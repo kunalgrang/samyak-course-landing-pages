@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Data Analytics Course in Sion, Mumbai | Samyak Computer Classes</title>
+<meta name="description" content="Learn Data Analytics at Samyak Sion. Excel, Python, Power BI, SQL, Tableau. Beginner to Advanced. Practical training, small batches, placement support.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --blue-900: #0f172a;
+  --blue-700: #1e293b;
+  --blue-500: #3b82f6;
+  --green-500: #27ae60;
+  --green-600: #219a52;
+  --amber-400: #f9a825;
+  --teal-500: #14b8a6;
+  --teal-600: #0d9488;
+  --white: #ffffff;
+  --gray-50: #f8f9fa;
+  --gray-100: #f1f3f5;
+  --gray-200: #e9ecef;
+  --gray-500: #868e96;
+  --gray-700: #495057;
+  --gray-900: #212529;
+  --whatsapp: #25D366;
+  --radius: 8px;
+}
+
+body {
+  font-family: 'Inter', -apple-system, sans-serif;
+  color: var(--gray-900);
+  background: var(--white);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  padding-bottom: 72px;
+}
+
+.sticky-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--white);
+  border-top: 1px solid var(--gray-200);
+  padding: 12px 16px;
+  display: flex;
+  gap: 10px;
+  z-index: 100;
+  box-shadow: 0 -4px 12px rgba(0,0,0,0.08);
+}
+
+.sticky-bar a {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 12px;
+  border-radius: var(--radius);
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 15px;
+  border: none;
+  cursor: pointer;
+}
+
+.btn-whatsapp { background: var(--whatsapp); color: var(--white); }
+.btn-call { background: var(--blue-900); color: var(--white); }
+
+/* ===== HERO ===== */
+.hero {
+  background: linear-gradient(135deg, var(--blue-900) 0%, #1a365d 100%);
+  color: var(--white);
+  padding: 28px 20px 32px;
+}
+
+.hero-badge {
+  display: inline-block;
+  background: var(--teal-500);
+  color: var(--white);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 4px;
+  margin-bottom: 16px;
+  letter-spacing: 0.3px;
+}
+
+.hero h1 { font-size: 26px; font-weight: 800; line-height: 1.25; margin-bottom: 12px; }
+.hero h1 span { color: var(--teal-500); }
+
+.hero-sub {
+  font-size: 16px;
+  color: rgba(255,255,255,0.85);
+  margin-bottom: 20px;
+  line-height: 1.5;
+}
+
+.hero-trust {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.hero-trust li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: rgba(255,255,255,0.9);
+}
+
+.hero-trust li .icon { color: var(--teal-500); font-size: 16px; flex-shrink: 0; }
+
+.hero-cta {
+  display: block;
+  width: 100%;
+  background: var(--whatsapp);
+  color: var(--white);
+  text-align: center;
+  padding: 16px;
+  border-radius: var(--radius);
+  font-size: 16px;
+  font-weight: 700;
+  text-decoration: none;
+  margin-bottom: 10px;
+}
+
+.hero-cta-secondary {
+  display: block;
+  width: 100%;
+  text-align: center;
+  padding: 14px;
+  border-radius: var(--radius);
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--white);
+  border: 1.5px solid rgba(255,255,255,0.35);
+}
+
+.hero-rating {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 16px;
+  font-size: 13px;
+  color: rgba(255,255,255,0.75);
+}
+
+.stars { color: var(--amber-400); letter-spacing: 1px; }
+
+/* ===== LEAD FORM ===== */
+.lead-form-section {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-top: 20px;
+}
+
+.lead-form-section .form-divider {
+  text-align: center;
+  font-size: 13px;
+  color: rgba(255,255,255,0.5);
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lead-form-section .form-divider::before,
+.lead-form-section .form-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(255,255,255,0.15);
+}
+
+.lead-form-section .form-title { font-size: 15px; font-weight: 700; color: var(--white); margin-bottom: 4px; text-align: center; }
+.lead-form-section .form-sub { font-size: 12px; color: rgba(255,255,255,0.6); margin-bottom: 14px; text-align: center; }
+
+.lead-form-section input {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.08);
+  color: var(--white);
+  font-size: 15px;
+  font-family: inherit;
+  margin-bottom: 10px;
+  outline: none;
+}
+
+.lead-form-section input::placeholder { color: rgba(255,255,255,0.4); }
+.lead-form-section input:focus { border-color: var(--teal-500); }
+
+.lead-form-section button {
+  width: 100%;
+  padding: 14px;
+  background: var(--teal-500);
+  color: var(--white);
+  border: none;
+  border-radius: 6px;
+  font-size: 15px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.lead-form-section .form-trust { font-size: 11px; color: rgba(255,255,255,0.4); text-align: center; margin-top: 8px; }
+
+.form-success { text-align: center; padding: 20px; display: none; }
+.form-success .check { font-size: 36px; margin-bottom: 8px; }
+.form-success p { font-size: 14px; color: rgba(255,255,255,0.85); }
+
+.mid-form-section {
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-top: 24px;
+}
+
+.mid-form-section .form-divider {
+  text-align: center; font-size: 13px; color: var(--gray-500); margin-bottom: 14px;
+  display: flex; align-items: center; gap: 12px;
+}
+
+.mid-form-section .form-divider::before,
+.mid-form-section .form-divider::after { content: ''; flex: 1; height: 1px; background: var(--gray-200); }
+
+.mid-form-section .form-title { font-size: 15px; font-weight: 700; color: var(--gray-900); margin-bottom: 4px; text-align: center; }
+.mid-form-section .form-sub { font-size: 12px; color: var(--gray-500); margin-bottom: 14px; text-align: center; }
+
+.mid-form-section input {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--gray-200);
+  border-radius: 6px;
+  background: var(--white);
+  color: var(--gray-900);
+  font-size: 15px;
+  font-family: inherit;
+  margin-bottom: 10px;
+  outline: none;
+}
+
+.mid-form-section input::placeholder { color: var(--gray-500); }
+.mid-form-section input:focus { border-color: var(--teal-500); }
+
+.mid-form-section button {
+  width: 100%;
+  padding: 14px;
+  background: var(--blue-900);
+  color: var(--white);
+  border: none;
+  border-radius: 6px;
+  font-size: 15px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.mid-form-section .form-trust { font-size: 11px; color: var(--gray-500); text-align: center; margin-top: 8px; }
+
+/* ===== SECTION COMMON ===== */
+section { padding: 36px 20px; }
+
+.section-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--teal-500);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+
+.section-title { font-size: 22px; font-weight: 800; line-height: 1.3; margin-bottom: 20px; color: var(--gray-900); }
+
+/* ===== WHY SAMYAK ===== */
+.why-section { background: var(--gray-50); }
+
+.why-grid { display: flex; flex-direction: column; gap: 16px; }
+
+.why-card {
+  background: var(--white);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.why-card .card-icon { font-size: 28px; margin-bottom: 10px; }
+.why-card h3 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+.why-card p { font-size: 14px; color: var(--gray-700); line-height: 1.5; }
+
+.trust-strip {
+  margin-top: 20px;
+  background: var(--blue-900);
+  color: var(--white);
+  border-radius: var(--radius);
+  padding: 20px;
+  text-align: center;
+}
+
+.trust-numbers { display: flex; gap: 12px; margin-top: 16px; }
+
+.trust-numbers > div {
+  flex: 1;
+  background: rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 12px 8px;
+}
+
+.trust-numbers .num { font-size: 22px; font-weight: 800; color: var(--teal-500); }
+.trust-numbers .label { font-size: 11px; color: rgba(255,255,255,0.7); margin-top: 2px; }
+
+/* ===== COURSE CONTENT ===== */
+.course-section { background: var(--white); }
+
+.module-list { list-style: none; display: flex; flex-direction: column; gap: 12px; }
+
+.module-list li {
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.module-list li .mod-title { font-weight: 700; font-size: 15px; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+.module-list li .mod-topics { font-size: 13px; color: var(--gray-700); line-height: 1.5; }
+
+.track-box {
+  margin-top: 20px;
+  border: 2px solid var(--teal-500);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.track-header {
+  background: var(--teal-500);
+  color: var(--white);
+  padding: 12px 16px;
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.track-body { padding: 16px; }
+.track-body p { font-size: 14px; color: var(--gray-700); line-height: 1.5; margin-bottom: 8px; }
+.track-body .track-detail { font-size: 13px; color: var(--gray-500); }
+
+.career-box {
+  margin-top: 20px;
+  background: linear-gradient(135deg, var(--teal-500), var(--teal-600));
+  color: var(--white);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.career-box h3 { font-size: 17px; font-weight: 700; margin-bottom: 12px; }
+
+.career-roles { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; }
+
+.career-roles li {
+  background: rgba(255,255,255,0.2);
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mid-cta {
+  display: block;
+  width: 100%;
+  background: var(--whatsapp);
+  color: var(--white);
+  text-align: center;
+  padding: 16px;
+  border-radius: var(--radius);
+  font-size: 16px;
+  font-weight: 700;
+  text-decoration: none;
+  margin-top: 24px;
+}
+
+/* ===== SOCIAL PROOF ===== */
+.proof-section { background: var(--gray-50); }
+
+.review-card {
+  background: var(--white);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 12px;
+}
+
+.review-card .review-stars { color: var(--amber-400); font-size: 14px; letter-spacing: 1px; margin-bottom: 8px; }
+.review-card .review-text { font-size: 14px; color: var(--gray-700); line-height: 1.6; margin-bottom: 10px; font-style: italic; }
+.review-card .reviewer { font-size: 13px; font-weight: 600; color: var(--gray-900); }
+.review-card .reviewer span { font-weight: 400; color: var(--gray-500); }
+
+.google-badge {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  background: var(--white); border: 1px solid var(--gray-200); border-radius: var(--radius);
+  padding: 14px; margin-bottom: 20px; font-size: 14px; font-weight: 600;
+}
+
+.google-badge .g-stars { color: var(--amber-400); }
+
+/* ===== FAQ + FINAL CTA ===== */
+.final-section { background: var(--white); padding-bottom: 48px; }
+
+.faq-list { display: flex; flex-direction: column; gap: 12px; margin-bottom: 32px; }
+
+.faq-item { border: 1px solid var(--gray-200); border-radius: var(--radius); overflow: hidden; }
+
+.faq-q {
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+  background: var(--gray-50); border: none; padding: 16px; font-size: 14px;
+  font-weight: 600; text-align: left; cursor: pointer; font-family: inherit; color: var(--gray-900);
+}
+
+.faq-q .arrow { font-size: 18px; transition: transform 0.2s; color: var(--gray-500); }
+
+.faq-a {
+  display: none; padding: 0 16px 16px; font-size: 14px;
+  color: var(--gray-700); line-height: 1.6; background: var(--gray-50);
+}
+
+.faq-item.open .faq-a { display: block; }
+.faq-item.open .arrow { transform: rotate(180deg); }
+
+.final-cta-box {
+  background: var(--blue-900); color: var(--white); border-radius: var(--radius);
+  padding: 28px 20px; text-align: center;
+}
+
+.final-cta-box h2 { font-size: 22px; font-weight: 800; line-height: 1.3; margin-bottom: 8px; }
+.final-cta-box p { font-size: 14px; color: rgba(255,255,255,0.8); margin-bottom: 20px; }
+
+.final-cta-box .urgency-tag {
+  display: inline-block; background: var(--teal-500); color: var(--white);
+  font-size: 12px; font-weight: 700; padding: 5px 14px; border-radius: 4px; margin-bottom: 16px;
+}
+
+.final-cta-box a {
+  display: block; width: 100%; padding: 16px; border-radius: var(--radius);
+  font-size: 16px; font-weight: 700; text-decoration: none; text-align: center; margin-bottom: 10px;
+}
+
+.final-cta-box .btn-wa { background: var(--whatsapp); color: var(--white); }
+.final-cta-box .btn-tel { background: transparent; color: var(--white); border: 1.5px solid rgba(255,255,255,0.35); }
+
+.location-strip {
+  display: flex; align-items: center; gap: 8px; margin-top: 20px;
+  font-size: 13px; color: rgba(255,255,255,0.7); justify-content: center;
+}
+
+@media (min-width: 640px) {
+  .hero { padding: 48px 40px; }
+  .hero h1 { font-size: 34px; }
+  section { padding: 48px 40px; }
+  .why-grid { display: grid; grid-template-columns: 1fr 1fr; }
+  .module-list { display: grid; grid-template-columns: 1fr 1fr; }
+  .final-cta-box { padding: 40px; }
+}
+
+@media (min-width: 768px) {
+  body { max-width: 680px; margin: 0 auto; }
+  .sticky-bar { max-width: 680px; left: 50%; transform: translateX(-50%); }
+}
+</style>
+
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=AW-17938047753"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'AW-17938047753');
+</script>
+</head>
+<body>
+
+<!-- ===== HERO ===== -->
+<div class="hero">
+  <div class="hero-badge">📍 Classroom Training in Sion West, Mumbai</div>
+  <h1>Learn <span>Data Analytics</span> — From Excel to Python & Power BI</h1>
+  <p class="hero-sub">Master the tools companies actually hire for. Hands-on training in Excel, SQL, Python, Power BI, and Tableau — beginner to advanced.</p>
+
+  <ul class="hero-trust">
+    <li><span class="icon">✓</span> Work on real datasets and projects</li>
+    <li><span class="icon">✓</span> Small batches — personal attention</li>
+    <li><span class="icon">✓</span> Beginner and Advanced tracks available</li>
+    <li><span class="icon">✓</span> Weekday & weekend batches</li>
+  </ul>
+
+  <a href="https://samyaksion.com/thank-you/?course=Data+Analytics" class="hero-cta">
+    💬 Get Course Details on WhatsApp
+  </a>
+  <a href="https://samyaksion.com/thank-you/?course=Data+Analytics&action=call" class="hero-cta-secondary">
+    📞 Call Now — Talk to Counsellor
+  </a>
+
+  <div class="hero-rating">
+    <span class="stars">★★★★★</span>
+    <span>4.9/5 on Google &nbsp;·&nbsp; Samyak Sion</span>
+  </div>
+
+  <div class="lead-form-section" id="hero-form-container">
+    <div class="form-divider">or</div>
+    <div class="form-title">Leave your number — we'll call you</div>
+    <div class="form-sub">Get a callback within 30 minutes</div>
+    <form id="hero-lead-form" onsubmit="return submitLeadForm(event, 'hero')">
+      <input type="text" name="name" placeholder="Your Name" required>
+      <input type="tel" name="phone" placeholder="Phone Number" pattern="[0-9]{10}" maxlength="10" required>
+      <input type="hidden" name="source" value="data-analytics-hero">
+      <button type="submit">📞 Request Callback</button>
+    </form>
+    <div class="form-trust">🔒 No spam. We'll only call about your enquiry.</div>
+  </div>
+  <div class="form-success" id="hero-form-success">
+    <div class="check">✅</div>
+    <p>Thank you! We'll call you within 30 minutes.</p>
+  </div>
+</div>
+
+<!-- ===== WHY SAMYAK ===== -->
+<section class="why-section">
+  <div class="section-label">Why Students Choose Us</div>
+  <h2 class="section-title">Not theory from slides. You'll work on real data.</h2>
+
+  <div class="why-grid">
+    <div class="why-card">
+      <div class="card-icon">📊</div>
+      <h3>Real Dataset Projects</h3>
+      <p>Practice on actual business datasets — not textbook examples. Build dashboards and reports you can show in interviews.</p>
+    </div>
+    <div class="why-card">
+      <div class="card-icon">🎯</div>
+      <h3>Beginner to Advanced Tracks</h3>
+      <p>Start from zero with the 4-month Beginner track, or go deep with the 6-month Advanced track including Tableau and R.</p>
+    </div>
+    <div class="why-card">
+      <div class="card-icon">👥</div>
+      <h3>Small Batch Sizes</h3>
+      <p>8–12 students per batch. Your doubts get answered, not ignored.</p>
+    </div>
+    <div class="why-card">
+      <div class="card-icon">💼</div>
+      <h3>Placement Assistance</h3>
+      <p>Resume prep, interview guidance, and job referrals for data analyst and MIS roles.</p>
+    </div>
+  </div>
+
+  <div class="trust-strip">
+    <p style="font-size:13px; margin-bottom:8px; color: rgba(255,255,255,0.65);">AUTHORISED FRANCHISE OF</p>
+    <div style="font-size:22px; font-weight:800; line-height:1.3; color: var(--teal-500);">Samyak Computer Classes</div>
+    <p style="font-size:13px;">India's trusted computer training network</p>
+    <div class="trust-numbers">
+      <div>
+        <div class="num">150+</div>
+        <div class="label">Branches across India</div>
+      </div>
+      <div>
+        <div class="num">10L+</div>
+        <div class="label">Students Trained</div>
+      </div>
+      <div>
+        <div class="num">7L+</div>
+        <div class="label">Students Placed</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== COURSE CONTENT ===== -->
+<section class="course-section">
+  <div class="section-label">What You'll Learn</div>
+  <h2 class="section-title">The exact tools companies hire for</h2>
+
+  <ul class="module-list">
+    <li>
+      <div class="mod-title">📗 Excel for Analytics</div>
+      <div class="mod-topics">Advanced formulas, pivot tables, VLOOKUP/XLOOKUP, data cleaning, charts, dashboards</div>
+    </li>
+    <li>
+      <div class="mod-title">🗄️ SQL</div>
+      <div class="mod-topics">Database queries, joins, subqueries, aggregations, data extraction from real databases</div>
+    </li>
+    <li>
+      <div class="mod-title">🐍 Python for Data</div>
+      <div class="mod-topics">Pandas, NumPy, data manipulation, cleaning, visualization with Matplotlib and Seaborn</div>
+    </li>
+    <li>
+      <div class="mod-title">📊 Power BI</div>
+      <div class="mod-topics">Dashboard creation, DAX formulas, data modeling, interactive reports, publishing</div>
+    </li>
+  </ul>
+
+  <div class="track-box">
+    <div class="track-header">🚀 Beginner Track — 4 Months</div>
+    <div class="track-body">
+      <p>Excel + SQL + Python + Power BI. Perfect if you're starting from scratch or switching careers.</p>
+      <div class="track-detail">No prior coding or analytics experience needed</div>
+    </div>
+  </div>
+
+  <div class="track-box" style="margin-top: 12px;">
+    <div class="track-header" style="background: var(--blue-900);">⚡ Advanced Track — 6 Months</div>
+    <div class="track-body">
+      <p>Everything in Beginner + Tableau + R Programming. For those who want deeper skills and stronger job prospects.</p>
+      <div class="track-detail">Includes all Beginner modules plus advanced tools</div>
+    </div>
+  </div>
+
+  <div class="career-box">
+    <h3>Jobs You Can Apply For After This Course</h3>
+    <ul class="career-roles">
+      <li>Data Analyst</li>
+      <li>MIS Executive</li>
+      <li>Business Analyst</li>
+      <li>Power BI Developer</li>
+      <li>SQL Analyst</li>
+      <li>Reporting Analyst</li>
+      <li>Operations Analyst</li>
+    </ul>
+  </div>
+
+  <a href="https://samyaksion.com/thank-you/?course=Data+Analytics" class="mid-cta">
+    💬 Enquire Now — Get Full Syllabus + Fees
+  </a>
+
+  <div class="mid-form-section">
+    <div class="form-divider">or</div>
+    <div class="form-title">Not on WhatsApp? Leave your number</div>
+    <div class="form-sub">We'll call you within 30 minutes</div>
+    <form id="mid-lead-form" onsubmit="return submitLeadForm(event, 'mid')">
+      <input type="text" name="name" placeholder="Your Name" required>
+      <input type="tel" name="phone" placeholder="Phone Number" pattern="[0-9]{10}" maxlength="10" required>
+      <input type="hidden" name="source" value="data-analytics-mid">
+      <button type="submit">📞 Request Callback</button>
+    </form>
+    <div class="form-trust">🔒 No spam. We'll only call about your enquiry.</div>
+  </div>
+  <div class="form-success" id="mid-form-success" style="background:var(--gray-50); border-radius:var(--radius); margin-top:24px;">
+    <div class="check">✅</div>
+    <p style="color:var(--gray-700);">Thank you! We'll call you within 30 minutes.</p>
+  </div>
+</section>
+
+<!-- ===== SOCIAL PROOF ===== -->
+<section class="proof-section">
+  <div class="section-label">Student Reviews</div>
+  <h2 class="section-title">Don't take our word for it</h2>
+
+  <div class="google-badge">
+    <span class="g-stars">★★★★★</span>
+    <strong>4.9 / 5</strong> on Google Reviews
+  </div>
+
+  <!-- REPLACE with real reviews -->
+  <div class="review-card">
+    <div class="review-stars">★★★★★</div>
+    <p class="review-text">"I had zero coding background but wanted to switch to analytics. The step-by-step approach made it easy. I'm now building Power BI dashboards at my company."</p>
+    <div class="reviewer">Amit K. <span>· Data Analytics Student</span></div>
+  </div>
+
+  <div class="review-card">
+    <div class="review-stars">★★★★★</div>
+    <p class="review-text">"Best part was working on real datasets, not just theory. The SQL and Python modules were very practical. Small batch so I could ask questions freely."</p>
+    <div class="reviewer">Neha S. <span>· Data Analytics Student</span></div>
+  </div>
+
+  <div class="review-card">
+    <div class="review-stars">★★★★★</div>
+    <p class="review-text">"I was already using Excel at work but wanted to learn Power BI and SQL. The weekend batch was perfect for me. Got promoted to MIS role within 2 months."</p>
+    <div class="reviewer">Rajesh M. <span>· Advanced Track Student</span></div>
+  </div>
+</section>
+
+<!-- ===== FAQ + FINAL CTA ===== -->
+<section class="final-section">
+  <div class="section-label">Common Questions</div>
+  <h2 class="section-title">Everything you need to know</h2>
+
+  <div class="faq-list">
+    <div class="faq-item">
+      <button class="faq-q" onclick="this.parentElement.classList.toggle('open')">
+        Can complete beginners join?
+        <span class="arrow">▾</span>
+      </button>
+      <div class="faq-a">Absolutely. The Beginner track starts from zero — no prior coding, Excel, or analytics knowledge needed. We teach everything step by step.</div>
+    </div>
+
+    <div class="faq-item">
+      <button class="faq-q" onclick="this.parentElement.classList.toggle('open')">
+        What's the difference between Beginner and Advanced?
+        <span class="arrow">▾</span>
+      </button>
+      <div class="faq-a">Beginner (4 months) covers Excel, SQL, Python, and Power BI. Advanced (6 months) includes everything in Beginner plus Tableau and R Programming for deeper analytical skills.</div>
+    </div>
+
+    <div class="faq-item">
+      <button class="faq-q" onclick="this.parentElement.classList.toggle('open')">
+        Do I need a laptop?
+        <span class="arrow">▾</span>
+      </button>
+      <div class="faq-a">We have computers available in class. Having your own laptop is helpful for practice at home but not required to join.</div>
+    </div>
+
+    <div class="faq-item">
+      <button class="faq-q" onclick="this.parentElement.classList.toggle('open')">
+        Are weekend or evening batches available?
+        <span class="arrow">▾</span>
+      </button>
+      <div class="faq-a">Yes. We run morning, evening, and weekend batches so working professionals and college students can attend comfortably.</div>
+    </div>
+
+    <div class="faq-item">
+      <button class="faq-q" onclick="this.parentElement.classList.toggle('open')">
+        Can I pay in installments?
+        <span class="arrow">▾</span>
+      </button>
+      <div class="faq-a">Yes, we offer flexible payment options. You can discuss this with our counsellor during your enquiry.</div>
+    </div>
+
+    <div class="faq-item">
+      <button class="faq-q" onclick="this.parentElement.classList.toggle('open')">
+        Where is the institute located?
+        <span class="arrow">▾</span>
+      </button>
+      <div class="faq-a">We are in Sion West, Mumbai — easily accessible from Dadar, Matunga, Wadala, Kurla, and Chembur. Just minutes from Sion station. <a href="https://maps.app.goo.gl/nWLbVTBALs6cNfTC6" target="_blank" rel="noopener" style="color:var(--teal-500); font-weight:600;">View on Google Maps</a></div>
+    </div>
+  </div>
+
+  <div class="final-cta-box">
+    <div class="urgency-tag">⚡ July Batch — Limited Seats</div>
+    <h2>Ready to Start Your Data Analytics Career?</h2>
+    <p>Get complete course details, fee structure, and batch timings on WhatsApp — takes 2 minutes.</p>
+
+    <a href="https://samyaksion.com/thank-you/?course=Data+Analytics" class="btn-wa">
+      💬 WhatsApp Us Now
+    </a>
+    <a href="https://samyaksion.com/thank-you/?course=Data+Analytics&action=call" class="btn-tel">
+      📞 Call to Book Free Demo Class
+    </a>
+
+    <div class="location-strip">
+      📍 Samyak Computer Classes, Sion West, Mumbai
+    </div>
+    <a href="https://maps.app.goo.gl/nWLbVTBALs6cNfTC6" target="_blank" rel="noopener" style="display:block; text-align:center; color: rgba(255,255,255,0.6); font-size:12px; margin-top:8px; text-decoration:underline;">
+      View on Google Maps → Get Directions
+    </a>
+  </div>
+</section>
+
+<!-- ===== STICKY BAR ===== -->
+<div class="sticky-bar">
+  <a href="https://samyaksion.com/thank-you/?course=Data+Analytics" class="btn-whatsapp">
+    💬 WhatsApp
+  </a>
+  <a href="https://samyaksion.com/thank-you/?course=Data+Analytics&action=call" class="btn-call">
+    📞 Call Now
+  </a>
+</div>
+
+<script>
+function submitLeadForm(e, location) {
+  e.preventDefault();
+  var form = e.target;
+  var name = form.querySelector('input[name="name"]').value;
+  var phone = form.querySelector('input[name="phone"]').value;
+  var source = form.querySelector('input[name="source"]').value;
+
+  if (typeof gtag === 'function') {
+    gtag('event', 'conversion', {
+      'send_to': 'AW-17938047753/KKhoCJuo7MEcEInGw-IC',
+      'value': 500,
+      'currency': 'INR'
+    });
+  }
+
+  fetch('https://formsubmit.co/ajax/shreeservicesrt@gmail.com', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({
+      name: name,
+      phone: phone,
+      source: source,
+      _subject: 'New Data Analytics Lead - ' + name + ' - ' + phone
+    })
+  }).then(function(response) {
+    document.getElementById(location + '-form-container').style.display = 'none';
+    document.getElementById(location + '-form-success').style.display = 'block';
+  }).catch(function(error) {
+    window.open('https://samyaksion.com/thank-you/?course=Data+Analytics&name=' + encodeURIComponent(name) + '%20-%20' + phone, '_blank');
+    document.getElementById(location + '-form-container').style.display = 'none';
+    document.getElementById(location + '-form-success').style.display = 'block';
+  });
+
+  return false;
+}
+</script>
+
+
+<!-- Google Ads conversion tracking for WhatsApp and phone links -->
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  const whatsappSelector = 'a[href*="wa.me"], a.hero-cta, a.mid-cta, a.btn-wa, a.btn-whatsapp';
+  const callSelector = 'a[href^="tel:"], a.hero-cta-secondary, a.btn-tel, a.btn-call';
+  const conversionLinks = document.querySelectorAll(
+    whatsappSelector + ', ' + callSelector
+  );
+
+  conversionLinks.forEach(function (link) {
+    link.addEventListener('click', function (event) {
+      event.preventDefault();
+
+      const destinationUrl = link.href;
+      const isCallLink = link.matches(callSelector);
+      const conversionId = isCallLink
+        ? 'AW-17938047753/4-O_CNv6xskcEInGw-lC'
+        : 'AW-17938047753/l-dXCN76xskcEInGw-lC';
+
+      let hasOpened = false;
+
+      function openDestination() {
+        if (hasOpened) return;
+        hasOpened = true;
+        window.location.href = destinationUrl;
+      }
+
+      const fallbackTimer = window.setTimeout(openDestination, 500);
+
+      try {
+        if (typeof window.gtag === 'function') {
+          window.gtag('event', 'conversion', {
+            send_to: conversionId,
+            event_callback: function () {
+              window.clearTimeout(fallbackTimer);
+              openDestination();
+            }
+          });
+        } else {
+          window.clearTimeout(fallbackTimer);
+          openDestination();
+        }
+      } catch (error) {
+        window.clearTimeout(fallbackTimer);
+        openDestination();
+      }
+    });
+  });
+});
+</script>
+</body>
+</html>
