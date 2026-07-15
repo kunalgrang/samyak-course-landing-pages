@@ -10,6 +10,10 @@ function onOpen() {
 
 function setupWorkbook() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss || !ss.getId()) {
+    throw publicError_('CONFIGURATION_ERROR', 'Open the referral workbook before running setupWorkbook().');
+  }
+  PropertiesService.getScriptProperties().setProperty('SPREADSHEET_ID', ss.getId());
   Object.keys(SSC.HEADERS).forEach(function (sheetName) {
     var sheet = ensureSheet_(ss, sheetName);
     ensureHeaders_(sheet, SSC.HEADERS[sheetName]);

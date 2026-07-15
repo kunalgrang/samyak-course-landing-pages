@@ -320,7 +320,7 @@ function calculateRewards_(fee, courseRow) {
 }
 
 function nextReferralId_() {
-  var year = Utilities.formatDate(new Date(), SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy');
+  var year = Utilities.formatDate(new Date(), getWorkbook_().getSpreadsheetTimeZone(), 'yyyy');
   var rows = readObjects_(getSheet_(SSC.SHEETS.REFERRALS));
   var max = 0;
   rows.forEach(function (row) {
@@ -435,9 +435,23 @@ function getHeaderMap_(sheet) {
 }
 
 function getSheet_(sheetName) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  var sheet = getWorkbook_().getSheetByName(sheetName);
   if (!sheet) throw publicError_('CONFIGURATION_ERROR', 'Workbook is not set up.');
   return sheet;
+}
+
+function getWorkbook_() {
+  var spreadsheetId = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
+  if (spreadsheetId) {
+    return SpreadsheetApp.openById(spreadsheetId);
+  }
+
+  var activeSpreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  if (activeSpreadsheet) {
+    return activeSpreadsheet;
+  }
+
+  throw publicError_('CONFIGURATION_ERROR', 'Referral workbook is not configured.');
 }
 
 function getSettings_() {
@@ -528,7 +542,7 @@ function logActivity_(action, referralId, referrerId, oldValue, newValue, notes)
 }
 
 function formatDateForApi_(date) {
-  return Utilities.formatDate(date, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+  return Utilities.formatDate(date, getWorkbook_().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
 }
 
 function addDays_(date, days) {
@@ -591,6 +605,7 @@ function assert_(condition, message) {
 
 function runReferralSystemTests() {
   setupWorkbook();
+  testWorkbookConfiguration();
   testMobileNormalisation();
   testInvalidMobileNumber();
   testExistingEnquiryRejection();
@@ -604,6 +619,16 @@ function runReferralSystemTests() {
   testRewardSlabCalculation();
   testMinimumQualifyingPaymentCalculation();
   SpreadsheetApp.getActive().toast('Referral system tests completed.');
+}
+
+function testWorkbookConfiguration() {
+  var spreadsheetId = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
+  assert_(!!spreadsheetId, 'SPREADSHEET_ID exists after setupWorkbook');
+  var workbook = getWorkbook_();
+  assert_(workbook.getId() === spreadsheetId, 'getWorkbook opens the configured spreadsheet');
+  Object.keys(SSC.HEADERS).forEach(function (sheetName) {
+    assert_(!!workbook.getSheetByName(sheetName), 'sheet is accessible through getWorkbook: ' + sheetName);
+  });
 }
 
 function testMobileNormalisation() {

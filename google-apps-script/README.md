@@ -8,15 +8,23 @@ This folder contains the Google Apps Script backend for the Samyak Skill Circle 
 - `Setup.gs` - workbook setup, menu actions, sheet validation, course/settings seed rows and admin utilities.
 - `Code.gs` - API endpoint, referral validation, duplicate checks, reward calculations, WhatsApp links, logging and tests.
 
-## Required Script Property
+## Script Properties
 
-Set this in Apps Script project settings before deploying:
+Running `setupWorkbook()` automatically saves the workbook ID as:
+
+```text
+SPREADSHEET_ID
+```
+
+Before deploying, confirm `SPREADSHEET_ID` exists and add:
 
 ```text
 REFERRAL_API_SECRET
 ```
 
-Use a long random value. Never commit the shared secret to Git.
+Use a long random value for `REFERRAL_API_SECRET`. Never commit the shared secret to Git.
+
+`SPREADSHEET_ID` is not a public secret, but it should not be exposed in frontend code. The deployed Web App opens the workbook with `SpreadsheetApp.openById()` using this property, because active-file methods are not reliable for web-app requests.
 
 ## Main Functions
 

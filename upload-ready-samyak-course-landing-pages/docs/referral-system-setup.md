@@ -31,6 +31,14 @@ This guide explains how to install the Google Sheets, Google Apps Script and Clo
    - `ActivityLog`
    - `Settings`
 
+Running `setupWorkbook()` also saves the workbook ID to Apps Script Script Properties as:
+
+```text
+SPREADSHEET_ID
+```
+
+The deployed Web App uses this value with `SpreadsheetApp.openById()` so API requests do not depend on bound-script active-file methods.
+
 The sheet should also show the custom menu:
 
 `Samyak Skill Circle` -> `Setup Workbook`, `Generate Missing Referral Links`, `Refresh Referrer Statistics`, `Expire Old Referrals`
@@ -41,18 +49,21 @@ The script needs permission to edit the active Google Sheet and read the active 
 
 Use the official Samyak Google account, not a personal temporary account.
 
-## 5. Set the Shared Secret
+## 5. Confirm Script Properties
 
 In Apps Script:
 
 1. Open `Project Settings`.
-2. Under `Script Properties`, add:
+2. Under `Script Properties`, confirm `SPREADSHEET_ID` exists. It is saved automatically by `setupWorkbook()`.
+3. Add:
 
 ```text
 REFERRAL_API_SECRET = a-long-random-secret
 ```
 
 Warning: never commit this secret to Git, paste it into frontend JavaScript, or share it publicly.
+
+`SPREADSHEET_ID` is not a public secret, but it should not be exposed in frontend code. Keep both workbook access details and the shared secret server-side.
 
 ## 6. Deploy Apps Script as a Web App
 
@@ -228,6 +239,7 @@ runReferralSystemTests()
 
 This covers:
 
+- Workbook configuration through `SPREADSHEET_ID`
 - Mobile normalisation
 - Invalid mobile number
 - Existing enquiry rejection
