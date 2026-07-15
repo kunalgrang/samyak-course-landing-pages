@@ -48,7 +48,8 @@
 
   function buildFallback(course, name, phone) {
     var number = document.body.dataset.whatsappNumber || DEFAULT_WHATSAPP_NUMBER;
-    var message = 'Hi, I am interested in the ' + course + ' course at Samyak Sion. Please contact me. Name: ' + name + '. Phone: ' + phone + '.';
+    var baseMessage = document.body.dataset.whatsappMessage || 'Hi, I am interested in the ' + course + ' course at Samyak Sion. Please contact me.';
+    var message = baseMessage + ' Name: ' + name + '. Phone: ' + phone + '.';
     return 'https://wa.me/' + number + '?text=' + encodeURIComponent(message);
   }
 
@@ -160,7 +161,28 @@
     });
   }
 
+  function hydrateLeadForms() {
+    var params = new URLSearchParams(window.location.search);
+    document.querySelectorAll('form.lead-form').forEach(function (form) {
+      var values = {
+        page_url: window.location.href,
+        utm_source: params.get('utm_source') || '',
+        utm_medium: params.get('utm_medium') || '',
+        utm_campaign: params.get('utm_campaign') || '',
+        utm_term: params.get('utm_term') || '',
+        utm_content: params.get('utm_content') || ''
+      };
+      Object.keys(values).forEach(function (name) {
+        var input = form.querySelector('input[name="' + name + '"]');
+        if (input) {
+          input.value = values[name];
+        }
+      });
+    });
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
+    hydrateLeadForms();
     document.querySelectorAll('a[href*="wa.me"], a[href^="tel:"]').forEach(function (link) {
       link.addEventListener('click', handleConversionLink);
     });
