@@ -1,7 +1,8 @@
 {
   "version": 1,
   "include": [
-    "/api/referrals/*"
+    "/api/referrals/*",
+    "/r/*"
   ],
   "exclude": []
 }
