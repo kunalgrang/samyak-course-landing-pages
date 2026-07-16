@@ -383,17 +383,37 @@ function findCourseByName_(courseName) {
 }
 
 function findExistingContactByMobile_(mobile) {
+  var targetMobile = normaliseMobile_(mobile);
+
   return findObject_(SSC.SHEETS.EXISTING_CONTACTS, function (row) {
-    return row['Normalised Mobile'] === mobile && row.Active !== 'No';
+    var storedMobile = normaliseMobile_(
+      row['Normalised Mobile'] || row['Mobile Number']
+    );
+
+    return storedMobile === targetMobile && row.Active !== 'No';
   });
 }
 
 function findActiveReferralByMobile_(mobile, now) {
+  var targetMobile = normaliseMobile_(mobile);
+
   return findObject_(SSC.SHEETS.REFERRALS, function (row) {
     var status = row.Status;
     var validUntil = row['Valid Until'];
-    return row['Normalised Mobile'] === mobile &&
-      ['Referral Accepted', 'Counselling in Progress', 'Admission Confirmed', 'Awaiting Minimum Fee', 'Reward Eligible', 'Reward Approved', 'Reward Paid'].indexOf(status) !== -1 &&
+    var storedMobile = normaliseMobile_(
+      row['Normalised Mobile'] || row['Mobile Number']
+    );
+
+    return storedMobile === targetMobile &&
+      [
+        'Referral Accepted',
+        'Counselling in Progress',
+        'Admission Confirmed',
+        'Awaiting Minimum Fee',
+        'Reward Eligible',
+        'Reward Approved',
+        'Reward Paid'
+      ].indexOf(status) !== -1 &&
       validUntil instanceof Date &&
       validUntil >= now;
   });
