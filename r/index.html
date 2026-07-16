@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Samyak Skill Circle Referral Enquiry</title>
-  <meta name="description" content="Submit your Samyak Skill Circle referral enquiry through a valid personal referral link.">
+  <title>Course Enquiry | Samyak Computer Classes</title>
+  <meta name="description" content="Submit your Samyak Computer Classes course enquiry through a personal invitation link.">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="theme-color" content="#071827">
   <link rel="icon" type="image/png" sizes="32x32" href="/assets/images/favicon-32.png">
@@ -29,18 +29,17 @@
   <main class="referral-main">
     <section class="intro-panel" aria-labelledby="page-title">
       <div class="intro-copy">
-        <p class="programme-name" data-i18n="programmeName">Samyak Skill Circle</p>
-        <h1 id="page-title" data-i18n="heading">Register your course interest</h1>
-        <p data-i18n="intro">Use this secure referral link to share your course interest with Samyak Computer Classes. Your referrer details stay private.</p>
-        <p class="benefit-note" data-i18n="benefit">After successful admission, you will also receive a complimentary classroom AI Tools Crash Course.</p>
-        <a class="rules-link" href="/samyak-skill-circle/" data-i18n="rulesLink">Read referral programme rules</a>
+        <p class="school-name" data-i18n="schoolName">Samyak Computer Classes</p>
+        <h1 id="page-title"><span id="referrer-name">A friend</span> <span data-i18n="headingSuffix">has referred you to Samyak Computer Classes</span></h1>
+        <p data-i18n="intro">Explore our practical, career-focused courses and submit your details for personal counselling.</p>
+        <p class="benefit-note" data-i18n="benefit">Special benefit for you: After successful admission, you will receive a complimentary classroom AI Prompting Crash Course.</p>
       </div>
 
       <div class="state-card" id="state-card">
         <div class="status-panel" id="loading-panel" data-state-panel="loading" aria-live="polite" aria-busy="true">
           <div class="spinner" aria-hidden="true"></div>
-          <h2 tabindex="-1" data-i18n="loadingTitle">Validating referral link</h2>
-          <p data-i18n="loadingCopy">Please wait while we check this referral link.</p>
+          <h2 tabindex="-1" data-i18n="loadingTitle">Validating invitation link</h2>
+          <p data-i18n="loadingCopy">Please wait while we check this invitation link.</p>
         </div>
 
         <div class="status-panel is-hidden" id="courses-panel" data-state-panel="courses" aria-live="polite" aria-busy="true">
@@ -50,11 +49,11 @@
         </div>
 
         <div class="status-panel is-hidden" id="invalid-panel" data-state-panel="invalid">
-          <h2 id="invalid-heading" tabindex="-1" data-i18n="invalidTitle">This referral link is invalid or no longer active.</h2>
-          <p data-i18n="invalidCopy">You may read the programme rules or contact Samyak Computer Classes directly.</p>
+          <h2 id="invalid-heading" tabindex="-1" data-i18n="invalidTitle">This invitation link is invalid or no longer available.</h2>
+          <p data-i18n="invalidCopy">You can still contact Samyak Computer Classes directly for course counselling.</p>
           <div class="action-row">
-            <a class="button secondary-button" href="/samyak-skill-circle/" data-i18n="rulesButton">Programme rules</a>
-            <a class="button whatsapp-button" href="https://wa.me/917413832777?text=Hi%20Samyak%2C%20I%20need%20help%20with%20a%20Samyak%20Skill%20Circle%20referral%20link." data-i18n="whatsappButton">WhatsApp</a>
+            <a class="button secondary-button" href="https://samyaksion.com/" data-i18n="websiteButton">Samyak website</a>
+            <a class="button whatsapp-button" href="https://wa.me/917413832777?text=Hi%20Samyak%2C%20I%20need%20help%20with%20a%20course%20enquiry%20invitation%20link." data-i18n="whatsappButton">WhatsApp</a>
             <a class="button call-button" href="tel:+917413832777" data-i18n="callButton">Call Samyak</a>
           </div>
         </div>
@@ -64,15 +63,15 @@
           <p id="error-copy" data-i18n="serverError">We could not submit your enquiry right now. Please try again or contact Samyak Computer Classes.</p>
           <div class="action-row">
             <button class="button primary-button" type="button" id="retry-button" data-i18n="retryButton">Retry</button>
-            <a class="button whatsapp-button" href="https://wa.me/917413832777?text=Hi%20Samyak%2C%20I%20need%20help%20with%20a%20Samyak%20Skill%20Circle%20referral%20link." data-i18n="whatsappButton">WhatsApp</a>
+            <a class="button whatsapp-button" href="https://wa.me/917413832777?text=Hi%20Samyak%2C%20I%20need%20help%20with%20a%20course%20enquiry%20invitation%20link." data-i18n="whatsappButton">WhatsApp</a>
             <a class="button call-button" href="tel:+917413832777" data-i18n="callButton">Call Samyak</a>
           </div>
         </div>
 
         <form class="referral-form is-hidden" id="referral-form" data-state-panel="form" novalidate>
           <div class="form-heading">
-            <h2 tabindex="-1" data-i18n="formTitle">Referral enquiry form</h2>
-            <p data-i18n="formCopy">Please enter the prospective student's details. Fields marked with * are required.</p>
+            <h2 tabindex="-1" data-i18n="formTitle">Tell us which course you are interested in</h2>
+            <p data-i18n="formCopy">Share your details and our counsellor will contact you shortly.</p>
           </div>
 
           <div class="form-alert is-hidden" id="form-alert" aria-live="polite"></div>
@@ -111,23 +110,23 @@
           </div>
           <p class="field-error" id="consent-error"></p>
 
-          <button class="button primary-button submit-button" type="submit" id="submit-button" data-i18n="submitButton">Submit enquiry</button>
-          <p class="privacy-note" data-i18n="privacyNote">This page does not show your referrer's identity. Samyak will use your details only for counselling and admission follow-up.</p>
+          <button class="button primary-button submit-button" type="submit" id="submit-button" data-i18n="submitButton">Request course counselling</button>
+          <p class="privacy-note" data-i18n="privacyNote">Samyak will use your details only for course counselling and admission follow-up.</p>
         </form>
 
         <div class="status-panel success-panel is-hidden" id="success-panel" data-state-panel="success">
-          <h2 id="success-heading" tabindex="-1" data-i18n="successTitle">Thank you! Your interest has been registered with Samyak Computer Classes.</h2>
+          <h2 id="success-heading" tabindex="-1" data-i18n="successTitle">Thank you! Your course enquiry has been registered.</h2>
           <dl class="result-list">
             <div>
-              <dt data-i18n="referralIdLabel">Referral ID</dt>
+              <dt data-i18n="enquiryReferenceLabel">Enquiry Reference</dt>
               <dd id="success-referral-id"></dd>
             </div>
             <div>
-              <dt data-i18n="validUntilLabel">Referral valid until</dt>
+              <dt data-i18n="protectedUntilLabel">Registration protected until</dt>
               <dd id="success-valid-until"></dd>
             </div>
           </dl>
-          <p data-i18n="successCopy">Our counsellor will contact you shortly. After successful admission, you will also receive a complimentary classroom AI Tools Crash Course.</p>
+          <p data-i18n="successCopy">Our counsellor will contact you shortly. After successful admission, you will receive your complimentary classroom AI Prompting Crash Course.</p>
           <div class="action-row">
             <a class="button whatsapp-button" id="success-whatsapp" href="https://wa.me/917413832777" data-i18n="chatButton">Chat on WhatsApp</a>
             <a class="button call-button" href="tel:+917413832777" data-i18n="callButton">Call Samyak</a>
@@ -138,7 +137,7 @@
           <h2 id="rejection-heading" tabindex="-1" data-i18n="rejectionTitle">We could not register this enquiry.</h2>
           <p id="rejection-message"></p>
           <div class="action-row">
-            <a class="button whatsapp-button" href="https://wa.me/917413832777?text=Hi%20Samyak%2C%20I%20need%20help%20with%20my%20Samyak%20Skill%20Circle%20enquiry." data-i18n="whatsappButton">WhatsApp</a>
+            <a class="button whatsapp-button" href="https://wa.me/917413832777?text=Hi%20Samyak%2C%20I%20need%20help%20with%20my%20course%20enquiry." data-i18n="whatsappButton">WhatsApp</a>
             <a class="button call-button" href="tel:+917413832777" data-i18n="callButton">Call Samyak</a>
           </div>
         </div>

@@ -83,7 +83,32 @@ function getActiveCoursesForApi_() {
 
 function validateReferrerForApi_(token) {
   var referrer = findActiveReferrerByToken_(sanitizeToken_(token));
-  return { valid: !!referrer };
+  if (!referrer) {
+    return { valid: false };
+  }
+  return {
+    valid: true,
+    referrerName: buildPublicReferrerName_(referrer.row['Full Name'])
+  };
+}
+
+function buildPublicReferrerName_(fullName) {
+  var cleaned = sanitizeText_(fullName, 100);
+  if (!cleaned) return 'A friend';
+
+  var parts = cleaned.split(/\s+/).filter(function (part) {
+    return !!part;
+  });
+
+  if (!parts.length) return 'A friend';
+
+  var firstName = parts[0].slice(0, 40);
+  if (parts.length === 1) {
+    return firstName.slice(0, 60);
+  }
+
+  var lastInitial = parts[parts.length - 1].charAt(0).toUpperCase();
+  return (firstName + ' ' + lastInitial + '.').slice(0, 60);
 }
 
 function submitReferral_(payload) {

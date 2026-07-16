@@ -95,7 +95,7 @@ body.referral-page .intro-copy {
   align-content: start;
 }
 
-body.referral-page .programme-name {
+body.referral-page .school-name {
   margin: 0;
   color: var(--ref-teal-dark);
   font-size: 13px;
@@ -118,7 +118,11 @@ body.referral-page h1 {
   letter-spacing: 0;
 }
 
-body.referral-page .intro-copy p:not(.programme-name) {
+body.referral-page #referrer-name {
+  color: var(--ref-teal-dark);
+}
+
+body.referral-page .intro-copy p:not(.school-name) {
   max-width: 680px;
   margin-bottom: 0;
   color: var(--ref-muted);

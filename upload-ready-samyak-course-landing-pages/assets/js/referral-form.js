@@ -7,6 +7,7 @@
 
   var state = {
     token: '',
+    referrerName: '',
     language: 'en',
     courses: [],
     submitting: false,
@@ -16,25 +17,25 @@
 
   var text = {
     en: {
-      programmeName: 'Samyak Skill Circle',
-      heading: 'Register your course interest',
-      intro: 'Use this secure referral link to share your course interest with Samyak Computer Classes. Your referrer details stay private.',
-      benefit: 'After successful admission, you will also receive a complimentary classroom AI Tools Crash Course.',
-      rulesLink: 'Read referral programme rules',
-      loadingTitle: 'Validating referral link',
-      loadingCopy: 'Please wait while we check this referral link.',
+      schoolName: 'Samyak Computer Classes',
+      friendFallback: 'A friend',
+      headingSuffix: 'has referred you to Samyak Computer Classes',
+      intro: 'Explore our practical, career-focused courses and submit your details for personal counselling.',
+      benefit: 'Special benefit for you: After successful admission, you will receive a complimentary classroom AI Prompting Crash Course.',
+      loadingTitle: 'Validating invitation link',
+      loadingCopy: 'Please wait while we check this invitation link.',
       coursesLoadingTitle: 'Loading courses',
       coursesLoadingCopy: 'We are fetching the latest active course list.',
-      invalidTitle: 'This referral link is invalid or no longer active.',
-      invalidCopy: 'You may read the programme rules or contact Samyak Computer Classes directly.',
+      invalidTitle: 'This invitation link is invalid or no longer available.',
+      invalidCopy: 'You can still contact Samyak Computer Classes directly for course counselling.',
       errorTitle: 'We could not load this page right now.',
       serverError: 'We could not submit your enquiry right now. Please try again or contact Samyak Computer Classes.',
       retryButton: 'Retry',
-      rulesButton: 'Programme rules',
+      websiteButton: 'Samyak website',
       whatsappButton: 'WhatsApp',
       callButton: 'Call Samyak',
-      formTitle: 'Referral enquiry form',
-      formCopy: 'Please enter the prospective student\'s details. Fields marked with * are required.',
+      formTitle: 'Tell us which course you are interested in',
+      formCopy: 'Share your details and our counsellor will contact you shortly.',
       nameLabel: 'Full Name',
       namePlaceholder: 'Enter your full name',
       mobileLabel: 'Mobile Number',
@@ -44,13 +45,13 @@
       courseLabel: 'Course Interested',
       coursePlaceholder: 'Select a course',
       consent: 'I agree to be contacted by Samyak Computer Classes through phone calls, WhatsApp and email regarding course information, counselling and admission.',
-      submitButton: 'Submit enquiry',
+      submitButton: 'Request course counselling',
       submittingButton: 'Submitting...',
-      privacyNote: 'This page does not show your referrer\'s identity. Samyak will use your details only for counselling and admission follow-up.',
-      successTitle: 'Thank you! Your interest has been registered with Samyak Computer Classes.',
-      referralIdLabel: 'Referral ID',
-      validUntilLabel: 'Referral valid until',
-      successCopy: 'Our counsellor will contact you shortly. After successful admission, you will also receive a complimentary classroom AI Tools Crash Course.',
+      privacyNote: 'Samyak will use your details only for course counselling and admission follow-up.',
+      successTitle: 'Thank you! Your course enquiry has been registered.',
+      enquiryReferenceLabel: 'Enquiry Reference',
+      protectedUntilLabel: 'Registration protected until',
+      successCopy: 'Our counsellor will contact you shortly. After successful admission, you will receive your complimentary classroom AI Prompting Crash Course.',
       chatButton: 'Chat on WhatsApp',
       rejectionTitle: 'We could not register this enquiry.',
       requiredName: 'Please enter your full name.',
@@ -59,37 +60,37 @@
       invalidEmail: 'Please enter a valid email address or leave it blank.',
       requiredCourse: 'Please select a course.',
       requiredConsent: 'Please provide consent before submitting the form.',
-      duplicate: 'Your interest has already been registered through an active referral. Please contact Samyak Computer Classes if you need assistance.',
+      duplicate: 'Your course interest has already been registered. Please contact Samyak Computer Classes if you need assistance.',
       existingEnquiry: 'Your enquiry is already registered with Samyak Computer Classes. Please contact us for further assistance.',
-      currentStudent: 'Our records indicate that you are already a Samyak student. Please contact the centre if you need help.',
-      formerStudent: 'Our records indicate that you have previously studied at Samyak. Please contact the centre for available benefits or courses.',
-      invalidReferral: 'This referral link is no longer valid. You may contact Samyak Computer Classes directly.',
+      currentStudent: 'Our records indicate that you are already a Samyak student. Please contact the centre for assistance.',
+      formerStudent: 'Our records indicate that you have previously studied at Samyak. Please contact the centre to explore available courses and benefits.',
+      invalidReferral: 'This invitation link is no longer available. You may contact Samyak Computer Classes directly.',
       inactiveCourse: 'The selected course is currently unavailable. Please select another course.',
       coursesUnavailable: 'We could not load the active courses right now. Please try again.',
-      validationUnavailable: 'We could not validate this referral link right now. Please try again.',
+      validationUnavailable: 'We could not validate this invitation link right now. Please try again.',
       noCourses: 'No active courses are available right now. Please contact Samyak Computer Classes.',
-      successWhatsApp: 'Hi Samyak, I submitted an enquiry through the Samyak Skill Circle referral programme. My Referral ID is {id}.'
+      successWhatsApp: 'Hi Samyak, I submitted a course enquiry through a friend\'s invitation link. My Enquiry Reference is {id}.'
     },
     hi: {
-      programmeName: 'Samyak Skill Circle',
-      heading: 'अपनी कोर्स रुचि दर्ज करें',
-      intro: 'इस सुरक्षित रेफरल लिंक से Samyak Computer Classes को अपनी कोर्स रुचि भेजें। रेफर करने वाले व्यक्ति की जानकारी निजी रहेगी।',
-      benefit: 'सफल एडमिशन के बाद आपको complimentary classroom AI Tools Crash Course भी मिलेगा।',
-      rulesLink: 'रेफरल programme rules पढ़ें',
-      loadingTitle: 'रेफरल लिंक जांचा जा रहा है',
-      loadingCopy: 'कृपया प्रतीक्षा करें, हम इस रेफरल लिंक को जांच रहे हैं।',
+      schoolName: 'Samyak Computer Classes',
+      friendFallback: 'आपके एक मित्र',
+      headingSuffix: 'ने आपको Samyak Computer Classes के लिए recommend किया है',
+      intro: 'हमारे practical और career-focused courses देखें और personal counselling के लिए अपनी details submit करें।',
+      benefit: 'आपके लिए विशेष लाभ: सफल admission के बाद आपको complimentary classroom AI Prompting Crash Course मिलेगा।',
+      loadingTitle: 'Invitation link जांचा जा रहा है',
+      loadingCopy: 'कृपया प्रतीक्षा करें, हम इस invitation link को जांच रहे हैं।',
       coursesLoadingTitle: 'कोर्स लोड हो रहे हैं',
       coursesLoadingCopy: 'हम latest active course list ला रहे हैं।',
-      invalidTitle: 'यह रेफरल लिंक invalid है या अब active नहीं है।',
-      invalidCopy: 'आप programme rules पढ़ सकते हैं या Samyak Computer Classes से सीधे संपर्क कर सकते हैं।',
+      invalidTitle: 'यह invitation link invalid है या अब available नहीं है।',
+      invalidCopy: 'आप course counselling के लिए Samyak Computer Classes से सीधे संपर्क कर सकते हैं।',
       errorTitle: 'यह page अभी load नहीं हो पाया।',
       serverError: 'हम अभी आपकी enquiry submit नहीं कर पाए। कृपया दोबारा प्रयास करें या Samyak Computer Classes से संपर्क करें।',
       retryButton: 'फिर कोशिश करें',
-      rulesButton: 'Programme rules',
+      websiteButton: 'Samyak website',
       whatsappButton: 'WhatsApp',
       callButton: 'Call Samyak',
-      formTitle: 'Referral enquiry form',
-      formCopy: 'कृपया prospective student की details भरें। * वाले fields जरूरी हैं।',
+      formTitle: 'बताएं कि आप किस course में interested हैं',
+      formCopy: 'अपनी details share करें। हमारा counsellor आपसे जल्द संपर्क करेगा।',
       nameLabel: 'पूरा नाम',
       namePlaceholder: 'अपना पूरा नाम लिखें',
       mobileLabel: 'मोबाइल नंबर',
@@ -99,13 +100,13 @@
       courseLabel: 'जिस कोर्स में रुचि है',
       coursePlaceholder: 'कोर्स चुनें',
       consent: 'मैं पाठ्यक्रम की जानकारी, काउंसलिंग और एडमिशन के संबंध में Samyak Computer Classes द्वारा फोन, WhatsApp और ईमेल के माध्यम से संपर्क किए जाने के लिए सहमत हूँ।',
-      submitButton: 'Enquiry submit करें',
+      submitButton: 'Course counselling के लिए request करें',
       submittingButton: 'Submit हो रहा है...',
-      privacyNote: 'यह page आपके referrer की identity नहीं दिखाता। Samyak आपकी details केवल counselling और admission follow-up के लिए उपयोग करेगा।',
-      successTitle: 'धन्यवाद! आपकी interest Samyak Computer Classes में register हो गई है।',
-      referralIdLabel: 'Referral ID',
-      validUntilLabel: 'Referral valid until',
-      successCopy: 'हमारा counsellor आपसे जल्द संपर्क करेगा। सफल admission के बाद आपको complimentary classroom AI Tools Crash Course भी मिलेगा।',
+      privacyNote: 'Samyak आपकी details का उपयोग केवल course counselling और admission follow-up के लिए करेगा।',
+      successTitle: 'धन्यवाद! आपकी course enquiry register हो गई है।',
+      enquiryReferenceLabel: 'Enquiry Reference',
+      protectedUntilLabel: 'Registration protected until',
+      successCopy: 'हमारा counsellor आपसे जल्द संपर्क करेगा। सफल admission के बाद आपको complimentary classroom AI Prompting Crash Course मिलेगा।',
       chatButton: 'WhatsApp पर chat करें',
       rejectionTitle: 'यह enquiry register नहीं हो पाई।',
       requiredName: 'कृपया अपना पूरा नाम भरें।',
@@ -114,16 +115,16 @@
       invalidEmail: 'कृपया valid email भरें या इसे blank छोड़ दें।',
       requiredCourse: 'कृपया कोर्स चुनें।',
       requiredConsent: 'कृपया form submit करने से पहले consent दें।',
-      duplicate: 'आपकी interest पहले से active referral के माध्यम से registered है। सहायता के लिए Samyak Computer Classes से संपर्क करें।',
+      duplicate: 'आपकी course interest पहले से registered है। सहायता के लिए Samyak Computer Classes से संपर्क करें।',
       existingEnquiry: 'आपकी enquiry Samyak Computer Classes में पहले से registered है। आगे की सहायता के लिए हमसे संपर्क करें।',
       currentStudent: 'हमारे records के अनुसार आप पहले से Samyak student हैं। सहायता के लिए centre से संपर्क करें।',
-      formerStudent: 'हमारे records के अनुसार आपने पहले Samyak में पढ़ाई की है। उपलब्ध benefits या courses के लिए centre से संपर्क करें।',
-      invalidReferral: 'यह referral link अब valid नहीं है। आप Samyak Computer Classes से सीधे संपर्क कर सकते हैं।',
+      formerStudent: 'हमारे records के अनुसार आपने पहले Samyak में पढ़ाई की है। available courses और benefits explore करने के लिए centre से संपर्क करें।',
+      invalidReferral: 'यह invitation link अब available नहीं है। आप Samyak Computer Classes से सीधे संपर्क कर सकते हैं।',
       inactiveCourse: 'चुना हुआ course अभी उपलब्ध नहीं है। कृपया दूसरा course चुनें।',
       coursesUnavailable: 'हम अभी active courses load नहीं कर पाए। कृपया फिर कोशिश करें।',
-      validationUnavailable: 'हम अभी यह referral link validate नहीं कर पाए। कृपया फिर कोशिश करें।',
+      validationUnavailable: 'हम अभी यह invitation link validate नहीं कर पाए। कृपया फिर कोशिश करें।',
       noCourses: 'अभी कोई active course उपलब्ध नहीं है। कृपया Samyak Computer Classes से संपर्क करें।',
-      successWhatsApp: 'Hi Samyak, I submitted an enquiry through the Samyak Skill Circle referral programme. My Referral ID is {id}.'
+      successWhatsApp: "Hi Samyak, I submitted a course enquiry through a friend's invitation link. My Enquiry Reference is {id}."
     }
   };
 
@@ -133,6 +134,7 @@
   var formAlert;
   var submitButton;
   var retryButton;
+  var referrerNameNode;
   var successReferralId;
   var successValidUntil;
   var successWhatsApp;
@@ -152,6 +154,7 @@
     formAlert = document.getElementById('form-alert');
     submitButton = document.getElementById('submit-button');
     retryButton = document.getElementById('retry-button');
+    referrerNameNode = document.getElementById('referrer-name');
     successReferralId = document.getElementById('success-referral-id');
     successValidUntil = document.getElementById('success-valid-until');
     successWhatsApp = document.getElementById('success-whatsapp');
@@ -217,6 +220,7 @@
     });
 
     updateCoursePlaceholder();
+    updateReferrerName();
     clearFieldErrors();
     if (submitButton.disabled && state.submitting) {
       submitButton.textContent = text[state.language].submittingButton;
@@ -239,6 +243,8 @@
     postJson('/api/referrals/referrer', { token: state.token })
       .then(function (data) {
         if (data && data.valid === true) {
+          state.referrerName = sanitizePublicReferrerName(data.referrerName);
+          updateReferrerName();
           loadCourses();
         } else {
           showInvalidLink();
@@ -289,6 +295,16 @@
     if (fields.course && fields.course.options.length) {
       fields.course.options[0].textContent = text[state.language].coursePlaceholder;
     }
+  }
+
+  function updateReferrerName() {
+    if (!referrerNameNode) return;
+    referrerNameNode.textContent = state.referrerName || text[state.language].friendFallback;
+  }
+
+  function sanitizePublicReferrerName(value) {
+    var name = trimLimit(value, 60);
+    return name || '';
   }
 
   function handleRetry() {
