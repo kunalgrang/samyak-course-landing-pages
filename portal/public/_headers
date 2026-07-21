@@ -1,0 +1,11 @@
+/login
+  Cache-Control: no-store
+
+/app
+  Cache-Control: no-store
+
+/app/*
+  Cache-Control: no-store
+
+/api/*
+  Cache-Control: no-store

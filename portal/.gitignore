@@ -1,0 +1,14 @@
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+!.env.example
+!.dev.vars.example
+.wrangler
+wrangler-secret*.json
+wrangler-secrets*.json
+*.secret
+*.secrets
+node_modules
+dist
+worker-configuration.d.ts
