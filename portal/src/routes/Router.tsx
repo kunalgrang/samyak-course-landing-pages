@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { LoadingState } from "../components/LoadingState";
 import { useAuth } from "../features/auth/AuthContext";
 import { LoginPage } from "../features/auth/LoginPage";
 import { ProfilePage } from "../features/profile/ProfilePage";
@@ -17,7 +18,7 @@ function normalizePath(pathname: string): RoutePath {
 }
 
 export function Router() {
-  const { isAuthenticated, signOut } = useAuth();
+  const { isAuthenticated, isLoading, signOut } = useAuth();
   const [path, setPath] = useState<RoutePath>(() => normalizePath(window.location.pathname));
 
   useEffect(() => {
@@ -50,9 +51,19 @@ export function Router() {
     setPath(next);
   }
 
-  function handleSignOut() {
-    signOut();
+  async function handleSignOut() {
+    await signOut();
     navigate("/login", true);
+  }
+
+  if (isLoading) {
+    return (
+      <main className="login-page">
+        <section className="login-shell">
+          <LoadingState label="Checking session" />
+        </section>
+      </main>
+    );
   }
 
   if (path === "/login" || !isAuthenticated) {

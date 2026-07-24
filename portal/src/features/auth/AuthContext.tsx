@@ -1,23 +1,48 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { getSession, logout, type SessionResponse } from "../../lib/api";
 
 type AuthContextValue = {
   isAuthenticated: boolean;
-  signInForShell: () => void;
-  signOut: () => void;
+  isLoading: boolean;
+  session: SessionResponse | null;
+  refreshSession: () => Promise<void>;
+  setAuthenticatedSession: (session: SessionResponse) => void;
+  signOut: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [session, setSession] = useState<SessionResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  async function refreshSession() {
+    setIsLoading(true);
+    try {
+      const next = await getSession();
+      setSession(next.authenticated ? next : null);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshSession();
+  }, []);
 
   const value = useMemo<AuthContextValue>(
     () => ({
-      isAuthenticated,
-      signInForShell: () => setIsAuthenticated(true),
-      signOut: () => setIsAuthenticated(false),
+      isAuthenticated: Boolean(session?.authenticated),
+      isLoading,
+      session,
+      refreshSession,
+      setAuthenticatedSession: (nextSession) => setSession(nextSession.authenticated ? nextSession : null),
+      signOut: async () => {
+        await logout().catch(() => undefined);
+        setSession(null);
+      },
     }),
-    [isAuthenticated],
+    [isLoading, session],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

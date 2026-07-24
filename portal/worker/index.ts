@@ -4,7 +4,10 @@ import type { WorkerBindings, WorkerVariables } from "./bindings";
 import { cacheControlMiddleware } from "./middleware/cache";
 import { requestIdMiddleware } from "./middleware/request-id";
 import { securityHeadersMiddleware } from "./middleware/security-headers";
+import { registerAuthRoutes } from "./routes/auth";
+import { registerConfigRoutes } from "./routes/config";
 import { registerHealthRoutes } from "./routes/health";
+import { registerStudentRoutes } from "./routes/student";
 import { jsonError } from "./lib/json-response";
 
 const app = new Hono<{
@@ -17,6 +20,9 @@ app.use("*", securityHeadersMiddleware);
 app.use("/api/*", cacheControlMiddleware);
 
 registerHealthRoutes(app);
+registerConfigRoutes(app);
+registerAuthRoutes(app);
+registerStudentRoutes(app);
 
 app.notFound((c) =>
   jsonError(c, {

@@ -1,8 +1,8 @@
 function doPost(e) {
   try {
     var body = parseRequestBody_(e);
-    requireApiSecret_(body.secret);
     var action = sanitizeText_(body.action, 40);
+    requireApiSecretForAction_(action, body.secret);
     var payload = body.payload || {};
 
     if (action === 'courses') {
@@ -13,6 +13,12 @@ function doPost(e) {
     }
     if (action === 'submit') {
       return jsonResponse_(submitReferral_(payload));
+    }
+    if (action === 'portal_lookup_mobile') {
+      return jsonResponse_(portalLookupMobile_(payload));
+    }
+    if (action === 'portal_referral_dashboard') {
+      return jsonResponse_(portalReferralDashboard_(payload));
     }
     return jsonResponse_({ success: false, code: 'UNKNOWN_ACTION', message: 'Unknown request action.' });
   } catch (error) {
@@ -90,6 +96,104 @@ function validateReferrerForApi_(token) {
     valid: true,
     referrerName: buildPublicReferrerName_(referrer.row['Full Name'])
   };
+}
+
+function portalLookupMobile_(payload) {
+  var normalisedMobile = normaliseMobile_(payload.mobile);
+  if (!normalisedMobile) {
+    return { success: true, eligible: false, profiles: [] };
+  }
+
+  var settings = getSettings_();
+  var profiles = readObjects_(getSheet_(SSC.SHEETS.REFERRERS))
+    .filter(function (row) {
+      return row.Active === 'Yes' &&
+        normaliseMobile_(row['Normalised Mobile'] || row['Mobile Number']) === normalisedMobile;
+    })
+    .map(function (row) {
+      var token = sanitizeToken_(row['Referral Token']);
+      var personalLink = sanitizeText_(row['Personal Link'], 240) || buildPersonalLink_(token, settings);
+      return {
+        externalReferrerId: sanitizeText_(row['Referrer ID'], 80),
+        fullName: sanitizeText_(row['Full Name'], 100),
+        publicName: buildPublicReferrerName_(row['Full Name']),
+        referrerType: sanitizeText_(row['Referrer Type'], 80),
+        referralToken: token,
+        personalLink: personalLink
+      };
+    })
+    .filter(function (profile) {
+      return !!profile.externalReferrerId && !!profile.referralToken;
+    });
+
+  return {
+    success: true,
+    eligible: profiles.length > 0,
+    profiles: profiles
+  };
+}
+
+function portalReferralDashboard_(payload) {
+  var externalReferrerId = sanitizeText_(payload.externalReferrerId, 80);
+  var referrer = findReferrerById_(externalReferrerId);
+  if (!referrer || referrer.row.Active !== 'Yes') {
+    return { success: false, code: 'REFERRER_NOT_FOUND', message: 'Referrer profile is not active.' };
+  }
+
+  var row = referrer.row;
+  var personalLink = sanitizeText_(row['Personal Link'], 240) ||
+    buildPersonalLink_(sanitizeToken_(row['Referral Token']), getSettings_());
+  var referrals = readObjects_(getSheet_(SSC.SHEETS.REFERRALS))
+    .filter(function (referral) {
+      return sanitizeText_(referral['Referrer ID'], 80) === externalReferrerId;
+    })
+    .map(function (referral) {
+      return {
+        referralId: sanitizeText_(referral['Referral ID'], 80),
+        prospectPublicName: buildPublicReferrerName_(referral['Prospect Name']),
+        courseInterested: sanitizeText_(referral['Course Interested'], 100),
+        submissionDate: formatValueForPortal_(referral['Submission Date and Time']),
+        publicStatus: publicReferralStatus_(referral.Status),
+        rewardStatus: sanitizeText_(referral['Reward Payment Status'] || referral['Reward Approval Status'], 40),
+        rewardChoice: sanitizeText_(referral['Reward Choice'], 40),
+        cashReward: positiveNumber_(referral['Cash Reward']),
+        courseCredit: positiveNumber_(referral['Course Credit']),
+        approvedRewardAmount: positiveNumber_(referral['Approved Reward Amount']),
+        rewardPaymentDate: formatValueForPortal_(referral['Reward Payment Date'])
+      };
+    });
+
+  return {
+    success: true,
+    profile: {
+      externalReferrerId: externalReferrerId,
+      publicName: buildPublicReferrerName_(row['Full Name']),
+      personalLink: personalLink
+    },
+    summary: {
+      totalReferrals: positiveNumber_(row['Total Referrals']),
+      successfulAdmissions: positiveNumber_(row['Successful Admissions']),
+      cashRewardsEarned: positiveNumber_(row['Cash Rewards Earned']),
+      courseCreditEarned: positiveNumber_(row['Course Credit Earned'])
+    },
+    referrals: referrals
+  };
+}
+
+function publicReferralStatus_(status) {
+  var value = sanitizeText_(status, 80);
+  if (value === 'Referral Accepted') return 'Enquiry Received';
+  if (value === 'Counselling in Progress') return 'Counselling in Progress';
+  if (value === 'Admission Confirmed' || value === 'Awaiting Minimum Fee') return 'Admission Confirmed';
+  if (value === 'Reward Eligible') return 'Reward Eligible';
+  if (value === 'Reward Approved') return 'Reward Approved';
+  if (value === 'Reward Paid') return 'Reward Paid';
+  return 'Closed';
+}
+
+function formatValueForPortal_(value) {
+  if (value instanceof Date) return formatDateForApi_(value);
+  return sanitizeText_(value, 40);
 }
 
 function buildPublicReferrerName_(fullName) {
@@ -545,11 +649,16 @@ function parseRequestBody_(e) {
   }
 }
 
-function requireApiSecret_(providedSecret) {
-  var expected = PropertiesService.getScriptProperties().getProperty('REFERRAL_API_SECRET');
+function requireApiSecretForAction_(action, providedSecret) {
+  var expectedName = isPortalAction_(action) ? 'PORTAL_API_SECRET' : 'REFERRAL_API_SECRET';
+  var expected = PropertiesService.getScriptProperties().getProperty(expectedName);
   if (!expected || !providedSecret || providedSecret !== expected) {
     throw publicError_('UNAUTHORISED', 'Unauthorised request.');
   }
+}
+
+function isPortalAction_(action) {
+  return String(action || '').indexOf('portal_') === 0;
 }
 
 function jsonResponse_(data) {
@@ -663,6 +772,10 @@ function runReferralSystemTests() {
   testInactiveReferrerRejection();
   testRewardSlabCalculation();
   testMinimumQualifyingPaymentCalculation();
+  testPortalSecretRouting();
+  testPortalLookupMultipleProfiles();
+  testPortalDashboardPrivacy();
+  testPortalPublicStatusMapping();
   SpreadsheetApp.getActive().toast('Referral system tests completed.');
 }
 
@@ -768,17 +881,126 @@ function testMinimumQualifyingPaymentCalculation() {
   assert_(40000 * (Number(getSettings_().MINIMUM_FEE_PERCENT || 50) / 100) === 20000, 'minimum qualifying payment');
 }
 
+function testPortalSecretRouting() {
+  var properties = PropertiesService.getScriptProperties();
+  var oldReferral = properties.getProperty('REFERRAL_API_SECRET');
+  var oldPortal = properties.getProperty('PORTAL_API_SECRET');
+  properties.setProperty('REFERRAL_API_SECRET', 'referral-test-secret');
+  properties.setProperty('PORTAL_API_SECRET', 'portal-test-secret');
+  try {
+    requireApiSecretForAction_('portal_lookup_mobile', 'portal-test-secret');
+    requireApiSecretForAction_('submit', 'referral-test-secret');
+    assertThrows_(function () {
+      requireApiSecretForAction_('portal_lookup_mobile', 'referral-test-secret');
+    }, 'referral secret cannot call portal action');
+    assertThrows_(function () {
+      requireApiSecretForAction_('submit', 'portal-test-secret');
+    }, 'portal secret cannot call referral action');
+    assertThrows_(function () {
+      requireApiSecretForAction_('portal_lookup_mobile', 'wrong');
+    }, 'invalid portal secret rejected');
+  } finally {
+    restoreProperty_('REFERRAL_API_SECRET', oldReferral);
+    restoreProperty_('PORTAL_API_SECRET', oldPortal);
+  }
+}
+
+function testPortalLookupMultipleProfiles() {
+  withTestData_(function (context) {
+    addReferrerForTest_('TEST-REF-SHARED-1', 'Rahul Sharma', '9876543299', 'Student', 'SHAREDTESTTOKEN01', true);
+    addReferrerForTest_('TEST-REF-SHARED-2', 'Riya Shah', '9876543299', 'Alumni', 'SHAREDTESTTOKEN02', true);
+    addReferrerForTest_('TEST-REF-SHARED-3', 'Inactive Person', '9876543299', 'Student', 'SHAREDTESTTOKEN03', false);
+    var result = portalLookupMobile_({ mobile: '+91 98765 43299' });
+    assert_(result.success === true, 'portal lookup succeeds');
+    assert_(result.eligible === true, 'shared mobile is eligible');
+    assert_(result.profiles.length === 2, 'multiple active profiles returned');
+    assert_(result.profiles[0].mobile === undefined, 'mobile is not returned');
+    assert_(result.profiles[0].email === undefined, 'email is not returned');
+    assert_(result.profiles.some(function (profile) {
+      return profile.externalReferrerId === context.referrerId;
+    }) === false, 'other mobile profile excluded');
+  });
+}
+
+function testPortalDashboardPrivacy() {
+  withTestData_(function (context) {
+    var submitted = submitReferral_(testPayload_(context.token, '9876543288'));
+    assert_(submitted.success === true, 'dashboard privacy seed referral accepted');
+    var dashboard = portalReferralDashboard_({ externalReferrerId: context.referrerId });
+    var serialised = JSON.stringify(dashboard);
+    assert_(dashboard.success === true, 'dashboard succeeds');
+    assert_(dashboard.profile.personalLink.indexOf(context.token) !== -1, 'personal link is available');
+    assert_(serialised.indexOf('9876543288') === -1, 'prospect mobile hidden');
+    assert_(serialised.indexOf('test@example.com') === -1, 'prospect email hidden');
+    assert_(serialised.indexOf('Minimum Qualifying Payment') === -1, 'internal fee fields hidden');
+    assert_(serialised.indexOf(context.token + '","') === -1, 'raw referral token field hidden');
+  });
+}
+
+function testPortalPublicStatusMapping() {
+  assert_(publicReferralStatus_('Referral Accepted') === 'Enquiry Received', 'accepted mapping');
+  assert_(publicReferralStatus_('Counselling in Progress') === 'Counselling in Progress', 'counselling mapping');
+  assert_(publicReferralStatus_('Admission Confirmed') === 'Admission Confirmed', 'admission mapping');
+  assert_(publicReferralStatus_('Awaiting Minimum Fee') === 'Admission Confirmed', 'awaiting fee mapping');
+  assert_(publicReferralStatus_('Reward Eligible') === 'Reward Eligible', 'eligible mapping');
+  assert_(publicReferralStatus_('Reward Approved') === 'Reward Approved', 'approved mapping');
+  assert_(publicReferralStatus_('Reward Paid') === 'Reward Paid', 'paid mapping');
+  assert_(publicReferralStatus_('Duplicate Referral') === 'Closed', 'closed mapping');
+  assert_(publicReferralStatus_('Invalid Mobile Number') === 'Closed', 'invalid mobile closed mapping');
+}
+
+function assertThrows_(callback, message) {
+  var threw = false;
+  try {
+    callback();
+  } catch (error) {
+    threw = true;
+  }
+  assert_(threw, message);
+}
+
+function restoreProperty_(name, value) {
+  var properties = PropertiesService.getScriptProperties();
+  if (value === null || value === undefined) {
+    properties.deleteProperty(name);
+  } else {
+    properties.setProperty(name, value);
+  }
+}
+
 function withTestData_(callback) {
   setupWorkbook();
   var token = 'TEST' + Utilities.getUuid().replace(/-/g, '').slice(0, 12);
   var refSheet = getSheet_(SSC.SHEETS.REFERRERS);
   var referrerRow = refSheet.getLastRow() + 1;
-  refSheet.appendRow(['TEST-REF-' + token, 'Test Referrer', '9876543200', '9876543200', 'Student', 'Test Course', token, buildPersonalLink_(token, getSettings_()), '', new Date(), 'Yes', 0, 0, 0, 0, 'Temporary test row']);
+  var referrerId = 'TEST-REF-' + token;
+  refSheet.appendRow([referrerId, 'Test Referrer', '9876543200', '9876543200', 'Student', 'Test Course', token, buildPersonalLink_(token, getSettings_()), '', new Date(), 'Yes', 0, 0, 0, 0, 'Temporary test row']);
   try {
-    callback({ token: token, referrerRow: referrerRow });
+    callback({ token: token, referrerRow: referrerRow, referrerId: referrerId });
   } finally {
     cleanupTestRows_();
   }
+}
+
+function addReferrerForTest_(referrerId, fullName, mobile, type, token, active) {
+  getSheet_(SSC.SHEETS.REFERRERS).appendRow([
+    referrerId,
+    fullName,
+    mobile,
+    normaliseMobile_(mobile),
+    type,
+    'Test Course',
+    token,
+    buildPersonalLink_(token, getSettings_()),
+    '',
+    new Date(),
+    active ? 'Yes' : 'No',
+    0,
+    0,
+    0,
+    0,
+    'Temporary test row'
+  ]);
 }
 
 function testPayload_(token, mobile) {

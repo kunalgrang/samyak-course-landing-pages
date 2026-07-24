@@ -1,93 +1,153 @@
 # Samyak Student Portal
 
-Standalone full-stack Cloudflare Workers application for the Samyak Student Portal.
+Standalone React and Cloudflare Workers application for secure Samyak student/referrer access.
 
 ## Architecture
 
 - React, TypeScript, and Vite render the browser application from `src/`.
-- `@cloudflare/vite-plugin` builds the React SPA and Worker together.
 - `worker/index.ts` runs a Hono API Worker for same-origin `/api/*` routes.
-- Cloudflare Worker Static Assets serves the SPA with `single-page-application` fallback.
-- Cloudflare D1 stores portal login accounts, person links, sessions, OTP challenges, roles, audit logs, and referral profile links.
-- Drizzle ORM owns the TypeScript schema in `db/schema.ts`; `drizzle-kit` generates SQL migrations in `migrations/`.
-
-## Folder Structure
-
-```text
-portal/
-  src/              React frontend
-  worker/           Worker/Hono backend
-  db/               Drizzle schema and relations
-  migrations/       Generated SQL migrations
-  docs/             Architecture notes
-  public/           Static headers and logo asset
-```
-
-## Referral Storage Boundary
-
-The existing Google Sheet remains temporary referral operations storage because it already powers the live referral workflow. Coding Pass 1 does not change that system. D1 stores portal authentication, sessions, roles, audit records, and the future link between a portal person and the existing external referrer identity.
-
-The browser must not call Apps Script directly. A later Worker route will call the secure Apps Script API server-to-server, then expose only authenticated referral dashboard data to the browser.
+- Cloudflare Worker Static Assets serves the SPA with single-page fallback.
+- Cloudflare D1 stores only portal auth state: hashed mobile identifiers, encrypted eligible challenge mobile values, hashed session tokens, people/profile links, audit logs, and auth events.
+- The existing Google Sheet remains the operational referral source. The browser never calls Apps Script directly.
 
 ## Local Setup
 
 ```sh
 cd portal
 npm install
+cp .dev.vars.example .dev.vars
+npm run db:migrate:local
+npm run db:seed:local
 npm run dev
 ```
 
-Copy `.dev.vars.example` to `.dev.vars` only for local development and fill real values outside Git.
+Fill `.dev.vars` locally only. Do not commit real values.
 
-## Create D1
+## Turnstile Setup
 
-Create the production D1 database:
+Create a Cloudflare Turnstile widget for:
 
-```sh
-npm exec wrangler d1 create samyak-student-portal
+- `localhost`
+- `127.0.0.1`
+- `portal.samyaksion.com`
+
+Use the site key as `TURNSTILE_SITE_KEY`. Store the private secret as `TURNSTILE_SECRET_KEY`. The frontend receives the public site key from `GET /api/public-config`; no Turnstile secret is exposed to React or any `VITE_` variable.
+
+Local automated tests may use Cloudflare's official Turnstile test keys.
+
+## Local Development OTP
+
+Local OTP testing is available only when all are true:
+
+- `ENVIRONMENT=development`
+- the request hostname is `localhost` or `127.0.0.1`
+- `DEV_OTP` is configured
+- MSG91 config is not selected
+
+The development OTP is never logged, returned by an API, embedded in the frontend, or enabled on preview/production hosts.
+
+## MSG91 Production State
+
+The MSG91 V5 provider is implemented for send, resend, and verify with mocked-fetch tests. Until DLT approval and real credentials are available, production `POST /api/auth/request-otp` returns:
+
+```json
+{
+  "success": false,
+  "code": "OTP_SERVICE_PENDING",
+  "message": "Mobile login is temporarily unavailable."
+}
 ```
 
-Copy the returned `database_id` into `portal/wrangler.jsonc` at:
+Production must not fall back to `DEV_OTP`.
 
-```jsonc
-"database_id": "REPLACE_WITH_D1_DATABASE_ID_AFTER_CREATION"
-```
+## Apps Script Requirement
 
-## Local Migrations
+Create this Script Property manually in the Apps Script project:
 
-```sh
-npm run db:generate
-npm run db:migrate:local
-npm run db:seed:local
-```
+- `PORTAL_API_SECRET`
 
-## Remote Migrations
+Keep the existing `REFERRAL_API_SECRET` unchanged. Existing actions `courses`, `referrer`, and `submit` use only `REFERRAL_API_SECRET`; new `portal_*` actions use only `PORTAL_API_SECRET`.
 
-```sh
-npm run db:migrate:remote
-npm run db:seed:remote
-```
+## Worker Variables And Secrets
 
-## Secrets Required Later
+Non-secret Worker variables:
 
+- `ENVIRONMENT`
+- `TURNSTILE_SITE_KEY`
+
+Private Worker secrets:
+
+- `TURNSTILE_SECRET_KEY`
+- `PORTAL_APPS_SCRIPT_URL`
+- `PORTAL_APPS_SCRIPT_SECRET`
 - `MSG91_AUTH_KEY`
 - `MSG91_TEMPLATE_ID`
-- `TURNSTILE_SECRET_KEY`
-- `REFERRAL_APPS_SCRIPT_URL`
-- `REFERRAL_API_SECRET`
+- `MSG91_SENDER_ID`
 - `SESSION_PEPPER`
+- `DEV_OTP` for local development only
 
-`VITE_TURNSTILE_SITE_KEY` may be used later as public frontend configuration. Private secrets must never use `VITE_` variables.
+Set production secrets with `wrangler secret put NAME`.
 
-## Deployment
+## Session Policy
+
+- Cookie name: `__Host-samyak_session`
+- Production attributes: `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`
+- No `Domain` attribute
+- Absolute expiry: 30 days
+- Inactivity rejection: 7 days since `last_seen_at`
+- Session tokens are random and only HMAC hashes are stored in D1
+- Logout revokes the D1 session and clears the cookie
+
+## Rate Limits
+
+OTP requests are D1-backed:
+
+- mobile hash: 1 request per 60 seconds
+- mobile hash: 3 sends per 15 minutes
+- mobile hash: 8 sends per 24 hours
+- IP hash: 10 requests per 15 minutes
+- IP hash: 30 requests per 24 hours
+
+Verification:
+
+- 5 attempts per challenge
+- challenge validity: 10 minutes
+- verified challenges cannot be reused
+- resend cooldown: 60 seconds
+- maximum 2 resends per challenge
+
+## Apps Script Redeployment
+
+1. Open the existing Apps Script project.
+2. Copy updated `google-apps-script/Code.gs` into the project.
+3. Confirm `Config.gs`, `Setup.gs`, and workbook tabs remain unchanged unless intentionally updated.
+4. Add Script Property `PORTAL_API_SECRET`.
+5. Deploy a new Web App version.
+6. Keep the same endpoint URL where possible; otherwise update Worker secret `PORTAL_APPS_SCRIPT_URL`.
+7. Smoke test `courses`, `referrer`, and `submit` with `REFERRAL_API_SECRET`.
+8. Smoke test `portal_lookup_mobile` and `portal_referral_dashboard` server-to-server with `PORTAL_API_SECRET`.
+
+## Manual Test Checklist
+
+- `/api/health` returns success.
+- `/api/public-config` returns only `turnstileSiteKey` and `otpEnabled`.
+- State-changing auth APIs reject cross-origin requests.
+- Invalid mobile is rejected.
+- Unknown mobile receives the same generic OTP response shape.
+- Local `DEV_OTP` login works only from localhost development.
+- Production without MSG91 credentials returns `OTP_SERVICE_PENDING`.
+- OTP attempts lock after 5 failed tries.
+- Expired challenges cannot be verified.
+- Login sets `__Host-samyak_session` and D1 stores only the token hash.
+- Shared-family/mobile profile chooser cannot select unlinked people.
+- `/api/student/referrals` rejects unauthenticated requests.
+- Authenticated referrals page shows no prospect phone, email, fees, paid amounts, internal notes, or Closed reasons.
+- Existing prospect route `/r/{TOKEN}` behaves unchanged.
+
+## Checks
 
 ```sh
+npm run typecheck
+npm run test:run
 npm run build
-npm run deploy
 ```
-
-After deployment, add `portal.samyaksion.com` as a custom domain for the Worker in Cloudflare and confirm DNS points to the Worker route.
-
-## Coding Pass 1 Scope
-
-MSG91 is deliberately not integrated in Coding Pass 1. No OTP endpoints, real people, mobile numbers, referral tokens, fake referral records, fake financial records, or changes to the live referral system are included.

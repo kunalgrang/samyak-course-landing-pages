@@ -1,7 +1,10 @@
-MSG91_AUTH_KEY="Set later as a private MSG91 API credential"
-MSG91_TEMPLATE_ID="Set later as the approved MSG91 login OTP template"
-TURNSTILE_SECRET_KEY="Set later as the private Cloudflare Turnstile secret"
-REFERRAL_APPS_SCRIPT_URL="Set later as the secure Google Apps Script endpoint URL"
-REFERRAL_API_SECRET="Set later as the private shared referral API secret"
-SESSION_PEPPER="Set later as a private pepper for hashing session material"
-VITE_TURNSTILE_SITE_KEY="Optional future public Turnstile site key; never place private secrets in VITE variables"
+ENVIRONMENT=
+TURNSTILE_SITE_KEY=
+TURNSTILE_SECRET_KEY=
+PORTAL_APPS_SCRIPT_URL=
+PORTAL_APPS_SCRIPT_SECRET=
+MSG91_AUTH_KEY=
+MSG91_TEMPLATE_ID=
+MSG91_SENDER_ID=
+SESSION_PEPPER=
+DEV_OTP=

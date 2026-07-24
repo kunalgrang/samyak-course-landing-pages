@@ -48,8 +48,14 @@ button:hover {
   background: var(--color-teal-dark);
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
 button:focus-visible,
-input:focus-visible {
+input:focus-visible,
+a:focus-visible {
   outline: 3px solid rgba(13, 148, 136, 0.35);
   outline-offset: 3px;
 }
@@ -128,7 +134,8 @@ input:focus-visible {
   gap: 14px;
 }
 
-.login-form label {
+.login-form label,
+.field-label {
   color: var(--color-navy);
   font-size: 0.92rem;
   font-weight: 800;
@@ -142,6 +149,60 @@ input:focus-visible {
   padding: 0 14px;
   color: var(--color-ink);
   background: #ffffff;
+}
+
+.turnstile-slot {
+  min-height: 68px;
+}
+
+.login-actions,
+.link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.button-secondary,
+.button-link {
+  min-height: 40px;
+  color: var(--color-navy);
+  background: #eaf3f3;
+}
+
+.button-secondary:hover,
+.button-link:hover {
+  background: #dcebea;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  padding: 0 18px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.profile-choice-list {
+  display: grid;
+  gap: 10px;
+}
+
+.profile-choice {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--color-navy);
+  background: #eef7f6;
+}
+
+.profile-choice small {
+  color: var(--color-muted);
+  font-weight: 800;
+  text-transform: capitalize;
 }
 
 .app-layout {
@@ -213,7 +274,11 @@ input:focus-visible {
 
 .status-panel,
 .empty-state,
-.notice {
+.notice,
+.link-panel,
+.metric,
+.referral-row,
+.rule {
   border: 1px solid var(--color-line);
   border-radius: var(--radius);
   background: var(--color-surface);
@@ -237,6 +302,95 @@ input:focus-visible {
 
 .empty-state {
   padding: 26px;
+}
+
+.link-panel {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.link-panel strong {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--color-navy);
+  line-height: 1.5;
+}
+
+.metric-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.metric {
+  display: grid;
+  gap: 6px;
+  padding: 18px;
+}
+
+.metric span,
+.referral-row span,
+.rule p {
+  color: var(--color-muted);
+}
+
+.metric strong {
+  color: var(--color-navy);
+  font-size: 1.55rem;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.section-heading h2 {
+  margin: 0;
+  color: var(--color-navy);
+  font-size: 1.1rem;
+}
+
+.section-heading a {
+  color: var(--color-teal-dark);
+  font-weight: 800;
+}
+
+.referral-list,
+.rules-list {
+  display: grid;
+  gap: 12px;
+}
+
+.referral-row {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.referral-row div {
+  display: grid;
+  gap: 4px;
+}
+
+.referral-row strong,
+.rule h2 {
+  color: var(--color-navy);
+}
+
+.rule {
+  padding: 18px;
+}
+
+.rule h2,
+.rule p {
+  margin: 0;
+}
+
+.rule p {
+  margin-top: 8px;
+  line-height: 1.6;
 }
 
 .empty-state__mark {
@@ -384,5 +538,14 @@ input:focus-visible {
 
   .status-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metric-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .referral-row {
+    grid-template-columns: 1.3fr 1fr 1fr;
+    align-items: center;
   }
 }
