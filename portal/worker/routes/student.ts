@@ -1,6 +1,6 @@
 import type { Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
-import { fetchDashboardForActiveProfile, getSessionFromRequest, sessionView } from "../lib/auth-store";
+import { clearSessionCookie, fetchDashboardForActiveProfile, getSessionFromRequest, hasSessionCookie, sessionView } from "../lib/auth-store";
 import { jsonError, jsonPlain } from "../lib/json-response";
 
 type PortalHono = Hono<{
@@ -12,7 +12,9 @@ export function registerStudentRoutes(app: PortalHono) {
   app.get("/api/student/referrals", async (c) => {
     const session = await getSessionFromRequest(c);
     if (!session) {
-      return jsonError(c, { status: 401, code: "unauthenticated", message: "Please sign in again." });
+      const response = jsonError(c, { status: 401, code: "unauthenticated", message: "Please sign in again." });
+      if (hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
+      return response;
     }
     const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
     if (!view.activeProfile) {

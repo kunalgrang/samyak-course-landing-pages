@@ -122,6 +122,7 @@ export const loginAccountPeople = sqliteTable(
       .references(() => people.id),
     accessType: text("access_type").notNull(),
     isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
+    isAvailable: integer("is_available", { mode: "boolean" }).notNull().default(true),
     createdAt: text("created_at").notNull(),
   },
   (table) => [
@@ -172,6 +173,27 @@ export const loginAccountRoles = sqliteTable(
     index("login_account_roles_login_account_id_idx").on(table.loginAccountId),
     index("login_account_roles_role_id_idx").on(table.roleId),
     index("login_account_roles_branch_id_idx").on(table.branchId),
+  ],
+);
+
+export const personRoles = sqliteTable(
+  "person_roles",
+  {
+    personId: text("person_id")
+      .notNull()
+      .references(() => people.id),
+    roleId: text("role_id")
+      .notNull()
+      .references(() => roles.id),
+    branchId: text("branch_id").references(() => branches.id),
+    branchKey: text("branch_key").notNull().default(""),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("person_roles_person_role_branch_unique").on(table.personId, table.roleId, table.branchKey),
+    index("person_roles_person_id_idx").on(table.personId),
+    index("person_roles_role_id_idx").on(table.roleId),
+    index("person_roles_branch_id_idx").on(table.branchId),
   ],
 );
 

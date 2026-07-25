@@ -7,13 +7,17 @@ import {
   buildSessionCookie,
   checkOtpRequestLimits,
   clearSessionCookie,
-  createChallenge,
+  createPendingChallenge,
   createSession,
   decryptChallengeMobile,
   getChallenge,
   getSessionFromRequest,
-  incrementChallengeAttempts,
+  hasSessionCookie,
+  incrementChallengeAttemptsIfAllowed,
+  markChallengeFailed,
   markChallengeVerified,
+  markRequestedChallengeBlocked,
+  markRequestedChallengeSent,
   mobileHash,
   recordAuditLog,
   recordAuthEvent,
@@ -21,7 +25,9 @@ import {
   revokeSession,
   selectLinkedProfile,
   sessionView,
+  runDummyOtpComparison,
   updateChallengeResent,
+  OTP_MAX_ATTEMPTS,
 } from "../lib/auth-store";
 import { isResponse, jsonWithRequestId, readJsonBody, requireSameOrigin, getClientIp } from "../lib/http";
 import { maskMobile, normalizeIndianMobile } from "../lib/mobile";
@@ -94,34 +100,49 @@ export function registerAuthRoutes(app: PortalHono) {
       return jsonWithRequestId(c, { success: false, code: "RATE_LIMITED", message: "Please wait before requesting another OTP." }, 429);
     }
 
+    const challengeId = await createPendingChallenge({
+      c,
+      hash,
+      mobileLastFour: mobile.slice(-4),
+      ipHash: fingerprint.ipHash,
+    });
+
     let lookup;
     try {
       lookup = await callPortalLookup(c.env, mobile);
     } catch {
+      await markChallengeFailed(c, challengeId);
       await recordAuthEvent(c, "otp_request", "APPS_SCRIPT_ERROR", { mobileHash: hash, mobileLastFour: mobile.slice(-4), ipHash: fingerprint.ipHash });
       return jsonWithRequestId(c, { success: false, code: "OTP_SERVICE_PENDING", message: "Mobile login is temporarily unavailable." }, 503);
     }
 
-    let providerRequestId: string | undefined;
-    if (lookup.eligible) {
-      const sent = await provider.sendOtp(mobile);
-      providerRequestId = sent.providerRequestId;
-      if (!sent.ok) {
-        await recordAuthEvent(c, "otp_request", sent.resultCode, { mobileHash: hash, mobileLastFour: mobile.slice(-4), ipHash: fingerprint.ipHash });
-        return jsonWithRequestId(c, { success: false, code: "OTP_SEND_FAILED", message: "Mobile login is temporarily unavailable." }, 503);
-      }
+    if (!lookup.eligible) {
+      await markRequestedChallengeBlocked(c, challengeId);
+      await recordAuthEvent(c, "otp_request", "NOT_ELIGIBLE_SHAPED", {
+        mobileHash: hash,
+        mobileLastFour: mobile.slice(-4),
+        ipHash: fingerprint.ipHash,
+      });
+      return jsonWithRequestId(c, { success: true, challengeId, maskedMobile: maskMobile(mobile), message: genericOtpMessage });
     }
 
-    const challengeId = await createChallenge({
+    let providerRequestId: string | undefined;
+    const sent = await provider.sendOtp(mobile);
+    providerRequestId = sent.providerRequestId;
+    if (!sent.ok) {
+      await markChallengeFailed(c, challengeId);
+      await recordAuthEvent(c, "otp_request", sent.resultCode, { mobileHash: hash, mobileLastFour: mobile.slice(-4), ipHash: fingerprint.ipHash });
+      return jsonWithRequestId(c, { success: false, code: "OTP_SEND_FAILED", message: "Mobile login is temporarily unavailable." }, 503);
+    }
+
+    await markRequestedChallengeSent({
       c,
+      challengeId,
       mobile,
-      hash,
-      ipHash: fingerprint.ipHash,
       provider: lookup.eligible ? provider.name : "none",
-      eligible: lookup.eligible,
       providerRequestId,
     });
-    await recordAuthEvent(c, "otp_request", lookup.eligible ? "OTP_SENT" : "NOT_ELIGIBLE_SHAPED", {
+    await recordAuthEvent(c, "otp_request", "OTP_SENT", {
       mobileHash: hash,
       mobileLastFour: mobile.slice(-4),
       ipHash: fingerprint.ipHash,
@@ -149,8 +170,12 @@ export function registerAuthRoutes(app: PortalHono) {
     const provider = getOtpProvider(c.env, new URL(c.req.url).hostname);
     if (!mobile || !provider) return jsonWithRequestId(c, { success: false, code: "OTP_SERVICE_PENDING", message: "Mobile login is temporarily unavailable." }, 503);
     const result = await provider.resendOtp(mobile);
-    if (!result.ok) return jsonWithRequestId(c, { success: false, code: "OTP_SEND_FAILED", message: "Mobile login is temporarily unavailable." }, 503);
-    await updateChallengeResent(c, challenge.id, result.providerRequestId);
+    if (!result.ok) {
+      await markChallengeFailed(c, challenge.id);
+      return jsonWithRequestId(c, { success: false, code: "OTP_SEND_FAILED", message: "Mobile login is temporarily unavailable." }, 503);
+    }
+    const updated = await updateChallengeResent(c, challenge.id, result.providerRequestId);
+    if (!updated) return jsonWithRequestId(c, { success: false, code: "RESEND_LIMITED", message: "Please use the latest OTP or change number." }, 429);
     return jsonWithRequestId(c, { success: true, message: genericOtpMessage });
   });
 
@@ -161,13 +186,29 @@ export function registerAuthRoutes(app: PortalHono) {
     if (isResponse(body)) return body;
 
     const challenge = await getChallenge(c, body.challengeId);
-    if (!challenge || challenge.status !== "sent" || Date.parse(challenge.expires_at) <= Date.now()) {
+    if (!challenge || !["sent", "blocked"].includes(challenge.status) || Date.parse(challenge.expires_at) <= Date.now()) {
       return jsonWithRequestId(c, { success: false, code: "OTP_EXPIRED", message: "The OTP has expired. Please request a new one." }, 400);
     }
-    if (challenge.verification_attempts >= 5) {
+    if (challenge.verification_attempts >= OTP_MAX_ATTEMPTS) {
       return jsonWithRequestId(c, { success: false, code: "TOO_MANY_ATTEMPTS", message: "Too many attempts. Please request a new OTP." }, 429);
     }
-    await incrementChallengeAttempts(c, challenge.id);
+    const attemptRecorded = await incrementChallengeAttemptsIfAllowed(c, challenge.id);
+    if (!attemptRecorded) {
+      const fresh = await getChallenge(c, body.challengeId);
+      if (fresh && fresh.verification_attempts >= OTP_MAX_ATTEMPTS) {
+        return jsonWithRequestId(c, { success: false, code: "TOO_MANY_ATTEMPTS", message: "Too many attempts. Please request a new OTP." }, 429);
+      }
+      return jsonWithRequestId(c, { success: false, code: "OTP_EXPIRED", message: "The OTP has expired. Please request a new one." }, 400);
+    }
+
+    if (challenge.status === "blocked") {
+      await runDummyOtpComparison(c, body.otp);
+      await recordAuthEvent(c, "otp_verify", "INVALID_OTP", {
+        mobileHash: challenge.mobile_hash,
+        mobileLastFour: challenge.mobile_last_four,
+      });
+      return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
+    }
 
     const mobile = await decryptChallengeMobile(c, challenge);
     const provider = getOtpProvider(c.env, new URL(c.req.url).hostname);
@@ -187,10 +228,13 @@ export function registerAuthRoutes(app: PortalHono) {
     if (!lookup.eligible) {
       return jsonWithRequestId(c, { success: false, code: "PROFILE_NOT_AVAILABLE", message: "Mobile login is temporarily unavailable." }, 403);
     }
+    const verified = await markChallengeVerified(c, challenge.id);
+    if (!verified) {
+      return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
+    }
     const accountId = await bootstrapAccount(c, mobile, lookup);
     const activePersonId = lookup.profiles.length === 1 ? `person_${lookup.profiles[0].externalReferrerId.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80)}` : null;
     const token = await createSession(c, accountId, activePersonId);
-    await markChallengeVerified(c, challenge.id);
     await recordAuthEvent(c, "otp_verify", "LOGIN_SUCCESS", { loginAccountId: accountId, mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
     await recordAuditLog(c, accountId, activePersonId, "login");
     const session = await sessionView(c, accountId, activePersonId);
@@ -201,7 +245,11 @@ export function registerAuthRoutes(app: PortalHono) {
 
   app.get("/api/auth/session", async (c) => {
     const session = await getSessionFromRequest(c);
-    if (!session) return jsonWithRequestId(c, { authenticated: false, activeProfile: null, profiles: [] });
+    if (!session) {
+      const response = jsonWithRequestId(c, { authenticated: false, activeProfile: null, profiles: [] });
+      if (hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
+      return response;
+    }
     return jsonWithRequestId(c, await sessionView(c, session.record.login_account_id, session.record.active_person_id));
   });
 

@@ -10,6 +10,7 @@ import {
   otpChallenges,
   people,
   personContacts,
+  personRoles,
   referrerProfiles,
   roles,
   userSessions,
@@ -34,6 +35,7 @@ export const peopleRelations = relations(people, ({ one, many }) => ({
   }),
   contacts: many(personContacts),
   accountLinks: many(loginAccountPeople),
+  roles: many(personRoles),
   referrerProfile: one(referrerProfiles),
 }));
 
@@ -73,6 +75,7 @@ export const rolesRelations = relations(roles, ({ one, many }) => ({
     references: [organisations.id],
   }),
   loginAccounts: many(loginAccountRoles),
+  people: many(personRoles),
 }));
 
 export const loginAccountRolesRelations = relations(loginAccountRoles, ({ one }) => ({
@@ -86,6 +89,21 @@ export const loginAccountRolesRelations = relations(loginAccountRoles, ({ one })
   }),
   branch: one(branches, {
     fields: [loginAccountRoles.branchId],
+    references: [branches.id],
+  }),
+}));
+
+export const personRolesRelations = relations(personRoles, ({ one }) => ({
+  person: one(people, {
+    fields: [personRoles.personId],
+    references: [people.id],
+  }),
+  role: one(roles, {
+    fields: [personRoles.roleId],
+    references: [roles.id],
+  }),
+  branch: one(branches, {
+    fields: [personRoles.branchId],
     references: [branches.id],
   }),
 }));
