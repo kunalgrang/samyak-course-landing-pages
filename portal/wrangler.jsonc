@@ -9,7 +9,7 @@
   },
   "vars": {
     "ENVIRONMENT": "production",
-    "TURNSTILE_SITE_KEY": ""
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAD_9LJVUBqi8lIkK"
   },
   "d1_databases": [
     {
