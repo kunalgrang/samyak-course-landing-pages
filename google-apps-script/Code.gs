@@ -933,7 +933,12 @@ function testPortalDashboardPrivacy() {
     assert_(serialised.indexOf('9876543288') === -1, 'prospect mobile hidden');
     assert_(serialised.indexOf('test@example.com') === -1, 'prospect email hidden');
     assert_(serialised.indexOf('Minimum Qualifying Payment') === -1, 'internal fee fields hidden');
-    assert_(serialised.indexOf(context.token + '","') === -1, 'raw referral token field hidden');
+    assert_(dashboard.referralToken === undefined, 'top-level raw referral token field hidden');
+    assert_(dashboard.profile.referralToken === undefined, 'profile raw referral token field hidden');
+    assert_(dashboard.referrals.every(function (referral) {
+        return referral.referralToken === undefined &&
+            referral.token === undefined;
+}), 'referral rows hide raw referral token fields');
   });
 }
 
