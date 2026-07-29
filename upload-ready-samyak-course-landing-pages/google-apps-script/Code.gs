@@ -118,8 +118,11 @@ function portalLookupMobile_(payload) {
         fullName: sanitizeText_(row['Full Name'], 100),
         publicName: buildPublicReferrerName_(row['Full Name']),
         referrerType: sanitizeText_(row['Referrer Type'], 80),
+        courseStudied: sanitizeText_(row['Course Studied'], 120),
+        memberSince: formatValueForPortal_(row['Created Date']),
         referralToken: token,
-        personalLink: personalLink
+        personalLink: personalLink,
+        active: row.Active === 'Yes'
       };
     })
     .filter(function (profile) {
@@ -167,8 +170,13 @@ function portalReferralDashboard_(payload) {
     success: true,
     profile: {
       externalReferrerId: externalReferrerId,
+      fullName: sanitizeText_(row['Full Name'], 100),
       publicName: buildPublicReferrerName_(row['Full Name']),
-      personalLink: personalLink
+      referrerType: sanitizeText_(row['Referrer Type'], 80),
+      courseStudied: sanitizeText_(row['Course Studied'], 120),
+      memberSince: formatValueForPortal_(row['Created Date']),
+      personalLink: personalLink,
+      active: row.Active === 'Yes'
     },
     summary: {
       totalReferrals: positiveNumber_(row['Total Referrals']),
@@ -916,6 +924,9 @@ function testPortalLookupMultipleProfiles() {
     assert_(result.profiles.length === 2, 'multiple active profiles returned');
     assert_(result.profiles[0].mobile === undefined, 'mobile is not returned');
     assert_(result.profiles[0].email === undefined, 'email is not returned');
+    assert_(result.profiles[0].courseStudied !== undefined, 'course studied is returned');
+    assert_(result.profiles[0].memberSince !== undefined, 'member since is returned');
+    assert_(result.profiles[0].active === true, 'profile active flag is returned');
     assert_(result.profiles.some(function (profile) {
       return profile.externalReferrerId === context.referrerId;
     }) === false, 'other mobile profile excluded');
@@ -930,8 +941,14 @@ function testPortalDashboardPrivacy() {
     var serialised = JSON.stringify(dashboard);
     assert_(dashboard.success === true, 'dashboard succeeds');
     assert_(dashboard.profile.personalLink.indexOf(context.token) !== -1, 'personal link is available');
+    assert_(dashboard.profile.fullName === 'Test Referrer', 'full name is available');
+    assert_(dashboard.profile.referrerType === 'Student', 'member type is available');
+    assert_(dashboard.profile.courseStudied === 'Test Course', 'course studied is available');
+    assert_(dashboard.profile.memberSince !== undefined, 'member since is available');
+    assert_(dashboard.profile.active === true, 'active status is available');
     assert_(serialised.indexOf('9876543288') === -1, 'prospect mobile hidden');
     assert_(serialised.indexOf('test@example.com') === -1, 'prospect email hidden');
+    assert_(serialised.indexOf('9876543200') === -1, 'referrer mobile hidden');
     assert_(serialised.indexOf('Minimum Qualifying Payment') === -1, 'internal fee fields hidden');
     assert_(serialised.indexOf(context.token + '","') === -1, 'raw referral token field hidden');
   });

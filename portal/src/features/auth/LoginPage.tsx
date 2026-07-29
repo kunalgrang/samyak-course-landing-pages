@@ -2,12 +2,24 @@ import { FormEvent, useEffect, useId, useRef, useState } from "react";
 import { BrandMark } from "../../components/BrandMark";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
+import { TrustFooter } from "../../components/TrustFooter";
 import { getPublicConfig, requestOtp, resendOtp, selectProfile, verifyOtp, type PublicConfig, type SessionResponse } from "../../lib/api";
 import { useAuth } from "./AuthContext";
 
 type LoginPageProps = {
   onAuthenticated: () => void;
 };
+
+export const OTP_LENGTH = 4;
+export const otpHelperText = "Enter the 4-digit OTP sent to your mobile number.";
+
+export function sanitizeOtpInput(value: string) {
+  return value.replace(/\D/g, "").slice(0, OTP_LENGTH);
+}
+
+export function isCompleteOtp(value: string) {
+  return new RegExp(`^\\d{${OTP_LENGTH}}$`).test(value);
+}
 
 export function LoginPage({ onAuthenticated }: LoginPageProps) {
   const { setAuthenticatedSession } = useAuth();
@@ -180,6 +192,7 @@ export function LoginPage({ onAuthenticated }: LoginPageProps) {
           <BrandMark />
           <LoadingState label="Preparing secure login" />
         </section>
+        <TrustFooter />
       </main>
     );
   }
@@ -217,18 +230,22 @@ export function LoginPage({ onAuthenticated }: LoginPageProps) {
         {step === "otp" ? (
           <form className="login-form" onSubmit={handleVerifyOtp}>
             <label htmlFor={otpId}>OTP sent to {maskedMobile}</label>
+            <p className="field-help">{otpHelperText}</p>
             <input
               id={otpId}
               name="otp"
               type="text"
               inputMode="numeric"
               autoComplete="one-time-code"
+              maxLength={OTP_LENGTH}
+              pattern="\d{4}"
+              aria-label="Enter OTP"
               value={otp}
-              onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))}
-              placeholder="Six-digit OTP"
+              onChange={(event) => setOtp(sanitizeOtpInput(event.target.value))}
+              placeholder="Enter OTP"
             />
             {error ? <ErrorState title="Could not verify" message={error} /> : null}
-            <button type="submit" disabled={isSubmitting || otp.length < 4}>
+            <button type="submit" disabled={isSubmitting || !isCompleteOtp(otp)}>
               {isSubmitting ? "Verifying..." : "Verify"}
             </button>
             <div className="login-actions">
@@ -257,6 +274,7 @@ export function LoginPage({ onAuthenticated }: LoginPageProps) {
           </div>
         ) : null}
       </section>
+      <TrustFooter />
     </main>
   );
 }

@@ -6,8 +6,11 @@ export const portalProfileSchema = z.object({
   fullName: z.string(),
   publicName: z.string(),
   referrerType: z.string(),
+  courseStudied: z.string(),
+  memberSince: z.string(),
   referralToken: z.string(),
   personalLink: z.string(),
+  active: z.boolean(),
 });
 
 export const portalLookupSchema = z.object({
@@ -36,8 +39,13 @@ export const portalDashboardSchema = z.object({
   success: z.literal(true),
   profile: z.object({
     externalReferrerId: z.string(),
+    fullName: z.string(),
     publicName: z.string(),
+    referrerType: z.string(),
+    courseStudied: z.string(),
+    memberSince: z.string(),
     personalLink: z.string(),
+    active: z.boolean(),
   }),
   summary: z.object({
     totalReferrals: z.number(),

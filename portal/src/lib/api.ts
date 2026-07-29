@@ -31,6 +31,7 @@ export const sessionSchema = z.object({
   authenticated: z.boolean(),
   activeProfile: profileSchema.nullable(),
   profiles: z.array(profileSchema),
+  mobileLastFour: z.string().optional(),
   requestId: z.string().optional(),
 });
 
@@ -68,8 +69,13 @@ const dashboardSchema = z.object({
   success: z.literal(true),
   profile: z.object({
     externalReferrerId: z.string(),
+    fullName: z.string(),
     publicName: z.string(),
+    referrerType: z.string(),
+    courseStudied: z.string(),
+    memberSince: z.string(),
     personalLink: z.string(),
+    active: z.boolean(),
   }),
   summary: z.object({
     totalReferrals: z.number(),

@@ -5,8 +5,8 @@ export const appNavigation: Array<{
   label: string;
   shortLabel: string;
 }> = [
-  { path: "/app", label: "Overview", shortLabel: "Home" },
-  { path: "/app/referrals", label: "Referrals", shortLabel: "Refer" },
-  { path: "/app/rules", label: "Rules", shortLabel: "Rules" },
-  { path: "/app/profile", label: "Profile", shortLabel: "Profile" },
+  { path: "/app", label: "Overview", shortLabel: "Overview" },
+  { path: "/app/referrals", label: "My Referrals", shortLabel: "My Referrals" },
+  { path: "/app/rules", label: "Rewards & Benefits", shortLabel: "Rewards" },
+  { path: "/app/profile", label: "My Profile", shortLabel: "My Profile" },
 ];

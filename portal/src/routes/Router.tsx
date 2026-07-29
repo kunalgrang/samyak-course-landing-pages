@@ -31,10 +31,10 @@ export function Router() {
   }, []);
 
   useEffect(() => {
-    if (path.startsWith("/app") && !isAuthenticated) {
+    if (!isLoading && path.startsWith("/app") && !isAuthenticated) {
       navigate("/login", true);
     }
-  }, [isAuthenticated, path]);
+  }, [isAuthenticated, isLoading, path]);
 
   const activeAppPath = useMemo<AppRoute>(
     () => (path.startsWith("/app") ? (path as AppRoute) : "/app"),

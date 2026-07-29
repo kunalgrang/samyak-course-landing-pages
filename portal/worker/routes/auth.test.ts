@@ -25,6 +25,9 @@ class FakeD1Statement {
     if (sql.includes("select id from login_accounts where organisation_id = ? and mobile_normalized = ?")) {
       return (this.db.loginAccounts.find((row) => row.organisation_id === this.values[0] && row.mobile_normalized === this.values[1]) ?? null) as T;
     }
+    if (sql.includes("select mobile_last_four from login_accounts where id = ?")) {
+      return (this.db.loginAccounts.find((row) => row.id === this.values[0]) ?? null) as T;
+    }
     if (sql.includes("select * from user_sessions where token_hash = ?")) {
       return (this.db.userSessions.find((row) => row.token_hash === this.values[0]) ?? null) as T;
     }
@@ -366,7 +369,17 @@ function env(db = new FakeD1(), overrides: Partial<WorkerBindings> = {}): Worker
 
 function installFetch(options: {
   eligible?: boolean;
-  profiles?: Array<{ externalReferrerId: string; fullName: string; publicName: string; referrerType: string; referralToken: string; personalLink: string }>;
+  profiles?: Array<{
+    externalReferrerId: string;
+    fullName: string;
+    publicName: string;
+    referrerType: string;
+    courseStudied: string;
+    memberSince: string;
+    referralToken: string;
+    personalLink: string;
+    active: boolean;
+  }>;
   appsScriptError?: boolean;
   invalidAppsSchema?: boolean;
   turnstileOk?: boolean;
@@ -386,7 +399,16 @@ function installFetch(options: {
     if (body.action === "portal_referral_dashboard") {
       return response({
         success: true,
-        profile: { externalReferrerId: body.payload.externalReferrerId, publicName: "Asha", personalLink: "https://example.test/r/ASH" },
+        profile: {
+          externalReferrerId: body.payload.externalReferrerId,
+          fullName: "Asha Student",
+          publicName: "Asha",
+          referrerType: "Student",
+          courseStudied: "Full Stack Development",
+          memberSince: "2026-07-01",
+          personalLink: "https://example.test/r/ASH",
+          active: true,
+        },
         summary: { totalReferrals: 0, successfulAdmissions: 0, cashRewardsEarned: 0, courseCreditEarned: 0 },
         referrals: [],
       }, 200);
@@ -407,8 +429,11 @@ function profile(externalReferrerId: string, fullName: string, publicName: strin
     fullName,
     publicName,
     referrerType,
+    courseStudied: "Full Stack Development",
+    memberSince: "2026-07-01",
     referralToken: `${externalReferrerId}_TOKEN`,
     personalLink: `https://example.test/r/${externalReferrerId}_TOKEN`,
+    active: true,
   };
 }
 
@@ -545,6 +570,7 @@ describe("auth routes", () => {
         expect.objectContaining({ personId: "person_alu1", roles: ["alumni"] }),
       ]),
     );
+    expect(body.session.mobileLastFour).toBe("3210");
     expect(body.session.profiles.find((item: Row) => item.personId === "person_stu1").roles).not.toContain("alumni");
     expect(body.session.profiles.find((item: Row) => item.personId === "person_alu1").roles).not.toContain("student");
   });

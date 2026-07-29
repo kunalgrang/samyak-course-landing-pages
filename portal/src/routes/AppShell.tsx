@@ -1,5 +1,6 @@
 import { appNavigation } from "../app/navigation";
 import { BrandMark } from "../components/BrandMark";
+import { TrustFooter } from "../components/TrustFooter";
 import type { AppRoute } from "./types";
 import type { ReactNode } from "react";
 
@@ -42,6 +43,7 @@ export function AppShell({ activePath, children, onNavigate, onSignOut }: AppShe
           </button>
         </header>
         <main className="page-content">{children}</main>
+        <TrustFooter />
       </div>
 
       <nav className="bottom-nav" aria-label="Primary">

@@ -22,6 +22,7 @@ export type SessionView = {
   authenticated: boolean;
   activeProfile: ProfileChoice | null;
   profiles: ProfileChoice[];
+  mobileLastFour?: string;
   accountRoles?: string[];
 };
 
@@ -376,6 +377,9 @@ export async function getSessionFromRequest(c: AppContext): Promise<Authenticate
 }
 
 export async function sessionView(c: AppContext, loginAccountId: string, activePersonId: string | null): Promise<SessionView> {
+  const account = await c.env.DB.prepare("select mobile_last_four from login_accounts where id = ?")
+    .bind(loginAccountId)
+    .first<{ mobile_last_four: string | null }>();
   const rows = await c.env.DB.prepare(
     `select people.id as person_id, people.public_name as public_name, login_account_people.access_type as access_type, roles.code as role_code
      from login_account_people
@@ -412,6 +416,7 @@ export async function sessionView(c: AppContext, loginAccountId: string, activeP
     authenticated: true,
     activeProfile: activeProfile ? { ...activeProfile, effectiveRoles } : null,
     profiles,
+    mobileLastFour: account?.mobile_last_four || undefined,
     accountRoles,
   };
 }
