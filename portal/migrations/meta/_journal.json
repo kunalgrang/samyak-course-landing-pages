@@ -19,22 +19,29 @@
     {
       "idx": 2,
       "version": "6",
-      "when": 1785408300000,
-      "tag": "0002_student_master_foundation",
+      "when": 1785243900000,
+      "tag": "0002_auth_hardening",
       "breakpoints": true
     },
     {
       "idx": 3,
       "version": "6",
-      "when": 1785408360000,
-      "tag": "0003_encrypted_contact_storage",
+      "when": 1785408300000,
+      "tag": "0003_student_master_foundation",
       "breakpoints": true
     },
     {
       "idx": 4,
       "version": "6",
+      "when": 1785408360000,
+      "tag": "0004_encrypted_contact_storage",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
       "when": 1785408420000,
-      "tag": "0004_enquiry_course_interest",
+      "tag": "0005_enquiry_course_interest",
       "breakpoints": true
     }
   ]
