@@ -1,23 +1,24 @@
-import { appNavigation } from "../app/navigation";
 import { BrandMark } from "../components/BrandMark";
 import { TrustFooter } from "../components/TrustFooter";
+import type { NavigationItem } from "../app/navigation";
 import type { AppRoute } from "./types";
 import type { ReactNode } from "react";
 
 type AppShellProps = {
   activePath: AppRoute;
+  navigation: NavigationItem[];
   children: ReactNode;
   onNavigate: (path: AppRoute) => void;
   onSignOut: () => void;
 };
 
-export function AppShell({ activePath, children, onNavigate, onSignOut }: AppShellProps) {
+export function AppShell({ activePath, navigation, children, onNavigate, onSignOut }: AppShellProps) {
   return (
     <div className="app-layout">
       <aside className="sidebar" aria-label="Primary">
         <BrandMark />
         <nav className="sidebar__nav">
-          {appNavigation.map((item) => (
+          {navigation.map((item) => (
             <button
               key={item.path}
               type="button"
@@ -46,8 +47,8 @@ export function AppShell({ activePath, children, onNavigate, onSignOut }: AppShe
         <TrustFooter />
       </div>
 
-      <nav className="bottom-nav" aria-label="Primary">
-        {appNavigation.map((item) => (
+      <nav className="bottom-nav" aria-label="Primary" style={{ gridTemplateColumns: `repeat(${navigation.length}, minmax(0, 1fr))` }}>
+        {navigation.map((item) => (
           <button
             key={item.path}
             type="button"
