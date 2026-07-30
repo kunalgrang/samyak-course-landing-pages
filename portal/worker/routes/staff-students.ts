@@ -171,7 +171,7 @@ export function registerStaffStudentRoutes(app: PortalHono) {
       )
       .run();
 
-    return jsonPlain(c, { success: true, enquiryId, enquiryNumber, personId }, 201);
+    return jsonPlain(c, { success: true, enquiryId, enquiryNumber, personId }, { status: 201 });
   });
 }
 
