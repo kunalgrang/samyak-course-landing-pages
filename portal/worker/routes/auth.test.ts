@@ -634,17 +634,18 @@ describe("auth routes", () => {
     expect(verifyResponse.status).toBe(200);
     expect(verifyResponse.headers.get("set-cookie")).toContain("Max-Age=2592000");
     const cookie = sessionCookie(verifyResponse);
-    expect(cookie).toMatch(/^__Host-samyak_session=/);
+    expect(cookie).toMatch(/^samyak_session=/);
+    const productionCookie = cookie.replace(/^samyak_session=/, "__Host-samyak_session=");
 
     fetchMock.mockClear();
     const firstRefresh = await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db));
     const secondRefresh = await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db));
-    const directAppSessionCheck = await app.request("https://portal.samyaksion.com/api/auth/session", { headers: { Cookie: cookie } }, env(db, { ENVIRONMENT: "production" }));
+    const directAppSessionCheck = await app.request("https://portal.samyaksion.com/api/auth/session", { headers: { Cookie: productionCookie } }, env(db, { ENVIRONMENT: "production" }));
     const reopenedMobileSafari = await app.request(
       "https://portal.samyaksion.com/api/auth/session",
       {
         headers: {
-          Cookie: cookie,
+          Cookie: productionCookie,
           "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1",
         },
       },
@@ -671,6 +672,7 @@ describe("auth routes", () => {
     const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456", undefined, loginBindings);
     const cookie = sessionCookie(verifyResponse);
     const token = rawSessionToken(cookie);
+    const productionCookie = cookie.replace(/^samyak_session=/, "__Host-samyak_session=");
 
     const restartedWorker = env(db, { SESSION_PEPPER: "stable-pepper" });
     await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, restartedWorker)).json()).resolves.toMatchObject({
@@ -678,7 +680,7 @@ describe("auth routes", () => {
     });
 
     const deployedWorker = env(db, { ENVIRONMENT: "production", SESSION_PEPPER: "stable-pepper" });
-    await expect((await app.request("https://portal.samyaksion.com/api/auth/session", { headers: { Cookie: cookie } }, deployedWorker)).json()).resolves.toMatchObject({
+    await expect((await app.request("https://portal.samyaksion.com/api/auth/session", { headers: { Cookie: productionCookie } }, deployedWorker)).json()).resolves.toMatchObject({
       authenticated: true,
     });
     expect(db.userSessions[0].token_hash).not.toBe(token);
@@ -777,7 +779,7 @@ describe("auth routes", () => {
     const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
     const cookie = sessionCookie(verifyResponse);
 
-    const invalidToken = await app.request("http://localhost/api/auth/session", { headers: { Cookie: "__Host-samyak_session=bad-token" } }, env(db));
+    const invalidToken = await app.request("http://localhost/api/auth/session", { headers: { Cookie: "samyak_session=bad-token" } }, env(db));
     expect(invalidToken.status).toBe(200);
     await expect(invalidToken.json()).resolves.toMatchObject({ authenticated: false, activeProfile: null, profiles: [], code: "SESSION_TOKEN_NOT_FOUND" });
     expect(invalidToken.headers.get("set-cookie")).toContain("Max-Age=0");
@@ -838,6 +840,7 @@ describe("auth routes", () => {
       { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie }, body: "{}" },
       env(db),
     );
+    expect(logoutResponse.headers.get("set-cookie")).toMatch(/^samyak_session=;/);
     expect(logoutResponse.headers.get("set-cookie")).toContain("Max-Age=0");
     expect(db.userSessions[0].revoked_at).toBeTruthy();
   });
