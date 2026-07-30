@@ -1,12 +1,22 @@
 import type { AppRoute } from "../routes/types";
 
-export const appNavigation: Array<{
+export type NavigationItem = {
   path: AppRoute;
   label: string;
   shortLabel: string;
-}> = [
+};
+
+export const studentNavigation: NavigationItem[] = [
   { path: "/app", label: "Overview", shortLabel: "Overview" },
-  { path: "/app/referrals", label: "My Referrals", shortLabel: "My Referrals" },
+  { path: "/app/referrals", label: "My Referrals", shortLabel: "Referrals" },
   { path: "/app/rules", label: "Rewards & Benefits", shortLabel: "Rewards" },
-  { path: "/app/profile", label: "My Profile", shortLabel: "My Profile" },
+  { path: "/app/profile", label: "My Profile", shortLabel: "Profile" },
+];
+
+// Backward-compatible export used by student-facing tests and existing imports.
+export const appNavigation = studentNavigation;
+
+export const staffNavigation: NavigationItem[] = [
+  { path: "/app/enquiries", label: "Students & Enquiries", shortLabel: "Enquiries" },
+  ...studentNavigation,
 ];

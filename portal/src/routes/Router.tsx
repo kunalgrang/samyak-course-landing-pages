@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
+import { studentNavigation, staffNavigation } from "../app/navigation";
 import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import { useAuth } from "../features/auth/AuthContext";
 import { LoginPage } from "../features/auth/LoginPage";
 import { ProfilePage } from "../features/profile/ProfilePage";
 import { ReferralsPage } from "../features/referrals/ReferralsPage";
+import { EnquiriesPage } from "../features/staff/EnquiriesPage";
 import { RulesPage } from "./RulesPage";
 import { ShellHomePage } from "./ShellHomePage";
 import { AppShell } from "./AppShell";
 import type { AppRoute, RoutePath } from "./types";
 
-const appRoutes = new Set<RoutePath>(["/app", "/app/referrals", "/app/rules", "/app/profile"]);
+const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/referrals", "/app/rules", "/app/profile"]);
+const staffRoles = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
 
 function normalizePath(pathname: string): RoutePath {
   if (pathname === "/login") return "/login";
@@ -19,14 +22,15 @@ function normalizePath(pathname: string): RoutePath {
 }
 
 export function Router() {
-  const { isAuthenticated, isLoading, hasSessionError, refreshSession, sessionMessage, signOut } = useAuth();
+  const { isAuthenticated, isLoading, hasSessionError, refreshSession, session, sessionMessage, signOut } = useAuth();
   const [path, setPath] = useState<RoutePath>(() => normalizePath(window.location.pathname));
+  const isStaff = Boolean(session?.accountRoles.some((role) => staffRoles.has(role)));
+  const navigation = isStaff ? staffNavigation : studentNavigation;
 
   useEffect(() => {
     function handlePopState() {
       setPath(normalizePath(window.location.pathname));
     }
-
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
@@ -37,6 +41,12 @@ export function Router() {
     }
   }, [hasSessionError, isAuthenticated, isLoading, path]);
 
+  useEffect(() => {
+    if (!isLoading && isAuthenticated && path === "/app/enquiries" && !isStaff) {
+      navigate("/app", true);
+    }
+  }, [isAuthenticated, isLoading, isStaff, path]);
+
   const activeAppPath = useMemo<AppRoute>(
     () => (path.startsWith("/app") ? (path as AppRoute) : "/app"),
     [path],
@@ -44,11 +54,8 @@ export function Router() {
 
   function navigate(nextPath: RoutePath, replace = false) {
     const next = normalizePath(nextPath);
-    if (replace) {
-      window.history.replaceState({}, "", next);
-    } else {
-      window.history.pushState({}, "", next);
-    }
+    if (replace) window.history.replaceState({}, "", next);
+    else window.history.pushState({}, "", next);
     setPath(next);
   }
 
@@ -60,9 +67,7 @@ export function Router() {
   if (isLoading) {
     return (
       <main className="login-page">
-        <section className="login-shell">
-          <LoadingState label="Checking session" />
-        </section>
+        <section className="login-shell"><LoadingState label="Checking session" /></section>
       </main>
     );
   }
@@ -72,9 +77,7 @@ export function Router() {
       <main className="login-page">
         <section className="login-shell">
           <ErrorState title="Could not check session" message="Please check your connection and try again." />
-          <button type="button" onClick={() => void refreshSession()}>
-            Retry
-          </button>
+          <button type="button" onClick={() => void refreshSession()}>Retry</button>
         </section>
       </main>
     );
@@ -85,8 +88,9 @@ export function Router() {
   }
 
   return (
-    <AppShell activePath={activeAppPath} onNavigate={navigate} onSignOut={handleSignOut}>
+    <AppShell activePath={activeAppPath} navigation={navigation} onNavigate={navigate} onSignOut={handleSignOut}>
       {activeAppPath === "/app" ? <ShellHomePage /> : null}
+      {activeAppPath === "/app/enquiries" && isStaff ? <EnquiriesPage /> : null}
       {activeAppPath === "/app/referrals" ? <ReferralsPage /> : null}
       {activeAppPath === "/app/rules" ? <RulesPage /> : null}
       {activeAppPath === "/app/profile" ? <ProfilePage /> : null}

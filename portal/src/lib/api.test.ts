@@ -4,6 +4,7 @@ import { getHealth, getSession } from "./api";
 describe("getHealth", () => {
   it("parses the health response contract", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
       json: () =>
         Promise.resolve({
           success: true,
@@ -30,6 +31,7 @@ describe("getHealth", () => {
 describe("getSession", () => {
   it("accepts account roles and effective roles from the Worker session response", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
       json: () =>
         Promise.resolve({
           authenticated: true,

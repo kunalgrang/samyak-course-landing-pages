@@ -148,7 +148,8 @@ Set production secrets with `wrangler secret put NAME`.
 
 ## Session Policy
 
-- Cookie name: `__Host-samyak_session`
+- Production cookie name: `__Host-samyak_session`
+- Local development cookie name on `localhost` and `127.0.0.1`: `samyak_session`
 - Production attributes: `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`
 - No `Domain` attribute
 - Absolute expiry: 30 days
@@ -221,7 +222,7 @@ Do not include real secret values in commits, logs, screenshots, tickets, or fro
 - Production without MSG91 credentials returns `OTP_SERVICE_PENDING`.
 - OTP attempts lock after 5 failed tries.
 - Expired challenges cannot be verified.
-- Login sets `__Host-samyak_session` and D1 stores only the token hash.
+- Login sets `samyak_session` locally and `__Host-samyak_session` in production; D1 stores only the token hash.
 - Shared-family/mobile profile chooser cannot select unlinked people.
 - `/api/student/referrals` rejects unauthenticated requests.
 - Authenticated referrals page shows no prospect phone, email, fees, paid amounts, internal notes, or Closed reasons.

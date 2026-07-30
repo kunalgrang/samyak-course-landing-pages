@@ -4,10 +4,11 @@ import type { PortalLookup, PortalDashboard } from "./apps-script";
 import { callPortalDashboard } from "./apps-script";
 
 export const ORG_ID = "org_samyak";
-export const SESSION_COOKIE = "__Host-samyak_session";
 export const OTP_MAX_ATTEMPTS = 5;
 export const OTP_EXPIRY_SECONDS = 10 * 60;
 
+const PRODUCTION_SESSION_COOKIE = "__Host-samyak_session";
+const LOCAL_DEVELOPMENT_SESSION_COOKIE = "samyak_session";
 const PERSON_ROLE_CODES = new Set(["student", "alumni"]);
 
 export type ProfileChoice = {
@@ -362,23 +363,21 @@ export async function createSession(c: AppContext, loginAccountId: string, activ
 }
 
 export function buildSessionCookie(c: AppContext, token: string) {
-  const parts = [`${SESSION_COOKIE}=${token}`, "Path=/"];
-  const hostname = new URL(c.req.url).hostname;
-  if (c.env.ENVIRONMENT === "production" || (hostname !== "localhost" && hostname !== "127.0.0.1")) parts.push("Secure");
+  const parts = [`${sessionCookieName(c)}=${token}`, "Path=/"];
+  if (shouldUseSecureSessionCookie(c)) parts.push("Secure");
   parts.push("HttpOnly", "SameSite=Lax", "Max-Age=2592000");
   return parts.join("; ");
 }
 
 export function clearSessionCookie(c: AppContext) {
-  const hostname = new URL(c.req.url).hostname;
-  const parts = [`${SESSION_COOKIE}=`, "Path=/"];
-  if (c.env.ENVIRONMENT === "production" || (hostname !== "localhost" && hostname !== "127.0.0.1")) parts.push("Secure");
+  const parts = [`${sessionCookieName(c)}=`, "Path=/"];
+  if (shouldUseSecureSessionCookie(c)) parts.push("Secure");
   parts.push("HttpOnly", "SameSite=Lax", "Max-Age=0");
   return parts.join("; ");
 }
 
 export function hasSessionCookie(c: AppContext) {
-  return Boolean(getCookie(c.req.header("cookie") || "", SESSION_COOKIE));
+  return Boolean(getCookie(c.req.header("cookie") || "", sessionCookieName(c)));
 }
 
 export async function getSessionFromRequest(c: AppContext): Promise<AuthenticatedSession | null> {
@@ -386,7 +385,7 @@ export async function getSessionFromRequest(c: AppContext): Promise<Authenticate
 }
 
 export async function getSessionValidationResult(c: AppContext): Promise<SessionValidationResult> {
-  const token = getCookie(c.req.header("cookie") || "", SESSION_COOKIE);
+  const token = getCookie(c.req.header("cookie") || "", sessionCookieName(c));
   if (!token) {
     await recordSessionResult(c, "SESSION_COOKIE_MISSING");
     return { session: null, resultCode: "SESSION_COOKIE_MISSING", shouldClearCookie: false };
@@ -423,6 +422,11 @@ export async function getSessionValidationResult(c: AppContext): Promise<Session
   }
   await recordSessionResult(c, "SESSION_VALID", record.login_account_id);
   return { session: { record: currentRecord, tokenHash }, resultCode: "SESSION_VALID", shouldClearCookie: false };
+}
+
+export function sessionCookieName(c: AppContext) {
+  if (isLocalDevelopmentRequest(c)) return LOCAL_DEVELOPMENT_SESSION_COOKIE;
+  return PRODUCTION_SESSION_COOKIE;
 }
 
 export async function sessionView(c: AppContext, loginAccountId: string, activePersonId: string | null): Promise<SessionView> {
@@ -642,6 +646,15 @@ function shouldSampleValidSession() {
   const sample = new Uint8Array(1);
   crypto.getRandomValues(sample);
   return sample[0] === 0;
+}
+
+function shouldUseSecureSessionCookie(c: AppContext) {
+  return !isLocalDevelopmentRequest(c);
+}
+
+function isLocalDevelopmentRequest(c: AppContext) {
+  const hostname = new URL(c.req.url).hostname;
+  return c.env.ENVIRONMENT === "development" && (hostname === "localhost" || hostname === "127.0.0.1");
 }
 
 function stableId(prefix: string, value: string) {

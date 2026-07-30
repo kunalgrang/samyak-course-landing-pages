@@ -11,11 +11,8 @@ export async function getHealth(): Promise<HealthResponse> {
   const response = await fetch("/api/health", {
     method: "GET",
     credentials: "same-origin",
-    headers: {
-      Accept: "application/json",
-    },
+    headers: { Accept: "application/json" },
   });
-
   const data: unknown = await response.json();
   return healthResponseSchema.parse(data);
 }
@@ -106,6 +103,68 @@ const dashboardSchema = z.object({
 
 export type ReferralDashboard = z.infer<typeof dashboardSchema>;
 
+const enquiryOptionsSchema = z.object({
+  branches: z.array(z.object({ id: z.string(), code: z.string(), name: z.string() })),
+  courses: z.array(
+    z.object({
+      id: z.string(),
+      code: z.string(),
+      name: z.string(),
+      nsdc_available: z.union([z.number(), z.boolean()]),
+    }),
+  ),
+  sources: z.array(z.string()),
+});
+
+const studentSearchSchema = z.object({
+  mobileLastFour: z.string(),
+  possiblePeople: z.array(
+    z.object({
+      person_id: z.string(),
+      full_name: z.string(),
+      date_of_birth: z.string().nullable(),
+      student_number: z.string().nullable(),
+      student_status: z.string().nullable(),
+      mobile_last_four: z.string().nullable(),
+    }),
+  ),
+  enquiries: z.array(
+    z.object({
+      id: z.string(),
+      enquiry_number: z.string(),
+      person_id: z.string().nullable(),
+      status: z.string(),
+      source: z.string(),
+      created_at: z.string(),
+      course_name: z.string().nullable(),
+    }),
+  ),
+});
+
+const createEnquiryResponseSchema = z.object({
+  success: z.literal(true),
+  enquiryId: z.string(),
+  enquiryNumber: z.string(),
+  personId: z.string(),
+});
+
+export type EnquiryOptions = z.infer<typeof enquiryOptionsSchema>;
+export type StudentSearchResult = z.infer<typeof studentSearchSchema>;
+export type CreateEnquiryResponse = z.infer<typeof createEnquiryResponseSchema>;
+
+export type CreateEnquiryInput = {
+  mobile: string;
+  fullName: string;
+  branchId: string;
+  courseInterestId?: string | null;
+  courseInterestText?: string | null;
+  source: string;
+  sourceDetail?: string | null;
+  preferredTiming?: string | null;
+  preferredJoiningDate?: string | null;
+  existingPersonId?: string | null;
+};
+
 export async function getPublicConfig() {
   return getJson("/api/public-config", publicConfigSchema);
 }
@@ -138,6 +197,18 @@ export async function getReferralDashboard() {
   return getJson("/api/student/referrals", dashboardSchema);
 }
 
+export async function getEnquiryOptions() {
+  return getJson("/api/staff/enquiry-options", enquiryOptionsSchema);
+}
+
+export async function searchStudentByMobile(mobile: string) {
+  return getJson(`/api/staff/student-search?mobile=${encodeURIComponent(mobile)}`, studentSearchSchema);
+}
+
+export async function createEnquiry(input: CreateEnquiryInput) {
+  return postJson("/api/staff/enquiries", input, createEnquiryResponseSchema);
+}
+
 async function getJson<T extends z.ZodType>(url: string, schema: T): Promise<z.infer<T>> {
   const response = await fetch(url, {
     method: "GET",
@@ -145,6 +216,7 @@ async function getJson<T extends z.ZodType>(url: string, schema: T): Promise<z.i
     headers: { Accept: "application/json" },
   });
   const data: unknown = await response.json();
+  if (!response.ok) throw new Error(apiErrorMessage(data));
   return schema.parse(data);
 }
 
@@ -159,5 +231,12 @@ async function postJson<T extends z.ZodType>(url: string, body: Record<string, u
     body: JSON.stringify(body),
   });
   const data: unknown = await response.json();
+  if (!response.ok) throw new Error(apiErrorMessage(data));
   return schema.parse(data);
+}
+
+function apiErrorMessage(data: unknown) {
+  if (!data || typeof data !== "object") return "The request could not be completed.";
+  const error = (data as { error?: { message?: unknown } }).error;
+  return typeof error?.message === "string" ? error.message : "The request could not be completed.";
 }

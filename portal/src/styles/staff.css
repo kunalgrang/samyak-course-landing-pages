@@ -1,0 +1,159 @@
+.staff-enquiries-page {
+  --staff-card-padding: 20px;
+}
+
+.staff-card {
+  padding: var(--staff-card-padding);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.staff-form {
+  display: grid;
+  gap: 16px;
+}
+
+.staff-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--color-navy);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.staff-form input,
+.staff-form select {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 0 13px;
+  color: var(--color-ink);
+  background: #fff;
+  font: inherit;
+}
+
+.staff-form input:disabled {
+  color: var(--color-muted);
+  background: #f3f6f8;
+}
+
+.staff-form input:focus-visible,
+.staff-form select:focus-visible {
+  outline: 3px solid rgba(13, 148, 136, 0.25);
+  outline-offset: 2px;
+}
+
+.staff-search-row {
+  display: grid;
+  gap: 10px;
+}
+
+.staff-search-row button {
+  width: 100%;
+}
+
+.match-list,
+.enquiry-history {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.match-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  background: #f8fafc;
+  cursor: pointer;
+}
+
+.match-card:has(input:checked) {
+  border-color: rgba(13, 148, 136, 0.5);
+  background: #edf9f7;
+}
+
+.match-card input {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+}
+
+.match-card span,
+.enquiry-history article {
+  display: grid;
+  gap: 4px;
+}
+
+.match-card strong,
+.enquiry-history strong {
+  color: var(--color-navy);
+}
+
+.match-card small,
+.enquiry-history small,
+.enquiry-history span,
+.staff-empty {
+  color: var(--color-muted);
+  line-height: 1.45;
+}
+
+.enquiry-history article {
+  padding: 14px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+}
+
+.staff-empty {
+  margin: 14px 0 0;
+}
+
+.staff-form-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.notice--success {
+  border-color: rgba(13, 148, 136, 0.28);
+  background: var(--color-green-soft);
+}
+
+.notice--success strong {
+  color: var(--color-teal-dark);
+}
+
+@media (min-width: 640px) {
+  .staff-search-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .staff-search-row button {
+    width: auto;
+  }
+
+  .staff-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .staff-form-actions {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 759px) {
+  .staff-enquiries-page {
+    --staff-card-padding: 16px;
+  }
+
+  .bottom-nav {
+    overflow-x: auto;
+  }
+
+  .bottom-nav button {
+    min-width: 76px;
+  }
+}
