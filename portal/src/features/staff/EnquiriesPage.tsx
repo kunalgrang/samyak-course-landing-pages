@@ -1,15 +1,18 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent, RefObject } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
 import {
   createEnquiry,
   getEnquiryOptions,
   searchStudentByMobile,
+  type CreateEnquiryInput,
+  type CreateEnquiryResponse,
   type EnquiryOptions,
   type StudentSearchResult,
 } from "../../lib/api";
 
-type FormState = {
+export type FormState = {
   fullName: string;
   branchId: string;
   courseInterestId: string;
@@ -21,7 +24,15 @@ type FormState = {
   existingPersonId: string;
 };
 
-const emptyForm: FormState = {
+export type EnquiryPageState = {
+  mobile: string;
+  searchResult: StudentSearchResult | null;
+  form: FormState;
+  error: string | null;
+  success: string | null;
+};
+
+const emptyFormFields: FormState = {
   fullName: "",
   branchId: "",
   courseInterestId: "",
@@ -37,22 +48,21 @@ export function EnquiriesPage() {
   const [options, setOptions] = useState<EnquiryOptions | null>(null);
   const [mobile, setMobile] = useState("");
   const [searchResult, setSearchResult] = useState<StudentSearchResult | null>(null);
-  const [form, setForm] = useState<FormState>(emptyForm);
+  const [form, setForm] = useState<FormState>(initialEnquiryForm());
   const [isLoadingOptions, setIsLoadingOptions] = useState(true);
   const [isSearching, setIsSearching] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const mobileInputRef = useRef<HTMLInputElement | null>(null);
+  const isSubmittingRef = useRef(false);
 
   useEffect(() => {
     void getEnquiryOptions()
       .then((data) => {
         setOptions(data);
-        setForm((current) => ({
-          ...current,
-          branchId: current.branchId || data.branches[0]?.id || "",
-          source: current.source || data.sources[0] || "",
-        }));
+        const initialForm = initialEnquiryForm(data);
+        setForm((current) => ({ ...initialForm, ...current, branchId: current.branchId || initialForm.branchId }));
       })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Could not load enquiry options."))
       .finally(() => setIsLoadingOptions(false));
@@ -87,26 +97,33 @@ export function EnquiriesPage() {
 
   async function handleCreate(event: FormEvent) {
     event.preventDefault();
+    if (isSubmittingRef.current) return;
     setError(null);
     setSuccess(null);
     setIsSubmitting(true);
     try {
-      const created = await createEnquiry({
-        mobile,
-        fullName: selectedPerson?.full_name || form.fullName,
-        branchId: form.branchId,
-        courseInterestId: form.courseInterestId || null,
-        courseInterestText: form.courseInterestId ? null : form.courseInterestText,
-        source: form.source,
-        sourceDetail: form.sourceDetail || null,
-        preferredTiming: form.preferredTiming || null,
-        preferredJoiningDate: form.preferredJoiningDate || null,
-        existingPersonId: form.existingPersonId || null,
-      });
-      setSuccess(`Enquiry ${created.enquiryNumber} created successfully.`);
-      setSearchResult(await searchStudentByMobile(mobile));
+      const created = await guardedCreateEnquiry(isSubmittingRef, () =>
+        createEnquiry(buildCreateEnquiryInput({
+          mobile,
+          form,
+          selectedPerson,
+        })),
+      );
+      if (!created) return;
+      const nextState = enquiryStateAfterSuccess(options, created);
+      setMobile(nextState.mobile);
+      setSearchResult(nextState.searchResult);
+      setForm(nextState.form);
+      setError(nextState.error);
+      setSuccess(nextState.success);
+      focusMobileSearchInput(mobileInputRef);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not create the enquiry.");
+      const nextState = enquiryStateAfterFailure(
+        { mobile, searchResult, form, error: null, success: null },
+        reason instanceof Error ? reason.message : "Could not create the enquiry.",
+      );
+      setError(nextState.error);
+      setSuccess(nextState.success);
     } finally {
       setIsSubmitting(false);
     }
@@ -127,6 +144,7 @@ export function EnquiriesPage() {
           <label htmlFor="student-mobile">Mobile number</label>
           <div className="staff-search-row">
             <input
+              ref={mobileInputRef}
               id="student-mobile"
               type="tel"
               inputMode="numeric"
@@ -143,7 +161,7 @@ export function EnquiriesPage() {
       </section>
 
       {error ? <ErrorState title="Could not continue" message={error} /> : null}
-      {success ? <div className="notice notice--success"><strong>Saved</strong><span>{success}</span></div> : null}
+      {success ? <EnquirySuccessNotice message={success} /> : null}
 
       {searchResult ? (
         <>
@@ -224,6 +242,7 @@ export function EnquiriesPage() {
               <label>
                 Branch
                 <select value={form.branchId} onChange={(event) => setForm((current) => ({ ...current, branchId: event.target.value }))} required>
+                  {options.branches.length !== 1 ? <option value="">Select branch</option> : null}
                   {options.branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
                 </select>
               </label>
@@ -251,6 +270,7 @@ export function EnquiriesPage() {
               <label>
                 Enquiry source
                 <select value={form.source} onChange={(event) => setForm((current) => ({ ...current, source: event.target.value }))} required>
+                  <option value="">Select source</option>
                   {options.sources.map((source) => <option key={source} value={source}>{source}</option>)}
                 </select>
               </label>
@@ -271,7 +291,7 @@ export function EnquiriesPage() {
               </label>
 
               <div className="staff-form-actions">
-                <button type="submit" disabled={isSubmitting}>{isSubmitting ? "Creating..." : "Create enquiry"}</button>
+                <CreateEnquirySubmitButton isSubmitting={isSubmitting} />
               </div>
             </form>
           </section>
@@ -279,6 +299,90 @@ export function EnquiriesPage() {
       ) : null}
     </div>
   );
+}
+
+export function EnquirySuccessNotice({ message }: { message: string }) {
+  return (
+    <div className="notice notice--success" role="status" aria-live="polite">
+      <strong>Saved</strong>
+      <span>{message}</span>
+    </div>
+  );
+}
+
+export function CreateEnquirySubmitButton({ isSubmitting }: { isSubmitting: boolean }) {
+  return <button type="submit" disabled={isSubmitting}>{isSubmitting ? "Creating enquiry…" : "Create enquiry"}</button>;
+}
+
+export function initialEnquiryForm(options?: EnquiryOptions | null): FormState {
+  return {
+    ...emptyFormFields,
+    branchId: options?.branches.length === 1 ? options.branches[0].id : "",
+  };
+}
+
+export function createEnquirySuccessMessage(created: Pick<CreateEnquiryResponse, "enquiryNumber">) {
+  return created.enquiryNumber
+    ? `Enquiry ${created.enquiryNumber} was created successfully.`
+    : "Enquiry was created successfully.";
+}
+
+export function enquiryStateAfterSuccess(options: EnquiryOptions | null, created: Pick<CreateEnquiryResponse, "enquiryNumber">): EnquiryPageState {
+  return {
+    mobile: "",
+    searchResult: null,
+    form: initialEnquiryForm(options),
+    error: null,
+    success: createEnquirySuccessMessage(created),
+  };
+}
+
+export function enquiryStateAfterFailure(current: EnquiryPageState, message: string): EnquiryPageState {
+  return {
+    ...current,
+    error: message,
+    success: null,
+  };
+}
+
+export function buildCreateEnquiryInput({
+  mobile,
+  form,
+  selectedPerson,
+}: {
+  mobile: string;
+  form: FormState;
+  selectedPerson: StudentSearchResult["possiblePeople"][number] | null;
+}): CreateEnquiryInput {
+  return {
+    mobile,
+    fullName: selectedPerson?.full_name || form.fullName,
+    branchId: form.branchId,
+    courseInterestId: form.courseInterestId || null,
+    courseInterestText: form.courseInterestId ? null : form.courseInterestText,
+    source: form.source,
+    sourceDetail: form.sourceDetail || null,
+    preferredTiming: form.preferredTiming || null,
+    preferredJoiningDate: form.preferredJoiningDate || null,
+    existingPersonId: form.existingPersonId || null,
+  };
+}
+
+export async function guardedCreateEnquiry(
+  pendingRef: { current: boolean },
+  submit: () => Promise<CreateEnquiryResponse>,
+) {
+  if (pendingRef.current) return null;
+  pendingRef.current = true;
+  try {
+    return await submit();
+  } finally {
+    pendingRef.current = false;
+  }
+}
+
+export function focusMobileSearchInput(ref: RefObject<HTMLInputElement | null>) {
+  ref.current?.focus();
 }
 
 function formatLabel(value: string) {
