@@ -31,6 +31,28 @@ export type AuthenticatedSession = {
   tokenHash: string;
 };
 
+export type SessionResultCode =
+  | "SESSION_COOKIE_MISSING"
+  | "SESSION_TOKEN_NOT_FOUND"
+  | "SESSION_REVOKED"
+  | "SESSION_ABSOLUTE_EXPIRED"
+  | "SESSION_INACTIVE_EXPIRED"
+  | "SESSION_PROFILE_CLEARED"
+  | "SESSION_VALID";
+
+export type SessionValidationResult = {
+  session: AuthenticatedSession | null;
+  resultCode: SessionResultCode;
+  shouldClearCookie: boolean;
+};
+
+export class AuthConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AuthConfigurationError";
+  }
+}
+
 type SessionRecord = {
   id: string;
   login_account_id: string;
@@ -68,15 +90,15 @@ type D1RunResult = {
 };
 
 export async function mobileHash(c: AppContext, mobile: string) {
-  return hmacHex(c.env.SESSION_PEPPER, "mobile", mobile);
+  return hmacHex(sessionPepper(c), "mobile", mobile);
 }
 
 export async function requestFingerprint(c: AppContext) {
   const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "unknown";
   const userAgent = c.req.header("user-agent") || "unknown";
   return {
-    ipHash: await hmacHex(c.env.SESSION_PEPPER, "ip", ip),
-    userAgentHash: await hmacHex(c.env.SESSION_PEPPER, "ua", userAgent),
+    ipHash: await hmacHex(sessionPepper(c), "ip", ip),
+    userAgentHash: await hmacHex(sessionPepper(c), "ua", userAgent),
   };
 }
 
@@ -129,7 +151,7 @@ export async function markRequestedChallengeSent({
   provider: string;
   providerRequestId?: string;
 }) {
-  const encryptedMobile = await encryptText(c.env.SESSION_PEPPER, "challenge-mobile", mobile);
+  const encryptedMobile = await encryptText(sessionPepper(c), "challenge-mobile", mobile);
   const now = new Date().toISOString();
   const result = await c.env.DB.prepare(
     `update otp_challenges
@@ -202,12 +224,12 @@ export async function markChallengeVerified(c: AppContext, id: string, now = new
 
 export async function decryptChallengeMobile(c: AppContext, challenge: ChallengeRecord) {
   if (!challenge.mobile_ciphertext) return null;
-  return decryptText(c.env.SESSION_PEPPER, "challenge-mobile", challenge.mobile_ciphertext);
+  return decryptText(sessionPepper(c), "challenge-mobile", challenge.mobile_ciphertext);
 }
 
 export async function runDummyOtpComparison(c: AppContext, otp: string) {
-  const submitted = await hmacHex(c.env.SESSION_PEPPER, "dummy-otp", otp);
-  const expected = await hmacHex(c.env.SESSION_PEPPER, "dummy-otp", "000000");
+  const submitted = await hmacHex(sessionPepper(c), "dummy-otp", otp);
+  const expected = await hmacHex(sessionPepper(c), "dummy-otp", "000000");
   return constantTimeEqual(submitted, expected);
 }
 
@@ -327,7 +349,7 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
 
 export async function createSession(c: AppContext, loginAccountId: string, activePersonId: string | null) {
   const token = createSessionToken();
-  const tokenHash = await hmacHex(c.env.SESSION_PEPPER, "session", token);
+  const tokenHash = await hmacHex(sessionPepper(c), "session", token);
   const now = new Date().toISOString();
   const fingerprint = await requestFingerprint(c);
   await c.env.DB.prepare(
@@ -340,16 +362,18 @@ export async function createSession(c: AppContext, loginAccountId: string, activ
 }
 
 export function buildSessionCookie(c: AppContext, token: string) {
-  const parts = [`${SESSION_COOKIE}=${token}`, "HttpOnly", "SameSite=Lax", "Path=/", "Max-Age=2592000"];
+  const parts = [`${SESSION_COOKIE}=${token}`, "Path=/"];
   const hostname = new URL(c.req.url).hostname;
   if (c.env.ENVIRONMENT === "production" || (hostname !== "localhost" && hostname !== "127.0.0.1")) parts.push("Secure");
+  parts.push("HttpOnly", "SameSite=Lax", "Max-Age=2592000");
   return parts.join("; ");
 }
 
 export function clearSessionCookie(c: AppContext) {
   const hostname = new URL(c.req.url).hostname;
-  const parts = [`${SESSION_COOKIE}=`, "HttpOnly", "SameSite=Lax", "Path=/", "Max-Age=0"];
+  const parts = [`${SESSION_COOKIE}=`, "Path=/"];
   if (c.env.ENVIRONMENT === "production" || (hostname !== "localhost" && hostname !== "127.0.0.1")) parts.push("Secure");
+  parts.push("HttpOnly", "SameSite=Lax", "Max-Age=0");
   return parts.join("; ");
 }
 
@@ -358,22 +382,47 @@ export function hasSessionCookie(c: AppContext) {
 }
 
 export async function getSessionFromRequest(c: AppContext): Promise<AuthenticatedSession | null> {
+  return (await getSessionValidationResult(c)).session;
+}
+
+export async function getSessionValidationResult(c: AppContext): Promise<SessionValidationResult> {
   const token = getCookie(c.req.header("cookie") || "", SESSION_COOKIE);
-  if (!token) return null;
-  const tokenHash = await hmacHex(c.env.SESSION_PEPPER, "session", token);
+  if (!token) {
+    await recordSessionResult(c, "SESSION_COOKIE_MISSING");
+    return { session: null, resultCode: "SESSION_COOKIE_MISSING", shouldClearCookie: false };
+  }
+  const tokenHash = await hmacHex(sessionPepper(c), "session", token);
   const record = await c.env.DB.prepare("select * from user_sessions where token_hash = ?").bind(tokenHash).first<SessionRecord>();
-  if (!record || record.revoked_at) return null;
+  if (!record) {
+    await recordSessionResult(c, "SESSION_TOKEN_NOT_FOUND");
+    return { session: null, resultCode: "SESSION_TOKEN_NOT_FOUND", shouldClearCookie: true };
+  }
+  if (record.revoked_at) {
+    await recordSessionResult(c, "SESSION_REVOKED", record.login_account_id);
+    return { session: null, resultCode: "SESSION_REVOKED", shouldClearCookie: true };
+  }
   const now = Date.now();
-  if (Date.parse(record.expires_at) <= now) return null;
-  if (Date.parse(record.last_seen_at) <= now - 7 * 24 * 60 * 60_000) return null;
+  if (Date.parse(record.expires_at) <= now) {
+    await recordSessionResult(c, "SESSION_ABSOLUTE_EXPIRED", record.login_account_id);
+    return { session: null, resultCode: "SESSION_ABSOLUTE_EXPIRED", shouldClearCookie: true };
+  }
+  if (Date.parse(record.last_seen_at) <= now - 7 * 24 * 60 * 60_000) {
+    await recordSessionResult(c, "SESSION_INACTIVE_EXPIRED", record.login_account_id);
+    return { session: null, resultCode: "SESSION_INACTIVE_EXPIRED", shouldClearCookie: true };
+  }
+  let currentRecord = record;
   if (record.active_person_id && !(await isLinkedProfileAvailable(c, record.login_account_id, record.active_person_id))) {
     await c.env.DB.prepare("update user_sessions set active_person_id = null where id = ?").bind(record.id).run();
-    return null;
+    currentRecord = { ...record, active_person_id: null };
+    await recordSessionResult(c, "SESSION_PROFILE_CLEARED", record.login_account_id);
   }
   if (Date.parse(record.last_seen_at) <= now - 6 * 60 * 60_000) {
-    await c.env.DB.prepare("update user_sessions set last_seen_at = ? where id = ?").bind(new Date().toISOString(), record.id).run();
+    const lastSeenAt = new Date().toISOString();
+    await c.env.DB.prepare("update user_sessions set last_seen_at = ? where id = ?").bind(lastSeenAt, record.id).run();
+    currentRecord = { ...currentRecord, last_seen_at: lastSeenAt };
   }
-  return { record, tokenHash };
+  await recordSessionResult(c, "SESSION_VALID", record.login_account_id);
+  return { session: { record: currentRecord, tokenHash }, resultCode: "SESSION_VALID", shouldClearCookie: false };
 }
 
 export async function sessionView(c: AppContext, loginAccountId: string, activePersonId: string | null): Promise<SessionView> {
@@ -524,6 +573,11 @@ export async function recordAuthEvent(
     .run();
 }
 
+async function recordSessionResult(c: AppContext, resultCode: SessionResultCode, loginAccountId?: string | null) {
+  if (resultCode === "SESSION_VALID" && !shouldSampleValidSession()) return;
+  await recordAuthEvent(c, "session_check", resultCode, { loginAccountId });
+}
+
 export async function recordAuditLog(c: AppContext, loginAccountId: string, personId: string | null, action: string) {
   await c.env.DB.prepare(
     `insert into audit_logs (id, organisation_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, created_at)
@@ -574,6 +628,20 @@ function constantTimeEqual(left: string, right: string) {
     diff |= (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
   }
   return diff === 0;
+}
+
+function sessionPepper(c: AppContext) {
+  const pepper = c.env.SESSION_PEPPER;
+  if (typeof pepper !== "string" || pepper.trim().length === 0) {
+    throw new AuthConfigurationError("SESSION_PEPPER is not configured.");
+  }
+  return pepper;
+}
+
+function shouldSampleValidSession() {
+  const sample = new Uint8Array(1);
+  crypto.getRandomValues(sample);
+  return sample[0] === 0;
 }
 
 function stableId(prefix: string, value: string) {

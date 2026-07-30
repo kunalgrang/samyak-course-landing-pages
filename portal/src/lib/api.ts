@@ -25,6 +25,7 @@ const profileSchema = z.object({
   publicName: z.string(),
   accessType: z.string(),
   roles: z.array(z.string()).default([]),
+  effectiveRoles: z.array(z.string()).default([]),
 });
 
 export const sessionSchema = z.object({
@@ -32,6 +33,9 @@ export const sessionSchema = z.object({
   activeProfile: profileSchema.nullable(),
   profiles: z.array(profileSchema),
   mobileLastFour: z.string().optional(),
+  accountRoles: z.array(z.string()).default([]),
+  code: z.string().optional(),
+  message: z.string().optional(),
   requestId: z.string().optional(),
 });
 

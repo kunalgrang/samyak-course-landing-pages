@@ -12,6 +12,7 @@ import {
   decryptChallengeMobile,
   getChallenge,
   getSessionFromRequest,
+  getSessionValidationResult,
   hasSessionCookie,
   incrementChallengeAttemptsIfAllowed,
   markChallengeFailed,
@@ -244,10 +245,19 @@ export function registerAuthRoutes(app: PortalHono) {
   });
 
   app.get("/api/auth/session", async (c) => {
-    const session = await getSessionFromRequest(c);
+    const validation = await getSessionValidationResult(c);
+    const session = validation.session;
     if (!session) {
-      const response = jsonWithRequestId(c, { authenticated: false, activeProfile: null, profiles: [] });
-      if (hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
+      const expired =
+        validation.resultCode === "SESSION_ABSOLUTE_EXPIRED" || validation.resultCode === "SESSION_INACTIVE_EXPIRED";
+      const response = jsonWithRequestId(c, {
+        authenticated: false,
+        activeProfile: null,
+        profiles: [],
+        code: validation.resultCode,
+        ...(expired ? { message: "Your session has expired. Please sign in again." } : {}),
+      });
+      if (validation.shouldClearCookie && hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
       return response;
     }
     return jsonWithRequestId(c, await sessionView(c, session.record.login_account_id, session.record.active_person_id));

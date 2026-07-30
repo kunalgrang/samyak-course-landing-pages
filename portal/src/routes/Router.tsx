@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import { useAuth } from "../features/auth/AuthContext";
 import { LoginPage } from "../features/auth/LoginPage";
@@ -18,7 +19,7 @@ function normalizePath(pathname: string): RoutePath {
 }
 
 export function Router() {
-  const { isAuthenticated, isLoading, signOut } = useAuth();
+  const { isAuthenticated, isLoading, hasSessionError, refreshSession, sessionMessage, signOut } = useAuth();
   const [path, setPath] = useState<RoutePath>(() => normalizePath(window.location.pathname));
 
   useEffect(() => {
@@ -31,10 +32,10 @@ export function Router() {
   }, []);
 
   useEffect(() => {
-    if (!isLoading && path.startsWith("/app") && !isAuthenticated) {
+    if (!isLoading && !hasSessionError && path.startsWith("/app") && !isAuthenticated) {
       navigate("/login", true);
     }
-  }, [isAuthenticated, isLoading, path]);
+  }, [hasSessionError, isAuthenticated, isLoading, path]);
 
   const activeAppPath = useMemo<AppRoute>(
     () => (path.startsWith("/app") ? (path as AppRoute) : "/app"),
@@ -66,8 +67,21 @@ export function Router() {
     );
   }
 
+  if (hasSessionError && !isAuthenticated) {
+    return (
+      <main className="login-page">
+        <section className="login-shell">
+          <ErrorState title="Could not check session" message="Please check your connection and try again." />
+          <button type="button" onClick={() => void refreshSession()}>
+            Retry
+          </button>
+        </section>
+      </main>
+    );
+  }
+
   if (path === "/login" || !isAuthenticated) {
-    return <LoginPage onAuthenticated={() => navigate("/app", true)} />;
+    return <LoginPage sessionMessage={sessionMessage} onAuthenticated={() => navigate("/app", true)} />;
   }
 
   return (

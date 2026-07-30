@@ -342,7 +342,19 @@ class FakeD1 {
       return 1;
     }
     if (sql.startsWith("insert into auth_events")) {
-      this.authEvents.push({ values });
+      const [id, organisationId, loginAccountId, eventType, resultCode, mobileHash, mobileLastFour, ipHash, userAgentHash, createdAt] = values;
+      this.authEvents.push({
+        id,
+        organisation_id: organisationId,
+        login_account_id: loginAccountId,
+        event_type: eventType,
+        result_code: resultCode,
+        mobile_hash: mobileHash,
+        mobile_last_four: mobileLastFour,
+        ip_hash: ipHash,
+        user_agent_hash: userAgentHash,
+        created_at: createdAt,
+      });
       return 1;
     }
     if (sql.startsWith("insert into audit_logs")) {
@@ -449,7 +461,7 @@ async function requestOtp(db: FakeD1, mobile = "9876543210", bindings = env(db))
   );
 }
 
-async function verifyOtp(db: FakeD1, challengeId: string, otp = "000000", cookie?: string) {
+async function verifyOtp(db: FakeD1, challengeId: string, otp = "000000", cookie?: string, bindings = env(db)) {
   return app.request(
     "http://localhost/api/auth/verify-otp",
     {
@@ -457,12 +469,20 @@ async function verifyOtp(db: FakeD1, challengeId: string, otp = "000000", cookie
       headers: { Origin: "http://localhost", "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) },
       body: JSON.stringify({ challengeId, otp }),
     },
-    env(db),
+    bindings,
   );
 }
 
 function sessionCookie(response: Response) {
   return response.headers.get("set-cookie")?.split(";")[0] || "";
+}
+
+function rawSessionToken(cookie: string) {
+  return cookie.slice(cookie.indexOf("=") + 1);
+}
+
+function authResultCodes(db: FakeD1) {
+  return db.authEvents.map((event) => event.result_code);
 }
 
 async function jsonBody(response: Response): Promise<Row> {
@@ -605,6 +625,100 @@ describe("auth routes", () => {
     expect(db.auditLogs.length).toBeGreaterThan(0);
   });
 
+  it("keeps the session authenticated across refreshes, browser reopen, direct app checks and referrals", async () => {
+    const db = new FakeD1();
+    const fetchMock = installFetch();
+    const otpResponse = await requestOtp(db);
+    const challengeId = String((await jsonBody(otpResponse)).challengeId);
+    const verifyResponse = await verifyOtp(db, challengeId, "123456");
+    expect(verifyResponse.status).toBe(200);
+    expect(verifyResponse.headers.get("set-cookie")).toContain("Max-Age=2592000");
+    const cookie = sessionCookie(verifyResponse);
+    expect(cookie).toMatch(/^__Host-samyak_session=/);
+
+    fetchMock.mockClear();
+    const firstRefresh = await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db));
+    const secondRefresh = await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db));
+    const directAppSessionCheck = await app.request("https://portal.samyaksion.com/api/auth/session", { headers: { Cookie: cookie } }, env(db, { ENVIRONMENT: "production" }));
+    const reopenedMobileSafari = await app.request(
+      "https://portal.samyaksion.com/api/auth/session",
+      {
+        headers: {
+          Cookie: cookie,
+          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1",
+        },
+      },
+      env(db, { ENVIRONMENT: "production" }),
+    );
+
+    await expect(firstRefresh.json()).resolves.toMatchObject({ authenticated: true, activeProfile: expect.objectContaining({ personId: "person_stu1" }) });
+    await expect(secondRefresh.json()).resolves.toMatchObject({ authenticated: true, activeProfile: expect.objectContaining({ personId: "person_stu1" }) });
+    await expect(directAppSessionCheck.json()).resolves.toMatchObject({ authenticated: true });
+    await expect(reopenedMobileSafari.json()).resolves.toMatchObject({ authenticated: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: cookie } }, env(db));
+    expect(referrals.status).toBe(200);
+    await expect(referrals.json()).resolves.toMatchObject({ success: true, referrals: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a session after simulated Worker restart and ordinary deployment when SESSION_PEPPER is stable", async () => {
+    const db = new FakeD1();
+    const loginBindings = env(db, { SESSION_PEPPER: "stable-pepper" });
+    installFetch();
+    const otpResponse = await requestOtp(db, "9876543210", loginBindings);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456", undefined, loginBindings);
+    const cookie = sessionCookie(verifyResponse);
+    const token = rawSessionToken(cookie);
+
+    const restartedWorker = env(db, { SESSION_PEPPER: "stable-pepper" });
+    await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, restartedWorker)).json()).resolves.toMatchObject({
+      authenticated: true,
+    });
+
+    const deployedWorker = env(db, { ENVIRONMENT: "production", SESSION_PEPPER: "stable-pepper" });
+    await expect((await app.request("https://portal.samyaksion.com/api/auth/session", { headers: { Cookie: cookie } }, deployedWorker)).json()).resolves.toMatchObject({
+      authenticated: true,
+    });
+    expect(db.userSessions[0].token_hash).not.toBe(token);
+    expect(JSON.stringify(db.userSessions)).not.toContain(token);
+  });
+
+  it("clears a stale active profile without destroying a valid account session", async () => {
+    const db = new FakeD1();
+    installFetch({ profiles: [profile("STU1", "Asha Student", "Asha", "Student"), profile("ALU1", "Ravi Alumni", "Ravi", "Alumni")] });
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const cookie = sessionCookie(verifyResponse);
+
+    await app.request(
+      "http://localhost/api/auth/select-profile",
+      {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ personId: "person_alu1" }),
+      },
+      env(db),
+    );
+    db.loginAccountPeople.find((link) => link.person_id === "person_alu1")!.is_available = 0;
+    db.referrerProfiles.find((profile) => profile.person_id === "person_alu1")!.active = 0;
+
+    const response = await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db));
+    expect(response.headers.get("set-cookie")).toBeNull();
+    await expect(response.json()).resolves.toMatchObject({
+      authenticated: true,
+      activeProfile: null,
+      profiles: [expect.objectContaining({ personId: "person_stu1" })],
+    });
+    expect(db.userSessions[0].active_person_id).toBeNull();
+    expect(authResultCodes(db)).toContain("SESSION_PROFILE_CLEARED");
+
+    const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: cookie } }, env(db));
+    expect(referrals.status).toBe(409);
+    expect(referrals.headers.get("set-cookie")).toBeNull();
+  });
+
   it("stores no plaintext mobile after eligible and unknown login paths", async () => {
     const knownDb = new FakeD1();
     installFetch({ eligible: true });
@@ -656,37 +770,52 @@ describe("auth routes", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects stale, revoked and expired sessions with cookie clearing", async () => {
+  it("clears invalid, revoked and expired sessions", async () => {
     const db = new FakeD1();
     installFetch();
     const otpResponse = await requestOtp(db);
     const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
     const cookie = sessionCookie(verifyResponse);
 
-    for (const mutate of [
-      () => {
-        db.userSessions[0].revoked_at = new Date().toISOString();
-      },
-      () => {
-        db.userSessions[0].revoked_at = null;
-        db.userSessions[0].expires_at = "2000-01-01T00:00:00.000Z";
-      },
-      () => {
-        db.userSessions[0].expires_at = "2999-01-01T00:00:00.000Z";
-        db.userSessions[0].last_seen_at = "2000-01-01T00:00:00.000Z";
-      },
-      () => {
-        db.userSessions[0].last_seen_at = new Date().toISOString();
-        db.people[0].status = "inactive";
-      },
-    ]) {
+    const invalidToken = await app.request("http://localhost/api/auth/session", { headers: { Cookie: "__Host-samyak_session=bad-token" } }, env(db));
+    expect(invalidToken.status).toBe(200);
+    await expect(invalidToken.json()).resolves.toMatchObject({ authenticated: false, activeProfile: null, profiles: [], code: "SESSION_TOKEN_NOT_FOUND" });
+    expect(invalidToken.headers.get("set-cookie")).toContain("Max-Age=0");
+
+    for (const [expectedCode, mutate] of [
+      [
+        "SESSION_REVOKED",
+        () => {
+          db.userSessions[0].revoked_at = new Date().toISOString();
+        },
+      ],
+      [
+        "SESSION_ABSOLUTE_EXPIRED",
+        () => {
+          db.userSessions[0].revoked_at = null;
+          db.userSessions[0].expires_at = "2000-01-01T00:00:00.000Z";
+        },
+      ],
+      [
+        "SESSION_INACTIVE_EXPIRED",
+        () => {
+          db.userSessions[0].expires_at = "2999-01-01T00:00:00.000Z";
+          db.userSessions[0].last_seen_at = "2000-01-01T00:00:00.000Z";
+        },
+      ],
+    ] as const) {
       mutate();
       const response = await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db));
       expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({ authenticated: false, activeProfile: null, profiles: [] });
+      await expect(response.json()).resolves.toMatchObject({
+        authenticated: false,
+        activeProfile: null,
+        profiles: [],
+        code: expectedCode,
+      });
       expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
-      db.people[0].status = "active";
     }
+    expect(authResultCodes(db)).toEqual(expect.arrayContaining(["SESSION_TOKEN_NOT_FOUND", "SESSION_REVOKED", "SESSION_ABSOLUTE_EXPIRED", "SESSION_INACTIVE_EXPIRED"]));
   });
 
   it("throttles last_seen_at updates and clears logout cookies", async () => {
@@ -711,6 +840,18 @@ describe("auth routes", () => {
     );
     expect(logoutResponse.headers.get("set-cookie")).toContain("Max-Age=0");
     expect(db.userSessions[0].revoked_at).toBeTruthy();
+  });
+
+  it("fails clearly when SESSION_PEPPER is missing instead of creating a fallback secret", async () => {
+    const response = await app.request("http://localhost/api/auth/session", {}, env(new FakeD1(), { SESSION_PEPPER: "" }));
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      error: {
+        code: "server_configuration_error",
+        message: "Authentication is temporarily unavailable.",
+      },
+    });
   });
 
   it("keeps /api/health working and rejects unauthenticated dashboard access", async () => {

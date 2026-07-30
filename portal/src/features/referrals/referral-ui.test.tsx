@@ -56,6 +56,7 @@ const session: SessionResponse = {
     publicName: "Asha S.",
     accessType: "self",
     roles: ["student"],
+    effectiveRoles: ["student"],
   },
   profiles: [
     {
@@ -63,15 +64,18 @@ const session: SessionResponse = {
       publicName: "Asha S.",
       accessType: "self",
       roles: ["student"],
+      effectiveRoles: [],
     },
     {
       personId: "person_ssc_002",
       publicName: "Ravi A.",
       accessType: "self",
       roles: ["alumni"],
+      effectiveRoles: [],
     },
   ],
   mobileLastFour: "3210",
+  accountRoles: [],
 };
 
 describe("student referral portal UI", () => {

@@ -18,11 +18,15 @@ describe("session security helpers", () => {
   });
 
   it("uses secure cookie attributes in production and local-safe cookies on localhost", () => {
-    expect(buildSessionCookie(context("https://portal.samyaksion.com/login", "production"), "token")).toContain("Secure");
+    expect(buildSessionCookie(context("https://portal.samyaksion.com/login", "production"), "token")).toBe(
+      "__Host-samyak_session=token; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=2592000",
+    );
     expect(buildSessionCookie(context("https://samyak-student-portal.workers.dev/login", "development"), "token")).toContain("Secure");
     expect(buildSessionCookie(context("http://localhost:5173/login", "development"), "token")).not.toContain("Secure");
     expect(buildSessionCookie(context("http://127.0.0.1:5173/login", "development"), "token")).not.toContain("Secure");
     expect(buildSessionCookie(context("https://portal.samyaksion.com/login", "production"), "token")).not.toContain("Domain=");
-    expect(clearSessionCookie(context("https://portal.samyaksion.com/login", "production"))).toContain("Max-Age=0");
+    expect(clearSessionCookie(context("https://portal.samyaksion.com/login", "production"))).toBe(
+      "__Host-samyak_session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0",
+    );
   });
 });

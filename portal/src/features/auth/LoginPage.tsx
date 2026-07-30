@@ -7,6 +7,7 @@ import { getPublicConfig, requestOtp, resendOtp, selectProfile, verifyOtp, type 
 import { useAuth } from "./AuthContext";
 
 type LoginPageProps = {
+  sessionMessage?: string | null;
   onAuthenticated: () => void;
 };
 
@@ -21,7 +22,7 @@ export function isCompleteOtp(value: string) {
   return new RegExp(`^\\d{${OTP_LENGTH}}$`).test(value);
 }
 
-export function LoginPage({ onAuthenticated }: LoginPageProps) {
+export function LoginPage({ sessionMessage, onAuthenticated }: LoginPageProps) {
   const { setAuthenticatedSession } = useAuth();
   const [mobile, setMobile] = useState("");
   const [otp, setOtp] = useState("");
@@ -220,6 +221,7 @@ export function LoginPage({ onAuthenticated }: LoginPageProps) {
               placeholder="Enter registered mobile"
             />
             <div ref={widgetContainerRef} className="turnstile-slot" />
+            {!error && sessionMessage ? <ErrorState title="Please sign in again" message={sessionMessage} /> : null}
             {error ? <ErrorState title="Could not continue" message={error} /> : null}
             <button type="submit" disabled={isSubmitting || !config.otpEnabled}>
               {isSubmitting ? "Sending..." : "Continue"}

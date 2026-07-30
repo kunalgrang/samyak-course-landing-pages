@@ -8,6 +8,7 @@ import { registerAuthRoutes } from "./routes/auth";
 import { registerConfigRoutes } from "./routes/config";
 import { registerHealthRoutes } from "./routes/health";
 import { registerStudentRoutes } from "./routes/student";
+import { AuthConfigurationError } from "./lib/auth-store";
 import { jsonError } from "./lib/json-response";
 
 const app = new Hono<{
@@ -41,12 +42,18 @@ app.onError((error, c) => {
     });
   }
 
-  const isProduction = c.env?.SESSION_PEPPER !== undefined;
+  if (error instanceof AuthConfigurationError) {
+    return jsonError(c, {
+      status: 500,
+      code: "server_configuration_error",
+      message: "Authentication is temporarily unavailable.",
+    });
+  }
 
   return jsonError(c, {
     status: 500,
     code: "internal_error",
-    message: isProduction ? "Internal server error" : "Internal server error",
+    message: "Internal server error",
   });
 });
 
