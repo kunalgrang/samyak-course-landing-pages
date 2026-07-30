@@ -8,6 +8,7 @@ import { registerAuthRoutes } from "./routes/auth";
 import { registerConfigRoutes } from "./routes/config";
 import { registerHealthRoutes } from "./routes/health";
 import { registerStaffStudentRoutes } from "./routes/staff-students";
+import { registerStaffAdmissionRoutes } from "./routes/staff-admissions";
 import { registerStudentRoutes } from "./routes/student";
 import { AuthConfigurationError } from "./lib/auth-store";
 import { jsonError } from "./lib/json-response";
@@ -26,6 +27,7 @@ registerConfigRoutes(app);
 registerAuthRoutes(app);
 registerStudentRoutes(app);
 registerStaffStudentRoutes(app);
+registerStaffAdmissionRoutes(app);
 
 app.notFound((c) =>
   jsonError(c, {

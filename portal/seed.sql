@@ -21,7 +21,9 @@ VALUES
   ('role_owner', 'org_samyak', 'owner', 'Owner', '2026-07-21T00:00:00.000Z'),
   ('role_student', 'org_samyak', 'student', 'Student', '2026-07-21T00:00:00.000Z'),
   ('role_alumni', 'org_samyak', 'alumni', 'Alumni', '2026-07-21T00:00:00.000Z'),
+  ('role_admin', 'org_samyak', 'admin', 'Admin', '2026-07-21T00:00:00.000Z'),
   ('role_counsellor', 'org_samyak', 'counsellor', 'Counsellor', '2026-07-21T00:00:00.000Z'),
+  ('role_admission_admin', 'org_samyak', 'admission_admin', 'Admission Admin', '2026-07-21T00:00:00.000Z'),
   ('role_trainer', 'org_samyak', 'trainer', 'Trainer', '2026-07-21T00:00:00.000Z'),
   ('role_system_admin', 'org_samyak', 'system_admin', 'System Admin', '2026-07-21T00:00:00.000Z')
 ON CONFLICT(id) DO UPDATE SET

@@ -407,3 +407,55 @@ export const studentConsents = sqliteTable(
     index("student_consents_enrolment_id_idx").on(table.enrolmentId),
   ],
 );
+
+export const numberSequences = sqliteTable(
+  "number_sequences",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branches.id),
+    sequenceKey: text("sequence_key").notNull(),
+    nextSequence: integer("next_sequence").notNull().default(1),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("number_sequences_branch_key_unique").on(table.organisationId, table.branchId, table.sequenceKey),
+    index("number_sequences_branch_id_idx").on(table.branchId),
+  ],
+);
+
+export const admissionDrafts = sqliteTable(
+  "admission_drafts",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branches.id),
+    enquiryId: text("enquiry_id")
+      .notNull()
+      .references(() => enquiries.id),
+    personId: text("person_id")
+      .notNull()
+      .references(() => people.id),
+    payloadJson: text("payload_json").notNull(),
+    currentStep: text("current_step").notNull().default("identity"),
+    status: text("status").notNull().default("draft"),
+    createdByLoginAccountId: text("created_by_login_account_id").notNull(),
+    updatedByLoginAccountId: text("updated_by_login_account_id").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    confirmedAt: text("confirmed_at"),
+  },
+  (table) => [
+    index("admission_drafts_enquiry_id_idx").on(table.enquiryId),
+    index("admission_drafts_person_id_idx").on(table.personId),
+    check("admission_drafts_status_check", sql`${table.status} in ('draft', 'confirmed', 'cancelled')`),
+  ],
+);

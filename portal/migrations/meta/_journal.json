@@ -43,6 +43,13 @@
       "when": 1785408420000,
       "tag": "0005_enquiry_course_interest",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785484800000,
+      "tag": "0006_admission_workflow",
+      "breakpoints": true
     }
   ]
 }
