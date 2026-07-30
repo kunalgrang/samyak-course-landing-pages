@@ -110,6 +110,8 @@ const enquiryOptionsSchema = z.object({
       id: z.string(),
       code: z.string(),
       name: z.string(),
+      duration_label: z.string().nullable().optional(),
+      default_fee_paise: z.number().nullable().optional(),
       nsdc_available: z.union([z.number(), z.boolean()]),
     }),
   ),
@@ -121,6 +123,7 @@ const studentSearchSchema = z.object({
   possiblePeople: z.array(
     z.object({
       person_id: z.string(),
+      student_id: z.string().nullable().optional(),
       full_name: z.string(),
       date_of_birth: z.string().nullable(),
       student_number: z.string().nullable(),
@@ -148,9 +151,77 @@ const createEnquiryResponseSchema = z.object({
   personId: z.string(),
 });
 
+const courseSchema = z.object({
+  id: z.string(),
+  code: z.string(),
+  name: z.string(),
+  duration_label: z.string().nullable(),
+  default_fee_paise: z.number().nullable(),
+  nsdc_available: z.union([z.number(), z.boolean()]),
+  status: z.string(),
+  created_at: z.string().optional(),
+  updated_at: z.string().optional(),
+});
+
+const courseListSchema = z.object({ courses: z.array(courseSchema) });
+
+const admissionDraftPayloadSchema = z.record(z.string(), z.unknown());
+
+const admissionDraftSchema = z.object({
+  draft: z
+    .object({
+      id: z.string(),
+      currentStep: z.string(),
+      status: z.string(),
+      payload: admissionDraftPayloadSchema,
+      confirmedAt: z.string().nullable(),
+    })
+    .nullable(),
+});
+
+const admissionDraftSaveSchema = z.object({
+  success: z.literal(true),
+  draftId: z.string(),
+  payload: admissionDraftPayloadSchema,
+  currentStep: z.string(),
+});
+
+const admissionConfirmationSchema = z.object({
+  success: z.literal(true),
+  studentId: z.string(),
+  studentNumber: z.string(),
+  enrolmentId: z.string(),
+  enrolmentNumber: z.string(),
+  enquiryNumber: z.string(),
+  isNewStudent: z.boolean(),
+});
+
+const enquiryDetailSchema = z.object({
+  enquiry: z.record(z.string(), z.unknown()),
+  primaryMobile: z.string().nullable(),
+  mobileDisplay: z.string().nullable(),
+  previousEnrolments: z.array(z.record(z.string(), z.unknown())),
+  activeDraft: z.object({ id: z.string(), status: z.string(), currentStep: z.string() }).nullable(),
+});
+
+const studentProfileSchema = z.object({
+  student: z.record(z.string(), z.unknown()),
+  primaryMobile: z.string().nullable(),
+  mobileDisplay: z.string().nullable(),
+  locality: z.record(z.string(), z.unknown()).nullable(),
+  education: z.record(z.string(), z.unknown()).nullable(),
+  enrolments: z.array(z.record(z.string(), z.unknown())),
+  enquiries: z.array(z.record(z.string(), z.unknown())),
+});
+
 export type EnquiryOptions = z.infer<typeof enquiryOptionsSchema>;
 export type StudentSearchResult = z.infer<typeof studentSearchSchema>;
 export type CreateEnquiryResponse = z.infer<typeof createEnquiryResponseSchema>;
+export type StaffCourse = z.infer<typeof courseSchema>;
+export type EnquiryDetail = z.infer<typeof enquiryDetailSchema>;
+export type AdmissionDraft = z.infer<typeof admissionDraftSchema>["draft"];
+export type AdmissionConfirmation = z.infer<typeof admissionConfirmationSchema>;
+export type StaffStudentProfile = z.infer<typeof studentProfileSchema>;
 
 export type CreateEnquiryInput = {
   mobile: string;
@@ -209,6 +280,46 @@ export async function createEnquiry(input: CreateEnquiryInput) {
   return postJson("/api/staff/enquiries", input, createEnquiryResponseSchema);
 }
 
+export async function getActiveCourses() {
+  return getJson("/api/staff/courses/active", courseListSchema);
+}
+
+export async function getStaffCourses() {
+  return getJson("/api/staff/courses", courseListSchema);
+}
+
+export async function createCourse(input: Record<string, unknown>) {
+  return postJson("/api/staff/courses", input, z.object({ success: z.literal(true), courseId: z.string() }));
+}
+
+export async function updateCourse(courseId: string, input: Record<string, unknown>) {
+  return patchJson(`/api/staff/courses/${encodeURIComponent(courseId)}`, input, z.object({ success: z.literal(true), courseId: z.string() }));
+}
+
+export async function getEnquiryDetail(enquiryId: string) {
+  return getJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}`, enquiryDetailSchema);
+}
+
+export async function updateEnquiryStatus(enquiryId: string, status: string) {
+  return patchJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}`, { status }, z.object({ success: z.literal(true) }));
+}
+
+export async function getAdmissionDraft(enquiryId: string) {
+  return getJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/admission-draft`, admissionDraftSchema);
+}
+
+export async function saveAdmissionDraft(enquiryId: string, payload: Record<string, unknown>, currentStep: string) {
+  return postJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/admission-draft`, { payload, currentStep }, admissionDraftSaveSchema);
+}
+
+export async function confirmAdmission(enquiryId: string) {
+  return postJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/confirm-admission`, {}, admissionConfirmationSchema);
+}
+
+export async function getStaffStudentProfile(studentId: string) {
+  return getJson(`/api/staff/students/${encodeURIComponent(studentId)}`, studentProfileSchema);
+}
+
 async function getJson<T extends z.ZodType>(url: string, schema: T): Promise<z.infer<T>> {
   const response = await fetch(url, {
     method: "GET",
@@ -223,6 +334,21 @@ async function getJson<T extends z.ZodType>(url: string, schema: T): Promise<z.i
 async function postJson<T extends z.ZodType>(url: string, body: Record<string, unknown>, schema: T): Promise<z.infer<T>> {
   const response = await fetch(url, {
     method: "POST",
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const data: unknown = await response.json();
+  if (!response.ok) throw new Error(apiErrorMessage(data));
+  return schema.parse(data);
+}
+
+async function patchJson<T extends z.ZodType>(url: string, body: Record<string, unknown>, schema: T): Promise<z.infer<T>> {
+  const response = await fetch(url, {
+    method: "PATCH",
     credentials: "same-origin",
     headers: {
       Accept: "application/json",

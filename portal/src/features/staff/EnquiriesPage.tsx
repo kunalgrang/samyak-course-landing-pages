@@ -187,6 +187,7 @@ export function EnquiriesPage() {
                         {person.student_status ? ` · ${formatLabel(person.student_status)}` : ""}
                         {person.date_of_birth ? ` · DOB ${person.date_of_birth}` : ""}
                       </small>
+                      {person.student_id ? <a href={`/app/students/${person.student_id}`}>Open student profile</a> : null}
                     </span>
                   </label>
                 ))}
@@ -217,6 +218,7 @@ export function EnquiriesPage() {
                     <strong>{enquiry.enquiry_number}</strong>
                     <span>{enquiry.course_name || "Course not recorded"}</span>
                     <small>{formatLabel(enquiry.status)} · {enquiry.source} · {formatDate(enquiry.created_at)}</small>
+                    <a href={`/app/enquiries/${enquiry.id}`}>Open enquiry</a>
                   </article>
                 ))}
               </div>

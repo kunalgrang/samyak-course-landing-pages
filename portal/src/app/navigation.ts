@@ -18,5 +18,6 @@ export const appNavigation = studentNavigation;
 
 export const staffNavigation: NavigationItem[] = [
   { path: "/app/enquiries", label: "Students & Enquiries", shortLabel: "Enquiries" },
+  { path: "/app/courses", label: "Course Master", shortLabel: "Courses" },
   ...studentNavigation,
 ];

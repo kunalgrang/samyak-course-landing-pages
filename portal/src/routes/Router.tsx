@@ -7,17 +7,25 @@ import { LoginPage } from "../features/auth/LoginPage";
 import { ProfilePage } from "../features/profile/ProfilePage";
 import { ReferralsPage } from "../features/referrals/ReferralsPage";
 import { EnquiriesPage } from "../features/staff/EnquiriesPage";
+import { AdmissionPage } from "../features/staff/AdmissionPage";
+import { CourseMasterPage } from "../features/staff/CourseMasterPage";
+import { EnquiryDetailPage } from "../features/staff/EnquiryDetailPage";
+import { StudentProfilePage } from "../features/staff/StudentProfilePage";
 import { RulesPage } from "./RulesPage";
 import { ShellHomePage } from "./ShellHomePage";
 import { AppShell } from "./AppShell";
 import type { AppRoute, RoutePath } from "./types";
 
-const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/referrals", "/app/rules", "/app/profile"]);
+const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/courses", "/app/referrals", "/app/rules", "/app/profile"]);
 const staffRoles = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
+const courseAdminRoles = new Set(["owner", "admin", "system_admin"]);
 
 function normalizePath(pathname: string): RoutePath {
   if (pathname === "/login") return "/login";
   if (appRoutes.has(pathname as RoutePath)) return pathname as RoutePath;
+  if (/^\/app\/enquiries\/[^/]+\/admission$/.test(pathname)) return pathname as RoutePath;
+  if (/^\/app\/enquiries\/[^/]+$/.test(pathname)) return pathname as RoutePath;
+  if (/^\/app\/students\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   return "/login";
 }
 
@@ -25,7 +33,8 @@ export function Router() {
   const { isAuthenticated, isLoading, hasSessionError, refreshSession, session, sessionMessage, signOut } = useAuth();
   const [path, setPath] = useState<RoutePath>(() => normalizePath(window.location.pathname));
   const isStaff = Boolean(session?.accountRoles.some((role) => staffRoles.has(role)));
-  const navigation = isStaff ? staffNavigation : studentNavigation;
+  const isCourseAdmin = Boolean(session?.accountRoles.some((role) => courseAdminRoles.has(role)));
+  const navigation = isStaff ? staffNavigation.filter((item) => item.path !== "/app/courses" || isCourseAdmin) : studentNavigation;
 
   useEffect(() => {
     function handlePopState() {
@@ -42,15 +51,21 @@ export function Router() {
   }, [hasSessionError, isAuthenticated, isLoading, path]);
 
   useEffect(() => {
-    if (!isLoading && isAuthenticated && path === "/app/enquiries" && !isStaff) {
+    if (!isLoading && isAuthenticated && (path === "/app/enquiries" || path === "/app/courses" || path.startsWith("/app/enquiries/") || path.startsWith("/app/students/")) && !isStaff) {
       navigate("/app", true);
     }
-  }, [isAuthenticated, isLoading, isStaff, path]);
+    if (!isLoading && isAuthenticated && path === "/app/courses" && !isCourseAdmin) {
+      navigate("/app/enquiries", true);
+    }
+  }, [isAuthenticated, isCourseAdmin, isLoading, isStaff, path]);
 
   const activeAppPath = useMemo<AppRoute>(
     () => (path.startsWith("/app") ? (path as AppRoute) : "/app"),
     [path],
   );
+  const enquiryAdmissionMatch = activeAppPath.match(/^\/app\/enquiries\/([^/]+)\/admission$/);
+  const enquiryDetailMatch = activeAppPath.match(/^\/app\/enquiries\/([^/]+)$/);
+  const studentProfileMatch = activeAppPath.match(/^\/app\/students\/([^/]+)$/);
 
   function navigate(nextPath: RoutePath, replace = false) {
     const next = normalizePath(nextPath);
@@ -91,6 +106,10 @@ export function Router() {
     <AppShell activePath={activeAppPath} navigation={navigation} onNavigate={navigate} onSignOut={handleSignOut}>
       {activeAppPath === "/app" ? <ShellHomePage /> : null}
       {activeAppPath === "/app/enquiries" && isStaff ? <EnquiriesPage /> : null}
+      {activeAppPath === "/app/courses" && isStaff ? <CourseMasterPage /> : null}
+      {enquiryDetailMatch && isStaff ? <EnquiryDetailPage enquiryId={enquiryDetailMatch[1]} /> : null}
+      {enquiryAdmissionMatch && isStaff ? <AdmissionPage enquiryId={enquiryAdmissionMatch[1]} /> : null}
+      {studentProfileMatch && isStaff ? <StudentProfilePage studentId={studentProfileMatch[1]} /> : null}
       {activeAppPath === "/app/referrals" ? <ReferralsPage /> : null}
       {activeAppPath === "/app/rules" ? <RulesPage /> : null}
       {activeAppPath === "/app/profile" ? <ProfilePage /> : null}
