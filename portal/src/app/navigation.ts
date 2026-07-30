@@ -13,6 +13,9 @@ export const studentNavigation: NavigationItem[] = [
   { path: "/app/profile", label: "My Profile", shortLabel: "Profile" },
 ];
 
+// Backward-compatible export used by student-facing tests and existing imports.
+export const appNavigation = studentNavigation;
+
 export const staffNavigation: NavigationItem[] = [
   { path: "/app/enquiries", label: "Students & Enquiries", shortLabel: "Enquiries" },
   ...studentNavigation,
