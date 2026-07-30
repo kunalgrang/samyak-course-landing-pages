@@ -7,6 +7,7 @@ import { securityHeadersMiddleware } from "./middleware/security-headers";
 import { registerAuthRoutes } from "./routes/auth";
 import { registerConfigRoutes } from "./routes/config";
 import { registerHealthRoutes } from "./routes/health";
+import { registerStaffStudentRoutes } from "./routes/staff-students";
 import { registerStudentRoutes } from "./routes/student";
 import { AuthConfigurationError } from "./lib/auth-store";
 import { jsonError } from "./lib/json-response";
@@ -24,6 +25,7 @@ registerHealthRoutes(app);
 registerConfigRoutes(app);
 registerAuthRoutes(app);
 registerStudentRoutes(app);
+registerStaffStudentRoutes(app);
 
 app.notFound((c) =>
   jsonError(c, {
