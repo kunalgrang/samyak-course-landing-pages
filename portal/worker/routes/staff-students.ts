@@ -10,21 +10,66 @@ type PortalHono = Hono<{
   Variables: WorkerVariables;
 }>;
 
-const STAFF_ROLES = new Set(["owner", "admin", "counsellor", "admission_admin"]);
+const STAFF_ROLES = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
 
-const createEnquirySchema = z.object({
-  mobile: z.string().min(10).max(20),
-  fullName: z.string().trim().min(2).max(120),
-  branchId: z.string().min(1),
-  courseInterestId: z.string().min(1).nullable().optional(),
-  source: z.string().trim().min(1).max(60),
-  sourceDetail: z.string().trim().max(200).nullable().optional(),
-  preferredTiming: z.string().trim().max(120).nullable().optional(),
-  preferredJoiningDate: z.string().trim().max(20).nullable().optional(),
-  existingPersonId: z.string().min(1).nullable().optional(),
-});
+const createEnquirySchema = z
+  .object({
+    mobile: z.string().min(10).max(20),
+    fullName: z.string().trim().min(2).max(120),
+    branchId: z.string().min(1),
+    courseInterestId: z.string().min(1).nullable().optional(),
+    courseInterestText: z.string().trim().max(120).nullable().optional(),
+    source: z.string().trim().min(1).max(60),
+    sourceDetail: z.string().trim().max(200).nullable().optional(),
+    preferredTiming: z.string().trim().max(120).nullable().optional(),
+    preferredJoiningDate: z.string().trim().max(20).nullable().optional(),
+    existingPersonId: z.string().min(1).nullable().optional(),
+  })
+  .refine((value) => Boolean(value.courseInterestId || value.courseInterestText), {
+    message: "Select or enter the course of interest.",
+    path: ["courseInterestText"],
+  });
 
 export function registerStaffStudentRoutes(app: PortalHono) {
+  app.get("/api/staff/enquiry-options", async (c) => {
+    const staff = await requireStaff(c);
+    if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Staff access is required." });
+
+    const [branches, courses] = await Promise.all([
+      c.env.DB.prepare(
+        "select id, code, name from branches where organisation_id = ? and status = 'active' order by name",
+      )
+        .bind(ORG_ID)
+        .all(),
+      c.env.DB.prepare(
+        "select id, code, name, nsdc_available from courses where organisation_id = ? and status = 'active' order by name",
+      )
+        .bind(ORG_ID)
+        .all(),
+    ]);
+
+    return jsonPlain(c, {
+      branches: branches.results || [],
+      courses: courses.results || [],
+      sources: [
+        "Google Ads",
+        "Google Organic",
+        "Google Maps",
+        "Instagram",
+        "Facebook",
+        "Website",
+        "WhatsApp",
+        "Walk-in",
+        "Student Referral",
+        "Alumni Referral",
+        "Friend or Family",
+        "Existing Student",
+        "Corporate Enquiry",
+        "Other",
+      ],
+    });
+  });
+
   app.get("/api/staff/student-search", async (c) => {
     const staff = await requireStaff(c);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Staff access is required." });
@@ -58,9 +103,11 @@ export function registerStaffStudentRoutes(app: PortalHono) {
 
     const enquiries = await c.env.DB.prepare(
       `select enquiries.id, enquiries.enquiry_number, enquiries.person_id, enquiries.status,
-              enquiries.source, enquiries.created_at, courses.name as course_name
+              enquiries.source, enquiries.created_at,
+              coalesce(courses.name, enquiry_course_interests.course_interest_text) as course_name
        from enquiries
        left join courses on courses.id = enquiries.course_interest_id
+       left join enquiry_course_interests on enquiry_course_interests.enquiry_id = enquiries.id
        where enquiries.organisation_id = ? and enquiries.mobile_used = ?
        order by enquiries.created_at desc
        limit 20`,
@@ -116,44 +163,28 @@ export function registerStaffStudentRoutes(app: PortalHono) {
         .bind(personId, ORG_ID)
         .first();
       if (!existing) return jsonError(c, { status: 404, code: "person_not_found", message: "The selected person was not found." });
+      await addMobileIfMissing(c, personId, normalizedMobile, lookupHash, now);
     } else {
       personId = createOpaqueId("person");
-      const contactId = createOpaqueId("contact");
-      const ciphertext = await encryptText(c.env.SESSION_PEPPER, `contact:${contactId}`, normalizedMobile);
-
-      await c.env.DB.batch([
-        c.env.DB.prepare(
-          `insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at)
-           values (?, ?, ?, ?, ?, 'active', ?, ?)`,
-        ).bind(personId, ORG_ID, branch.id, parsed.data.fullName, parsed.data.fullName, now, now),
-        c.env.DB.prepare(
-          `insert into person_contacts
-             (id, person_id, contact_type, normalized_value, display_value, last_four, is_primary, is_verified, created_at, updated_at)
-           values (?, ?, 'mobile', ?, null, ?, 1, 0, ?, ?)`,
-        ).bind(contactId, personId, lookupHash, normalizedMobile.slice(-4), now, now),
-        c.env.DB.prepare(
-          `insert into person_contact_details
-             (contact_id, belongs_to, is_whatsapp, status, created_at, updated_at)
-           values (?, 'student', 1, 'active', ?, ?)`,
-        ).bind(contactId, now, now),
-        c.env.DB.prepare(
-          `insert into person_contact_secrets
-             (contact_id, value_ciphertext, encryption_version, created_at, updated_at)
-           values (?, ?, 'v1', ?, ?)`,
-        ).bind(contactId, ciphertext, now, now),
-      ]);
+      await c.env.DB.prepare(
+        `insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at)
+         values (?, ?, ?, ?, ?, 'active', ?, ?)`,
+      )
+        .bind(personId, ORG_ID, branch.id, parsed.data.fullName, parsed.data.fullName, now, now)
+        .run();
+      await addMobileIfMissing(c, personId, normalizedMobile, lookupHash, now, true);
     }
 
     const enquiryId = createOpaqueId("enq");
     const enquiryNumber = buildEnquiryNumber(branch.code, now);
-    await c.env.DB.prepare(
-      `insert into enquiries
-         (id, organisation_id, branch_id, person_id, enquiry_number, mobile_used, course_interest_id,
-          source, source_detail, counsellor_login_account_id, preferred_timing, preferred_joining_date,
-          status, created_at, updated_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)`,
-    )
-      .bind(
+    const statements = [
+      c.env.DB.prepare(
+        `insert into enquiries
+           (id, organisation_id, branch_id, person_id, enquiry_number, mobile_used, course_interest_id,
+            source, source_detail, counsellor_login_account_id, preferred_timing, preferred_joining_date,
+            status, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)`,
+      ).bind(
         enquiryId,
         ORG_ID,
         branch.id,
@@ -168,11 +199,57 @@ export function registerStaffStudentRoutes(app: PortalHono) {
         parsed.data.preferredJoiningDate || null,
         now,
         now,
-      )
-      .run();
+      ),
+    ];
 
+    if (!parsed.data.courseInterestId && parsed.data.courseInterestText) {
+      statements.push(
+        c.env.DB.prepare(
+          `insert into enquiry_course_interests (enquiry_id, course_interest_text, created_at, updated_at)
+           values (?, ?, ?, ?)`,
+        ).bind(enquiryId, parsed.data.courseInterestText, now, now),
+      );
+    }
+
+    await c.env.DB.batch(statements);
     return jsonPlain(c, { success: true, enquiryId, enquiryNumber, personId }, { status: 201 });
   });
+}
+
+async function addMobileIfMissing(
+  c: Parameters<typeof getSessionFromRequest>[0],
+  personId: string,
+  normalizedMobile: string,
+  lookupHash: string,
+  now: string,
+  makePrimary = false,
+) {
+  const contact = await c.env.DB.prepare(
+    "select id from person_contacts where person_id = ? and contact_type = 'mobile' and normalized_value = ?",
+  )
+    .bind(personId, lookupHash)
+    .first<{ id: string }>();
+  if (contact) return;
+
+  const contactId = createOpaqueId("contact");
+  const ciphertext = await encryptText(c.env.SESSION_PEPPER, `contact:${contactId}`, normalizedMobile);
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `insert into person_contacts
+         (id, person_id, contact_type, normalized_value, display_value, last_four, is_primary, is_verified, created_at, updated_at)
+       values (?, ?, 'mobile', ?, null, ?, ?, 0, ?, ?)`,
+    ).bind(contactId, personId, lookupHash, normalizedMobile.slice(-4), makePrimary ? 1 : 0, now, now),
+    c.env.DB.prepare(
+      `insert into person_contact_details
+         (contact_id, belongs_to, is_whatsapp, status, created_at, updated_at)
+       values (?, 'student', 1, 'active', ?, ?)`,
+    ).bind(contactId, now, now),
+    c.env.DB.prepare(
+      `insert into person_contact_secrets
+         (contact_id, value_ciphertext, encryption_version, created_at, updated_at)
+       values (?, ?, 'v1', ?, ?)`,
+    ).bind(contactId, ciphertext, now, now),
+  ]);
 }
 
 async function requireStaff(c: Parameters<typeof getSessionFromRequest>[0]) {
