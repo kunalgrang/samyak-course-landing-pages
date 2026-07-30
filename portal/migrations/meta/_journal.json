@@ -15,6 +15,20 @@
       "when": 1784898600000,
       "tag": "0001_student_portal_auth",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785408300000,
+      "tag": "0002_student_master_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1785408360000,
+      "tag": "0003_encrypted_contact_storage",
+      "breakpoints": true
     }
   ]
 }
