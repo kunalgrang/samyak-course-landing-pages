@@ -54,6 +54,15 @@ describe("AdmissionPage helpers", () => {
     expect(review.canConfirmRegularAdmission).toBe(true);
   });
 
+  it("uses Course Master fee over draft display fee in review calculations", () => {
+    const payload = readyPayload();
+    payload.fee.standardFeePaise = 1;
+    payload.fee.finalAgreedFeePaise = 4500000;
+    payload.fee.discountReason = "Scholarship";
+
+    expect(admissionReview(payload, course).discountPaise).toBe(500000);
+  });
+
   it("shows NSDC readiness separately from regular admission readiness", () => {
     const payload = readyPayload();
     payload.course.nsdcPreference = "yes";
