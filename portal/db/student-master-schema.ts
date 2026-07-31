@@ -405,6 +405,9 @@ export const studentConsents = sqliteTable(
   (table) => [
     index("student_consents_person_id_idx").on(table.personId),
     index("student_consents_enrolment_id_idx").on(table.enrolmentId),
+    uniqueIndex("student_consents_enrolment_type_unique")
+      .on(table.enrolmentId, table.consentType)
+      .where(sql`${table.enrolmentId} is not null`),
   ],
 );
 

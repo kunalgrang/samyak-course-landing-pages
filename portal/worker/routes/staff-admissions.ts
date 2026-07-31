@@ -219,12 +219,14 @@ async function getEnquiryDetail(c: Parameters<typeof getAdmissionDraft>[0], enqu
         .bind(enquiry.person_id)
         .all()
     : { results: [] };
-  const primaryMobile = enquiry.person_id ? await fullPrimaryMobile(c, String(enquiry.person_id)) : null;
+  const mobiles = enquiry.person_id ? await fullMobileContacts(c, String(enquiry.person_id)) : { primaryMobile: null, alternateMobile: null };
   const draft = await getAdmissionDraft(c, enquiryId);
   return {
     enquiry,
-    primaryMobile,
-    mobileDisplay: primaryMobile ? maskMobile(primaryMobile) : null,
+    primaryMobile: mobiles.primaryMobile,
+    alternateMobile: mobiles.alternateMobile,
+    mobileDisplay: mobiles.primaryMobile ? maskMobile(mobiles.primaryMobile) : null,
+    alternateMobileDisplay: mobiles.alternateMobile ? maskMobile(mobiles.alternateMobile) : null,
     previousEnrolments: enrolments.results || [],
     activeDraft: draft ? { id: draft.id, status: draft.status, currentStep: draft.current_step } : null,
   };
@@ -274,18 +276,35 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], stu
 }
 
 async function fullPrimaryMobile(c: Parameters<typeof getAdmissionDraft>[0], personId: string) {
-  const contact = await c.env.DB.prepare(
-    `select person_contacts.id, person_contact_secrets.value_ciphertext
+  return (await fullMobileContacts(c, personId)).primaryMobile;
+}
+
+async function fullMobileContacts(c: Parameters<typeof getAdmissionDraft>[0], personId: string) {
+  const rows = await c.env.DB.prepare(
+    `select person_contacts.id, person_contacts.is_primary, person_contact_secrets.value_ciphertext
      from person_contacts
+     left join person_contact_details on person_contact_details.contact_id = person_contacts.id
      left join person_contact_secrets on person_contact_secrets.contact_id = person_contacts.id
-     where person_contacts.person_id = ? and person_contacts.contact_type = 'mobile'
-     order by person_contacts.is_primary desc, person_contacts.created_at desc
-     limit 1`,
+     where person_contacts.person_id = ?
+       and person_contacts.contact_type = 'mobile'
+       and coalesce(person_contact_details.status, 'active') = 'active'
+     order by person_contacts.is_primary desc, person_contacts.created_at desc`,
   )
     .bind(personId)
-    .first<{ id: string; value_ciphertext: string | null }>();
-  if (!contact?.value_ciphertext) return null;
-  return decryptText(c.env.SESSION_PEPPER, `contact:${contact.id}`, contact.value_ciphertext).catch(() => null);
+    .all<{ id: string; is_primary: number; value_ciphertext: string | null }>();
+  let primaryMobile: string | null = null;
+  let alternateMobile: string | null = null;
+  for (const contact of rows.results || []) {
+    if (!contact.value_ciphertext) continue;
+    const value = await decryptText(c.env.SESSION_PEPPER, `contact:${contact.id}`, contact.value_ciphertext).catch(() => null);
+    if (!value) continue;
+    if (contact.is_primary && !primaryMobile) {
+      primaryMobile = value;
+    } else if (!alternateMobile) {
+      alternateMobile = value;
+    }
+  }
+  return { primaryMobile, alternateMobile };
 }
 
 async function audit(c: Parameters<typeof getAdmissionDraft>[0], staff: StaffContext, action: string, entityType: string, entityId: string, metadata: Record<string, unknown>) {

@@ -199,7 +199,9 @@ const admissionConfirmationSchema = z.object({
 const enquiryDetailSchema = z.object({
   enquiry: z.record(z.string(), z.unknown()),
   primaryMobile: z.string().nullable(),
+  alternateMobile: z.string().nullable().optional(),
   mobileDisplay: z.string().nullable(),
+  alternateMobileDisplay: z.string().nullable().optional(),
   previousEnrolments: z.array(z.record(z.string(), z.unknown())),
   activeDraft: z.object({ id: z.string(), status: z.string(), currentStep: z.string() }).nullable(),
 });

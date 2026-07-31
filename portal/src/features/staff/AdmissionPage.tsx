@@ -172,7 +172,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       </AdmissionSection>
 
       <AdmissionSection title="F · Fee agreement">
-        <label>Standard fee<input type="number" value={Number(payload.fee.standardFeePaise || 0) / 100} disabled /></label>
+        <label>Standard fee<input type="number" value={Number(selectedCourse?.default_fee_paise ?? payload.fee.standardFeePaise ?? 0) / 100} disabled /></label>
         <label>Final agreed fee<input type="number" min="0" value={Number(payload.fee.finalAgreedFeePaise || 0) / 100} onChange={(e) => setSection("fee", "finalAgreedFeePaise", Math.round(Number(e.target.value || 0) * 100))} required /></label>
         <label>Discount<input value={formatMoney(review.discountPaise)} disabled /></label>
         <label>Discount reason<input value={String(payload.fee.discountReason)} onChange={(e) => setSection("fee", "discountReason", e.target.value)} required={review.discountPaise > 0} /></label>
@@ -195,7 +195,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
           <Review label="Course" value={selectedCourse?.name || "Missing"} />
           <Review label="Joining date" value={String(payload.course.joiningDate || "Missing")} />
           <Review label="NSDC" value={String(payload.course.nsdcPreference)} />
-          <Review label="Standard fee" value={formatMoney(Number(payload.fee.standardFeePaise || 0))} />
+          <Review label="Course Master standard fee" value={formatMoney(Number(selectedCourse?.default_fee_paise ?? payload.fee.standardFeePaise ?? 0))} />
           <Review label="Final fee" value={formatMoney(Number(payload.fee.finalAgreedFeePaise || 0))} />
           <Review label="Discount" value={formatMoney(review.discountPaise)} />
           <Review label="Payment plan" value={String(payload.fee.paymentPlanType)} />
@@ -230,7 +230,7 @@ export function defaultAdmissionPayload(detail?: EnquiryDetail | null): Admissio
       primaryMobile: detail?.primaryMobile || "",
       belongsTo: "student",
       isWhatsapp: true,
-      alternateMobile: "",
+      alternateMobile: detail?.alternateMobile || "",
       email: "",
       preferredLanguage: "",
     },
@@ -256,7 +256,7 @@ export function defaultAdmissionPayload(detail?: EnquiryDetail | null): Admissio
 }
 
 export function admissionReview(payload: AdmissionPayload, selectedCourse?: StaffCourse) {
-  const standard = Number(payload.fee.standardFeePaise || selectedCourse?.default_fee_paise || 0);
+  const standard = Number(selectedCourse?.default_fee_paise ?? payload.fee.standardFeePaise ?? 0);
   const finalFee = Number(payload.fee.finalAgreedFeePaise || 0);
   const discountPaise = Math.max(0, standard - finalFee);
   const nsdcYes = payload.course.nsdcPreference === "yes";

@@ -78,6 +78,7 @@ export const admissionPayloadSchema = z.object({
     .optional(),
   fee: z
     .object({
+      // Retained for staff UI display only; confirmation always reloads Course Master default_fee_paise.
       standardFeePaise: paiseSchema.optional(),
       finalAgreedFeePaise: paiseSchema.optional(),
       discountReason: z.string().trim().max(240).optional(),
@@ -158,12 +159,14 @@ const confirmationSchema = admissionPayloadSchema.superRefine((payload, ctx) => 
   if (contact.primaryMobile && !normalizeIndianMobile(String(contact.primaryMobile))) {
     ctx.addIssue({ code: "custom", path: ["contact", "primaryMobile"], message: "Enter a valid Indian primary mobile number." });
   }
-  const finalFee = Number(fee.finalAgreedFeePaise ?? -1);
-  const standardFee = Number(fee.standardFeePaise ?? 0);
-  if (finalFee < 0) ctx.addIssue({ code: "custom", path: ["fee", "finalAgreedFeePaise"], message: "Final agreed fee cannot be negative." });
-  if (finalFee < standardFee && !fee.discountReason?.trim()) {
-    ctx.addIssue({ code: "custom", path: ["fee", "discountReason"], message: "Discount reason is required when the final fee is lower." });
+  if (contact.alternateMobile && !normalizeIndianMobile(String(contact.alternateMobile))) {
+    ctx.addIssue({ code: "custom", path: ["contact", "alternateMobile"], message: "Enter a valid Indian alternate mobile number." });
   }
+  if (course.admissionDate && !validIsoDate(course.admissionDate)) {
+    ctx.addIssue({ code: "custom", path: ["course", "admissionDate"], message: "Admission date must be a real YYYY-MM-DD date." });
+  }
+  const finalFee = Number(fee.finalAgreedFeePaise ?? -1);
+  if (finalFee < 0) ctx.addIssue({ code: "custom", path: ["fee", "finalAgreedFeePaise"], message: "Final agreed fee cannot be negative." });
   if (fee.paymentPlanType === "full" && Number(fee.numberOfInstalments || 1) !== 1) {
     ctx.addIssue({ code: "custom", path: ["fee", "numberOfInstalments"], message: "Full payment uses one instalment." });
   }
@@ -258,9 +261,12 @@ export async function saveAdmissionDraft(c: AppContext, staff: StaffContext, enq
   if (validated.payload.contact?.primaryMobile && !normalizeIndianMobile(String(validated.payload.contact.primaryMobile))) {
     return { ok: false as const, status: 400, code: "invalid_mobile", message: "Enter a valid Indian primary mobile number." };
   }
+  if (validated.payload.contact?.alternateMobile && !normalizeIndianMobile(String(validated.payload.contact.alternateMobile))) {
+    return { ok: false as const, status: 400, code: "invalid_mobile", message: "Enter a valid Indian alternate mobile number." };
+  }
 
   const now = new Date().toISOString();
-  await upsertPrimaryContact(c, enquiry.person_id, validated.payload.contact, now);
+  await upsertAdmissionContacts(c, enquiry.person_id, validated.payload.contact, now);
   const storedPayload = sanitizeAdmissionDraftPayload(validated.payload);
   const existing = await getAdmissionDraft(c, enquiryId);
   const draftId = existing?.status === "draft" ? existing.id : createOpaqueId("draft");
@@ -292,13 +298,19 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
 > {
   const enquiry = await getAdmissionEnquiry(c, enquiryId);
   if (!enquiry) return { ok: false, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
+  const draft = await getAdmissionDraft(c, enquiryId);
+  const existingEnrolmentId = enquiry.converted_enrolment_id || (await getEnrolmentByEnquiry(c, enquiry.id))?.id || null;
+  if (existingEnrolmentId && draft) {
+    const recovered = await finalizeExistingAdmission(c, staff, enquiry, draft, existingEnrolmentId);
+    if (recovered.ok) return { ok: true, result: recovered.result };
+    return recovered;
+  }
   if (enquiry.converted_enrolment_id) {
     const existing = await confirmationForEnrolment(c, enquiry, enquiry.converted_enrolment_id, false);
     if (existing) return { ok: true, result: existing };
     return { ok: false, status: 409, code: "already_converted", message: "This enquiry is already converted." };
   }
 
-  const draft = await getAdmissionDraft(c, enquiryId);
   if (!draft || draft.status !== "draft") return { ok: false, status: 404, code: "draft_not_found", message: "Save an admission draft before confirming." };
   const validated = validateAdmissionForConfirmation(JSON.parse(draft.payload_json));
   if (!validated.success) return { ok: false, status: 400, code: "invalid_admission", message: validated.message };
@@ -307,19 +319,26 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
   if (!branch) return { ok: false, status: 400, code: "invalid_branch", message: "Select an active branch." };
   const course = await getActiveCourse(c, payload.course?.courseId || "");
   if (!course) return { ok: false, status: 400, code: "invalid_course", message: "Select an active configured course." };
-
-  const now = new Date().toISOString();
   const identity = payload.identity!;
   const courseInput = payload.course!;
   const feeInput = payload.fee!;
   const locality = payload.locality!;
   const education = payload.education!;
   const declarations = payload.declarations || {};
+  if (course.default_fee_paise === null || course.default_fee_paise === undefined) {
+    return { ok: false, status: 400, code: "course_fee_required", message: "Selected course must have a configured standard fee." };
+  }
+  const courseStandardFeePaise = Number(course.default_fee_paise);
+  if (Number(feeInput.finalAgreedFeePaise || 0) < courseStandardFeePaise && !feeInput.discountReason?.trim()) {
+    return { ok: false, status: 400, code: "discount_reason_required", message: "Discount reason is required when the final fee is lower than Course Master fee." };
+  }
+  const admissionYear = admissionYearFromDate(courseInput.admissionDate);
 
+  const now = new Date().toISOString();
   await upsertCanonicalPerson(c, draft.person_id, identity, branch.id, staff.loginAccountId, now);
-  await upsertPrimaryContact(c, draft.person_id, payload.contact, now);
-  await upsertLocality(c, draft.person_id, locality, now);
-  await upsertEducation(c, draft.person_id, education, now);
+  await upsertAdmissionContacts(c, draft.person_id, payload.contact, now);
+  await upsertLocality(c, draft.id, draft.person_id, locality, now);
+  await upsertEducation(c, draft.id, draft.person_id, education, now);
 
   let student = await c.env.DB.prepare(
     "select id, student_number from students where organisation_id = ? and person_id = ?",
@@ -344,9 +363,9 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
   }
   if (!student) return { ok: false, status: 500, code: "student_create_failed", message: "Could not create the student record." };
 
-  const enrolmentSequence = await allocateSequence(c, ORG_ID, branch.id, `enrolment:${now.slice(0, 4)}`);
+  const enrolmentSequence = await allocateSequence(c, ORG_ID, branch.id, `enrolment:${admissionYear}`);
   const enrolmentId = createOpaqueId("enrol");
-  const enrolmentNumber = `ENR-${branch.code.toUpperCase()}-${now.slice(0, 4)}-${formatSequence(enrolmentSequence)}`;
+  const enrolmentNumber = `ENR-${branch.code.toUpperCase()}-${admissionYear}-${formatSequence(enrolmentSequence)}`;
   await c.env.DB.prepare(
     `insert or ignore into enrolments
        (id, student_id, branch_id, course_id, enquiry_id, enrolment_number, training_mode, batch_preference,
@@ -376,69 +395,20 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
     .first<{ id: string; enrolment_number: string }>();
   if (!enrolment) return { ok: false, status: 500, code: "enrolment_create_failed", message: "Could not create the enrolment." };
 
-  const discountPaise = Math.max(0, Number(feeInput.standardFeePaise || 0) - Number(feeInput.finalAgreedFeePaise || 0));
-  await c.env.DB.prepare(
-    `insert or ignore into fee_agreements
-       (id, enrolment_id, standard_fee_paise, final_agreed_fee_paise, discount_paise, discount_reason,
-        discount_approved_by, payment_plan_type, number_of_instalments, initial_payment_expected_paise, status, created_at, updated_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-  )
-    .bind(
-      createOpaqueId("fee"),
-      enrolment.id,
-      feeInput.standardFeePaise || 0,
-      feeInput.finalAgreedFeePaise || 0,
-      discountPaise,
-      feeInput.discountReason || null,
-      discountPaise > 0 ? staff.loginAccountId : null,
-      feeInput.paymentPlanType,
-      instalmentsFor(feeInput.paymentPlanType, feeInput.numberOfInstalments),
-      feeInput.initialPaymentExpectedPaise || 0,
-      now,
-      now,
-    )
-    .run();
-
-  if (courseInput.nsdcPreference === "yes") {
-    await c.env.DB.prepare(
-      `insert or ignore into nsdc_profiles (id, enrolment_id, aadhaar_verified, status, created_at, updated_at)
-       values (?, ?, 0, 'aadhaar_pending', ?, ?)`,
-    )
-      .bind(createOpaqueId("nsdc"), enrolment.id, now, now)
-      .run();
-  }
-
-  await insertConsents(c, draft.person_id, enrolment.id, declarations, staff.loginAccountId, now);
-  await c.env.DB.prepare(
-    `update enquiries
-     set status = 'converted', converted_enrolment_id = ?, converted_at = ?, updated_at = ?
-     where id = ? and organisation_id = ? and converted_enrolment_id is null`,
-  )
-    .bind(enrolment.id, now, now, enquiry.id, ORG_ID)
-    .run();
-  await c.env.DB.prepare(
-    "update admission_drafts set status = 'confirmed', updated_by_login_account_id = ?, updated_at = ?, confirmed_at = ? where id = ? and status = 'draft'",
-  )
-    .bind(staff.loginAccountId, now, now, draft.id)
-    .run();
-  await audit(c, staff, branch.id, "admission_confirmed", "enrolment", enrolment.id, {
-    enquiryId,
+  return finalizeAdmission(c, staff, enquiry, draft, {
+    branchId: branch.id,
+    personId: draft.person_id,
     studentId: student.id,
     studentNumber: student.student_number,
+    enrolmentId: enrolment.id,
     enrolmentNumber: enrolment.enrolment_number,
+    isNewStudent,
+    feeInput,
+    declarations,
+    nsdcPreference: courseInput.nsdcPreference,
+    courseStandardFeePaise,
+    now,
   });
-
-  return {
-    ok: true,
-    result: {
-      studentId: student.id,
-      studentNumber: student.student_number,
-      enrolmentId: enrolment.id,
-      enrolmentNumber: enrolment.enrolment_number,
-      enquiryNumber: enquiry.enquiry_number,
-      isNewStudent,
-    },
-  };
 }
 
 async function getAdmissionEnquiry(c: AppContext, enquiryId: string) {
@@ -447,6 +417,12 @@ async function getAdmissionEnquiry(c: AppContext, enquiryId: string) {
   )
     .bind(enquiryId, ORG_ID)
     .first<EnquiryRecord>();
+}
+
+async function getEnrolmentByEnquiry(c: AppContext, enquiryId: string) {
+  return c.env.DB.prepare("select id, student_id, enrolment_number from enrolments where enquiry_id = ?")
+    .bind(enquiryId)
+    .first<{ id: string; student_id: string; enrolment_number: string }>();
 }
 
 async function getBranch(c: AppContext, branchId: string) {
@@ -459,6 +435,156 @@ async function getActiveCourse(c: AppContext, courseId: string) {
   return c.env.DB.prepare("select id, code, name, default_fee_paise from courses where id = ? and organisation_id = ? and status = 'active'")
     .bind(courseId, ORG_ID)
     .first<{ id: string; code: string; name: string; default_fee_paise: number | null }>();
+}
+
+async function finalizeExistingAdmission(c: AppContext, staff: StaffContext, enquiry: EnquiryRecord, draft: DraftRecord, enrolmentId: string) {
+  const validated = validateAdmissionForConfirmation(JSON.parse(draft.payload_json));
+  if (!validated.success) return { ok: false as const, status: 400, code: "invalid_admission", message: validated.message };
+  const payload = validated.payload;
+  const course = await getActiveCourse(c, payload.course?.courseId || "");
+  if (!course) return { ok: false as const, status: 400, code: "invalid_course", message: "Select an active configured course." };
+  if (course.default_fee_paise === null || course.default_fee_paise === undefined) {
+    return { ok: false as const, status: 400, code: "course_fee_required", message: "Selected course must have a configured standard fee." };
+  }
+  const courseStandardFeePaise = Number(course.default_fee_paise);
+  const feeInput = payload.fee!;
+  if (Number(feeInput.finalAgreedFeePaise || 0) < courseStandardFeePaise && !feeInput.discountReason?.trim()) {
+    return { ok: false as const, status: 400, code: "discount_reason_required", message: "Discount reason is required when the final fee is lower than Course Master fee." };
+  }
+  const enrolment = await c.env.DB.prepare(
+    `select enrolments.id, enrolments.enrolment_number, enrolments.student_id, enrolments.branch_id,
+            students.student_number, students.person_id
+     from enrolments
+     join students on students.id = enrolments.student_id
+     where enrolments.id = ? and enrolments.enquiry_id = ?`,
+  )
+    .bind(enrolmentId, enquiry.id)
+    .first<{ id: string; enrolment_number: string; student_id: string; branch_id: string; student_number: string; person_id: string }>();
+  if (!enrolment) return { ok: false as const, status: 409, code: "enrolment_not_found", message: "Existing enrolment could not be recovered." };
+  const now = new Date().toISOString();
+  await upsertCanonicalPerson(c, draft.person_id, payload.identity!, enrolment.branch_id, staff.loginAccountId, now);
+  await upsertAdmissionContacts(c, draft.person_id, payload.contact, now);
+  await upsertLocality(c, draft.id, draft.person_id, payload.locality!, now);
+  await upsertEducation(c, draft.id, draft.person_id, payload.education!, now);
+  return finalizeAdmission(c, staff, enquiry, draft, {
+    branchId: enrolment.branch_id,
+    personId: draft.person_id,
+    studentId: enrolment.student_id,
+    studentNumber: enrolment.student_number,
+    enrolmentId: enrolment.id,
+    enrolmentNumber: enrolment.enrolment_number,
+    isNewStudent: false,
+    feeInput,
+    declarations: payload.declarations || {},
+    nsdcPreference: payload.course?.nsdcPreference,
+    courseStandardFeePaise,
+    now,
+  });
+}
+
+async function finalizeAdmission(
+  c: AppContext,
+  staff: StaffContext,
+  enquiry: EnquiryRecord,
+  draft: DraftRecord,
+  input: {
+    branchId: string;
+    personId: string;
+    studentId: string;
+    studentNumber: string;
+    enrolmentId: string;
+    enrolmentNumber: string;
+    isNewStudent: boolean;
+    feeInput: NonNullable<AdmissionPayload["fee"]>;
+    declarations: Record<string, boolean | undefined>;
+    nsdcPreference: string | undefined;
+    courseStandardFeePaise: number;
+    now: string;
+  },
+) {
+  const discountPaise = Math.max(0, input.courseStandardFeePaise - Number(input.feeInput.finalAgreedFeePaise || 0));
+  await c.env.DB.prepare(
+    `insert into fee_agreements
+       (id, enrolment_id, standard_fee_paise, final_agreed_fee_paise, discount_paise, discount_reason,
+        discount_approved_by, payment_plan_type, number_of_instalments, initial_payment_expected_paise, status, created_at, updated_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+     on conflict(enrolment_id) do update set
+       standard_fee_paise = excluded.standard_fee_paise,
+       final_agreed_fee_paise = excluded.final_agreed_fee_paise,
+       discount_paise = excluded.discount_paise,
+       discount_reason = excluded.discount_reason,
+       discount_approved_by = excluded.discount_approved_by,
+       payment_plan_type = excluded.payment_plan_type,
+       number_of_instalments = excluded.number_of_instalments,
+       initial_payment_expected_paise = excluded.initial_payment_expected_paise,
+       status = 'active',
+       updated_at = excluded.updated_at`,
+  )
+    .bind(
+      createOpaqueId("fee"),
+      input.enrolmentId,
+      input.courseStandardFeePaise,
+      input.feeInput.finalAgreedFeePaise || 0,
+      discountPaise,
+      input.feeInput.discountReason || null,
+      discountPaise > 0 ? staff.loginAccountId : null,
+      input.feeInput.paymentPlanType,
+      instalmentsFor(input.feeInput.paymentPlanType, input.feeInput.numberOfInstalments),
+      input.feeInput.initialPaymentExpectedPaise || 0,
+      input.now,
+      input.now,
+    )
+    .run();
+
+  if (input.nsdcPreference === "yes") {
+    await c.env.DB.prepare(
+      `insert into nsdc_profiles (id, enrolment_id, aadhaar_verified, status, created_at, updated_at)
+       values (?, ?, 0, 'aadhaar_pending', ?, ?)
+       on conflict(enrolment_id) do update set status = coalesce(nsdc_profiles.status, excluded.status), updated_at = excluded.updated_at`,
+    )
+      .bind(createOpaqueId("nsdc"), input.enrolmentId, input.now, input.now)
+      .run();
+  }
+
+  await insertConsents(c, input.personId, input.enrolmentId, input.declarations, staff.loginAccountId, input.now);
+  await c.env.DB.prepare(
+    `update enquiries
+     set status = 'converted', converted_enrolment_id = ?, converted_at = coalesce(converted_at, ?), updated_at = ?
+     where id = ? and organisation_id = ? and (converted_enrolment_id is null or converted_enrolment_id = ?)`,
+  )
+    .bind(input.enrolmentId, input.now, input.now, enquiry.id, ORG_ID, input.enrolmentId)
+    .run();
+  await c.env.DB.prepare(
+    `update admission_drafts
+     set status = 'confirmed', updated_by_login_account_id = ?, updated_at = ?, confirmed_at = coalesce(confirmed_at, ?)
+     where id = ? and status in ('draft', 'confirmed')`,
+  )
+    .bind(staff.loginAccountId, input.now, input.now, draft.id)
+    .run();
+  await auditAdmissionConfirmed(c, staff, input.branchId, input.enrolmentId, {
+    enquiryId: enquiry.id,
+    studentId: input.studentId,
+    studentNumber: input.studentNumber,
+    enrolmentNumber: input.enrolmentNumber,
+  });
+  const finalEnquiry = await getAdmissionEnquiry(c, enquiry.id);
+  const finalDraft = await c.env.DB.prepare("select status, confirmed_at from admission_drafts where id = ?")
+    .bind(draft.id)
+    .first<{ status: string; confirmed_at: string | null }>();
+  if (finalEnquiry?.converted_enrolment_id !== input.enrolmentId || finalEnquiry.status !== "converted" || finalDraft?.status !== "confirmed" || !finalDraft.confirmed_at) {
+    return { ok: false as const, status: 409, code: "confirmation_inconsistent", message: "Admission confirmation could not be finalised consistently. Please retry." };
+  }
+  return {
+    ok: true as const,
+    result: {
+      studentId: input.studentId,
+      studentNumber: input.studentNumber,
+      enrolmentId: input.enrolmentId,
+      enrolmentNumber: input.enrolmentNumber,
+      enquiryNumber: enquiry.enquiry_number,
+      isNewStudent: input.isNewStudent,
+    },
+  };
 }
 
 async function allocateSequence(c: AppContext, organisationId: string, branchId: string, sequenceKey: string) {
@@ -526,58 +652,116 @@ async function upsertCanonicalPerson(c: AppContext, personId: string, identity: 
   ]);
 }
 
-async function upsertPrimaryContact(c: AppContext, personId: string, contact: AdmissionPayload["contact"], now: string) {
+async function upsertAdmissionContacts(c: AppContext, personId: string, contact: AdmissionPayload["contact"], now: string) {
   const primaryMobile = contact?.primaryMobile?.trim();
-  if (!primaryMobile) return;
-  const normalizedMobile = normalizeIndianMobile(primaryMobile);
-  if (!normalizedMobile) throw new Error("Invalid primary mobile");
+  const alternateMobile = contact?.alternateMobile?.trim();
+  const normalizedPrimary = primaryMobile ? normalizeIndianMobile(primaryMobile) : null;
+  const normalizedAlternate = alternateMobile ? normalizeIndianMobile(alternateMobile) : null;
+  if (primaryMobile) {
+    await upsertMobileContact(c, personId, {
+      mobile: primaryMobile,
+      belongsTo: contact?.belongsTo || "student",
+      isWhatsapp: contact?.isWhatsapp ? 1 : 0,
+      isPrimary: true,
+      now,
+    });
+  }
+  if (alternateMobile && normalizedAlternate !== normalizedPrimary) {
+    await upsertMobileContact(c, personId, {
+      mobile: alternateMobile,
+      belongsTo: "other",
+      isWhatsapp: 0,
+      isPrimary: false,
+      now,
+    });
+  }
+}
+
+async function upsertMobileContact(
+  c: AppContext,
+  personId: string,
+  input: { mobile: string; belongsTo: string; isWhatsapp: number; isPrimary: boolean; now: string },
+) {
+  const normalizedMobile = normalizeIndianMobile(input.mobile);
+  if (!normalizedMobile) throw new Error("Invalid mobile");
   const lookupHash = await mobileHash(c, normalizedMobile);
   const existing = await c.env.DB.prepare("select id from person_contacts where person_id = ? and contact_type = 'mobile' and normalized_value = ?")
     .bind(personId, lookupHash)
     .first<{ id: string }>();
   const contactId = existing?.id || createOpaqueId("contact");
   const ciphertext = await encryptText(c.env.SESSION_PEPPER, `contact:${contactId}`, normalizedMobile);
-  await c.env.DB.batch([
+  const statements = [
+    ...(input.isPrimary
+      ? [
+          c.env.DB.prepare("update person_contacts set is_primary = 0, updated_at = ? where person_id = ? and contact_type = 'mobile' and is_primary = 1 and id != ?")
+            .bind(input.now, personId, contactId),
+        ]
+      : []),
     c.env.DB.prepare(
       `insert into person_contacts
          (id, person_id, contact_type, normalized_value, display_value, last_four, is_primary, is_verified, created_at, updated_at)
-       values (?, ?, 'mobile', ?, null, ?, 1, 0, ?, ?)
-       on conflict(person_id, contact_type, normalized_value) do update set is_primary = 1, last_four = excluded.last_four, updated_at = excluded.updated_at`,
-    ).bind(contactId, personId, lookupHash, normalizedMobile.slice(-4), now, now),
+       values (?, ?, 'mobile', ?, null, ?, ?, 0, ?, ?)
+       on conflict(person_id, contact_type, normalized_value) do update set
+         is_primary = excluded.is_primary,
+         is_verified = case when excluded.is_primary = 1 then person_contacts.is_verified else 0 end,
+         last_four = excluded.last_four,
+         updated_at = excluded.updated_at`,
+    ).bind(contactId, personId, lookupHash, normalizedMobile.slice(-4), input.isPrimary ? 1 : 0, input.now, input.now),
     c.env.DB.prepare(
       `insert into person_contact_details (contact_id, belongs_to, is_whatsapp, status, created_at, updated_at)
        values (?, ?, ?, 'active', ?, ?)
        on conflict(contact_id) do update set belongs_to = excluded.belongs_to, is_whatsapp = excluded.is_whatsapp, updated_at = excluded.updated_at`,
-    ).bind(contactId, contact?.belongsTo || "student", contact?.isWhatsapp ? 1 : 0, now, now),
+    ).bind(contactId, input.belongsTo, input.isWhatsapp, input.now, input.now),
     c.env.DB.prepare(
       `insert into person_contact_secrets (contact_id, value_ciphertext, encryption_version, created_at, updated_at)
        values (?, ?, 'v1', ?, ?)
        on conflict(contact_id) do update set value_ciphertext = excluded.value_ciphertext, updated_at = excluded.updated_at`,
-    ).bind(contactId, ciphertext, now, now),
-  ]);
+    ).bind(contactId, ciphertext, input.now, input.now),
+  ];
+  await c.env.DB.batch(statements);
 }
 
-async function upsertLocality(c: AppContext, personId: string, locality: NonNullable<AdmissionPayload["locality"]>, now: string) {
-  await c.env.DB.prepare("update person_localities set status = 'previous', valid_until = ?, updated_at = ? where person_id = ? and locality_type = 'current' and status = 'active'")
-    .bind(now, now, personId)
+async function upsertLocality(c: AppContext, draftId: string, personId: string, locality: NonNullable<AdmissionPayload["locality"]>, now: string) {
+  const localityId = stableAdmissionChildId("loc_admission", draftId);
+  await c.env.DB.prepare("update person_localities set status = 'previous', valid_until = ?, updated_at = ? where person_id = ? and locality_type = 'current' and status = 'active' and id != ?")
+    .bind(now, now, personId, localityId)
     .run();
   await c.env.DB.prepare(
     `insert into person_localities
        (id, person_id, locality_type, locality, city, postal_code, state, residence_type, full_address, valid_from, status, created_at, updated_at)
-     values (?, ?, 'current', ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+     values (?, ?, 'current', ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+     on conflict(id) do update set
+       locality = excluded.locality,
+       city = excluded.city,
+       postal_code = excluded.postal_code,
+       state = excluded.state,
+       residence_type = excluded.residence_type,
+       full_address = excluded.full_address,
+       valid_until = null,
+       status = 'active',
+       updated_at = excluded.updated_at`,
   )
-    .bind(createOpaqueId("loc"), personId, locality.locality, locality.city, locality.postalCode || null, locality.state || "Maharashtra", locality.residenceType || null, locality.fullAddress || null, now, now, now)
+    .bind(localityId, personId, locality.locality, locality.city, locality.postalCode || null, locality.state || "Maharashtra", locality.residenceType || null, locality.fullAddress || null, now, now, now)
     .run();
 }
 
-async function upsertEducation(c: AppContext, personId: string, education: NonNullable<AdmissionPayload["education"]>, now: string) {
+async function upsertEducation(c: AppContext, draftId: string, personId: string, education: NonNullable<AdmissionPayload["education"]>, now: string) {
   await c.env.DB.prepare(
     `insert into education_records
        (id, person_id, qualification_level, qualification_name, stream, institution_name, currently_pursuing, current_year_semester, passing_year, created_at, updated_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     on conflict(id) do update set
+       qualification_level = excluded.qualification_level,
+       qualification_name = excluded.qualification_name,
+       stream = excluded.stream,
+       institution_name = excluded.institution_name,
+       currently_pursuing = excluded.currently_pursuing,
+       current_year_semester = excluded.current_year_semester,
+       passing_year = excluded.passing_year,
+       updated_at = excluded.updated_at`,
   )
     .bind(
-      createOpaqueId("edu"),
+      stableAdmissionChildId("edu_admission", draftId),
       personId,
       education.qualificationLevel,
       education.qualificationName || null,
@@ -617,7 +801,15 @@ async function insertConsents(c: AppContext, personId: string, enrolmentId: stri
     return c.env.DB.prepare(
       `insert into student_consents
          (id, person_id, enrolment_id, consent_type, consent_given, consent_version, captured_method, captured_by, captured_at)
-       values (?, ?, ?, ?, ?, 'admission-v1', 'staff_form', ?, ?)`,
+       values (?, ?, ?, ?, ?, 'admission-v1', 'staff_form', ?, ?)
+       on conflict(enrolment_id, consent_type) where enrolment_id is not null do update set
+         person_id = excluded.person_id,
+         consent_given = excluded.consent_given,
+         consent_version = excluded.consent_version,
+         captured_method = excluded.captured_method,
+         captured_by = excluded.captured_by,
+         captured_at = excluded.captured_at,
+         withdrawn_at = null`,
     ).bind(createOpaqueId("consent"), personId, enrolmentId, type, declarations[camel] ? 1 : 0, staffId, now);
   });
   await c.env.DB.batch(statements);
@@ -653,6 +845,16 @@ async function audit(c: AppContext, staff: StaffContext, branchId: string | null
     .run();
 }
 
+async function auditAdmissionConfirmed(c: AppContext, staff: StaffContext, branchId: string | null, enrolmentId: string, metadata: Record<string, unknown>) {
+  await c.env.DB.prepare(
+    `insert or ignore into audit_logs
+       (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
+     values (?, ?, ?, ?, ?, 'admission_confirmed', 'enrolment', ?, ?, ?)`,
+  )
+    .bind(stableAdmissionChildId("audit_admission_confirmed", enrolmentId), ORG_ID, branchId, staff.loginAccountId, staff.activePersonId, enrolmentId, JSON.stringify(metadata), new Date().toISOString())
+    .run();
+}
+
 function requireField(ctx: z.RefinementCtx, value: unknown, path: (string | number)[], message: string) {
   if (typeof value !== "string" || !value.trim()) ctx.addIssue({ code: "custom", path, message });
 }
@@ -671,6 +873,21 @@ function findSensitivePayloadKey(value: unknown): string | null {
 
 function formatSequence(sequence: number) {
   return String(sequence).padStart(6, "0");
+}
+
+function stableAdmissionChildId(prefix: string, draftId: string) {
+  return `${prefix}_${draftId.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 90)}`;
+}
+
+function validIsoDate(value: string) {
+  if (!dateSchema.safeParse(value).success) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function admissionYearFromDate(value: string | undefined) {
+  if (!value || !validIsoDate(value)) throw new Error("Invalid admission date");
+  return value.slice(0, 4);
 }
 
 function instalmentsFor(paymentPlanType: string | undefined, custom: number | null | undefined) {
