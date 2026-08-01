@@ -46,6 +46,37 @@
   outline-offset: 2px;
 }
 
+.staff-form [aria-invalid="true"] {
+  border-color: #b42318;
+}
+
+.required-mark {
+  color: #b42318;
+  margin-left: 4px;
+}
+
+.field-error {
+  color: #b42318;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.admission-error-summary {
+  border-color: rgba(180, 35, 24, 0.28);
+  background: #fff4f2;
+}
+
+.admission-error-summary strong {
+  color: #8a1f14;
+}
+
+.admission-error-summary ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #8a1f14;
+}
+
 .staff-search-row {
   display: grid;
   gap: 10px;

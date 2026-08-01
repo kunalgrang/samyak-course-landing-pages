@@ -7,7 +7,14 @@ import type { AppContext } from "./http";
 import type { StaffContext } from "./staff-auth";
 import type { WorkerBindings } from "../bindings";
 import { decryptText } from "./crypto";
-import { confirmAdmission, saveAdmissionDraft, validateAdmissionDraftPayload, validateAdmissionForConfirmation } from "./admission-service";
+import {
+  confirmAdmission,
+  decideDiscountApproval,
+  requestDiscountApproval,
+  saveAdmissionDraft,
+  validateAdmissionDraftPayload,
+  validateAdmissionForConfirmation,
+} from "./admission-service";
 
 type Row = Record<string, any>;
 type AdmissionTestPayload = any;
@@ -258,6 +265,7 @@ describe("confirmAdmission service integration", () => {
     payload.fee.standardFeePaise = 1;
     payload.fee.finalAgreedFeePaise = 4500000;
     payload.fee.discountReason = "Approved scholarship";
+    payload.fee.discountReasonCode = "merit";
     await createAdmissionDraft(c, "enq_first", payload);
 
     await expectOk(confirmAdmission(c, staff, "enq_first"));
@@ -266,6 +274,62 @@ describe("confirmAdmission service integration", () => {
       final_agreed_fee_paise: 4500000,
       discount_paise: 500000,
     });
+    db.close();
+  });
+
+  it("rejects an admission draft branch that does not match the enquiry branch", async () => {
+    const db = testDb();
+    const c = context(db);
+    const payload = validPayload();
+    payload.course.branchId = "branch_tampered";
+    await createAdmissionDraft(c, "enq_first", payload);
+
+    const confirmed = await confirmAdmission(c, staff, "enq_first");
+    expect(confirmed.ok).toBe(false);
+    if (confirmed.ok) throw new Error("Expected branch mismatch to fail");
+    expect(confirmed.fieldErrors?.["course.branchId"]?.[0]).toContain("locked");
+    expect(count(db, "enrolments")).toBe(0);
+    db.close();
+  });
+
+  it("rejects payment plans not allowed by the course duration rules", async () => {
+    const db = testDb();
+    const c = context(db);
+    const payload = validPayload();
+    payload.fee.paymentPlanType = "custom";
+    payload.fee.numberOfInstalments = 4;
+    await createAdmissionDraft(c, "enq_first", payload);
+
+    const confirmed = await confirmAdmission(c, staff, "enq_first");
+    expect(confirmed.ok).toBe(false);
+    if (confirmed.ok) throw new Error("Expected disallowed payment plan to fail");
+    expect(confirmed.fieldErrors?.["fee.paymentPlanType"]?.[0]).toContain("allowed");
+    db.close();
+  });
+
+  it("requires matching owner approval for below-floor final fees", async () => {
+    const db = testDb();
+    const c = context(db);
+    const payload = validPayload();
+    payload.fee.finalAgreedFeePaise = 3500000;
+    payload.fee.discountReason = "Merit scholarship";
+    payload.fee.discountReasonCode = "merit";
+    await createAdmissionDraft(c, "enq_first", payload);
+
+    const blocked = await confirmAdmission(c, staff, "enq_first");
+    expect(blocked.ok).toBe(false);
+    if (blocked.ok) throw new Error("Expected below-floor fee to need approval");
+    expect(blocked.fieldErrors?.["fee.finalAgreedFeePaise"]?.[0]).toContain("Owner approval");
+
+    const requested = await requestDiscountApproval(c, staff, "enq_first");
+    expect(requested.ok).toBe(true);
+    if (!requested.ok) throw new Error(requested.message);
+    const owner = { ...staff, roles: ["owner"] };
+    const decided = await decideDiscountApproval(c, owner, requested.approvalId, "approved");
+    expect(decided.ok).toBe(true);
+
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
+    expect(row(db, "select final_agreed_fee_paise from fee_agreements")).toMatchObject({ final_agreed_fee_paise: 3500000 });
     db.close();
   });
 
@@ -352,13 +416,15 @@ function validPayload(): AdmissionTestPayload {
       fatherName: "",
       identityConfirmed: true,
     },
-    contact: { primaryMobile: "+919876543210", belongsTo: "student", isWhatsapp: true, alternateMobile: "" },
+    contact: { primaryMobile: "+919876543210", belongsTo: "student", isWhatsapp: true, alternateMobile: "", preferredLanguage: "English", preferredLanguageCode: "english" },
     locality: { locality: "Sion East", city: "Mumbai", fullAddress: "" },
-    education: { qualificationLevel: "HSC", occupationStatus: "student" },
+    education: { qualificationLevel: "HSC / 12th", qualificationLevelCode: "hsc", occupationStatus: "Student", occupationStatusCode: "student", currentlyPursuing: false, passingYear: 2024 },
     course: {
       courseId: "course_full_stack",
       branchId: "branch_sion",
       trainingMode: "classroom",
+      batchPreference: "8 AM to 11 AM",
+      batchPreferenceCode: "8_11",
       admissionDate: "2026-08-01",
       joiningDate: "2026-08-05",
       nsdcPreference: "no",
@@ -367,6 +433,7 @@ function validPayload(): AdmissionTestPayload {
       standardFeePaise: 5000000,
       finalAgreedFeePaise: 5000000,
       discountReason: "",
+      discountReasonCode: "",
       paymentPlanType: "two_instalments",
       numberOfInstalments: 2,
       initialPaymentExpectedPaise: 0,
@@ -442,8 +509,20 @@ function seedBase(db: SqliteD1) {
       ('person_asha', 'org_samyak', 'branch_sion', 'Asha Student', 'Asha', '2001-02-03', 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
     insert into login_accounts (id, organisation_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, created_at, updated_at)
     values ('acct_staff', 'org_samyak', 'staff_mobile_hash', 'staff_mobile_hash', '0000', 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
-    insert into courses (id, organisation_id, code, name, duration_label, default_fee_paise, nsdc_available, status, created_at, updated_at)
-    values ('course_full_stack', 'org_samyak', 'FSD', 'Full Stack Development', '6 months', 5000000, 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+    insert into courses (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, nsdc_available, status, created_at, updated_at)
+    values ('course_full_stack', 'org_samyak', 'FSD', 'Full Stack Development', '6 months', 6, 5000000, 4000000, 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+    insert into admission_option_values (id, organisation_id, category, code, label, sort_order, requires_custom_label, is_active, created_at, updated_at)
+    values
+      ('opt_lang_en', 'org_samyak', 'preferred_language', 'english', 'English', 1, 0, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
+      ('opt_qual_hsc', 'org_samyak', 'qualification_level', 'hsc', 'HSC / 12th', 1, 0, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
+      ('opt_occ_student', 'org_samyak', 'occupation_status', 'student', 'Student', 1, 0, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
+      ('opt_batch_8_11', 'org_samyak', 'batch_preference', '8_11', '8 AM to 11 AM', 1, 0, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
+      ('opt_discount_merit', 'org_samyak', 'discount_reason', 'merit', 'Merit scholarship', 1, 0, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+    insert into payment_plan_rules (id, organisation_id, min_duration_months, max_duration_months, plan_type, fixed_instalments, is_active, created_at, updated_at)
+    values
+      ('rule_full', 'org_samyak', 4, 6, 'full', 1, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
+      ('rule_two', 'org_samyak', 4, 6, 'two_instalments', 2, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
+      ('rule_three', 'org_samyak', 4, 6, 'three_instalments', 3, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
   `);
 }
 

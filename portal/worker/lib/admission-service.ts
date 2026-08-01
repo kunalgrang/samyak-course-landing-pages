@@ -32,6 +32,7 @@ export const admissionPayloadSchema = z.object({
       alternateMobile: z.string().trim().max(20).optional(),
       email: z.string().trim().max(160).optional(),
       preferredLanguage: z.string().trim().max(60).optional(),
+      preferredLanguageCode: z.string().trim().max(60).optional(),
     })
     .partial()
     .optional(),
@@ -50,13 +51,16 @@ export const admissionPayloadSchema = z.object({
   education: z
     .object({
       qualificationLevel: z.string().trim().max(100).optional(),
+      qualificationLevelCode: z.string().trim().max(60).optional(),
       qualificationName: z.string().trim().max(140).optional(),
       stream: z.string().trim().max(100).optional(),
+      streamCode: z.string().trim().max(60).optional(),
       institutionName: z.string().trim().max(180).optional(),
       currentlyPursuing: z.boolean().optional(),
       currentYearSemester: z.string().trim().max(80).optional(),
       passingYear: z.coerce.number().int().min(1950).max(2100).optional().nullable(),
       occupationStatus: z.string().trim().max(80).optional(),
+      occupationStatusCode: z.string().trim().max(60).optional(),
       reasonForCourse: z.string().trim().max(300).optional(),
       placementAssistanceRequired: z.boolean().optional(),
     })
@@ -68,6 +72,7 @@ export const admissionPayloadSchema = z.object({
       branchId: z.string().trim().optional(),
       trainingMode: z.string().trim().optional(),
       batchPreference: z.string().trim().max(120).optional(),
+      batchPreferenceCode: z.string().trim().max(60).optional(),
       admissionDate: z.string().trim().optional(),
       joiningDate: z.string().trim().optional(),
       expectedCompletionDate: z.string().trim().optional(),
@@ -82,6 +87,7 @@ export const admissionPayloadSchema = z.object({
       standardFeePaise: paiseSchema.optional(),
       finalAgreedFeePaise: paiseSchema.optional(),
       discountReason: z.string().trim().max(240).optional(),
+      discountReasonCode: z.string().trim().max(60).optional(),
       paymentPlanType: z.enum(["full", "two_instalments", "three_instalments", "custom"]).optional(),
       numberOfInstalments: z.coerce.number().int().min(1).max(24).optional().nullable(),
       initialPaymentExpectedPaise: paiseSchema.optional(),
@@ -127,10 +133,10 @@ const confirmationSchema = admissionPayloadSchema.superRefine((payload, ctx) => 
   requireField(ctx, identity.gender, ["identity", "gender"], "Gender is required.");
   requireField(ctx, locality.locality, ["locality", "locality"], "Locality is required.");
   requireField(ctx, locality.city, ["locality", "city"], "City is required.");
-  requireField(ctx, education.qualificationLevel, ["education", "qualificationLevel"], "Highest/current qualification is required.");
-  requireField(ctx, education.occupationStatus, ["education", "occupationStatus"], "Current occupation status is required.");
+  requireField(ctx, contact.preferredLanguageCode, ["contact", "preferredLanguageCode"], "Preferred language is required.");
+  requireField(ctx, education.qualificationLevelCode, ["education", "qualificationLevelCode"], "Highest/current qualification is required.");
+  requireField(ctx, education.occupationStatusCode, ["education", "occupationStatusCode"], "Current occupation status is required.");
   requireField(ctx, course.courseId, ["course", "courseId"], "Select a configured course.");
-  requireField(ctx, course.branchId, ["course", "branchId"], "Select a branch.");
   requireField(ctx, course.trainingMode, ["course", "trainingMode"], "Training mode is required.");
   requireField(ctx, course.admissionDate, ["course", "admissionDate"], "Admission date is required.");
   requireField(ctx, course.joiningDate, ["course", "joiningDate"], "Joining date is required.");
@@ -165,6 +171,19 @@ const confirmationSchema = admissionPayloadSchema.superRefine((payload, ctx) => 
   if (course.admissionDate && !validIsoDate(course.admissionDate)) {
     ctx.addIssue({ code: "custom", path: ["course", "admissionDate"], message: "Admission date must be a real YYYY-MM-DD date." });
   }
+  if (education.currentlyPursuing) {
+    requireField(ctx, education.currentYearSemester, ["education", "currentYearSemester"], "Current year/semester is required when the student is currently pursuing.");
+    if (education.passingYear) {
+      ctx.addIssue({ code: "custom", path: ["education", "passingYear"], message: "Passing year must be empty while currently pursuing." });
+    }
+  } else {
+    if (!education.passingYear) {
+      ctx.addIssue({ code: "custom", path: ["education", "passingYear"], message: "Passing year is required when the student is not currently pursuing." });
+    }
+    if (education.currentYearSemester?.trim()) {
+      ctx.addIssue({ code: "custom", path: ["education", "currentYearSemester"], message: "Current year/semester must be empty when the student is not currently pursuing." });
+    }
+  }
   const finalFee = Number(fee.finalAgreedFeePaise ?? -1);
   if (finalFee < 0) ctx.addIssue({ code: "custom", path: ["fee", "finalAgreedFeePaise"], message: "Final agreed fee cannot be negative." });
   if (fee.paymentPlanType === "full" && Number(fee.numberOfInstalments || 1) !== 1) {
@@ -185,6 +204,39 @@ const confirmationSchema = admissionPayloadSchema.superRefine((payload, ctx) => 
 });
 
 type AdmissionPayload = z.infer<typeof admissionPayloadSchema>;
+export type FieldErrors = Record<string, string[]>;
+type AdmissionFailure = { ok: false; status: number; code: string; message: string; fieldErrors?: FieldErrors };
+
+type AdmissionOptionRecord = {
+  category: string;
+  code: string;
+  label: string;
+  requires_custom_label: number | boolean;
+  is_active: number | boolean;
+};
+
+type CourseRecord = {
+  id: string;
+  code: string;
+  name: string;
+  default_fee_paise: number | null;
+  duration_months: number | null;
+  lowest_acceptable_fee_paise: number | null;
+};
+
+type PaymentPlanRuleRecord = {
+  plan_type: string;
+  fixed_instalments: number | null;
+};
+
+type DiscountApprovalRecord = {
+  id: string;
+  status: string;
+  course_id: string;
+  requested_final_fee_paise: number;
+  discount_reason_code: string;
+  discount_reason_text: string | null;
+};
 
 type EnquiryRecord = {
   id: string;
@@ -235,7 +287,13 @@ export function validateAdmissionForConfirmation(payload: unknown) {
     return { success: false as const, message: `Admission draft cannot contain ${sensitive}.` };
   }
   const parsed = confirmationSchema.safeParse(payload);
-  if (!parsed.success) return { success: false as const, message: parsed.error.issues[0]?.message || "Please check the admission details." };
+  if (!parsed.success) {
+    return {
+      success: false as const,
+      message: parsed.error.issues[0]?.message || "Please check the admission details.",
+      fieldErrors: fieldErrorsFromIssues(parsed.error.issues),
+    };
+  }
   return { success: true as const, payload: parsed.data };
 }
 
@@ -267,9 +325,11 @@ export async function saveAdmissionDraft(c: AppContext, staff: StaffContext, enq
 
   const now = new Date().toISOString();
   await upsertAdmissionContacts(c, enquiry.person_id, validated.payload.contact, now);
-  const storedPayload = sanitizeAdmissionDraftPayload(validated.payload);
   const existing = await getAdmissionDraft(c, enquiryId);
   const draftId = existing?.status === "draft" ? existing.id : createOpaqueId("draft");
+  const normalizedPayload = await normalizeAdmissionOptionLabels(c, validated.payload);
+  await supersedeChangedDiscountApprovals(c, draftId, normalizedPayload);
+  const storedPayload = sanitizeAdmissionDraftPayload(normalizedPayload);
   if (existing?.status === "draft") {
     await c.env.DB.prepare(
       `update admission_drafts
@@ -289,12 +349,13 @@ export async function saveAdmissionDraft(c: AppContext, staff: StaffContext, enq
       .run();
   }
   await audit(c, staff, enquiry.branch_id, "admission_draft_saved", "admission_draft", draftId, { enquiryId });
-  return { ok: true as const, draftId, payload: storedPayload, currentStep: input.currentStep };
+  const readiness = await getAdmissionReadiness(c, enquiry, storedPayload, draftId);
+  return { ok: true as const, draftId, payload: storedPayload, currentStep: input.currentStep, fieldErrors: readiness.fieldErrors };
 }
 
 export async function confirmAdmission(c: AppContext, staff: StaffContext, enquiryId: string): Promise<
   | { ok: true; result: AdmissionConfirmationResult }
-  | { ok: false; status: number; code: string; message: string }
+  | AdmissionFailure
 > {
   const enquiry = await getAdmissionEnquiry(c, enquiryId);
   if (!enquiry) return { ok: false, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
@@ -313,9 +374,13 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
 
   if (!draft || draft.status !== "draft") return { ok: false, status: 404, code: "draft_not_found", message: "Save an admission draft before confirming." };
   const validated = validateAdmissionForConfirmation(JSON.parse(draft.payload_json));
-  if (!validated.success) return { ok: false, status: 400, code: "invalid_admission", message: validated.message };
+  if (!validated.success) return { ok: false, status: 400, code: "invalid_admission", message: validated.message, fieldErrors: validated.fieldErrors };
   const payload = validated.payload;
-  const branch = await getBranch(c, payload.course?.branchId || draft.branch_id);
+  const branchFieldErrors = await validateBranchLock(c, enquiry, payload, draft.branch_id);
+  if (Object.keys(branchFieldErrors).length) {
+    return { ok: false, status: 400, code: "invalid_branch", message: firstFieldError(branchFieldErrors) || "Admission branch must match the enquiry branch.", fieldErrors: branchFieldErrors };
+  }
+  const branch = await getBranch(c, enquiry.branch_id);
   if (!branch) return { ok: false, status: 400, code: "invalid_branch", message: "Select an active branch." };
   const course = await getActiveCourse(c, payload.course?.courseId || "");
   if (!course) return { ok: false, status: 400, code: "invalid_course", message: "Select an active configured course." };
@@ -325,13 +390,11 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
   const locality = payload.locality!;
   const education = payload.education!;
   const declarations = payload.declarations || {};
-  if (course.default_fee_paise === null || course.default_fee_paise === undefined) {
-    return { ok: false, status: 400, code: "course_fee_required", message: "Selected course must have a configured standard fee." };
+  const readiness = await getAdmissionReadiness(c, enquiry, payload, draft.id, course);
+  if (Object.keys(readiness.fieldErrors).length) {
+    return { ok: false, status: 400, code: "invalid_admission", message: firstFieldError(readiness.fieldErrors) || "Please check the admission details.", fieldErrors: readiness.fieldErrors };
   }
   const courseStandardFeePaise = Number(course.default_fee_paise);
-  if (Number(feeInput.finalAgreedFeePaise || 0) < courseStandardFeePaise && !feeInput.discountReason?.trim()) {
-    return { ok: false, status: 400, code: "discount_reason_required", message: "Discount reason is required when the final fee is lower than Course Master fee." };
-  }
   const admissionYear = admissionYearFromDate(courseInput.admissionDate);
 
   const now = new Date().toISOString();
@@ -432,25 +495,23 @@ async function getBranch(c: AppContext, branchId: string) {
 }
 
 async function getActiveCourse(c: AppContext, courseId: string) {
-  return c.env.DB.prepare("select id, code, name, default_fee_paise from courses where id = ? and organisation_id = ? and status = 'active'")
+  return c.env.DB.prepare("select id, code, name, default_fee_paise, duration_months, lowest_acceptable_fee_paise from courses where id = ? and organisation_id = ? and status = 'active'")
     .bind(courseId, ORG_ID)
-    .first<{ id: string; code: string; name: string; default_fee_paise: number | null }>();
+    .first<CourseRecord>();
 }
 
 async function finalizeExistingAdmission(c: AppContext, staff: StaffContext, enquiry: EnquiryRecord, draft: DraftRecord, enrolmentId: string) {
   const validated = validateAdmissionForConfirmation(JSON.parse(draft.payload_json));
-  if (!validated.success) return { ok: false as const, status: 400, code: "invalid_admission", message: validated.message };
+  if (!validated.success) return { ok: false as const, status: 400, code: "invalid_admission", message: validated.message, fieldErrors: validated.fieldErrors };
   const payload = validated.payload;
   const course = await getActiveCourse(c, payload.course?.courseId || "");
   if (!course) return { ok: false as const, status: 400, code: "invalid_course", message: "Select an active configured course." };
-  if (course.default_fee_paise === null || course.default_fee_paise === undefined) {
-    return { ok: false as const, status: 400, code: "course_fee_required", message: "Selected course must have a configured standard fee." };
+  const readiness = await getAdmissionReadiness(c, enquiry, payload, draft.id, course);
+  if (Object.keys(readiness.fieldErrors).length) {
+    return { ok: false as const, status: 400, code: "invalid_admission", message: firstFieldError(readiness.fieldErrors) || "Please check the admission details.", fieldErrors: readiness.fieldErrors };
   }
   const courseStandardFeePaise = Number(course.default_fee_paise);
   const feeInput = payload.fee!;
-  if (Number(feeInput.finalAgreedFeePaise || 0) < courseStandardFeePaise && !feeInput.discountReason?.trim()) {
-    return { ok: false as const, status: 400, code: "discount_reason_required", message: "Discount reason is required when the final fee is lower than Course Master fee." };
-  }
   const enrolment = await c.env.DB.prepare(
     `select enrolments.id, enrolments.enrolment_number, enrolments.student_id, enrolments.branch_id,
             students.student_number, students.person_id
@@ -585,6 +646,305 @@ async function finalizeAdmission(
       isNewStudent: input.isNewStudent,
     },
   };
+}
+
+export async function getAdmissionConfiguration(c: AppContext) {
+  const [options, paymentPlanRules] = await Promise.all([
+    c.env.DB.prepare(
+      `select category, code, label, sort_order, requires_custom_label, is_active
+       from admission_option_values
+       where organisation_id = ? and is_active = 1
+       order by category, sort_order, label`,
+    )
+      .bind(ORG_ID)
+      .all<AdmissionOptionRecord>(),
+    c.env.DB.prepare(
+      `select min_duration_months, max_duration_months, plan_type, fixed_instalments, is_active
+       from payment_plan_rules
+       where organisation_id = ? and is_active = 1
+       order by min_duration_months, coalesce(max_duration_months, 999), fixed_instalments`,
+    )
+      .bind(ORG_ID)
+      .all<Record<string, unknown>>(),
+  ]);
+  return { options: options.results || [], paymentPlanRules: paymentPlanRules.results || [] };
+}
+
+export async function requestDiscountApproval(c: AppContext, staff: StaffContext, enquiryId: string) {
+  const enquiry = await getAdmissionEnquiry(c, enquiryId);
+  if (!enquiry) return { ok: false as const, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
+  const draft = await getAdmissionDraft(c, enquiryId);
+  if (!draft || draft.status !== "draft") return { ok: false as const, status: 404, code: "draft_not_found", message: "Save a draft before requesting approval." };
+  const validated = validateAdmissionDraftPayload(JSON.parse(draft.payload_json));
+  if (!validated.success) return { ok: false as const, status: 400, code: "invalid_draft", message: validated.message };
+  const payload = validated.payload;
+  const course = await getActiveCourse(c, payload.course?.courseId || "");
+  if (!course) return { ok: false as const, status: 400, code: "invalid_course", message: "Select an active configured course." };
+  const errors = await discountApprovalFieldErrors(c, payload, draft.id, course);
+  const floor = Number(course.lowest_acceptable_fee_paise);
+  if (Number(payload.fee?.finalAgreedFeePaise || 0) >= floor) {
+    return { ok: false as const, status: 400, code: "approval_not_required", message: "Owner approval is only required below the course floor price." };
+  }
+  const reasonCode = String(payload.fee?.discountReasonCode || "");
+  if (errors["fee.discountReasonCode"]) {
+    return { ok: false as const, status: 400, code: "discount_reason_required", message: errors["fee.discountReasonCode"][0], fieldErrors: errors };
+  }
+  const now = new Date().toISOString();
+  await supersedeChangedDiscountApprovals(c, draft.id, payload);
+  const existing = await matchingDiscountApproval(c, draft.id, course.id, Number(payload.fee?.finalAgreedFeePaise || 0), reasonCode, String(payload.fee?.discountReason || ""));
+  if (existing?.status === "pending" || existing?.status === "approved") {
+    return { ok: true as const, approvalId: existing.id, status: existing.status };
+  }
+  const approvalId = createOpaqueId("approval");
+  await c.env.DB.prepare(
+    `insert into admission_discount_approvals
+       (id, organisation_id, admission_draft_id, enquiry_id, course_id, requested_final_fee_paise, discount_reason_code,
+        discount_reason_text, status, requested_by_login_account_id, created_at, updated_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+  )
+    .bind(approvalId, ORG_ID, draft.id, enquiry.id, course.id, Number(payload.fee?.finalAgreedFeePaise || 0), reasonCode, payload.fee?.discountReason || null, staff.loginAccountId, now, now)
+    .run();
+  await audit(c, staff, enquiry.branch_id, "discount_approval_requested", "admission_discount_approval", approvalId, { enquiryId, draftId: draft.id });
+  return { ok: true as const, approvalId, status: "pending" };
+}
+
+export async function listDiscountApprovals(c: AppContext) {
+  const approvals = await c.env.DB.prepare(
+    `select admission_discount_approvals.*, enquiries.enquiry_number, people.full_name, courses.name as course_name
+     from admission_discount_approvals
+     join enquiries on enquiries.id = admission_discount_approvals.enquiry_id
+     left join people on people.id = enquiries.person_id
+     join courses on courses.id = admission_discount_approvals.course_id
+     where admission_discount_approvals.organisation_id = ?
+     order by case admission_discount_approvals.status when 'pending' then 1 when 'approved' then 2 when 'rejected' then 3 else 4 end,
+              admission_discount_approvals.created_at desc`,
+  )
+    .bind(ORG_ID)
+    .all<Record<string, unknown>>();
+  return approvals.results || [];
+}
+
+export async function decideDiscountApproval(c: AppContext, staff: StaffContext, approvalId: string, decision: "approved" | "rejected") {
+  const now = new Date().toISOString();
+  const result = await c.env.DB.prepare(
+    `update admission_discount_approvals
+     set status = ?, decided_by_login_account_id = ?, decided_at = ?, updated_at = ?
+     where id = ? and organisation_id = ? and status = 'pending'`,
+  )
+    .bind(decision, staff.loginAccountId, now, now, approvalId, ORG_ID)
+    .run();
+  if (!changed(result)) return { ok: false as const, status: 404, code: "approval_not_found", message: "Pending approval was not found." };
+  await audit(c, staff, null, `discount_approval_${decision}`, "admission_discount_approval", approvalId, {});
+  return { ok: true as const, approvalId, status: decision };
+}
+
+async function getAdmissionReadiness(c: AppContext, enquiry: EnquiryRecord, payload: AdmissionPayload, draftId: string, knownCourse?: CourseRecord) {
+  const fieldErrors: FieldErrors = {};
+  const syncValidation = validateAdmissionForConfirmation(payload);
+  if (!syncValidation.success) mergeFieldErrors(fieldErrors, syncValidation.fieldErrors || {});
+  mergeFieldErrors(fieldErrors, await validateBranchLock(c, enquiry, payload, enquiry.branch_id));
+  mergeFieldErrors(fieldErrors, await validateAdmissionOptions(c, payload));
+  const courseId = String(payload.course?.courseId || "");
+  const course = knownCourse || (courseId ? await getActiveCourse(c, courseId) : null);
+  if (!course) {
+    addFieldError(fieldErrors, "course.courseId", "Select an active configured course.");
+    return { fieldErrors };
+  }
+  mergeFieldErrors(fieldErrors, courseConfigurationFieldErrors(course));
+  mergeFieldErrors(fieldErrors, await paymentPlanFieldErrors(c, payload, course));
+  mergeFieldErrors(fieldErrors, await discountApprovalFieldErrors(c, payload, draftId, course));
+  return { fieldErrors };
+}
+
+async function validateBranchLock(c: AppContext, enquiry: EnquiryRecord, payload: AdmissionPayload, expectedBranchId: string) {
+  const fieldErrors: FieldErrors = {};
+  const payloadBranchId = String(payload.course?.branchId || "");
+  if (payloadBranchId && payloadBranchId !== expectedBranchId) {
+    addFieldError(fieldErrors, "course.branchId", "Admission branch is locked to the enquiry branch.");
+  }
+  const branch = await getBranch(c, expectedBranchId);
+  if (!branch) addFieldError(fieldErrors, "course.branchId", "The enquiry branch is not active.");
+  return fieldErrors;
+}
+
+async function validateAdmissionOptions(c: AppContext, payload: AdmissionPayload) {
+  const fieldErrors: FieldErrors = {};
+  const map = await admissionOptionsMap(c);
+  validateOptionSelection(fieldErrors, map, "preferred_language", payload.contact?.preferredLanguageCode, payload.contact?.preferredLanguage, "contact.preferredLanguageCode", "Preferred language");
+  validateOptionSelection(fieldErrors, map, "qualification_level", payload.education?.qualificationLevelCode, payload.education?.qualificationLevel, "education.qualificationLevelCode", "Highest/current qualification");
+  validateOptionSelection(fieldErrors, map, "stream", payload.education?.streamCode, payload.education?.stream, "education.streamCode", "Stream", false);
+  validateOptionSelection(fieldErrors, map, "occupation_status", payload.education?.occupationStatusCode, payload.education?.occupationStatus, "education.occupationStatusCode", "Current occupation status");
+  validateOptionSelection(fieldErrors, map, "batch_preference", payload.course?.batchPreferenceCode, payload.course?.batchPreference, "course.batchPreferenceCode", "Batch preference", false);
+  if (Number(payload.fee?.finalAgreedFeePaise || 0) < Number(payload.fee?.standardFeePaise || 0)) {
+    validateOptionSelection(fieldErrors, map, "discount_reason", payload.fee?.discountReasonCode, payload.fee?.discountReason, "fee.discountReasonCode", "Discount reason");
+  } else if (payload.fee?.discountReasonCode) {
+    validateOptionSelection(fieldErrors, map, "discount_reason", payload.fee.discountReasonCode, payload.fee.discountReason, "fee.discountReasonCode", "Discount reason", false);
+  }
+  return fieldErrors;
+}
+
+async function normalizeAdmissionOptionLabels(c: AppContext, payload: AdmissionPayload): Promise<AdmissionPayload> {
+  const map = await admissionOptionsMap(c);
+  const next: AdmissionPayload = {
+    ...payload,
+    contact: { ...(payload.contact || {}) } as NonNullable<AdmissionPayload["contact"]>,
+    education: { ...(payload.education || {}) } as NonNullable<AdmissionPayload["education"]>,
+    course: { ...(payload.course || {}) } as NonNullable<AdmissionPayload["course"]>,
+    fee: { ...(payload.fee || {}) } as NonNullable<AdmissionPayload["fee"]>,
+  };
+  const contact = next.contact as Record<string, unknown>;
+  const education = next.education as Record<string, unknown>;
+  const course = next.course as Record<string, unknown>;
+  const fee = next.fee as Record<string, unknown>;
+  applyOptionLabel(contact, "preferredLanguageCode", "preferredLanguage", map.preferred_language);
+  applyOptionLabel(education, "qualificationLevelCode", "qualificationLevel", map.qualification_level);
+  applyOptionLabel(education, "streamCode", "stream", map.stream);
+  applyOptionLabel(education, "occupationStatusCode", "occupationStatus", map.occupation_status);
+  applyOptionLabel(course, "batchPreferenceCode", "batchPreference", map.batch_preference);
+  applyOptionLabel(fee, "discountReasonCode", "discountReason", map.discount_reason);
+  if (next.education?.currentlyPursuing) {
+    next.education.passingYear = null;
+  } else {
+    if (next.education) next.education.currentYearSemester = "";
+  }
+  return next;
+}
+
+async function admissionOptionsMap(c: AppContext) {
+  const rows = await c.env.DB.prepare(
+    `select category, code, label, requires_custom_label, is_active
+     from admission_option_values
+     where organisation_id = ? and is_active = 1`,
+  )
+    .bind(ORG_ID)
+    .all<AdmissionOptionRecord>();
+  const map: Record<string, Record<string, AdmissionOptionRecord>> = {};
+  for (const option of rows.results || []) {
+    map[option.category] ||= {};
+    map[option.category][option.code] = option;
+  }
+  return map as Record<string, Record<string, AdmissionOptionRecord>>;
+}
+
+function validateOptionSelection(
+  fieldErrors: FieldErrors,
+  optionsByCategory: Record<string, Record<string, AdmissionOptionRecord>>,
+  category: string,
+  code: unknown,
+  label: unknown,
+  path: string,
+  fieldLabel: string,
+  required = true,
+) {
+  const value = typeof code === "string" ? code.trim() : "";
+  if (!value) {
+    if (required) addFieldError(fieldErrors, path, `${fieldLabel} is required.`);
+    return;
+  }
+  const option = optionsByCategory[category]?.[value];
+  if (!option) {
+    addFieldError(fieldErrors, path, `Select an active ${fieldLabel.toLowerCase()} option.`);
+    return;
+  }
+  if (Boolean(option.requires_custom_label) && (typeof label !== "string" || !label.trim() || label.trim() === option.label)) {
+    addFieldError(fieldErrors, path.replace(/Code$/, ""), `Enter the custom ${fieldLabel.toLowerCase()} label.`);
+  }
+}
+
+function applyOptionLabel(target: Record<string, unknown>, codeKey: string, labelKey: string, options: Record<string, AdmissionOptionRecord> | undefined) {
+  const code = typeof target[codeKey] === "string" ? String(target[codeKey]) : "";
+  const option = code ? options?.[code] : null;
+  if (!option) return;
+  if (!option.requires_custom_label || !String(target[labelKey] || "").trim()) {
+    target[labelKey] = option.label;
+  }
+}
+
+function courseConfigurationFieldErrors(course: CourseRecord) {
+  const fieldErrors: FieldErrors = {};
+  const duration = Number(course.duration_months);
+  const standard = Number(course.default_fee_paise);
+  const floor = Number(course.lowest_acceptable_fee_paise);
+  if (!Number.isInteger(duration) || duration < 1) addFieldError(fieldErrors, "course.courseId", "Selected course must have a duration of at least one month.");
+  if (!Number.isInteger(standard) || standard < 0) addFieldError(fieldErrors, "fee.standardFeePaise", "Selected course must have a configured listed price.");
+  if (!Number.isInteger(floor) || floor < 0) addFieldError(fieldErrors, "fee.finalAgreedFeePaise", "Selected course must have a configured floor price.");
+  if (Number.isInteger(standard) && Number.isInteger(floor) && floor > standard) {
+    addFieldError(fieldErrors, "fee.finalAgreedFeePaise", "Selected course floor price cannot exceed listed price.");
+  }
+  return fieldErrors;
+}
+
+async function paymentPlanFieldErrors(c: AppContext, payload: AdmissionPayload, course: CourseRecord) {
+  const fieldErrors: FieldErrors = {};
+  const rules = await c.env.DB.prepare(
+    `select plan_type, fixed_instalments
+     from payment_plan_rules
+     where organisation_id = ?
+       and is_active = 1
+       and min_duration_months <= ?
+       and (max_duration_months is null or max_duration_months >= ?)
+     order by fixed_instalments`,
+  )
+    .bind(ORG_ID, Number(course.duration_months || 0), Number(course.duration_months || 0))
+    .all<PaymentPlanRuleRecord>();
+  const selected = String(payload.fee?.paymentPlanType || "");
+  const rule = (rules.results || []).find((item) => item.plan_type === selected);
+  if (!rule) {
+    addFieldError(fieldErrors, "fee.paymentPlanType", "Select a payment plan allowed for the course duration.");
+    return fieldErrors;
+  }
+  if (rule.fixed_instalments !== null && Number(payload.fee?.numberOfInstalments || rule.fixed_instalments) !== Number(rule.fixed_instalments)) {
+    addFieldError(fieldErrors, "fee.numberOfInstalments", `${paymentPlanLabel(selected)} uses ${rule.fixed_instalments} instalment${rule.fixed_instalments === 1 ? "" : "s"}.`);
+  }
+  return fieldErrors;
+}
+
+async function discountApprovalFieldErrors(c: AppContext, payload: AdmissionPayload, draftId: string, course: CourseRecord) {
+  const fieldErrors: FieldErrors = {};
+  const finalFee = Number(payload.fee?.finalAgreedFeePaise || 0);
+  const standard = Number(course.default_fee_paise || 0);
+  const floor = Number(course.lowest_acceptable_fee_paise || 0);
+  if (finalFee < 0) addFieldError(fieldErrors, "fee.finalAgreedFeePaise", "Final agreed fee cannot be negative.");
+  if (finalFee < standard && !String(payload.fee?.discountReasonCode || "").trim()) {
+    addFieldError(fieldErrors, "fee.discountReasonCode", "Discount reason is required when the final fee is lower than Course Master price.");
+  }
+  if (finalFee < floor) {
+    const approval = await matchingDiscountApproval(c, draftId, course.id, finalFee, String(payload.fee?.discountReasonCode || ""), String(payload.fee?.discountReason || ""));
+    if (approval?.status !== "approved") {
+      addFieldError(fieldErrors, "fee.finalAgreedFeePaise", "Owner approval is required below the course floor price.");
+    }
+  }
+  return fieldErrors;
+}
+
+async function matchingDiscountApproval(c: AppContext, draftId: string, courseId: string, finalFeePaise: number, reasonCode: string, reasonText: string) {
+  return c.env.DB.prepare(
+    `select id, status, course_id, requested_final_fee_paise, discount_reason_code, discount_reason_text
+     from admission_discount_approvals
+     where admission_draft_id = ? and course_id = ? and requested_final_fee_paise = ? and discount_reason_code = ?
+       and coalesce(discount_reason_text, '') = ?
+       and status in ('pending', 'approved')
+     order by updated_at desc limit 1`,
+  )
+    .bind(draftId, courseId, finalFeePaise, reasonCode, reasonText)
+    .first<DiscountApprovalRecord>();
+}
+
+async function supersedeChangedDiscountApprovals(c: AppContext, draftId: string | null, payload: AdmissionPayload) {
+  if (!draftId) return;
+  const courseId = String(payload.course?.courseId || "");
+  const finalFee = Number(payload.fee?.finalAgreedFeePaise || 0);
+  const reasonCode = String(payload.fee?.discountReasonCode || "");
+  const reasonText = String(payload.fee?.discountReason || "");
+  await c.env.DB.prepare(
+    `update admission_discount_approvals
+     set status = 'superseded', updated_at = ?
+     where admission_draft_id = ?
+       and status in ('pending', 'approved')
+       and not (course_id = ? and requested_final_fee_paise = ? and discount_reason_code = ? and coalesce(discount_reason_text, '') = ?)`,
+  )
+    .bind(new Date().toISOString(), draftId, courseId, finalFee, reasonCode, reasonText)
+    .run();
 }
 
 async function allocateSequence(c: AppContext, organisationId: string, branchId: string, sequenceKey: string) {
@@ -857,6 +1217,38 @@ async function auditAdmissionConfirmed(c: AppContext, staff: StaffContext, branc
 
 function requireField(ctx: z.RefinementCtx, value: unknown, path: (string | number)[], message: string) {
   if (typeof value !== "string" || !value.trim()) ctx.addIssue({ code: "custom", path, message });
+}
+
+function fieldErrorsFromIssues(issues: z.ZodIssue[]): FieldErrors {
+  const fieldErrors: FieldErrors = {};
+  for (const issue of issues) addFieldError(fieldErrors, issue.path.join("."), issue.message);
+  return fieldErrors;
+}
+
+function addFieldError(fieldErrors: FieldErrors, path: string, message: string) {
+  fieldErrors[path] ||= [];
+  if (!fieldErrors[path].includes(message)) fieldErrors[path].push(message);
+}
+
+function mergeFieldErrors(target: FieldErrors, source: FieldErrors) {
+  for (const [path, messages] of Object.entries(source)) {
+    for (const message of messages) addFieldError(target, path, message);
+  }
+}
+
+function firstFieldError(fieldErrors: FieldErrors) {
+  return Object.values(fieldErrors)[0]?.[0] || null;
+}
+
+function paymentPlanLabel(value: string) {
+  if (value === "full") return "Full payment";
+  if (value === "two_instalments") return "Two instalments";
+  if (value === "three_instalments") return "Three instalments";
+  return "Custom payment plan";
+}
+
+function changed(result: { meta?: { changes?: number; rows_written?: number } }) {
+  return Number(result.meta?.changes ?? result.meta?.rows_written ?? 0) > 0;
 }
 
 function findSensitivePayloadKey(value: unknown): string | null {

@@ -156,7 +156,9 @@ const courseSchema = z.object({
   code: z.string(),
   name: z.string(),
   duration_label: z.string().nullable(),
+  duration_months: z.number().nullable().optional(),
   default_fee_paise: z.number().nullable(),
+  lowest_acceptable_fee_paise: z.number().nullable().optional(),
   nsdc_available: z.union([z.number(), z.boolean()]),
   status: z.string(),
   created_at: z.string().optional(),
@@ -184,6 +186,7 @@ const admissionDraftSaveSchema = z.object({
   draftId: z.string(),
   payload: admissionDraftPayloadSchema,
   currentStep: z.string(),
+  fieldErrors: z.record(z.string(), z.array(z.string())).optional(),
 });
 
 const admissionConfirmationSchema = z.object({
@@ -216,6 +219,32 @@ const studentProfileSchema = z.object({
   enquiries: z.array(z.record(z.string(), z.unknown())),
 });
 
+const admissionConfigurationSchema = z.object({
+  options: z.array(
+    z.object({
+      category: z.string(),
+      code: z.string(),
+      label: z.string(),
+      sort_order: z.number().optional(),
+      requires_custom_label: z.union([z.number(), z.boolean()]),
+      is_active: z.union([z.number(), z.boolean()]),
+    }),
+  ),
+  paymentPlanRules: z.array(
+    z.object({
+      min_duration_months: z.number(),
+      max_duration_months: z.number().nullable().optional(),
+      plan_type: z.string(),
+      fixed_instalments: z.number().nullable().optional(),
+      is_active: z.union([z.number(), z.boolean()]),
+    }),
+  ),
+});
+
+const discountApprovalsSchema = z.object({
+  approvals: z.array(z.record(z.string(), z.unknown())),
+});
+
 export type EnquiryOptions = z.infer<typeof enquiryOptionsSchema>;
 export type StudentSearchResult = z.infer<typeof studentSearchSchema>;
 export type CreateEnquiryResponse = z.infer<typeof createEnquiryResponseSchema>;
@@ -224,6 +253,20 @@ export type EnquiryDetail = z.infer<typeof enquiryDetailSchema>;
 export type AdmissionDraft = z.infer<typeof admissionDraftSchema>["draft"];
 export type AdmissionConfirmation = z.infer<typeof admissionConfirmationSchema>;
 export type StaffStudentProfile = z.infer<typeof studentProfileSchema>;
+export type AdmissionConfiguration = z.infer<typeof admissionConfigurationSchema>;
+export type AdmissionOptionValue = AdmissionConfiguration["options"][number];
+export type PaymentPlanRule = AdmissionConfiguration["paymentPlanRules"][number];
+export type FieldErrors = Record<string, string[]>;
+
+export class ApiError extends Error {
+  fieldErrors?: FieldErrors;
+
+  constructor(message: string, fieldErrors?: FieldErrors) {
+    super(message);
+    this.name = "ApiError";
+    this.fieldErrors = fieldErrors;
+  }
+}
 
 export type CreateEnquiryInput = {
   mobile: string;
@@ -286,6 +329,10 @@ export async function getActiveCourses() {
   return getJson("/api/staff/courses/active", courseListSchema);
 }
 
+export async function getAdmissionConfiguration() {
+  return getJson("/api/staff/admission-configuration", admissionConfigurationSchema);
+}
+
 export async function getStaffCourses() {
   return getJson("/api/staff/courses", courseListSchema);
 }
@@ -322,6 +369,18 @@ export async function getStaffStudentProfile(studentId: string) {
   return getJson(`/api/staff/students/${encodeURIComponent(studentId)}`, studentProfileSchema);
 }
 
+export async function requestDiscountApproval(enquiryId: string) {
+  return postJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/discount-approval`, {}, z.object({ success: z.literal(true), approvalId: z.string(), status: z.string() }));
+}
+
+export async function getDiscountApprovals() {
+  return getJson("/api/staff/discount-approvals", discountApprovalsSchema);
+}
+
+export async function decideDiscountApproval(approvalId: string, decision: "approved" | "rejected") {
+  return postJson(`/api/staff/discount-approvals/${encodeURIComponent(approvalId)}/decision`, { decision }, z.object({ success: z.literal(true), approvalId: z.string(), status: z.string() }));
+}
+
 async function getJson<T extends z.ZodType>(url: string, schema: T): Promise<z.infer<T>> {
   const response = await fetch(url, {
     method: "GET",
@@ -329,7 +388,7 @@ async function getJson<T extends z.ZodType>(url: string, schema: T): Promise<z.i
     headers: { Accept: "application/json" },
   });
   const data: unknown = await response.json();
-  if (!response.ok) throw new Error(apiErrorMessage(data));
+  if (!response.ok) throw apiError(data);
   return schema.parse(data);
 }
 
@@ -344,7 +403,7 @@ async function postJson<T extends z.ZodType>(url: string, body: Record<string, u
     body: JSON.stringify(body),
   });
   const data: unknown = await response.json();
-  if (!response.ok) throw new Error(apiErrorMessage(data));
+  if (!response.ok) throw apiError(data);
   return schema.parse(data);
 }
 
@@ -359,7 +418,7 @@ async function patchJson<T extends z.ZodType>(url: string, body: Record<string, 
     body: JSON.stringify(body),
   });
   const data: unknown = await response.json();
-  if (!response.ok) throw new Error(apiErrorMessage(data));
+  if (!response.ok) throw apiError(data);
   return schema.parse(data);
 }
 
@@ -367,4 +426,17 @@ function apiErrorMessage(data: unknown) {
   if (!data || typeof data !== "object") return "The request could not be completed.";
   const error = (data as { error?: { message?: unknown } }).error;
   return typeof error?.message === "string" ? error.message : "The request could not be completed.";
+}
+
+function apiError(data: unknown) {
+  const fieldErrors = data && typeof data === "object" ? (data as { error?: { fieldErrors?: unknown } }).error?.fieldErrors : undefined;
+  return new ApiError(apiErrorMessage(data), isFieldErrors(fieldErrors) ? fieldErrors : undefined);
+}
+
+function isFieldErrors(value: unknown): value is FieldErrors {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      Object.values(value as Record<string, unknown>).every((messages) => Array.isArray(messages) && messages.every((message) => typeof message === "string")),
+  );
 }

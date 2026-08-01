@@ -9,6 +9,7 @@ import { ReferralsPage } from "../features/referrals/ReferralsPage";
 import { EnquiriesPage } from "../features/staff/EnquiriesPage";
 import { AdmissionPage } from "../features/staff/AdmissionPage";
 import { CourseMasterPage } from "../features/staff/CourseMasterPage";
+import { DiscountApprovalsPage } from "../features/staff/DiscountApprovalsPage";
 import { EnquiryDetailPage } from "../features/staff/EnquiryDetailPage";
 import { StudentProfilePage } from "../features/staff/StudentProfilePage";
 import { RulesPage } from "./RulesPage";
@@ -16,7 +17,7 @@ import { ShellHomePage } from "./ShellHomePage";
 import { AppShell } from "./AppShell";
 import type { AppRoute, RoutePath } from "./types";
 
-const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/courses", "/app/referrals", "/app/rules", "/app/profile"]);
+const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/courses", "/app/discount-approvals", "/app/referrals", "/app/rules", "/app/profile"]);
 const staffRoles = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
 const courseAdminRoles = new Set(["owner", "admin", "system_admin"]);
 
@@ -34,7 +35,7 @@ export function Router() {
   const [path, setPath] = useState<RoutePath>(() => normalizePath(window.location.pathname));
   const isStaff = Boolean(session?.accountRoles.some((role) => staffRoles.has(role)));
   const isCourseAdmin = Boolean(session?.accountRoles.some((role) => courseAdminRoles.has(role)));
-  const navigation = isStaff ? staffNavigation.filter((item) => item.path !== "/app/courses" || isCourseAdmin) : studentNavigation;
+  const navigation = isStaff ? staffNavigation.filter((item) => !["/app/courses", "/app/discount-approvals"].includes(item.path) || isCourseAdmin) : studentNavigation;
 
   useEffect(() => {
     function handlePopState() {
@@ -51,10 +52,10 @@ export function Router() {
   }, [hasSessionError, isAuthenticated, isLoading, path]);
 
   useEffect(() => {
-    if (!isLoading && isAuthenticated && (path === "/app/enquiries" || path === "/app/courses" || path.startsWith("/app/enquiries/") || path.startsWith("/app/students/")) && !isStaff) {
+    if (!isLoading && isAuthenticated && (path === "/app/enquiries" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/enquiries/") || path.startsWith("/app/students/")) && !isStaff) {
       navigate("/app", true);
     }
-    if (!isLoading && isAuthenticated && path === "/app/courses" && !isCourseAdmin) {
+    if (!isLoading && isAuthenticated && (path === "/app/courses" || path === "/app/discount-approvals") && !isCourseAdmin) {
       navigate("/app/enquiries", true);
     }
   }, [isAuthenticated, isCourseAdmin, isLoading, isStaff, path]);
@@ -107,6 +108,7 @@ export function Router() {
       {activeAppPath === "/app" ? <ShellHomePage /> : null}
       {activeAppPath === "/app/enquiries" && isStaff ? <EnquiriesPage /> : null}
       {activeAppPath === "/app/courses" && isStaff ? <CourseMasterPage /> : null}
+      {activeAppPath === "/app/discount-approvals" && isCourseAdmin ? <DiscountApprovalsPage /> : null}
       {enquiryDetailMatch && isStaff ? <EnquiryDetailPage enquiryId={enquiryDetailMatch[1]} /> : null}
       {enquiryAdmissionMatch && isStaff ? <AdmissionPage enquiryId={enquiryAdmissionMatch[1]} /> : null}
       {studentProfileMatch && isStaff ? <StudentProfilePage studentId={studentProfileMatch[1]} /> : null}

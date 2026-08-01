@@ -175,7 +175,9 @@ export const courses = sqliteTable(
     code: text("code").notNull(),
     name: text("name").notNull(),
     durationLabel: text("duration_label"),
+    durationMonths: integer("duration_months"),
     defaultFeePaise: integer("default_fee_paise"),
+    lowestAcceptableFeePaise: integer("lowest_acceptable_fee_paise"),
     nsdcAvailable: integer("nsdc_available", { mode: "boolean" }).notNull().default(false),
     status: text("status").notNull().default("active"),
     ...timestamps,
@@ -184,6 +186,52 @@ export const courses = sqliteTable(
     uniqueIndex("courses_organisation_code_unique").on(table.organisationId, table.code),
     index("courses_organisation_id_idx").on(table.organisationId),
     check("courses_status_check", sql`${table.status} in ('active', 'inactive', 'archived')`),
+  ],
+);
+
+export const admissionOptionValues = sqliteTable(
+  "admission_option_values",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    category: text("category").notNull(),
+    code: text("code").notNull(),
+    label: text("label").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    requiresCustomLabel: integer("requires_custom_label", { mode: "boolean" }).notNull().default(false),
+    isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("admission_option_values_category_code_unique").on(table.organisationId, table.category, table.code),
+    index("admission_option_values_category_idx").on(table.organisationId, table.category, table.isActive),
+    check(
+      "admission_option_values_category_check",
+      sql`${table.category} in ('preferred_language', 'qualification_level', 'stream', 'occupation_status', 'batch_preference', 'discount_reason')`,
+    ),
+  ],
+);
+
+export const paymentPlanRules = sqliteTable(
+  "payment_plan_rules",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    minDurationMonths: integer("min_duration_months").notNull(),
+    maxDurationMonths: integer("max_duration_months"),
+    planType: text("plan_type").notNull(),
+    fixedInstalments: integer("fixed_instalments"),
+    isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+    ...timestamps,
+  },
+  (table) => [
+    index("payment_plan_rules_duration_idx").on(table.organisationId, table.minDurationMonths, table.maxDurationMonths, table.isActive),
+    check("payment_plan_rules_duration_check", sql`${table.minDurationMonths} >= 1 and (${table.maxDurationMonths} is null or ${table.maxDurationMonths} >= ${table.minDurationMonths})`),
+    check("payment_plan_rules_plan_check", sql`${table.planType} in ('full', 'two_instalments', 'three_instalments', 'custom')`),
   ],
 );
 
@@ -460,5 +508,38 @@ export const admissionDrafts = sqliteTable(
     index("admission_drafts_enquiry_id_idx").on(table.enquiryId),
     index("admission_drafts_person_id_idx").on(table.personId),
     check("admission_drafts_status_check", sql`${table.status} in ('draft', 'confirmed', 'cancelled')`),
+  ],
+);
+
+export const admissionDiscountApprovals = sqliteTable(
+  "admission_discount_approvals",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    admissionDraftId: text("admission_draft_id")
+      .notNull()
+      .references(() => admissionDrafts.id),
+    enquiryId: text("enquiry_id")
+      .notNull()
+      .references(() => enquiries.id),
+    courseId: text("course_id")
+      .notNull()
+      .references(() => courses.id),
+    requestedFinalFeePaise: integer("requested_final_fee_paise").notNull(),
+    discountReasonCode: text("discount_reason_code").notNull(),
+    discountReasonText: text("discount_reason_text"),
+    status: text("status").notNull().default("pending"),
+    requestedByLoginAccountId: text("requested_by_login_account_id").notNull(),
+    decidedByLoginAccountId: text("decided_by_login_account_id"),
+    decidedAt: text("decided_at"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("admission_discount_approvals_status_idx").on(table.organisationId, table.status, table.createdAt),
+    index("admission_discount_approvals_draft_idx").on(table.admissionDraftId),
+    check("admission_discount_approvals_status_check", sql`${table.status} in ('pending', 'approved', 'rejected', 'superseded')`),
   ],
 );

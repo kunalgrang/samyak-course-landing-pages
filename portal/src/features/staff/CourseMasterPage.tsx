@@ -8,7 +8,9 @@ type CourseForm = {
   code: string;
   name: string;
   durationLabel: string;
+  durationMonths: string;
   standardFeeRupees: string;
+  lowestAcceptableFeeRupees: string;
   nsdcAvailable: boolean;
   status: "active" | "inactive" | "archived";
 };
@@ -17,7 +19,9 @@ const emptyCourseForm: CourseForm = {
   code: "",
   name: "",
   durationLabel: "",
+  durationMonths: "6",
   standardFeeRupees: "",
+  lowestAcceptableFeeRupees: "",
   nsdcAvailable: false,
   status: "active",
 };
@@ -70,7 +74,9 @@ export function CourseMasterPage() {
       code: course.code,
       name: course.name,
       durationLabel: course.duration_label || "",
+      durationMonths: String(course.duration_months || 6),
       standardFeeRupees: paiseToRupees(course.default_fee_paise || 0),
+      lowestAcceptableFeeRupees: paiseToRupees(course.lowest_acceptable_fee_paise ?? course.default_fee_paise ?? 0),
       nsdcAvailable: Boolean(course.nsdc_available),
       status: course.status as CourseForm["status"],
     });
@@ -93,7 +99,9 @@ export function CourseMasterPage() {
           <label>Course code<input value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} required /></label>
           <label>Course name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label>
           <label>Duration label<input value={form.durationLabel} onChange={(event) => setForm({ ...form, durationLabel: event.target.value })} placeholder="e.g. 6 months" /></label>
-          <label>Standard fee<input type="number" min="0" value={form.standardFeeRupees} onChange={(event) => setForm({ ...form, standardFeeRupees: event.target.value })} required /></label>
+          <label>Duration months<input type="number" min="1" value={form.durationMonths} onChange={(event) => setForm({ ...form, durationMonths: event.target.value })} required /></label>
+          <label>Listed price<input type="number" min="0" value={form.standardFeeRupees} onChange={(event) => setForm({ ...form, standardFeeRupees: event.target.value })} required /></label>
+          <label>Lowest acceptable fee<input type="number" min="0" value={form.lowestAcceptableFeeRupees} onChange={(event) => setForm({ ...form, lowestAcceptableFeeRupees: event.target.value })} required /></label>
           <label>NSDC available<select value={form.nsdcAvailable ? "yes" : "no"} onChange={(event) => setForm({ ...form, nsdcAvailable: event.target.value === "yes" })}><option value="no">No</option><option value="yes">Yes</option></select></label>
           <label>Status<select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as CourseForm["status"] })}><option value="active">Active</option><option value="inactive">Inactive</option><option value="archived">Archived</option></select></label>
           <div className="staff-form-actions">
@@ -110,7 +118,7 @@ export function CourseMasterPage() {
             <article key={course.id} className="table-row">
               <strong>{course.code}</strong>
               <span>{course.name}</span>
-              <small>{course.duration_label || "Duration not set"} · {formatMoney(course.default_fee_paise || 0)} · {course.nsdc_available ? "NSDC" : "Non-NSDC"} · {course.status}</small>
+              <small>{course.duration_label || `${course.duration_months || 0} months`} · Listed {formatMoney(course.default_fee_paise || 0)} · Floor {formatMoney(course.lowest_acceptable_fee_paise ?? course.default_fee_paise ?? 0)} · {course.nsdc_available ? "NSDC" : "Non-NSDC"} · {course.status}</small>
               <button type="button" onClick={() => edit(course)}>Edit</button>
             </article>
           ))}
@@ -125,7 +133,9 @@ export function courseInputFromForm(form: CourseForm) {
     code: form.code.trim(),
     name: form.name.trim(),
     durationLabel: form.durationLabel.trim() || null,
+    durationMonths: Number(form.durationMonths || 0),
     standardFeePaise: Math.round(Number(form.standardFeeRupees || 0) * 100),
+    lowestAcceptableFeePaise: Math.round(Number(form.lowestAcceptableFeeRupees || 0) * 100),
     nsdcAvailable: form.nsdcAvailable,
     status: form.status,
   };

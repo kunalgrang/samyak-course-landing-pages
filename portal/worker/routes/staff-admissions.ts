@@ -2,7 +2,16 @@ import { z } from "zod";
 import type { Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { ORG_ID } from "../lib/auth-store";
-import { confirmAdmission, getAdmissionDraft, saveAdmissionDraft, saveAdmissionDraftSchema } from "../lib/admission-service";
+import {
+  confirmAdmission,
+  decideDiscountApproval,
+  getAdmissionConfiguration,
+  getAdmissionDraft,
+  listDiscountApprovals,
+  requestDiscountApproval,
+  saveAdmissionDraft,
+  saveAdmissionDraftSchema,
+} from "../lib/admission-service";
 import { ADMISSION_STAFF_ROLES, COURSE_ADMIN_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import { createOpaqueId, decryptText } from "../lib/crypto";
 import { jsonError, jsonPlain } from "../lib/json-response";
@@ -12,14 +21,24 @@ type PortalHono = Hono<{
   Variables: WorkerVariables;
 }>;
 
-const courseSchema = z.object({
+const baseCourseSchema = z.object({
   code: z.string().trim().min(2).max(30).regex(/^[A-Za-z0-9_-]+$/),
   name: z.string().trim().min(2).max(140),
   durationLabel: z.string().trim().max(80).nullable().optional(),
+  durationMonths: z.coerce.number().int().min(1),
   standardFeePaise: z.coerce.number().int().min(0),
+  lowestAcceptableFeePaise: z.coerce.number().int().min(0),
   nsdcAvailable: z.boolean().default(false),
   status: z.enum(["active", "inactive", "archived"]).default("active"),
 });
+
+const courseSchema = baseCourseSchema.refine((course) => course.lowestAcceptableFeePaise <= course.standardFeePaise, {
+  path: ["lowestAcceptableFeePaise"],
+  message: "Lowest acceptable fee cannot exceed listed price.",
+});
+const coursePatchSchema = baseCourseSchema.partial();
+
+const discountDecisionSchema = z.object({ decision: z.enum(["approved", "rejected"]) });
 
 const enquiryStatusSchema = z.object({
   status: z.enum([
@@ -43,7 +62,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
     const courses = await c.env.DB.prepare(
-      `select id, code, name, duration_label, default_fee_paise, nsdc_available, status
+      `select id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, nsdc_available, status
        from courses
        where organisation_id = ? and status = 'active'
        order by name`,
@@ -57,7 +76,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     const staff = await requireStaffRoles(c, COURSE_ADMIN_ROLES);
     if (!staff) return forbidden(c);
     const courses = await c.env.DB.prepare(
-      `select id, code, name, duration_label, default_fee_paise, nsdc_available, status, created_at, updated_at
+      `select id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, nsdc_available, status, created_at, updated_at
        from courses
        where organisation_id = ?
        order by case status when 'active' then 1 when 'inactive' then 2 else 3 end, name`,
@@ -71,14 +90,14 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     const staff = await requireStaffRoles(c, COURSE_ADMIN_ROLES);
     if (!staff) return forbidden(c);
     const parsed = courseSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_course", message: "Please check course details." });
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_course", message: parsed.error.issues[0]?.message || "Please check course details." });
     const now = new Date().toISOString();
     const courseId = createOpaqueId("course");
     try {
       await c.env.DB.prepare(
         `insert into courses
-           (id, organisation_id, code, name, duration_label, default_fee_paise, nsdc_available, status, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, nsdc_available, status, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
         .bind(
           courseId,
@@ -86,7 +105,9 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
           parsed.data.code.toUpperCase(),
           parsed.data.name,
           parsed.data.durationLabel || null,
+          parsed.data.durationMonths,
           parsed.data.standardFeePaise,
+          parsed.data.lowestAcceptableFeePaise,
           parsed.data.nsdcAvailable ? 1 : 0,
           parsed.data.status,
           now,
@@ -103,27 +124,36 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.patch("/api/staff/courses/:courseId", async (c) => {
     const staff = await requireStaffRoles(c, COURSE_ADMIN_ROLES);
     if (!staff) return forbidden(c);
-    const parsed = courseSchema.partial().safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_course", message: "Please check course details." });
+    const parsed = coursePatchSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_course", message: parsed.error.issues[0]?.message || "Please check course details." });
     const existing = await c.env.DB.prepare("select id from courses where id = ? and organisation_id = ?")
       .bind(c.req.param("courseId"), ORG_ID)
       .first<{ id: string }>();
     if (!existing) return jsonError(c, { status: 404, code: "course_not_found", message: "Course was not found." });
     const current = await c.env.DB.prepare("select * from courses where id = ?").bind(existing.id).first<Record<string, unknown>>();
     const next = { ...current, ...toCourseRow(parsed.data), updated_at: new Date().toISOString() };
+    if (Number(next.lowest_acceptable_fee_paise ?? 0) > Number(next.default_fee_paise ?? 0)) {
+      return jsonError(c, { status: 400, code: "invalid_course", message: "Lowest acceptable fee cannot exceed listed price." });
+    }
     try {
       await c.env.DB.prepare(
         `update courses
-         set code = ?, name = ?, duration_label = ?, default_fee_paise = ?, nsdc_available = ?, status = ?, updated_at = ?
+         set code = ?, name = ?, duration_label = ?, duration_months = ?, default_fee_paise = ?, lowest_acceptable_fee_paise = ?, nsdc_available = ?, status = ?, updated_at = ?
          where id = ? and organisation_id = ?`,
       )
-        .bind(next.code, next.name, next.duration_label ?? null, next.default_fee_paise ?? 0, next.nsdc_available ? 1 : 0, next.status, next.updated_at, existing.id, ORG_ID)
+        .bind(next.code, next.name, next.duration_label ?? null, next.duration_months, next.default_fee_paise ?? 0, next.lowest_acceptable_fee_paise ?? 0, next.nsdc_available ? 1 : 0, next.status, next.updated_at, existing.id, ORG_ID)
         .run();
     } catch {
       return jsonError(c, { status: 409, code: "course_code_exists", message: "Course code already exists." });
     }
     await audit(c, staff, "course_updated", "course", existing.id, { status: next.status });
     return jsonPlain(c, { success: true, courseId: existing.id });
+  });
+
+  app.get("/api/staff/admission-configuration", async (c) => {
+    const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
+    if (!staff) return forbidden(c);
+    return jsonPlain(c, await getAdmissionConfiguration(c));
   });
 
   app.get("/api/staff/enquiries/:enquiryId", async (c) => {
@@ -173,15 +203,39 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_draft", message: "Please check the admission draft." });
     const result = await saveAdmissionDraft(c, staff, c.req.param("enquiryId"), parsed.data);
     if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message });
-    return jsonPlain(c, { success: true, draftId: result.draftId, payload: result.payload, currentStep: result.currentStep });
+    return jsonPlain(c, { success: true, draftId: result.draftId, payload: result.payload, currentStep: result.currentStep, fieldErrors: result.fieldErrors });
   });
 
   app.post("/api/staff/enquiries/:enquiryId/confirm-admission", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
     const result = await confirmAdmission(c, staff, c.req.param("enquiryId"));
-    if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message });
+    if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message, fieldErrors: result.fieldErrors });
     return jsonPlain(c, { success: true, ...result.result });
+  });
+
+  app.post("/api/staff/enquiries/:enquiryId/discount-approval", async (c) => {
+    const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
+    if (!staff) return forbidden(c);
+    const result = await requestDiscountApproval(c, staff, c.req.param("enquiryId"));
+    if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message, fieldErrors: result.fieldErrors });
+    return jsonPlain(c, { success: true, approvalId: result.approvalId, status: result.status }, { status: 201 });
+  });
+
+  app.get("/api/staff/discount-approvals", async (c) => {
+    const staff = await requireStaffRoles(c, COURSE_ADMIN_ROLES);
+    if (!staff) return forbidden(c);
+    return jsonPlain(c, { approvals: await listDiscountApprovals(c) });
+  });
+
+  app.post("/api/staff/discount-approvals/:approvalId/decision", async (c) => {
+    const staff = await requireStaffRoles(c, COURSE_ADMIN_ROLES);
+    if (!staff) return forbidden(c);
+    const parsed = discountDecisionSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_decision", message: "Select approve or reject." });
+    const result = await decideDiscountApproval(c, staff, c.req.param("approvalId"), parsed.data.decision);
+    if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message });
+    return jsonPlain(c, { success: true, approvalId: result.approvalId, status: result.status });
   });
 
   app.get("/api/staff/students/:studentId", async (c) => {
@@ -196,9 +250,10 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
 async function getEnquiryDetail(c: Parameters<typeof getAdmissionDraft>[0], enquiryId: string) {
   const enquiry = await c.env.DB.prepare(
     `select enquiries.*, people.full_name, people.date_of_birth, students.id as student_id, students.student_number,
-            courses.name as course_name, courses.id as course_id, enquiry_course_interests.course_interest_text
+            courses.name as course_name, courses.id as course_id, branches.name as branch_name, branches.code as branch_code, enquiry_course_interests.course_interest_text
      from enquiries
      left join people on people.id = enquiries.person_id
+     left join branches on branches.id = enquiries.branch_id
      left join students on students.person_id = enquiries.person_id and students.organisation_id = enquiries.organisation_id
      left join courses on courses.id = enquiries.course_interest_id
      left join enquiry_course_interests on enquiry_course_interests.enquiry_id = enquiries.id
@@ -322,7 +377,9 @@ function toCourseRow(input: Partial<z.infer<typeof courseSchema>>) {
     ...(input.code ? { code: input.code.toUpperCase() } : {}),
     ...(input.name ? { name: input.name } : {}),
     ...(input.durationLabel !== undefined ? { duration_label: input.durationLabel || null } : {}),
+    ...(input.durationMonths !== undefined ? { duration_months: input.durationMonths } : {}),
     ...(input.standardFeePaise !== undefined ? { default_fee_paise: input.standardFeePaise } : {}),
+    ...(input.lowestAcceptableFeePaise !== undefined ? { lowest_acceptable_fee_paise: input.lowestAcceptableFeePaise } : {}),
     ...(input.nsdcAvailable !== undefined ? { nsdc_available: input.nsdcAvailable ? 1 : 0 } : {}),
     ...(input.status ? { status: input.status } : {}),
   };

@@ -4,12 +4,18 @@ import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
 import {
   confirmAdmission,
+  ApiError,
   getAdmissionDraft,
+  getAdmissionConfiguration,
   getEnquiryDetail,
   getActiveCourses,
+  requestDiscountApproval,
   saveAdmissionDraft,
+  type AdmissionConfiguration,
   type AdmissionConfirmation,
   type EnquiryDetail,
+  type FieldErrors,
+  type PaymentPlanRule,
   type StaffCourse,
 } from "../../lib/api";
 
@@ -26,25 +32,30 @@ export type AdmissionPayload = {
 export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const [detail, setDetail] = useState<EnquiryDetail | null>(null);
   const [courses, setCourses] = useState<StaffCourse[]>([]);
+  const [configuration, setConfiguration] = useState<AdmissionConfiguration>({ options: [], paymentPlanRules: [] });
   const [payload, setPayload] = useState<AdmissionPayload>(defaultAdmissionPayload());
   const [currentStep, setCurrentStep] = useState("identity");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [saved, setSaved] = useState<string | null>(null);
+  const [approvalStatus, setApprovalStatus] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<AdmissionConfirmation | null>(null);
   const confirmPendingRef = useRef(false);
 
   useEffect(() => {
     async function load() {
-      const [detailData, courseData, draftData] = await Promise.all([
+      const [detailData, courseData, draftData, configData] = await Promise.all([
         getEnquiryDetail(enquiryId),
         getActiveCourses(),
         getAdmissionDraft(enquiryId),
+        getAdmissionConfiguration(),
       ]);
       setDetail(detailData);
       setCourses(courseData.courses);
+      setConfiguration(configData);
       const next = draftData.draft?.payload ? mergeAdmissionPayload(defaultAdmissionPayload(detailData), draftData.draft.payload) : defaultAdmissionPayload(detailData);
       setPayload(next);
       setCurrentStep(draftData.draft?.currentStep || "identity");
@@ -56,6 +67,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
 
   const selectedCourse = useMemo(() => courses.find((course) => course.id === payload.course.courseId), [courses, payload.course.courseId]);
   const review = useMemo(() => admissionReview(payload, selectedCourse), [payload, selectedCourse]);
+  const optionGroups = useMemo(() => groupOptions(configuration), [configuration]);
+  const allowedPaymentRules = useMemo(() => allowedPaymentRulesForCourse(selectedCourse, configuration.paymentPlanRules), [configuration.paymentPlanRules, selectedCourse]);
 
   useEffect(() => {
     if (!selectedCourse) return;
@@ -73,11 +86,13 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
     event?.preventDefault();
     setIsSaving(true);
     try {
-      await saveAdmissionDraft(enquiryId, payload as unknown as Record<string, unknown>, currentStep);
-      setSaved("Draft saved.");
+      const result = await saveAdmissionDraft(enquiryId, payload as unknown as Record<string, unknown>, currentStep);
+      setPayload(mergeAdmissionPayload(payload, result.payload));
+      setFieldErrors(result.fieldErrors || {});
+      setSaved(Object.keys(result.fieldErrors || {}).length ? "Draft saved with warnings." : "Draft saved.");
       setError(null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not save draft.");
+      captureApiError(reason, setError, setFieldErrors, "Could not save draft.");
     } finally {
       setIsSaving(false);
     }
@@ -93,7 +108,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       setConfirmation(result);
       setError(null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not confirm admission.");
+      captureApiError(reason, setError, setFieldErrors, "Could not confirm admission.");
     } finally {
       confirmPendingRef.current = false;
       setIsConfirming(false);
@@ -101,8 +116,44 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   }
 
   function setSection(section: keyof AdmissionPayload, key: string, value: string | boolean | number | null) {
-    setPayload((current) => ({ ...current, [section]: { ...current[section], [key]: value } }));
+    setPayload((current) => normalizeDependentFields({ ...current, [section]: { ...current[section], [key]: value } } as AdmissionPayload, section, key));
     setSaved(null);
+    setFieldErrors((current) => {
+      const next = { ...current };
+      delete next[`${section}.${key}`];
+      return next;
+    });
+  }
+
+  function setOption(section: keyof AdmissionPayload, codeKey: string, labelKey: string, category: string, code: string) {
+    const option = optionGroups[category]?.find((item) => item.code === code);
+    const label = option && !Boolean(option.requires_custom_label) ? option.label : "";
+    setPayload((current) => ({ ...current, [section]: { ...current[section], [codeKey]: code, [labelKey]: label } }));
+    setSaved(null);
+    setFieldErrors((current) => {
+      const next = { ...current };
+      delete next[`${section}.${codeKey}`];
+      delete next[`${section}.${labelKey}`];
+      return next;
+    });
+  }
+
+  async function handleRequestApproval() {
+    setIsSaving(true);
+    try {
+      await saveAdmissionDraft(enquiryId, payload as unknown as Record<string, unknown>, "fee");
+      const result = await requestDiscountApproval(enquiryId);
+      setApprovalStatus(result.status === "approved" ? "Approved" : "Requested");
+      setError(null);
+    } catch (reason) {
+      captureApiError(reason, setError, setFieldErrors, "Could not request approval.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  function errorFor(path: string) {
+    return fieldErrors[path]?.[0] || "";
   }
 
   if (isLoading) return <LoadingState label="Loading admission" />;
@@ -116,6 +167,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         <p>{String(detail.enquiry.enquiry_number)} · {String(detail.enquiry.full_name || "Student")}</p>
       </header>
       {error ? <ErrorState title="Could not continue" message={error} /> : null}
+      {Object.keys(fieldErrors).length ? <ErrorSummary fieldErrors={fieldErrors} /> : null}
       {saved ? <div className="notice notice--success" role="status"><strong>{saved}</strong></div> : null}
 
       <AdmissionSection title="A · Official identity">
@@ -137,7 +189,16 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         <label>WhatsApp available<select value={payload.contact.isWhatsapp ? "yes" : "no"} onChange={(e) => setSection("contact", "isWhatsapp", e.target.value === "yes")}><option value="yes">Yes</option><option value="no">No</option></select></label>
         <label>Alternate mobile<input value={String(payload.contact.alternateMobile)} onChange={(e) => setSection("contact", "alternateMobile", e.target.value)} /></label>
         <label>Email<input type="email" value={String(payload.contact.email)} onChange={(e) => setSection("contact", "email", e.target.value)} /></label>
-        <label>Preferred language<input value={String(payload.contact.preferredLanguage)} onChange={(e) => setSection("contact", "preferredLanguage", e.target.value)} /></label>
+        <OptionSelect
+          label="Preferred language"
+          required
+          options={optionGroups.preferred_language || []}
+          code={String(payload.contact.preferredLanguageCode || "")}
+          customLabel={String(payload.contact.preferredLanguage || "")}
+          onCodeChange={(code) => setOption("contact", "preferredLanguageCode", "preferredLanguage", "preferred_language", code)}
+          onCustomLabelChange={(value) => setSection("contact", "preferredLanguage", value)}
+          error={errorFor("contact.preferredLanguageCode") || errorFor("contact.preferredLanguage")}
+        />
       </AdmissionSection>
 
       <AdmissionSection title="C · Locality">
@@ -150,21 +211,55 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       </AdmissionSection>
 
       <AdmissionSection title="D · Education and profile">
-        <label>Highest/current qualification<input value={String(payload.education.qualificationLevel)} onChange={(e) => setSection("education", "qualificationLevel", e.target.value)} required /></label>
+        <OptionSelect
+          label="Highest/current qualification"
+          required
+          options={optionGroups.qualification_level || []}
+          code={String(payload.education.qualificationLevelCode || "")}
+          customLabel={String(payload.education.qualificationLevel || "")}
+          onCodeChange={(code) => setOption("education", "qualificationLevelCode", "qualificationLevel", "qualification_level", code)}
+          onCustomLabelChange={(value) => setSection("education", "qualificationLevel", value)}
+          error={errorFor("education.qualificationLevelCode") || errorFor("education.qualificationLevel")}
+        />
         <label>Qualification/course name<input value={String(payload.education.qualificationName)} onChange={(e) => setSection("education", "qualificationName", e.target.value)} /></label>
-        <label>Stream<input value={String(payload.education.stream)} onChange={(e) => setSection("education", "stream", e.target.value)} /></label>
+        <OptionSelect
+          label="Stream"
+          options={optionGroups.stream || []}
+          code={String(payload.education.streamCode || "")}
+          customLabel={String(payload.education.stream || "")}
+          onCodeChange={(code) => setOption("education", "streamCode", "stream", "stream", code)}
+          onCustomLabelChange={(value) => setSection("education", "stream", value)}
+          error={errorFor("education.streamCode") || errorFor("education.stream")}
+        />
         <label>Institution<input value={String(payload.education.institutionName)} onChange={(e) => setSection("education", "institutionName", e.target.value)} /></label>
         <label>Currently pursuing<select value={payload.education.currentlyPursuing ? "yes" : "no"} onChange={(e) => setSection("education", "currentlyPursuing", e.target.value === "yes")}><option value="no">No</option><option value="yes">Yes</option></select></label>
-        <label>Current year/semester<input value={String(payload.education.currentYearSemester)} onChange={(e) => setSection("education", "currentYearSemester", e.target.value)} /></label>
-        <label>Passing year<input type="number" value={String(payload.education.passingYear || "")} onChange={(e) => setSection("education", "passingYear", e.target.value ? Number(e.target.value) : null)} /></label>
-        <label>Occupation status<input value={String(payload.education.occupationStatus)} onChange={(e) => setSection("education", "occupationStatus", e.target.value)} required /></label>
+        <label>Current year/semester{payload.education.currentlyPursuing ? <RequiredMark /> : null}<input value={String(payload.education.currentYearSemester)} onChange={(e) => setSection("education", "currentYearSemester", e.target.value)} disabled={!payload.education.currentlyPursuing} aria-invalid={Boolean(errorFor("education.currentYearSemester"))} /></label>
+        <label>Passing year{!payload.education.currentlyPursuing ? <RequiredMark /> : null}<input type="number" value={String(payload.education.passingYear || "")} onChange={(e) => setSection("education", "passingYear", e.target.value ? Number(e.target.value) : null)} disabled={Boolean(payload.education.currentlyPursuing)} aria-invalid={Boolean(errorFor("education.passingYear"))} /></label>
+        <OptionSelect
+          label="Occupation status"
+          required
+          options={optionGroups.occupation_status || []}
+          code={String(payload.education.occupationStatusCode || "")}
+          customLabel={String(payload.education.occupationStatus || "")}
+          onCodeChange={(code) => setOption("education", "occupationStatusCode", "occupationStatus", "occupation_status", code)}
+          onCustomLabelChange={(value) => setSection("education", "occupationStatus", value)}
+          error={errorFor("education.occupationStatusCode") || errorFor("education.occupationStatus")}
+        />
       </AdmissionSection>
 
       <AdmissionSection title="E · Course enrolment">
         <label>Configured active course<select value={String(payload.course.courseId)} onChange={(e) => setSection("course", "courseId", e.target.value)} required><option value="">Select course</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select></label>
-        <label>Branch<input value={String(payload.course.branchId)} onChange={(e) => setSection("course", "branchId", e.target.value)} required /></label>
+        <label>Branch<input value={branchDisplay(detail)} readOnly aria-readonly="true" /></label>
         <label>Training mode<select value={String(payload.course.trainingMode)} onChange={(e) => setSection("course", "trainingMode", e.target.value)} required><option value="classroom">Classroom</option><option value="online">Online</option><option value="hybrid">Hybrid</option></select></label>
-        <label>Batch preference<input value={String(payload.course.batchPreference)} onChange={(e) => setSection("course", "batchPreference", e.target.value)} /></label>
+        <OptionSelect
+          label="Batch preference"
+          options={optionGroups.batch_preference || []}
+          code={String(payload.course.batchPreferenceCode || "")}
+          customLabel={String(payload.course.batchPreference || "")}
+          onCodeChange={(code) => setOption("course", "batchPreferenceCode", "batchPreference", "batch_preference", code)}
+          onCustomLabelChange={(value) => setSection("course", "batchPreference", value)}
+          error={errorFor("course.batchPreferenceCode") || errorFor("course.batchPreference")}
+        />
         <label>Admission date<input type="date" value={String(payload.course.admissionDate)} onChange={(e) => setSection("course", "admissionDate", e.target.value)} required /></label>
         <label>Joining date<input type="date" value={String(payload.course.joiningDate)} onChange={(e) => setSection("course", "joiningDate", e.target.value)} required /></label>
         <label>Expected completion<input type="date" value={String(payload.course.expectedCompletionDate)} onChange={(e) => setSection("course", "expectedCompletionDate", e.target.value)} /></label>
@@ -175,10 +270,20 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         <label>Standard fee<input type="number" value={Number(selectedCourse?.default_fee_paise ?? payload.fee.standardFeePaise ?? 0) / 100} disabled /></label>
         <label>Final agreed fee<input type="number" min="0" value={Number(payload.fee.finalAgreedFeePaise || 0) / 100} onChange={(e) => setSection("fee", "finalAgreedFeePaise", Math.round(Number(e.target.value || 0) * 100))} required /></label>
         <label>Discount<input value={formatMoney(review.discountPaise)} disabled /></label>
-        <label>Discount reason<input value={String(payload.fee.discountReason)} onChange={(e) => setSection("fee", "discountReason", e.target.value)} required={review.discountPaise > 0} /></label>
-        <label>Payment plan<select value={String(payload.fee.paymentPlanType)} onChange={(e) => setSection("fee", "paymentPlanType", e.target.value)}><option value="full">Full payment</option><option value="two_instalments">Two instalments</option><option value="three_instalments">Three instalments</option><option value="custom">Custom</option></select></label>
-        <label>Number of instalments<input type="number" min="1" value={String(payload.fee.numberOfInstalments)} onChange={(e) => setSection("fee", "numberOfInstalments", Number(e.target.value || 1))} /></label>
+        <OptionSelect
+          label="Discount reason"
+          required={review.discountPaise > 0}
+          options={optionGroups.discount_reason || []}
+          code={String(payload.fee.discountReasonCode || "")}
+          customLabel={String(payload.fee.discountReason || "")}
+          onCodeChange={(code) => setOption("fee", "discountReasonCode", "discountReason", "discount_reason", code)}
+          onCustomLabelChange={(value) => setSection("fee", "discountReason", value)}
+          error={errorFor("fee.discountReasonCode") || errorFor("fee.discountReason")}
+        />
+        <label>Payment plan<RequiredMark /><select value={String(payload.fee.paymentPlanType)} onChange={(e) => setSection("fee", "paymentPlanType", e.target.value)} aria-invalid={Boolean(errorFor("fee.paymentPlanType"))}><option value="">Select plan</option>{allowedPaymentRules.map((rule) => <option key={rule.plan_type} value={rule.plan_type}>{paymentPlanLabel(rule.plan_type)}</option>)}</select><FieldMessage message={errorFor("fee.paymentPlanType")} /></label>
+        <label>Number of instalments<input type="number" min="1" value={String(payload.fee.numberOfInstalments)} onChange={(e) => setSection("fee", "numberOfInstalments", Number(e.target.value || 1))} disabled={String(payload.fee.paymentPlanType) !== "custom"} aria-invalid={Boolean(errorFor("fee.numberOfInstalments"))} /><FieldMessage message={errorFor("fee.numberOfInstalments")} /></label>
         <label>Initial payment expected<input type="number" min="0" value={Number(payload.fee.initialPaymentExpectedPaise || 0) / 100} onChange={(e) => setSection("fee", "initialPaymentExpectedPaise", Math.round(Number(e.target.value || 0) * 100))} required /></label>
+        {review.ownerApprovalRequired ? <div className="staff-form-actions"><button type="button" className="secondary-button" disabled={isSaving} onClick={() => void handleRequestApproval()}>{approvalStatus || "Request owner approval"}</button></div> : null}
       </AdmissionSection>
 
       <AdmissionSection title="G · Declarations">
@@ -233,11 +338,12 @@ export function defaultAdmissionPayload(detail?: EnquiryDetail | null): Admissio
       alternateMobile: detail?.alternateMobile || "",
       email: "",
       preferredLanguage: "",
+      preferredLanguageCode: "",
     },
     locality: { locality: "", city: "", postalCode: "", state: "Maharashtra", residenceType: "", fullAddress: "", homeLocality: "" },
-    education: { qualificationLevel: "", qualificationName: "", stream: "", institutionName: "", currentlyPursuing: false, currentYearSemester: "", passingYear: null, occupationStatus: "" },
-    course: { courseId: String(detail?.enquiry.course_id || ""), branchId: String(detail?.enquiry.branch_id || ""), trainingMode: "classroom", batchPreference: "", admissionDate: today, joiningDate: today, expectedCompletionDate: "", nsdcPreference: "no", placementSupport: false },
-    fee: { standardFeePaise: 0, finalAgreedFeePaise: 0, discountReason: "", paymentPlanType: "full", numberOfInstalments: 1, initialPaymentExpectedPaise: 0, feeRemarks: "" },
+    education: { qualificationLevel: "", qualificationLevelCode: "", qualificationName: "", stream: "", streamCode: "", institutionName: "", currentlyPursuing: false, currentYearSemester: "", passingYear: null, occupationStatus: "", occupationStatusCode: "" },
+    course: { courseId: String(detail?.enquiry.course_id || ""), branchId: String(detail?.enquiry.branch_id || ""), trainingMode: "classroom", batchPreference: "", batchPreferenceCode: "", admissionDate: today, joiningDate: today, expectedCompletionDate: "", nsdcPreference: "no", placementSupport: false },
+    fee: { standardFeePaise: 0, finalAgreedFeePaise: 0, discountReason: "", discountReasonCode: "", paymentPlanType: "full", numberOfInstalments: 1, initialPaymentExpectedPaise: 0, feeRemarks: "" },
     declarations: {
       informationCorrect: false,
       nameDobMatchesAadhaar: false,
@@ -259,6 +365,7 @@ export function admissionReview(payload: AdmissionPayload, selectedCourse?: Staf
   const standard = Number(selectedCourse?.default_fee_paise ?? payload.fee.standardFeePaise ?? 0);
   const finalFee = Number(payload.fee.finalAgreedFeePaise || 0);
   const discountPaise = Math.max(0, standard - finalFee);
+  const ownerApprovalRequired = finalFee < Number(selectedCourse?.lowest_acceptable_fee_paise ?? 0);
   const nsdcYes = payload.course.nsdcPreference === "yes";
   const regularReady = Boolean(
     payload.identity.officialFullName &&
@@ -278,10 +385,10 @@ export function admissionReview(payload: AdmissionPayload, selectedCourse?: Staf
       payload.declarations.courseRulesExplained &&
       payload.declarations.feeTermsAccepted &&
       payload.declarations.dataProcessingAccepted &&
-      (!discountPaise || payload.fee.discountReason),
+      (!discountPaise || payload.fee.discountReasonCode),
   );
   const nsdcReady = !nsdcYes || Boolean(payload.identity.fatherName && payload.declarations.nsdcProcessingAccepted && payload.declarations.nsdcPendingDocumentsUnderstood);
-  return { discountPaise, canConfirmRegularAdmission: regularReady, nsdcReady };
+  return { discountPaise, canConfirmRegularAdmission: regularReady, nsdcReady, ownerApprovalRequired };
 }
 
 export function mergeAdmissionPayload(base: AdmissionPayload, incoming: Record<string, unknown>): AdmissionPayload {
@@ -296,6 +403,99 @@ export function mergeAdmissionPayload(base: AdmissionPayload, incoming: Record<s
     fee: { ...base.fee, ...((incoming.fee as Record<string, unknown>) || {}) },
     declarations: { ...base.declarations, ...((incoming.declarations as Record<string, unknown>) || {}) },
   } as AdmissionPayload;
+}
+
+function groupOptions(configuration: AdmissionConfiguration) {
+  return configuration.options.reduce<Record<string, AdmissionConfiguration["options"]>>((groups, option) => {
+    groups[option.category] ||= [];
+    groups[option.category].push(option);
+    return groups;
+  }, {});
+}
+
+function allowedPaymentRulesForCourse(course: StaffCourse | undefined, rules: PaymentPlanRule[]) {
+  const duration = Number(course?.duration_months || 0);
+  return rules.filter((rule) => duration >= rule.min_duration_months && (rule.max_duration_months == null || duration <= rule.max_duration_months));
+}
+
+function normalizeDependentFields(payload: AdmissionPayload, section: keyof AdmissionPayload, key: string) {
+  const next = { ...payload, education: { ...payload.education }, fee: { ...payload.fee } };
+  if (section === "education" && key === "currentlyPursuing") {
+    if (next.education.currentlyPursuing) next.education.passingYear = null;
+    else next.education.currentYearSemester = "";
+  }
+  if (section === "fee" && key === "paymentPlanType") {
+    if (next.fee.paymentPlanType === "full") next.fee.numberOfInstalments = 1;
+    if (next.fee.paymentPlanType === "two_instalments") next.fee.numberOfInstalments = 2;
+    if (next.fee.paymentPlanType === "three_instalments") next.fee.numberOfInstalments = 3;
+  }
+  return next;
+}
+
+function branchDisplay(detail: EnquiryDetail) {
+  const branchName = detail.enquiry.branch_name || detail.enquiry.branch_code || detail.enquiry.branch_id;
+  return String(branchName || "Enquiry branch");
+}
+
+function captureApiError(reason: unknown, setError: (message: string | null) => void, setFieldErrors: (errors: FieldErrors) => void, fallback: string) {
+  if (reason instanceof ApiError) {
+    setError(reason.message);
+    setFieldErrors(reason.fieldErrors || {});
+    return;
+  }
+  setError(reason instanceof Error ? reason.message : fallback);
+}
+
+function ErrorSummary({ fieldErrors }: { fieldErrors: FieldErrors }) {
+  const entries = Object.entries(fieldErrors).flatMap(([path, messages]) => messages.map((message) => ({ path, message })));
+  return (
+    <div className="notice admission-error-summary" role="alert" tabIndex={-1}>
+      <strong>Review required fields</strong>
+      <ul>{entries.map((entry) => <li key={`${entry.path}-${entry.message}`}>{entry.message}</li>)}</ul>
+    </div>
+  );
+}
+
+function RequiredMark() {
+  return <span className="required-mark" aria-hidden="true">*</span>;
+}
+
+function FieldMessage({ message }: { message?: string }) {
+  return message ? <span className="field-error">{message}</span> : null;
+}
+
+function OptionSelect({
+  label,
+  required = false,
+  options,
+  code,
+  customLabel,
+  onCodeChange,
+  onCustomLabelChange,
+  error,
+}: {
+  label: string;
+  required?: boolean;
+  options: AdmissionConfiguration["options"];
+  code: string;
+  customLabel: string;
+  onCodeChange: (code: string) => void;
+  onCustomLabelChange: (value: string) => void;
+  error?: string;
+}) {
+  const selected = options.find((option) => option.code === code);
+  const needsCustom = Boolean(selected?.requires_custom_label);
+  return (
+    <label>
+      {label}{required ? <RequiredMark /> : null}
+      <select value={code} onChange={(event) => onCodeChange(event.target.value)} aria-invalid={Boolean(error)}>
+        <option value="">Select</option>
+        {options.map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
+      </select>
+      {needsCustom ? <input value={customLabel} onChange={(event) => onCustomLabelChange(event.target.value)} aria-invalid={Boolean(error)} /> : null}
+      <FieldMessage message={error} />
+    </label>
+  );
 }
 
 export function AdmissionSuccess({ confirmation }: { confirmation: AdmissionConfirmation }) {
@@ -337,6 +537,14 @@ function requiredDeclarations(nsdc: boolean): Array<[keyof AdmissionPayload["dec
     base.splice(5, 0, ["nsdcProcessingAccepted", "NSDC/Skill India processing authorised"], ["nsdcPendingDocumentsUnderstood", "Aadhaar and document completion is pending"]);
   }
   return base;
+}
+
+function paymentPlanLabel(value: string) {
+  if (value === "full") return "Full payment";
+  if (value === "two_instalments") return "Two instalments";
+  if (value === "three_instalments") return "Three instalments";
+  if (value === "custom") return "Custom";
+  return value || "Not selected";
 }
 
 function formatMoney(paise: number) {

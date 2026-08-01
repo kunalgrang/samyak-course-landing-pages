@@ -48,6 +48,7 @@ describe("AdmissionPage helpers", () => {
     const payload = readyPayload();
     payload.fee.finalAgreedFeePaise = 4500000;
     payload.fee.discountReason = "Scholarship";
+    payload.fee.discountReasonCode = "merit";
     const review = admissionReview(payload, course);
 
     expect(review.discountPaise).toBe(500000);
@@ -59,6 +60,7 @@ describe("AdmissionPage helpers", () => {
     payload.fee.standardFeePaise = 1;
     payload.fee.finalAgreedFeePaise = 4500000;
     payload.fee.discountReason = "Scholarship";
+    payload.fee.discountReasonCode = "merit";
 
     expect(admissionReview(payload, course).discountPaise).toBe(500000);
   });

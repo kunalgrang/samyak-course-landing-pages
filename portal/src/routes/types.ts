@@ -5,6 +5,7 @@ export type AppRoute =
   | `/app/enquiries/${string}/admission`
   | `/app/students/${string}`
   | "/app/courses"
+  | "/app/discount-approvals"
   | "/app/referrals"
   | "/app/rules"
   | "/app/profile";
