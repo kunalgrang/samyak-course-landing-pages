@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { AppContext } from "./http";
 import { ORG_ID, mobileHash } from "./auth-store";
 import { createOpaqueId, encryptText } from "./crypto";
-import type { StaffContext } from "./staff-auth";
+import { DISCOUNT_APPROVER_ROLES, type StaffContext } from "./staff-auth";
 
 const nameSchema = z.string().trim().min(2).max(140).regex(/^[^\d]+$/, "Name cannot contain numbers.");
 const optionalNameSchema = z.string().trim().max(140).regex(/^[^\d]*$/, "Name cannot contain numbers.").optional().or(z.literal(""));
@@ -222,6 +222,7 @@ type CourseRecord = {
   default_fee_paise: number | null;
   duration_months: number | null;
   lowest_acceptable_fee_paise: number | null;
+  admission_configuration_complete: number | boolean;
 };
 
 type PaymentPlanRuleRecord = {
@@ -233,9 +234,14 @@ type DiscountApprovalRecord = {
   id: string;
   status: string;
   course_id: string;
+  listed_fee_paise: number;
+  lowest_acceptable_fee_paise: number;
   requested_final_fee_paise: number;
+  discount_amount_paise: number;
+  approval_fingerprint: string;
   discount_reason_code: string;
   discount_reason_text: string | null;
+  decided_by_login_account_id: string | null;
 };
 
 type EnquiryRecord = {
@@ -328,7 +334,9 @@ export async function saveAdmissionDraft(c: AppContext, staff: StaffContext, enq
   const existing = await getAdmissionDraft(c, enquiryId);
   const draftId = existing?.status === "draft" ? existing.id : createOpaqueId("draft");
   const normalizedPayload = await normalizeAdmissionOptionLabels(c, validated.payload);
-  await supersedeChangedDiscountApprovals(c, draftId, normalizedPayload);
+  const normalizedCourseId = String(normalizedPayload.course?.courseId || "");
+  const normalizedCourse = normalizedCourseId ? await getActiveCourse(c, normalizedCourseId) : null;
+  await supersedeChangedDiscountApprovals(c, draftId, normalizedPayload, normalizedCourse);
   const storedPayload = sanitizeAdmissionDraftPayload(normalizedPayload);
   if (existing?.status === "draft") {
     await c.env.DB.prepare(
@@ -469,6 +477,7 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
     feeInput,
     declarations,
     nsdcPreference: courseInput.nsdcPreference,
+    course,
     courseStandardFeePaise,
     now,
   });
@@ -495,7 +504,7 @@ async function getBranch(c: AppContext, branchId: string) {
 }
 
 async function getActiveCourse(c: AppContext, courseId: string) {
-  return c.env.DB.prepare("select id, code, name, default_fee_paise, duration_months, lowest_acceptable_fee_paise from courses where id = ? and organisation_id = ? and status = 'active'")
+  return c.env.DB.prepare("select id, code, name, default_fee_paise, duration_months, lowest_acceptable_fee_paise, admission_configuration_complete from courses where id = ? and organisation_id = ? and status = 'active'")
     .bind(courseId, ORG_ID)
     .first<CourseRecord>();
 }
@@ -538,6 +547,7 @@ async function finalizeExistingAdmission(c: AppContext, staff: StaffContext, enq
     feeInput,
     declarations: payload.declarations || {},
     nsdcPreference: payload.course?.nsdcPreference,
+    course,
     courseStandardFeePaise,
     now,
   });
@@ -559,22 +569,36 @@ async function finalizeAdmission(
     feeInput: NonNullable<AdmissionPayload["fee"]>;
     declarations: Record<string, boolean | undefined>;
     nsdcPreference: string | undefined;
+    course: CourseRecord;
     courseStandardFeePaise: number;
     now: string;
   },
 ) {
-  const discountPaise = Math.max(0, input.courseStandardFeePaise - Number(input.feeInput.finalAgreedFeePaise || 0));
+  const finalFeePaise = Number(input.feeInput.finalAgreedFeePaise || 0);
+  const floorPaise = Number(input.course.lowest_acceptable_fee_paise || 0);
+  const discountPaise = Math.max(0, input.courseStandardFeePaise - finalFeePaise);
+  const ownerApproval = await ownerApprovalForFeeAgreement(c, draft.id, input.course, input.feeInput);
+  if (finalFeePaise < floorPaise && !ownerApproval) {
+    return {
+      ok: false as const,
+      status: 400,
+      code: "discount_approval_required",
+      message: "Owner approval is required below the course floor price.",
+      fieldErrors: { "fee.finalAgreedFeePaise": ["Owner approval is required below the course floor price."] },
+    };
+  }
   await c.env.DB.prepare(
     `insert into fee_agreements
        (id, enrolment_id, standard_fee_paise, final_agreed_fee_paise, discount_paise, discount_reason,
-        discount_approved_by, payment_plan_type, number_of_instalments, initial_payment_expected_paise, status, created_at, updated_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+        discount_approved_by, discount_approval_id, payment_plan_type, number_of_instalments, initial_payment_expected_paise, status, created_at, updated_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
      on conflict(enrolment_id) do update set
        standard_fee_paise = excluded.standard_fee_paise,
        final_agreed_fee_paise = excluded.final_agreed_fee_paise,
        discount_paise = excluded.discount_paise,
        discount_reason = excluded.discount_reason,
        discount_approved_by = excluded.discount_approved_by,
+       discount_approval_id = excluded.discount_approval_id,
        payment_plan_type = excluded.payment_plan_type,
        number_of_instalments = excluded.number_of_instalments,
        initial_payment_expected_paise = excluded.initial_payment_expected_paise,
@@ -588,7 +612,8 @@ async function finalizeAdmission(
       input.feeInput.finalAgreedFeePaise || 0,
       discountPaise,
       input.feeInput.discountReason || null,
-      discountPaise > 0 ? staff.loginAccountId : null,
+      ownerApproval?.decided_by_login_account_id || null,
+      ownerApproval?.id || null,
       input.feeInput.paymentPlanType,
       instalmentsFor(input.feeInput.paymentPlanType, input.feeInput.numberOfInstalments),
       input.feeInput.initialPaymentExpectedPaise || 0,
@@ -690,27 +715,60 @@ export async function requestDiscountApproval(c: AppContext, staff: StaffContext
     return { ok: false as const, status: 400, code: "discount_reason_required", message: errors["fee.discountReasonCode"][0], fieldErrors: errors };
   }
   const now = new Date().toISOString();
-  await supersedeChangedDiscountApprovals(c, draft.id, payload);
-  const existing = await matchingDiscountApproval(c, draft.id, course.id, Number(payload.fee?.finalAgreedFeePaise || 0), reasonCode, String(payload.fee?.discountReason || ""));
+  const snapshot = approvalSnapshot(draft.id, course, payload);
+  await supersedeChangedDiscountApprovals(c, draft.id, payload, course);
+  const existing = await matchingDiscountApproval(c, snapshot);
   if (existing?.status === "pending" || existing?.status === "approved") {
     return { ok: true as const, approvalId: existing.id, status: existing.status };
   }
   const approvalId = createOpaqueId("approval");
   await c.env.DB.prepare(
     `insert into admission_discount_approvals
-       (id, organisation_id, admission_draft_id, enquiry_id, course_id, requested_final_fee_paise, discount_reason_code,
+       (id, organisation_id, admission_draft_id, enquiry_id, course_id, listed_fee_paise, lowest_acceptable_fee_paise,
+        requested_final_fee_paise, discount_amount_paise, approval_fingerprint, discount_reason_code,
         discount_reason_text, status, requested_by_login_account_id, created_at, updated_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+     on conflict do nothing`,
   )
-    .bind(approvalId, ORG_ID, draft.id, enquiry.id, course.id, Number(payload.fee?.finalAgreedFeePaise || 0), reasonCode, payload.fee?.discountReason || null, staff.loginAccountId, now, now)
+    .bind(
+      approvalId,
+      ORG_ID,
+      draft.id,
+      enquiry.id,
+      course.id,
+      snapshot.listedFeePaise,
+      snapshot.lowestAcceptableFeePaise,
+      snapshot.requestedFinalFeePaise,
+      snapshot.discountAmountPaise,
+      snapshot.approvalFingerprint,
+      snapshot.discountReasonCode,
+      snapshot.discountReasonText || null,
+      staff.loginAccountId,
+      now,
+      now,
+    )
     .run();
+  const active = await matchingDiscountApproval(c, snapshot);
+  if (active?.status === "pending" || active?.status === "approved") {
+    await audit(c, staff, enquiry.branch_id, "discount_approval_requested", "admission_discount_approval", active.id, { enquiryId, draftId: draft.id });
+    return { ok: true as const, approvalId: active.id, status: active.status };
+  }
   await audit(c, staff, enquiry.branch_id, "discount_approval_requested", "admission_discount_approval", approvalId, { enquiryId, draftId: draft.id });
   return { ok: true as const, approvalId, status: "pending" };
 }
 
 export async function listDiscountApprovals(c: AppContext) {
   const approvals = await c.env.DB.prepare(
-    `select admission_discount_approvals.*, enquiries.enquiry_number, people.full_name, courses.name as course_name
+    `select admission_discount_approvals.*, enquiries.enquiry_number, people.full_name, courses.name as course_name,
+            coalesce(
+              (select staff_people.public_name
+               from login_account_people
+               join people as staff_people on staff_people.id = login_account_people.person_id
+               where login_account_people.login_account_id = admission_discount_approvals.requested_by_login_account_id
+               order by login_account_people.is_default desc
+               limit 1),
+              admission_discount_approvals.requested_by_login_account_id
+            ) as requested_by_name
      from admission_discount_approvals
      join enquiries on enquiries.id = admission_discount_approvals.enquiry_id
      left join people on people.id = enquiries.person_id
@@ -725,6 +783,9 @@ export async function listDiscountApprovals(c: AppContext) {
 }
 
 export async function decideDiscountApproval(c: AppContext, staff: StaffContext, approvalId: string, decision: "approved" | "rejected") {
+  if (!staff.roles.some((role) => DISCOUNT_APPROVER_ROLES.includes(role as (typeof DISCOUNT_APPROVER_ROLES)[number]))) {
+    return { ok: false as const, status: 403, code: "forbidden", message: "Owner approval is required." };
+  }
   const now = new Date().toISOString();
   const result = await c.env.DB.prepare(
     `update admission_discount_approvals
@@ -865,6 +926,7 @@ function courseConfigurationFieldErrors(course: CourseRecord) {
   const duration = Number(course.duration_months);
   const standard = Number(course.default_fee_paise);
   const floor = Number(course.lowest_acceptable_fee_paise);
+  if (!Boolean(course.admission_configuration_complete)) addFieldError(fieldErrors, "course.courseId", "Selected course requires Course Master configuration before admission.");
   if (!Number.isInteger(duration) || duration < 1) addFieldError(fieldErrors, "course.courseId", "Selected course must have a duration of at least one month.");
   if (!Number.isInteger(standard) || standard < 0) addFieldError(fieldErrors, "fee.standardFeePaise", "Selected course must have a configured listed price.");
   if (!Number.isInteger(floor) || floor < 0) addFieldError(fieldErrors, "fee.finalAgreedFeePaise", "Selected course must have a configured floor price.");
@@ -909,42 +971,138 @@ async function discountApprovalFieldErrors(c: AppContext, payload: AdmissionPayl
     addFieldError(fieldErrors, "fee.discountReasonCode", "Discount reason is required when the final fee is lower than Course Master price.");
   }
   if (finalFee < floor) {
-    const approval = await matchingDiscountApproval(c, draftId, course.id, finalFee, String(payload.fee?.discountReasonCode || ""), String(payload.fee?.discountReason || ""));
-    if (approval?.status !== "approved") {
+    const approval = await matchingDiscountApproval(c, approvalSnapshot(draftId, course, payload));
+    const ownerApproved = approval?.status === "approved" && approval.decided_by_login_account_id && (await discountApprovalDecisionIsOwner(c, approval.id, approval.decided_by_login_account_id));
+    if (!ownerApproved) {
       addFieldError(fieldErrors, "fee.finalAgreedFeePaise", "Owner approval is required below the course floor price.");
     }
   }
   return fieldErrors;
 }
 
-async function matchingDiscountApproval(c: AppContext, draftId: string, courseId: string, finalFeePaise: number, reasonCode: string, reasonText: string) {
+async function matchingDiscountApproval(c: AppContext, snapshot: ApprovalSnapshot) {
   return c.env.DB.prepare(
-    `select id, status, course_id, requested_final_fee_paise, discount_reason_code, discount_reason_text
+    `select id, status, course_id, listed_fee_paise, lowest_acceptable_fee_paise, requested_final_fee_paise,
+            discount_amount_paise, approval_fingerprint, discount_reason_code, discount_reason_text,
+            decided_by_login_account_id
      from admission_discount_approvals
-     where admission_draft_id = ? and course_id = ? and requested_final_fee_paise = ? and discount_reason_code = ?
+     where admission_draft_id = ?
+       and course_id = ?
+       and listed_fee_paise = ?
+       and lowest_acceptable_fee_paise = ?
+       and requested_final_fee_paise = ?
+       and discount_reason_code = ?
        and coalesce(discount_reason_text, '') = ?
+       and approval_fingerprint = ?
        and status in ('pending', 'approved')
      order by updated_at desc limit 1`,
   )
-    .bind(draftId, courseId, finalFeePaise, reasonCode, reasonText)
+    .bind(
+      snapshot.draftId,
+      snapshot.courseId,
+      snapshot.listedFeePaise,
+      snapshot.lowestAcceptableFeePaise,
+      snapshot.requestedFinalFeePaise,
+      snapshot.discountReasonCode,
+      snapshot.discountReasonText,
+      snapshot.approvalFingerprint,
+    )
     .first<DiscountApprovalRecord>();
 }
 
-async function supersedeChangedDiscountApprovals(c: AppContext, draftId: string | null, payload: AdmissionPayload) {
+async function supersedeChangedDiscountApprovals(c: AppContext, draftId: string | null, payload: AdmissionPayload, course: CourseRecord | null) {
   if (!draftId) return;
-  const courseId = String(payload.course?.courseId || "");
-  const finalFee = Number(payload.fee?.finalAgreedFeePaise || 0);
-  const reasonCode = String(payload.fee?.discountReasonCode || "");
-  const reasonText = String(payload.fee?.discountReason || "");
+  const snapshot = course
+    ? approvalSnapshot(draftId, course, payload)
+    : {
+        approvalFingerprint: "",
+        courseId: String(payload.course?.courseId || ""),
+        listedFeePaise: 0,
+        lowestAcceptableFeePaise: 0,
+        requestedFinalFeePaise: Number(payload.fee?.finalAgreedFeePaise || 0),
+        discountReasonCode: String(payload.fee?.discountReasonCode || ""),
+        discountReasonText: String(payload.fee?.discountReason || ""),
+      };
   await c.env.DB.prepare(
     `update admission_discount_approvals
      set status = 'superseded', updated_at = ?
      where admission_draft_id = ?
        and status in ('pending', 'approved')
-       and not (course_id = ? and requested_final_fee_paise = ? and discount_reason_code = ? and coalesce(discount_reason_text, '') = ?)`,
+       and approval_fingerprint != ?`,
   )
-    .bind(new Date().toISOString(), draftId, courseId, finalFee, reasonCode, reasonText)
+    .bind(new Date().toISOString(), draftId, snapshot.approvalFingerprint)
     .run();
+}
+
+type ApprovalSnapshot = {
+  draftId: string;
+  courseId: string;
+  listedFeePaise: number;
+  lowestAcceptableFeePaise: number;
+  requestedFinalFeePaise: number;
+  discountAmountPaise: number;
+  discountReasonCode: string;
+  discountReasonText: string;
+  approvalFingerprint: string;
+};
+
+function approvalSnapshot(draftId: string, course: CourseRecord, payload: AdmissionPayload): ApprovalSnapshot {
+  const listedFeePaise = Number(course.default_fee_paise || 0);
+  const lowestAcceptableFeePaise = Number(course.lowest_acceptable_fee_paise || 0);
+  const requestedFinalFeePaise = Number(payload.fee?.finalAgreedFeePaise || 0);
+  const discountReasonCode = String(payload.fee?.discountReasonCode || "");
+  const discountReasonText = String(payload.fee?.discountReason || "");
+  const snapshot = {
+    draftId,
+    courseId: course.id,
+    listedFeePaise,
+    lowestAcceptableFeePaise,
+    requestedFinalFeePaise,
+    discountAmountPaise: Math.max(0, listedFeePaise - requestedFinalFeePaise),
+    discountReasonCode,
+    discountReasonText,
+  };
+  return {
+    ...snapshot,
+    approvalFingerprint: JSON.stringify(snapshot),
+  };
+}
+
+async function ownerApprovalForFeeAgreement(c: AppContext, draftId: string, course: CourseRecord, feeInput: NonNullable<AdmissionPayload["fee"]>) {
+  const finalFee = Number(feeInput.finalAgreedFeePaise || 0);
+  if (finalFee >= Number(course.lowest_acceptable_fee_paise || 0)) return null;
+  const approval = await matchingDiscountApproval(c, approvalSnapshot(draftId, course, { fee: feeInput } as AdmissionPayload));
+  if (approval?.status !== "approved" || !approval.decided_by_login_account_id) return null;
+  if (!(await discountApprovalDecisionIsOwner(c, approval.id, approval.decided_by_login_account_id))) return null;
+  return approval;
+}
+
+async function discountApprovalDecisionIsOwner(c: AppContext, approvalId: string, loginAccountId: string) {
+  const currentOwner = await c.env.DB.prepare(
+    `select 1 as ok
+     from login_account_roles
+     join roles on roles.id = login_account_roles.role_id
+     where login_account_roles.login_account_id = ?
+       and roles.organisation_id = ?
+       and roles.code = 'owner'
+     limit 1`,
+  )
+    .bind(loginAccountId, ORG_ID)
+    .first<{ ok: number }>();
+  if (currentOwner) return true;
+  const historicalOwnerDecision = await c.env.DB.prepare(
+    `select 1 as ok
+     from audit_logs
+     where organisation_id = ?
+       and actor_login_account_id = ?
+       and action = 'discount_approval_approved'
+       and entity_type = 'admission_discount_approval'
+       and entity_id = ?
+     limit 1`,
+  )
+    .bind(ORG_ID, loginAccountId, approvalId)
+    .first<{ ok: number }>();
+  return Boolean(historicalOwnerDecision);
 }
 
 async function allocateSequence(c: AppContext, organisationId: string, branchId: string, sequenceKey: string) {

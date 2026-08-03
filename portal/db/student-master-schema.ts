@@ -178,6 +178,7 @@ export const courses = sqliteTable(
     durationMonths: integer("duration_months"),
     defaultFeePaise: integer("default_fee_paise"),
     lowestAcceptableFeePaise: integer("lowest_acceptable_fee_paise"),
+    admissionConfigurationComplete: integer("admission_configuration_complete", { mode: "boolean" }).notNull().default(false),
     nsdcAvailable: integer("nsdc_available", { mode: "boolean" }).notNull().default(false),
     status: text("status").notNull().default("active"),
     ...timestamps,
@@ -348,6 +349,7 @@ export const feeAgreements = sqliteTable(
     discountPaise: integer("discount_paise").notNull().default(0),
     discountReason: text("discount_reason"),
     discountApprovedBy: text("discount_approved_by"),
+    discountApprovalId: text("discount_approval_id"),
     gstRateBasisPoints: integer("gst_rate_basis_points").notNull().default(0),
     paymentPlanType: text("payment_plan_type").notNull(),
     numberOfInstalments: integer("number_of_instalments"),
@@ -357,6 +359,7 @@ export const feeAgreements = sqliteTable(
   },
   (table) => [
     uniqueIndex("fee_agreements_enrolment_unique").on(table.enrolmentId),
+    index("fee_agreements_discount_approval_idx").on(table.discountApprovalId),
     check("fee_agreements_status_check", sql`${table.status} in ('draft', 'active', 'replaced', 'cancelled')`),
   ],
 );
@@ -528,18 +531,26 @@ export const admissionDiscountApprovals = sqliteTable(
       .notNull()
       .references(() => courses.id),
     requestedFinalFeePaise: integer("requested_final_fee_paise").notNull(),
+    listedFeePaise: integer("listed_fee_paise").notNull().default(0),
+    lowestAcceptableFeePaise: integer("lowest_acceptable_fee_paise").notNull().default(0),
+    discountAmountPaise: integer("discount_amount_paise").notNull().default(0),
+    approvalFingerprint: text("approval_fingerprint").notNull().default(""),
     discountReasonCode: text("discount_reason_code").notNull(),
     discountReasonText: text("discount_reason_text"),
     status: text("status").notNull().default("pending"),
     requestedByLoginAccountId: text("requested_by_login_account_id").notNull(),
     decidedByLoginAccountId: text("decided_by_login_account_id"),
     decidedAt: text("decided_at"),
+    decisionNotes: text("decision_notes"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
   (table) => [
     index("admission_discount_approvals_status_idx").on(table.organisationId, table.status, table.createdAt),
     index("admission_discount_approvals_draft_idx").on(table.admissionDraftId),
+    uniqueIndex("admission_discount_approvals_active_fingerprint_unique")
+      .on(table.organisationId, table.approvalFingerprint)
+      .where(sql`${table.status} in ('pending', 'approved')`),
     check("admission_discount_approvals_status_check", sql`${table.status} in ('pending', 'approved', 'rejected', 'superseded')`),
   ],
 );

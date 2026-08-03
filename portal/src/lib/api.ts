@@ -159,6 +159,7 @@ const courseSchema = z.object({
   duration_months: z.number().nullable().optional(),
   default_fee_paise: z.number().nullable(),
   lowest_acceptable_fee_paise: z.number().nullable().optional(),
+  admission_configuration_complete: z.union([z.number(), z.boolean()]).optional(),
   nsdc_available: z.union([z.number(), z.boolean()]),
   status: z.string(),
   created_at: z.string().optional(),

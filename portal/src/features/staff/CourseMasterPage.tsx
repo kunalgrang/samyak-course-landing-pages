@@ -116,7 +116,7 @@ export function CourseMasterPage() {
         <div className="table-list">
           {courses.map((course) => (
             <article key={course.id} className="table-row">
-              <strong>{course.code}</strong>
+              <strong>{course.code} {courseConfigurationLabel(course) ? <span className="status-pill status-pill--warning">{courseConfigurationLabel(course)}</span> : null}</strong>
               <span>{course.name}</span>
               <small>{course.duration_label || `${course.duration_months || 0} months`} · Listed {formatMoney(course.default_fee_paise || 0)} · Floor {formatMoney(course.lowest_acceptable_fee_paise ?? course.default_fee_paise ?? 0)} · {course.nsdc_available ? "NSDC" : "Non-NSDC"} · {course.status}</small>
               <button type="button" onClick={() => edit(course)}>Edit</button>
@@ -139,6 +139,14 @@ export function courseInputFromForm(form: CourseForm) {
     nsdcAvailable: form.nsdcAvailable,
     status: form.status,
   };
+}
+
+export function isCourseConfigurationComplete(course: StaffCourse) {
+  return Boolean(course.admission_configuration_complete);
+}
+
+export function courseConfigurationLabel(course: StaffCourse) {
+  return isCourseConfigurationComplete(course) ? "" : "Configuration required";
 }
 
 function paiseToRupees(value: number) {

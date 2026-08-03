@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   AdmissionSuccess,
   admissionReview,
+  configuredAdmissionCourses,
   defaultAdmissionPayload,
   mergeAdmissionPayload,
 } from "./AdmissionPage";
@@ -13,6 +14,8 @@ const course = {
   name: "Full Stack",
   duration_label: "6 months",
   default_fee_paise: 5000000,
+  lowest_acceptable_fee_paise: 4000000,
+  admission_configuration_complete: true,
   nsdc_available: true,
   status: "active",
 };
@@ -103,6 +106,15 @@ describe("AdmissionPage helpers", () => {
     const html = renderToStaticMarkup(<button type="button" disabled>Confirming...</button>);
     expect(html).toContain("disabled");
     expect(html).toContain("Confirming...");
+  });
+
+  it("filters incomplete courses out of admission choices", () => {
+    expect(
+      configuredAdmissionCourses([
+        course,
+        { ...course, id: "course_incomplete", name: "Incomplete", admission_configuration_complete: false },
+      ]).map((item) => item.id),
+    ).toEqual(["course_full_stack"]);
   });
 });
 

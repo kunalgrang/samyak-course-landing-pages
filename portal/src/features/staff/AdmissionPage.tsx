@@ -65,7 +65,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       .finally(() => setIsLoading(false));
   }, [enquiryId]);
 
-  const selectedCourse = useMemo(() => courses.find((course) => course.id === payload.course.courseId), [courses, payload.course.courseId]);
+  const admissionCourses = useMemo(() => configuredAdmissionCourses(courses), [courses]);
+  const selectedCourse = useMemo(() => admissionCourses.find((course) => course.id === payload.course.courseId), [admissionCourses, payload.course.courseId]);
   const review = useMemo(() => admissionReview(payload, selectedCourse), [payload, selectedCourse]);
   const optionGroups = useMemo(() => groupOptions(configuration), [configuration]);
   const allowedPaymentRules = useMemo(() => allowedPaymentRulesForCourse(selectedCourse, configuration.paymentPlanRules), [configuration.paymentPlanRules, selectedCourse]);
@@ -248,7 +249,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       </AdmissionSection>
 
       <AdmissionSection title="E · Course enrolment">
-        <label>Configured active course<select value={String(payload.course.courseId)} onChange={(e) => setSection("course", "courseId", e.target.value)} required><option value="">Select course</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select></label>
+        <label>Configured active course<select value={String(payload.course.courseId)} onChange={(e) => setSection("course", "courseId", e.target.value)} required><option value="">Select course</option>{admissionCourses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select></label>
         <label>Branch<input value={branchDisplay(detail)} readOnly aria-readonly="true" /></label>
         <label>Training mode<select value={String(payload.course.trainingMode)} onChange={(e) => setSection("course", "trainingMode", e.target.value)} required><option value="classroom">Classroom</option><option value="online">Online</option><option value="hybrid">Hybrid</option></select></label>
         <OptionSelect
@@ -389,6 +390,10 @@ export function admissionReview(payload: AdmissionPayload, selectedCourse?: Staf
   );
   const nsdcReady = !nsdcYes || Boolean(payload.identity.fatherName && payload.declarations.nsdcProcessingAccepted && payload.declarations.nsdcPendingDocumentsUnderstood);
   return { discountPaise, canConfirmRegularAdmission: regularReady, nsdcReady, ownerApprovalRequired };
+}
+
+export function configuredAdmissionCourses(courses: StaffCourse[]) {
+  return courses.filter((course) => course.status === "active" && Boolean(course.admission_configuration_complete));
 }
 
 export function mergeAdmissionPayload(base: AdmissionPayload, incoming: Record<string, unknown>): AdmissionPayload {

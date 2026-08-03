@@ -12,7 +12,7 @@ import {
   saveAdmissionDraft,
   saveAdmissionDraftSchema,
 } from "../lib/admission-service";
-import { ADMISSION_STAFF_ROLES, COURSE_ADMIN_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
+import { ADMISSION_STAFF_ROLES, COURSE_ADMIN_ROLES, DISCOUNT_APPROVER_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import { createOpaqueId, decryptText } from "../lib/crypto";
 import { jsonError, jsonPlain } from "../lib/json-response";
 
@@ -62,9 +62,9 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
     const courses = await c.env.DB.prepare(
-      `select id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, nsdc_available, status
+      `select id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status
        from courses
-       where organisation_id = ? and status = 'active'
+       where organisation_id = ? and status = 'active' and admission_configuration_complete = 1
        order by name`,
     )
       .bind(ORG_ID)
@@ -76,7 +76,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     const staff = await requireStaffRoles(c, COURSE_ADMIN_ROLES);
     if (!staff) return forbidden(c);
     const courses = await c.env.DB.prepare(
-      `select id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, nsdc_available, status, created_at, updated_at
+      `select id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at
        from courses
        where organisation_id = ?
        order by case status when 'active' then 1 when 'inactive' then 2 else 3 end, name`,
@@ -96,8 +96,8 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     try {
       await c.env.DB.prepare(
         `insert into courses
-           (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, nsdc_available, status, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
       )
         .bind(
           courseId,
@@ -135,17 +135,26 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     if (Number(next.lowest_acceptable_fee_paise ?? 0) > Number(next.default_fee_paise ?? 0)) {
       return jsonError(c, { status: 400, code: "invalid_course", message: "Lowest acceptable fee cannot exceed listed price." });
     }
+    const explicitlyValidatedConfiguration =
+      parsed.data.durationMonths !== undefined &&
+      parsed.data.standardFeePaise !== undefined &&
+      parsed.data.lowestAcceptableFeePaise !== undefined;
+    const admissionConfigurationComplete = Boolean(current?.admission_configuration_complete) || explicitlyValidatedConfiguration;
+    const coursePriceChanged =
+      Number(current?.default_fee_paise ?? 0) !== Number(next.default_fee_paise ?? 0) ||
+      Number(current?.lowest_acceptable_fee_paise ?? 0) !== Number(next.lowest_acceptable_fee_paise ?? 0);
     try {
       await c.env.DB.prepare(
         `update courses
-         set code = ?, name = ?, duration_label = ?, duration_months = ?, default_fee_paise = ?, lowest_acceptable_fee_paise = ?, nsdc_available = ?, status = ?, updated_at = ?
+         set code = ?, name = ?, duration_label = ?, duration_months = ?, default_fee_paise = ?, lowest_acceptable_fee_paise = ?, admission_configuration_complete = ?, nsdc_available = ?, status = ?, updated_at = ?
          where id = ? and organisation_id = ?`,
       )
-        .bind(next.code, next.name, next.duration_label ?? null, next.duration_months, next.default_fee_paise ?? 0, next.lowest_acceptable_fee_paise ?? 0, next.nsdc_available ? 1 : 0, next.status, next.updated_at, existing.id, ORG_ID)
+        .bind(next.code, next.name, next.duration_label ?? null, next.duration_months, next.default_fee_paise ?? 0, next.lowest_acceptable_fee_paise ?? 0, admissionConfigurationComplete ? 1 : 0, next.nsdc_available ? 1 : 0, next.status, next.updated_at, existing.id, ORG_ID)
         .run();
     } catch {
       return jsonError(c, { status: 409, code: "course_code_exists", message: "Course code already exists." });
     }
+    if (coursePriceChanged) await supersedeCoursePriceApprovals(c, existing.id);
     await audit(c, staff, "course_updated", "course", existing.id, { status: next.status });
     return jsonPlain(c, { success: true, courseId: existing.id });
   });
@@ -223,13 +232,13 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   });
 
   app.get("/api/staff/discount-approvals", async (c) => {
-    const staff = await requireStaffRoles(c, COURSE_ADMIN_ROLES);
+    const staff = await requireStaffRoles(c, DISCOUNT_APPROVER_ROLES);
     if (!staff) return forbidden(c);
     return jsonPlain(c, { approvals: await listDiscountApprovals(c) });
   });
 
   app.post("/api/staff/discount-approvals/:approvalId/decision", async (c) => {
-    const staff = await requireStaffRoles(c, COURSE_ADMIN_ROLES);
+    const staff = await requireStaffRoles(c, DISCOUNT_APPROVER_ROLES);
     if (!staff) return forbidden(c);
     const parsed = discountDecisionSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_decision", message: "Select approve or reject." });
@@ -369,6 +378,18 @@ async function audit(c: Parameters<typeof getAdmissionDraft>[0], staff: StaffCon
      values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(createOpaqueId("audit"), ORG_ID, staff.loginAccountId, staff.activePersonId, action, entityType, entityId, JSON.stringify(metadata), new Date().toISOString())
+    .run();
+}
+
+async function supersedeCoursePriceApprovals(c: Parameters<typeof getAdmissionDraft>[0], courseId: string) {
+  await c.env.DB.prepare(
+    `update admission_discount_approvals
+     set status = 'superseded', updated_at = ?
+     where organisation_id = ?
+       and course_id = ?
+       and status in ('pending', 'approved')`,
+  )
+    .bind(new Date().toISOString(), ORG_ID, courseId)
     .run();
 }
 

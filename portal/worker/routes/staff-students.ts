@@ -41,7 +41,7 @@ export function registerStaffStudentRoutes(app: PortalHono) {
         .bind(ORG_ID)
         .all(),
       c.env.DB.prepare(
-        "select id, code, name, duration_label, default_fee_paise, nsdc_available from courses where organisation_id = ? and status = 'active' order by name",
+        "select id, code, name, duration_label, default_fee_paise, nsdc_available from courses where organisation_id = ? and status = 'active' and admission_configuration_complete = 1 order by name",
       )
         .bind(ORG_ID)
         .all(),
@@ -145,7 +145,7 @@ export function registerStaffStudentRoutes(app: PortalHono) {
 
     if (parsed.data.courseInterestId) {
       const course = await c.env.DB.prepare(
-        "select id from courses where id = ? and organisation_id = ? and status = 'active'",
+        "select id from courses where id = ? and organisation_id = ? and status = 'active' and admission_configuration_complete = 1",
       )
         .bind(parsed.data.courseInterestId, ORG_ID)
         .first();

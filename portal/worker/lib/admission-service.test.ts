@@ -10,6 +10,7 @@ import { decryptText } from "./crypto";
 import {
   confirmAdmission,
   decideDiscountApproval,
+  listDiscountApprovals,
   requestDiscountApproval,
   saveAdmissionDraft,
   validateAdmissionDraftPayload,
@@ -324,12 +325,156 @@ describe("confirmAdmission service integration", () => {
     const requested = await requestDiscountApproval(c, staff, "enq_first");
     expect(requested.ok).toBe(true);
     if (!requested.ok) throw new Error(requested.message);
-    const owner = { ...staff, roles: ["owner"] };
+    const owner = staffForRole("owner", "acct_owner");
     const decided = await decideDiscountApproval(c, owner, requested.approvalId, "approved");
     expect(decided.ok).toBe(true);
 
     await expectOk(confirmAdmission(c, staff, "enq_first"));
-    expect(row(db, "select final_agreed_fee_paise from fee_agreements")).toMatchObject({ final_agreed_fee_paise: 3500000 });
+    expect(row(db, "select final_agreed_fee_paise, discount_approved_by, discount_approval_id from fee_agreements")).toMatchObject({
+      final_agreed_fee_paise: 3500000,
+      discount_approved_by: "acct_owner",
+      discount_approval_id: requested.approvalId,
+    });
+    db.close();
+  });
+
+  it.each(["admin", "system_admin", "admission_admin", "counsellor"])("rejects %s discount decisions at the service boundary", async (role) => {
+    const db = testDb();
+    const c = context(db);
+    await createAdmissionDraft(c, "enq_first", belowFloorPayload());
+    const requested = await requestDiscountApproval(c, staff, "enq_first");
+    expect(requested.ok).toBe(true);
+    if (!requested.ok) throw new Error(requested.message);
+
+    const decided = await decideDiscountApproval(c, staffForRole(role, "acct_staff"), requested.approvalId, "approved");
+    expect(decided).toMatchObject({ ok: false, status: 403 });
+    expect(row(db, "select status, decided_by_login_account_id from admission_discount_approvals")).toMatchObject({
+      status: "pending",
+      decided_by_login_account_id: null,
+    });
+    db.close();
+  });
+
+  it("records no approver for within-floor discounts", async () => {
+    const db = testDb();
+    const c = context(db);
+    const payload = validPayload();
+    payload.fee.finalAgreedFeePaise = 4500000;
+    payload.fee.discountReason = "Merit scholarship";
+    payload.fee.discountReasonCode = "merit";
+    await createAdmissionDraft(c, "enq_first", payload);
+
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
+    expect(row(db, "select discount_paise, discount_approved_by, discount_approval_id from fee_agreements")).toMatchObject({
+      discount_paise: 500000,
+      discount_approved_by: null,
+      discount_approval_id: null,
+    });
+    db.close();
+  });
+
+  it("records no approver for listed-price admissions", async () => {
+    const db = testDb();
+    const c = context(db);
+    await createAdmissionDraft(c, "enq_first");
+
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
+    expect(row(db, "select discount_paise, discount_approved_by, discount_approval_id from fee_agreements")).toMatchObject({
+      discount_paise: 0,
+      discount_approved_by: null,
+      discount_approval_id: null,
+    });
+    db.close();
+  });
+
+  it.each([
+    ["final fee", (payload: AdmissionTestPayload) => { payload.fee.finalAgreedFeePaise = 3400000; }],
+    ["discount reason", (payload: AdmissionTestPayload) => { payload.fee.discountReasonCode = "custom"; payload.fee.discountReason = "Owner exception"; }],
+    ["course", (payload: AdmissionTestPayload, db: SqliteD1) => { seedCourse(db, "course_data", "DA", "Data Analytics", 4500000, 3800000); payload.course.courseId = "course_data"; }],
+  ])("supersedes approval when %s changes", async (_label, mutate) => {
+    const db = testDb();
+    const c = context(db);
+    const payload = belowFloorPayload();
+    await createAdmissionDraft(c, "enq_first", payload);
+    const requested = await requestDiscountApproval(c, staff, "enq_first");
+    expect(requested.ok).toBe(true);
+    if (!requested.ok) throw new Error(requested.message);
+    await decideDiscountApproval(c, staffForRole("owner", "acct_owner"), requested.approvalId, "approved");
+
+    mutate(payload, db);
+    await saveAdmissionDraft(c, staff, "enq_first", { payload, currentStep: "fee" });
+    expect(row(db, "select status from admission_discount_approvals where id = '" + requested.approvalId + "'")).toMatchObject({ status: "superseded" });
+    const confirmed = await confirmAdmission(c, staff, "enq_first");
+    expect(confirmed.ok).toBe(false);
+    db.close();
+  });
+
+  it.each([
+    ["listed price", "default_fee_paise", 5100000],
+    ["floor price", "lowest_acceptable_fee_paise", 4100000],
+  ])("supersedes approval when Course Master %s changes", async (_label, column, value) => {
+    const db = testDb();
+    const c = context(db);
+    const payload = belowFloorPayload();
+    await createAdmissionDraft(c, "enq_first", payload);
+    const requested = await requestDiscountApproval(c, staff, "enq_first");
+    expect(requested.ok).toBe(true);
+    if (!requested.ok) throw new Error(requested.message);
+    await decideDiscountApproval(c, staffForRole("owner", "acct_owner"), requested.approvalId, "approved");
+
+    db.database.exec(`update courses set ${column} = ${value} where id = 'course_full_stack'`);
+    await saveAdmissionDraft(c, staff, "enq_first", { payload, currentStep: "fee" });
+    expect(row(db, "select status from admission_discount_approvals where id = '" + requested.approvalId + "'")).toMatchObject({ status: "superseded" });
+    expect((await confirmAdmission(c, staff, "enq_first")).ok).toBe(false);
+    db.close();
+  });
+
+  it("deduplicates concurrent identical approval requests to one active fingerprint", async () => {
+    const db = testDb();
+    const c = context(db);
+    await createAdmissionDraft(c, "enq_first", belowFloorPayload());
+
+    const [first, second] = await Promise.all([requestDiscountApproval(c, staff, "enq_first"), requestDiscountApproval(c, staff, "enq_first")]);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) throw new Error("approval requests failed");
+    expect(first.approvalId).toBe(second.approvalId);
+    expect(count(db, "admission_discount_approvals where status in ('pending', 'approved')")).toBe(1);
+    db.close();
+  });
+
+  it("returns commercial snapshot values in the approval queue", async () => {
+    const db = testDb();
+    const c = context(db);
+    await createAdmissionDraft(c, "enq_first", belowFloorPayload());
+    const requested = await requestDiscountApproval(c, staff, "enq_first");
+    expect(requested.ok).toBe(true);
+
+    const approvals = await listDiscountApprovals(c);
+    expect(approvals[0]).toMatchObject({
+      listed_fee_paise: 5000000,
+      lowest_acceptable_fee_paise: 4000000,
+      requested_final_fee_paise: 3500000,
+      discount_amount_paise: 1500000,
+      enquiry_number: "ENQ-SION-2026-001",
+      course_name: "Full Stack Development",
+    });
+    db.close();
+  });
+
+  it("blocks incomplete migrated courses until explicitly configured", async () => {
+    const db = testDb();
+    const c = context(db);
+    db.database.exec("update courses set admission_configuration_complete = 0 where id = 'course_full_stack'");
+    await createAdmissionDraft(c, "enq_first");
+
+    const blocked = await confirmAdmission(c, staff, "enq_first");
+    expect(blocked.ok).toBe(false);
+    if (blocked.ok) throw new Error("Expected incomplete course to fail");
+    expect(blocked.fieldErrors?.["course.courseId"]?.[0]).toContain("requires Course Master configuration");
+
+    db.database.exec("update courses set admission_configuration_complete = 1 where id = 'course_full_stack'");
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
     db.close();
   });
 
@@ -406,6 +551,14 @@ const staff: StaffContext = {
   roles: ["admission_admin"],
 };
 
+function staffForRole(role: string, loginAccountId = `acct_${role}`): StaffContext {
+  return {
+    loginAccountId,
+    activePersonId: `person_${role}`,
+    roles: [role],
+  };
+}
+
 function validPayload(): AdmissionTestPayload {
   return {
     identity: {
@@ -448,6 +601,14 @@ function validPayload(): AdmissionTestPayload {
       nsdcPendingDocumentsUnderstood: false,
     },
   };
+}
+
+function belowFloorPayload() {
+  const payload = validPayload();
+  payload.fee.finalAgreedFeePaise = 3500000;
+  payload.fee.discountReason = "Merit scholarship";
+  payload.fee.discountReasonCode = "merit";
+  return payload;
 }
 
 async function createAdmissionDraft(c: AppContext, enquiryId: string, payload = validPayload()) {
@@ -506,11 +667,16 @@ function seedBase(db: SqliteD1) {
     insert into people (id, organisation_id, home_branch_id, full_name, public_name, date_of_birth, status, created_at, updated_at)
     values
       ('person_staff', 'org_samyak', 'branch_sion', 'Staff User', 'Staff', null, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
+      ('person_owner', 'org_samyak', 'branch_sion', 'Owner User', 'Owner', null, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
       ('person_asha', 'org_samyak', 'branch_sion', 'Asha Student', 'Asha', '2001-02-03', 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
     insert into login_accounts (id, organisation_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, created_at, updated_at)
-    values ('acct_staff', 'org_samyak', 'staff_mobile_hash', 'staff_mobile_hash', '0000', 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
-    insert into courses (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, nsdc_available, status, created_at, updated_at)
-    values ('course_full_stack', 'org_samyak', 'FSD', 'Full Stack Development', '6 months', 6, 5000000, 4000000, 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+    values
+      ('acct_staff', 'org_samyak', 'staff_mobile_hash', 'staff_mobile_hash', '0000', 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
+      ('acct_owner', 'org_samyak', 'owner_mobile_hash', 'owner_mobile_hash', '1111', 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+    insert into login_account_roles (login_account_id, role_id, branch_id, created_at)
+    select 'acct_owner', roles.id, null, '2026-07-21T00:00:00.000Z' from roles where roles.organisation_id = 'org_samyak' and roles.code = 'owner';
+    insert into courses (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
+    values ('course_full_stack', 'org_samyak', 'FSD', 'Full Stack Development', '6 months', 6, 5000000, 4000000, 1, 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
     insert into admission_option_values (id, organisation_id, category, code, label, sort_order, requires_custom_label, is_active, created_at, updated_at)
     values
       ('opt_lang_en', 'org_samyak', 'preferred_language', 'english', 'English', 1, 0, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
@@ -532,6 +698,14 @@ function seedEnquiry(db: SqliteD1, input: { id: string; personId: string; number
        (id, organisation_id, branch_id, person_id, enquiry_number, mobile_used, course_interest_id, source, status, created_at, updated_at)
      values (?, 'org_samyak', 'branch_sion', ?, ?, 'mobile_hash', 'course_full_stack', 'walk_in', 'admission_pending', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z')`,
   ).run(input.id, input.personId, input.number);
+}
+
+function seedCourse(db: SqliteD1, id: string, code: string, name: string, listedFeePaise: number, floorFeePaise: number) {
+  db.database.prepare(
+    `insert into courses
+       (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
+     values (?, 'org_samyak', ?, ?, '6 months', 6, ?, ?, 1, 0, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z')`,
+  ).run(id, code, name, listedFeePaise, floorFeePaise);
 }
 
 function row(db: SqliteD1, sql: string) {

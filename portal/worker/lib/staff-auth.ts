@@ -2,6 +2,7 @@ import type { AppContext } from "./http";
 import { getAccountRoles, getSessionFromRequest } from "./auth-store";
 
 export const COURSE_ADMIN_ROLES = ["owner", "system_admin", "admin"] as const;
+export const DISCOUNT_APPROVER_ROLES = ["owner"] as const;
 export const ADMISSION_STAFF_ROLES = ["owner", "system_admin", "admin", "counsellor", "admission_admin"] as const;
 export const SENSITIVE_ADMISSION_ROLES = ["owner", "system_admin", "admission_admin"] as const;
 
