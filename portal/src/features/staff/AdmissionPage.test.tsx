@@ -1,12 +1,18 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  AdmissionLockedFieldset,
+  AdmissionRecoveryNotice,
   AdmissionSuccess,
   admissionReview,
   configuredAdmissionCourses,
+  courseForReview,
   defaultAdmissionPayload,
+  isAdmissionLockedError,
   mergeAdmissionPayload,
+  shouldSaveDraftBeforeConfirm,
 } from "./AdmissionPage";
+import { ApiError } from "../../lib/api";
 
 const course = {
   id: "course_full_stack",
@@ -115,6 +121,49 @@ describe("AdmissionPage helpers", () => {
         { ...course, id: "course_incomplete", name: "Incomplete", admission_configuration_complete: false },
       ]).map((item) => item.id),
     ).toEqual(["course_full_stack"]);
+  });
+
+  it("freezes Course Master display values from the locked draft", () => {
+    const payload = readyPayload();
+    payload.fee.standardFeePaise = 5000000;
+
+    const lockedCourse = courseForReview(payload, { ...course, default_fee_paise: 5500000 }, true);
+    const editableCourse = courseForReview(payload, { ...course, default_fee_paise: 5500000 }, false);
+
+    expect(lockedCourse?.default_fee_paise).toBe(5000000);
+    expect(editableCourse?.default_fee_paise).toBe(5500000);
+  });
+
+  it("skips draft save before retrying a locked confirmation", () => {
+    expect(shouldSaveDraftBeforeConfirm(false)).toBe(true);
+    expect(shouldSaveDraftBeforeConfirm(true)).toBe(false);
+  });
+
+  it("recognizes admission lock API errors", () => {
+    expect(isAdmissionLockedError(new ApiError("Locked", undefined, "admission_confirmation_locked"))).toBe(true);
+    expect(isAdmissionLockedError(new ApiError("Different", undefined, "invalid_admission"))).toBe(false);
+  });
+
+  it("renders locked recovery notice with retry action", () => {
+    const html = renderToStaticMarkup(<AdmissionRecoveryNotice isConfirming={false} onRetry={() => undefined} />);
+    expect(html).toContain("Admission confirmation is locked for recovery.");
+    expect(html).toContain("Retry Confirmation");
+  });
+
+  it("disables admission controls while keeping frozen values visible", () => {
+    const html = renderToStaticMarkup(
+      <AdmissionLockedFieldset isLocked>
+        <input value="Asha Student" readOnly />
+        <select value="course_full_stack" onChange={() => undefined}>
+          <option value="course_full_stack">Full Stack</option>
+        </select>
+        <button type="submit">Save Draft</button>
+      </AdmissionLockedFieldset>,
+    );
+
+    expect(html).toContain("disabled");
+    expect(html).toContain("Asha Student");
+    expect(html).toContain("Full Stack");
   });
 });
 

@@ -35,7 +35,8 @@
   font: inherit;
 }
 
-.staff-form input:disabled {
+.staff-form input:disabled,
+.staff-form select:disabled {
   color: var(--color-muted);
   background: #f3f6f8;
 }
@@ -75,6 +76,35 @@
   margin: 8px 0 0;
   padding-left: 18px;
   color: #8a1f14;
+}
+
+.admission-locked-fieldset {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.admission-recovery-notice {
+  display: grid;
+  gap: 8px;
+  border-color: rgba(14, 116, 144, 0.28);
+  background: #ecfeff;
+}
+
+.admission-recovery-notice strong {
+  color: #155e75;
+}
+
+.admission-recovery-notice span {
+  color: var(--color-ink);
+  line-height: 1.45;
+}
+
+.admission-recovery-notice button {
+  justify-self: start;
 }
 
 .staff-search-row {

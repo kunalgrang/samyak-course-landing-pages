@@ -200,6 +200,8 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
             status: draft.status,
             payload: JSON.parse(draft.payload_json),
             confirmedAt: draft.confirmed_at,
+            confirmationLockedAt: draft.confirmation_locked_at,
+            confirmationSnapshotVersion: draft.confirmation_snapshot_version,
           }
         : null,
     });

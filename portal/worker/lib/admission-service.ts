@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { AppContext } from "./http";
 import { ORG_ID, mobileHash } from "./auth-store";
-import { createOpaqueId, encryptText } from "./crypto";
+import { createOpaqueId, encryptText, hmacHex } from "./crypto";
 import { DISCOUNT_APPROVER_ROLES, type StaffContext } from "./staff-auth";
 
 const nameSchema = z.string().trim().min(2).max(140).regex(/^[^\d]+$/, "Name cannot contain numbers.");
@@ -266,6 +266,10 @@ type DraftRecord = {
   current_step: string;
   status: string;
   confirmed_at: string | null;
+  confirmation_locked_at: string | null;
+  confirmation_snapshot_json: string | null;
+  confirmation_snapshot_version: string | null;
+  confirmation_locked_by_login_account_id: string | null;
 };
 
 export type AdmissionConfirmationResult = {
@@ -320,6 +324,15 @@ export async function saveAdmissionDraft(c: AppContext, staff: StaffContext, enq
   if (enquiry.status === "converted" || enquiry.converted_enrolment_id) {
     return { ok: false as const, status: 409, code: "already_converted", message: "This enquiry is already converted." };
   }
+  const existing = await getAdmissionDraft(c, enquiryId);
+  if (existing?.confirmation_locked_at) {
+    return {
+      ok: false as const,
+      status: 409,
+      code: "admission_confirmation_locked",
+      message: "Admission confirmation has started. The admission details are locked while the system completes or recovers the admission.",
+    };
+  }
   const validated = validateAdmissionDraftPayload(input.payload);
   if (!validated.success) return { ok: false as const, status: 400, code: "invalid_draft", message: validated.message };
   if (validated.payload.contact?.primaryMobile && !normalizeIndianMobile(String(validated.payload.contact.primaryMobile))) {
@@ -331,7 +344,6 @@ export async function saveAdmissionDraft(c: AppContext, staff: StaffContext, enq
 
   const now = new Date().toISOString();
   await upsertAdmissionContacts(c, enquiry.person_id, validated.payload.contact, now);
-  const existing = await getAdmissionDraft(c, enquiryId);
   const draftId = existing?.status === "draft" ? existing.id : createOpaqueId("draft");
   const normalizedPayload = await normalizeAdmissionOptionLabels(c, validated.payload);
   const normalizedCourseId = String(normalizedPayload.course?.courseId || "");
@@ -368,45 +380,35 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
   const enquiry = await getAdmissionEnquiry(c, enquiryId);
   if (!enquiry) return { ok: false, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
   const draft = await getAdmissionDraft(c, enquiryId);
-  const existingEnrolmentId = enquiry.converted_enrolment_id || (await getEnrolmentByEnquiry(c, enquiry.id))?.id || null;
-  if (existingEnrolmentId && draft) {
-    const recovered = await finalizeExistingAdmission(c, staff, enquiry, draft, existingEnrolmentId);
-    if (recovered.ok) return { ok: true, result: recovered.result };
-    return recovered;
-  }
-  if (enquiry.converted_enrolment_id) {
-    const existing = await confirmationForEnrolment(c, enquiry, enquiry.converted_enrolment_id, false);
-    if (existing) return { ok: true, result: existing };
-    return { ok: false, status: 409, code: "already_converted", message: "This enquiry is already converted." };
+  if (!draft || !["draft", "confirmed"].includes(draft.status)) {
+    if (enquiry.converted_enrolment_id) {
+      const existing = await confirmationForEnrolment(c, enquiry, enquiry.converted_enrolment_id, false);
+      if (existing) return { ok: true, result: existing };
+    }
+    return { ok: false, status: 404, code: "draft_not_found", message: "Save an admission draft before confirming." };
   }
 
-  if (!draft || draft.status !== "draft") return { ok: false, status: 404, code: "draft_not_found", message: "Save an admission draft before confirming." };
+  const snapshotResult = await getOrCreateConfirmationSnapshot(c, staff, enquiry, draft);
+  if (!snapshotResult.ok) return snapshotResult;
+  const snapshot = snapshotResult.snapshot;
   const validated = validateAdmissionForConfirmation(JSON.parse(draft.payload_json));
   if (!validated.success) return { ok: false, status: 400, code: "invalid_admission", message: validated.message, fieldErrors: validated.fieldErrors };
   const payload = validated.payload;
-  const branchFieldErrors = await validateBranchLock(c, enquiry, payload, draft.branch_id);
-  if (Object.keys(branchFieldErrors).length) {
-    return { ok: false, status: 400, code: "invalid_branch", message: firstFieldError(branchFieldErrors) || "Admission branch must match the enquiry branch.", fieldErrors: branchFieldErrors };
-  }
-  const branch = await getBranch(c, enquiry.branch_id);
-  if (!branch) return { ok: false, status: 400, code: "invalid_branch", message: "Select an active branch." };
-  const course = await getActiveCourse(c, payload.course?.courseId || "");
-  if (!course) return { ok: false, status: 400, code: "invalid_course", message: "Select an active configured course." };
   const identity = payload.identity!;
-  const courseInput = payload.course!;
-  const feeInput = payload.fee!;
   const locality = payload.locality!;
   const education = payload.education!;
   const declarations = payload.declarations || {};
-  const readiness = await getAdmissionReadiness(c, enquiry, payload, draft.id, course);
-  if (Object.keys(readiness.fieldErrors).length) {
-    return { ok: false, status: 400, code: "invalid_admission", message: firstFieldError(readiness.fieldErrors) || "Please check the admission details.", fieldErrors: readiness.fieldErrors };
+
+  const existingEnrolmentId = enquiry.converted_enrolment_id || (await getEnrolmentByEnquiry(c, enquiry.id))?.id || null;
+  if (existingEnrolmentId) {
+    const recovered = await finalizeExistingAdmission(c, staff, enquiry, draft, snapshot, payload, existingEnrolmentId);
+    if (recovered.ok) return { ok: true, result: recovered.result };
+    return recovered;
   }
-  const courseStandardFeePaise = Number(course.default_fee_paise);
-  const admissionYear = admissionYearFromDate(courseInput.admissionDate);
+  const admissionYear = admissionYearFromDate(snapshot.admissionDate);
 
   const now = new Date().toISOString();
-  await upsertCanonicalPerson(c, draft.person_id, identity, branch.id, staff.loginAccountId, now);
+  await upsertCanonicalPerson(c, draft.person_id, identity, snapshot.branchId, staff.loginAccountId, now);
   await upsertAdmissionContacts(c, draft.person_id, payload.contact, now);
   await upsertLocality(c, draft.id, draft.person_id, locality, now);
   await upsertEducation(c, draft.id, draft.person_id, education, now);
@@ -418,15 +420,15 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
     .first<{ id: string; student_number: string }>();
   const isNewStudent = !student;
   if (!student) {
-    const sequence = await allocateSequence(c, ORG_ID, branch.id, "student");
+    const sequence = await allocateSequence(c, ORG_ID, snapshot.branchId, "student");
     const studentId = createOpaqueId("student");
-    const studentNumber = `SYK-${branch.code.toUpperCase()}-${formatSequence(sequence)}`;
+    const studentNumber = `SYK-${snapshot.branchCode.toUpperCase()}-${formatSequence(sequence)}`;
     await c.env.DB.prepare(
       `insert or ignore into students
          (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at)
        values (?, ?, ?, ?, ?, ?, ?, 'active', 'not_invited', ?, ?)`,
     )
-      .bind(studentId, ORG_ID, draft.person_id, branch.id, studentNumber, sequence, courseInput.admissionDate, now, now)
+      .bind(studentId, ORG_ID, draft.person_id, snapshot.branchId, studentNumber, sequence, snapshot.admissionDate, now, now)
       .run();
     student = await c.env.DB.prepare("select id, student_number from students where organisation_id = ? and person_id = ?")
       .bind(ORG_ID, draft.person_id)
@@ -434,9 +436,9 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
   }
   if (!student) return { ok: false, status: 500, code: "student_create_failed", message: "Could not create the student record." };
 
-  const enrolmentSequence = await allocateSequence(c, ORG_ID, branch.id, `enrolment:${admissionYear}`);
+  const enrolmentSequence = await allocateSequence(c, ORG_ID, snapshot.branchId, `enrolment:${admissionYear}`);
   const enrolmentId = createOpaqueId("enrol");
-  const enrolmentNumber = `ENR-${branch.code.toUpperCase()}-${admissionYear}-${formatSequence(enrolmentSequence)}`;
+  const enrolmentNumber = `ENR-${snapshot.branchCode.toUpperCase()}-${admissionYear}-${formatSequence(enrolmentSequence)}`;
   await c.env.DB.prepare(
     `insert or ignore into enrolments
        (id, student_id, branch_id, course_id, enquiry_id, enrolment_number, training_mode, batch_preference,
@@ -446,16 +448,16 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
     .bind(
       enrolmentId,
       student.id,
-      branch.id,
-      course.id,
+      snapshot.branchId,
+      snapshot.courseId,
       enquiry.id,
       enrolmentNumber,
-      courseInput.trainingMode,
-      courseInput.batchPreference || null,
-      courseInput.admissionDate,
-      courseInput.joiningDate,
-      courseInput.expectedCompletionDate || null,
-      courseInput.nsdcPreference || "decide_later",
+      snapshot.trainingMode,
+      snapshot.batchPreference || null,
+      snapshot.admissionDate,
+      snapshot.joiningDate,
+      snapshot.expectedCompletionDate || null,
+      snapshot.nsdcPreference || "decide_later",
       now,
       now,
     )
@@ -467,18 +469,14 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
   if (!enrolment) return { ok: false, status: 500, code: "enrolment_create_failed", message: "Could not create the enrolment." };
 
   return finalizeAdmission(c, staff, enquiry, draft, {
-    branchId: branch.id,
+    snapshot,
     personId: draft.person_id,
     studentId: student.id,
     studentNumber: student.student_number,
     enrolmentId: enrolment.id,
     enrolmentNumber: enrolment.enrolment_number,
     isNewStudent,
-    feeInput,
     declarations,
-    nsdcPreference: courseInput.nsdcPreference,
-    course,
-    courseStandardFeePaise,
     now,
   });
 }
@@ -509,46 +507,50 @@ async function getActiveCourse(c: AppContext, courseId: string) {
     .first<CourseRecord>();
 }
 
-async function finalizeExistingAdmission(c: AppContext, staff: StaffContext, enquiry: EnquiryRecord, draft: DraftRecord, enrolmentId: string) {
-  const validated = validateAdmissionForConfirmation(JSON.parse(draft.payload_json));
-  if (!validated.success) return { ok: false as const, status: 400, code: "invalid_admission", message: validated.message, fieldErrors: validated.fieldErrors };
-  const payload = validated.payload;
-  const course = await getActiveCourse(c, payload.course?.courseId || "");
-  if (!course) return { ok: false as const, status: 400, code: "invalid_course", message: "Select an active configured course." };
-  const readiness = await getAdmissionReadiness(c, enquiry, payload, draft.id, course);
-  if (Object.keys(readiness.fieldErrors).length) {
-    return { ok: false as const, status: 400, code: "invalid_admission", message: firstFieldError(readiness.fieldErrors) || "Please check the admission details.", fieldErrors: readiness.fieldErrors };
-  }
-  const courseStandardFeePaise = Number(course.default_fee_paise);
-  const feeInput = payload.fee!;
+async function finalizeExistingAdmission(c: AppContext, staff: StaffContext, enquiry: EnquiryRecord, draft: DraftRecord, snapshot: ConfirmationSnapshot, payload: AdmissionPayload, enrolmentId: string) {
   const enrolment = await c.env.DB.prepare(
     `select enrolments.id, enrolments.enrolment_number, enrolments.student_id, enrolments.branch_id,
+            enrolments.course_id, enrolments.enquiry_id, enrolments.training_mode, enrolments.batch_preference,
+            enrolments.admission_date, enrolments.joining_date, enrolments.expected_completion_date, enrolments.nsdc_preference,
             students.student_number, students.person_id
      from enrolments
      join students on students.id = enrolments.student_id
      where enrolments.id = ? and enrolments.enquiry_id = ?`,
   )
     .bind(enrolmentId, enquiry.id)
-    .first<{ id: string; enrolment_number: string; student_id: string; branch_id: string; student_number: string; person_id: string }>();
+    .first<{
+      id: string;
+      enrolment_number: string;
+      student_id: string;
+      branch_id: string;
+      course_id: string;
+      enquiry_id: string | null;
+      training_mode: string;
+      batch_preference: string | null;
+      admission_date: string;
+      joining_date: string;
+      expected_completion_date: string | null;
+      nsdc_preference: string;
+      student_number: string;
+      person_id: string;
+    }>();
   if (!enrolment) return { ok: false as const, status: 409, code: "enrolment_not_found", message: "Existing enrolment could not be recovered." };
+  const integrityError = recoveryIntegrityErrorFor(snapshot, enrolment);
+  if (integrityError) return integrityError;
   const now = new Date().toISOString();
-  await upsertCanonicalPerson(c, draft.person_id, payload.identity!, enrolment.branch_id, staff.loginAccountId, now);
+  await upsertCanonicalPerson(c, draft.person_id, payload.identity!, snapshot.branchId, staff.loginAccountId, now);
   await upsertAdmissionContacts(c, draft.person_id, payload.contact, now);
   await upsertLocality(c, draft.id, draft.person_id, payload.locality!, now);
   await upsertEducation(c, draft.id, draft.person_id, payload.education!, now);
   return finalizeAdmission(c, staff, enquiry, draft, {
-    branchId: enrolment.branch_id,
+    snapshot,
     personId: draft.person_id,
     studentId: enrolment.student_id,
     studentNumber: enrolment.student_number,
     enrolmentId: enrolment.id,
     enrolmentNumber: enrolment.enrolment_number,
     isNewStudent: false,
-    feeInput,
     declarations: payload.declarations || {},
-    nsdcPreference: payload.course?.nsdcPreference,
-    course,
-    courseStandardFeePaise,
     now,
   });
 }
@@ -559,26 +561,19 @@ async function finalizeAdmission(
   enquiry: EnquiryRecord,
   draft: DraftRecord,
   input: {
-    branchId: string;
+    snapshot: ConfirmationSnapshot;
     personId: string;
     studentId: string;
     studentNumber: string;
     enrolmentId: string;
     enrolmentNumber: string;
     isNewStudent: boolean;
-    feeInput: NonNullable<AdmissionPayload["fee"]>;
     declarations: Record<string, boolean | undefined>;
-    nsdcPreference: string | undefined;
-    course: CourseRecord;
-    courseStandardFeePaise: number;
     now: string;
   },
 ) {
-  const finalFeePaise = Number(input.feeInput.finalAgreedFeePaise || 0);
-  const floorPaise = Number(input.course.lowest_acceptable_fee_paise || 0);
-  const discountPaise = Math.max(0, input.courseStandardFeePaise - finalFeePaise);
-  const ownerApproval = await ownerApprovalForFeeAgreement(c, draft.id, input.course, input.feeInput);
-  if (finalFeePaise < floorPaise && !ownerApproval) {
+  const snapshot = input.snapshot;
+  if (snapshot.finalAgreedFeePaise < snapshot.lowestAcceptableFeePaise && (!snapshot.discountApprovalId || !snapshot.discountApprovedByLoginAccountId)) {
     return {
       ok: false as const,
       status: 400,
@@ -608,21 +603,21 @@ async function finalizeAdmission(
     .bind(
       createOpaqueId("fee"),
       input.enrolmentId,
-      input.courseStandardFeePaise,
-      input.feeInput.finalAgreedFeePaise || 0,
-      discountPaise,
-      input.feeInput.discountReason || null,
-      ownerApproval?.decided_by_login_account_id || null,
-      ownerApproval?.id || null,
-      input.feeInput.paymentPlanType,
-      instalmentsFor(input.feeInput.paymentPlanType, input.feeInput.numberOfInstalments),
-      input.feeInput.initialPaymentExpectedPaise || 0,
+      snapshot.listedFeePaise,
+      snapshot.finalAgreedFeePaise,
+      snapshot.discountAmountPaise,
+      snapshot.discountReasonText || null,
+      snapshot.discountApprovedByLoginAccountId || null,
+      snapshot.discountApprovalId || null,
+      snapshot.paymentPlanType,
+      snapshot.numberOfInstalments,
+      snapshot.initialPaymentExpectedPaise,
       input.now,
       input.now,
     )
     .run();
 
-  if (input.nsdcPreference === "yes") {
+  if (snapshot.nsdcPreference === "yes") {
     await c.env.DB.prepare(
       `insert into nsdc_profiles (id, enrolment_id, aadhaar_verified, status, created_at, updated_at)
        values (?, ?, 0, 'aadhaar_pending', ?, ?)
@@ -647,19 +642,14 @@ async function finalizeAdmission(
   )
     .bind(staff.loginAccountId, input.now, input.now, draft.id)
     .run();
-  await auditAdmissionConfirmed(c, staff, input.branchId, input.enrolmentId, {
+  await auditAdmissionConfirmed(c, staff, snapshot.branchId, input.enrolmentId, {
     enquiryId: enquiry.id,
     studentId: input.studentId,
     studentNumber: input.studentNumber,
     enrolmentNumber: input.enrolmentNumber,
   });
-  const finalEnquiry = await getAdmissionEnquiry(c, enquiry.id);
-  const finalDraft = await c.env.DB.prepare("select status, confirmed_at from admission_drafts where id = ?")
-    .bind(draft.id)
-    .first<{ status: string; confirmed_at: string | null }>();
-  if (finalEnquiry?.converted_enrolment_id !== input.enrolmentId || finalEnquiry.status !== "converted" || finalDraft?.status !== "confirmed" || !finalDraft.confirmed_at) {
-    return { ok: false as const, status: 409, code: "confirmation_inconsistent", message: "Admission confirmation could not be finalised consistently. Please retry." };
-  }
+  const finalCheck = await finalizationIntegrityError(c, enquiry, draft, input);
+  if (finalCheck) return finalCheck;
   return {
     ok: true as const,
     result: {
@@ -671,6 +661,232 @@ async function finalizeAdmission(
       isNewStudent: input.isNewStudent,
     },
   };
+}
+
+async function finalizationIntegrityError(
+  c: AppContext,
+  enquiry: EnquiryRecord,
+  draft: DraftRecord,
+  input: {
+    snapshot: ConfirmationSnapshot;
+    personId: string;
+    studentId: string;
+    studentNumber: string;
+    enrolmentId: string;
+    enrolmentNumber: string;
+    isNewStudent: boolean;
+    declarations: Record<string, boolean | undefined>;
+    now: string;
+  },
+) {
+  const finalEnquiry = await getAdmissionEnquiry(c, enquiry.id);
+  const finalDraft = await c.env.DB.prepare("select status, confirmed_at, confirmation_snapshot_json from admission_drafts where id = ?")
+    .bind(draft.id)
+    .first<{ status: string; confirmed_at: string | null; confirmation_snapshot_json: string | null }>();
+  const finalSnapshot = finalDraft ? parseConfirmationSnapshot(finalDraft) : null;
+  if (
+    finalEnquiry?.converted_enrolment_id !== input.enrolmentId ||
+    finalEnquiry.status !== "converted" ||
+    finalDraft?.status !== "confirmed" ||
+    !finalDraft.confirmed_at ||
+    !snapshotsMatch(input.snapshot, finalSnapshot)
+  ) {
+    return { ok: false as const, status: 409, code: "confirmation_inconsistent", message: "Admission confirmation could not be finalised consistently. Please retry." };
+  }
+  const enrolment = await c.env.DB.prepare(
+    `select enrolments.id, enrolments.enrolment_number, enrolments.student_id, enrolments.branch_id,
+            enrolments.course_id, enrolments.enquiry_id, enrolments.training_mode, enrolments.batch_preference,
+            enrolments.admission_date, enrolments.joining_date, enrolments.expected_completion_date, enrolments.nsdc_preference,
+            students.person_id
+     from enrolments
+     join students on students.id = enrolments.student_id
+     where enrolments.id = ?`,
+  )
+    .bind(input.enrolmentId)
+    .first<Record<string, unknown>>();
+  if (!enrolment || recoveryIntegrityErrorFor(input.snapshot, enrolment)) {
+    return { ok: false as const, status: 409, code: "recovery_integrity_error", message: "Admission recovery terms do not match the locked confirmation snapshot." };
+  }
+  const feeAgreement = await c.env.DB.prepare(
+    `select standard_fee_paise, final_agreed_fee_paise, discount_paise, discount_approved_by, discount_approval_id,
+            payment_plan_type, number_of_instalments, initial_payment_expected_paise
+     from fee_agreements
+     where enrolment_id = ?`,
+  )
+    .bind(input.enrolmentId)
+    .first<Record<string, unknown>>();
+  if (!feeAgreement || feeAgreementIntegrityErrorFor(input.snapshot, feeAgreement)) {
+    return { ok: false as const, status: 409, code: "recovery_integrity_error", message: "Fee agreement does not match the locked confirmation snapshot." };
+  }
+  return null;
+}
+
+const CONFIRMATION_SNAPSHOT_VERSION = "admission-confirmation-v1";
+
+type ConfirmationSnapshot = {
+  version: string;
+  organisationId: string;
+  enquiryId: string;
+  draftId: string;
+  personId: string;
+  branchId: string;
+  branchCode: string;
+  courseId: string;
+  admissionDate: string;
+  joiningDate: string;
+  expectedCompletionDate: string | null;
+  trainingMode: string;
+  batchPreference: string | null;
+  nsdcPreference: string;
+  listedFeePaise: number;
+  lowestAcceptableFeePaise: number;
+  finalAgreedFeePaise: number;
+  discountAmountPaise: number;
+  discountReasonCode: string;
+  discountReasonText: string | null;
+  paymentPlanType: string;
+  numberOfInstalments: number;
+  initialPaymentExpectedPaise: number;
+  discountApprovalId: string | null;
+  discountApprovedByLoginAccountId: string | null;
+  payloadFingerprint: string;
+};
+
+async function getOrCreateConfirmationSnapshot(c: AppContext, staff: StaffContext, enquiry: EnquiryRecord, draft: DraftRecord) {
+  const existing = parseConfirmationSnapshot(draft);
+  if (existing) return { ok: true as const, snapshot: existing };
+
+  if (draft.status !== "draft") return { ok: false as const, status: 404, code: "draft_not_found", message: "Save an admission draft before confirming." };
+  const validated = validateAdmissionForConfirmation(JSON.parse(draft.payload_json));
+  if (!validated.success) return { ok: false as const, status: 400, code: "invalid_admission", message: validated.message, fieldErrors: validated.fieldErrors };
+  const payload = validated.payload;
+  const branchFieldErrors = await validateBranchLock(c, enquiry, payload, draft.branch_id);
+  if (Object.keys(branchFieldErrors).length) {
+    return { ok: false as const, status: 400, code: "invalid_branch", message: firstFieldError(branchFieldErrors) || "Admission branch must match the enquiry branch.", fieldErrors: branchFieldErrors };
+  }
+  const branch = await getBranch(c, enquiry.branch_id);
+  if (!branch) return { ok: false as const, status: 400, code: "invalid_branch", message: "Select an active branch." };
+  const course = await getActiveCourse(c, payload.course?.courseId || "");
+  if (!course) return { ok: false as const, status: 400, code: "invalid_course", message: "Select an active configured course." };
+  const readiness = await getAdmissionReadiness(c, enquiry, payload, draft.id, course);
+  if (Object.keys(readiness.fieldErrors).length) {
+    return { ok: false as const, status: 400, code: "invalid_admission", message: firstFieldError(readiness.fieldErrors) || "Please check the admission details.", fieldErrors: readiness.fieldErrors };
+  }
+
+  const snapshot = await buildConfirmationSnapshot(c, enquiry, draft, payload, branch, course);
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `update admission_drafts
+     set confirmation_locked_at = ?,
+         confirmation_snapshot_json = ?,
+         confirmation_snapshot_version = ?,
+         confirmation_locked_by_login_account_id = ?,
+         updated_by_login_account_id = ?,
+         updated_at = ?
+     where id = ?
+       and status = 'draft'
+       and confirmation_locked_at is null`,
+  )
+    .bind(now, JSON.stringify(snapshot), CONFIRMATION_SNAPSHOT_VERSION, staff.loginAccountId, staff.loginAccountId, now, draft.id)
+    .run();
+
+  const lockedDraft = await c.env.DB.prepare("select * from admission_drafts where id = ?")
+    .bind(draft.id)
+    .first<DraftRecord>();
+  const lockedSnapshot = lockedDraft ? parseConfirmationSnapshot(lockedDraft) : null;
+  if (!lockedSnapshot) {
+    return { ok: false as const, status: 409, code: "admission_confirmation_lock_failed", message: "Admission confirmation could not be locked. Please retry confirmation." };
+  }
+  return { ok: true as const, snapshot: lockedSnapshot };
+}
+
+async function buildConfirmationSnapshot(c: AppContext, enquiry: EnquiryRecord, draft: DraftRecord, payload: AdmissionPayload, branch: { id: string; code: string }, course: CourseRecord): Promise<ConfirmationSnapshot> {
+  const fee = payload.fee!;
+  const courseInput = payload.course!;
+  const listedFeePaise = Number(course.default_fee_paise || 0);
+  const lowestAcceptableFeePaise = Number(course.lowest_acceptable_fee_paise || 0);
+  const finalAgreedFeePaise = Number(fee.finalAgreedFeePaise || 0);
+  const ownerApproval = await ownerApprovalForFeeAgreement(c, draft.id, course, fee);
+  return {
+    version: CONFIRMATION_SNAPSHOT_VERSION,
+    organisationId: ORG_ID,
+    enquiryId: enquiry.id,
+    draftId: draft.id,
+    personId: draft.person_id,
+    branchId: branch.id,
+    branchCode: branch.code,
+    courseId: course.id,
+    admissionDate: String(courseInput.admissionDate),
+    joiningDate: String(courseInput.joiningDate),
+    expectedCompletionDate: courseInput.expectedCompletionDate ? String(courseInput.expectedCompletionDate) : null,
+    trainingMode: String(courseInput.trainingMode),
+    batchPreference: courseInput.batchPreference ? String(courseInput.batchPreference) : null,
+    nsdcPreference: String(courseInput.nsdcPreference || "decide_later"),
+    listedFeePaise,
+    lowestAcceptableFeePaise,
+    finalAgreedFeePaise,
+    discountAmountPaise: Math.max(0, listedFeePaise - finalAgreedFeePaise),
+    discountReasonCode: String(fee.discountReasonCode || ""),
+    discountReasonText: fee.discountReason ? String(fee.discountReason) : null,
+    paymentPlanType: String(fee.paymentPlanType),
+    numberOfInstalments: instalmentsFor(String(fee.paymentPlanType), Number(fee.numberOfInstalments || 0)),
+    initialPaymentExpectedPaise: Number(fee.initialPaymentExpectedPaise || 0),
+    discountApprovalId: ownerApproval?.id || null,
+    discountApprovedByLoginAccountId: ownerApproval?.decided_by_login_account_id || null,
+    payloadFingerprint: await hmacHex(c.env.SESSION_PEPPER, "admission-confirmation-payload", JSON.stringify(payload)),
+  };
+}
+
+function parseConfirmationSnapshot(draft: Pick<DraftRecord, "confirmation_snapshot_json">): ConfirmationSnapshot | null {
+  if (!draft.confirmation_snapshot_json) return null;
+  try {
+    const parsed = JSON.parse(draft.confirmation_snapshot_json) as ConfirmationSnapshot;
+    return parsed.version === CONFIRMATION_SNAPSHOT_VERSION ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function recoveryIntegrityErrorFor(snapshot: ConfirmationSnapshot, enrolment: Record<string, unknown>) {
+  const expected: Record<string, string | null> = {
+    person_id: snapshot.personId,
+    branch_id: snapshot.branchId,
+    course_id: snapshot.courseId,
+    enquiry_id: snapshot.enquiryId,
+    admission_date: snapshot.admissionDate,
+    joining_date: snapshot.joiningDate,
+    expected_completion_date: snapshot.expectedCompletionDate,
+    training_mode: snapshot.trainingMode,
+    batch_preference: snapshot.batchPreference,
+    nsdc_preference: snapshot.nsdcPreference,
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if ((enrolment[key] ?? null) !== value) {
+      return { ok: false as const, status: 409, code: "recovery_integrity_error", message: "Existing enrolment does not match the locked confirmation snapshot." };
+    }
+  }
+  return null;
+}
+
+function feeAgreementIntegrityErrorFor(snapshot: ConfirmationSnapshot, feeAgreement: Record<string, unknown>) {
+  const expected: Record<string, number | string | null> = {
+    standard_fee_paise: snapshot.listedFeePaise,
+    final_agreed_fee_paise: snapshot.finalAgreedFeePaise,
+    discount_paise: snapshot.discountAmountPaise,
+    discount_approved_by: snapshot.discountApprovedByLoginAccountId,
+    discount_approval_id: snapshot.discountApprovalId,
+    payment_plan_type: snapshot.paymentPlanType,
+    number_of_instalments: snapshot.numberOfInstalments,
+    initial_payment_expected_paise: snapshot.initialPaymentExpectedPaise,
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if ((feeAgreement[key] ?? null) !== value) return true;
+  }
+  return false;
+}
+
+function snapshotsMatch(expected: ConfirmationSnapshot, actual: ConfirmationSnapshot | null) {
+  return Boolean(actual && JSON.stringify(actual) === JSON.stringify(expected));
 }
 
 export async function getAdmissionConfiguration(c: AppContext) {

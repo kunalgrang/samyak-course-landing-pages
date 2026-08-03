@@ -71,6 +71,13 @@
       "when": 1785744000000,
       "tag": "0009_admission_approval_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1785830400000,
+      "tag": "0010_admission_confirmation_lock",
+      "breakpoints": true
     }
   ]
 }

@@ -178,6 +178,8 @@ const admissionDraftSchema = z.object({
       status: z.string(),
       payload: admissionDraftPayloadSchema,
       confirmedAt: z.string().nullable(),
+      confirmationLockedAt: z.string().nullable().optional(),
+      confirmationSnapshotVersion: z.string().nullable().optional(),
     })
     .nullable(),
 });
@@ -260,12 +262,14 @@ export type PaymentPlanRule = AdmissionConfiguration["paymentPlanRules"][number]
 export type FieldErrors = Record<string, string[]>;
 
 export class ApiError extends Error {
+  code?: string;
   fieldErrors?: FieldErrors;
 
-  constructor(message: string, fieldErrors?: FieldErrors) {
+  constructor(message: string, fieldErrors?: FieldErrors, code?: string) {
     super(message);
     this.name = "ApiError";
     this.fieldErrors = fieldErrors;
+    this.code = code;
   }
 }
 
@@ -430,8 +434,10 @@ function apiErrorMessage(data: unknown) {
 }
 
 function apiError(data: unknown) {
-  const fieldErrors = data && typeof data === "object" ? (data as { error?: { fieldErrors?: unknown } }).error?.fieldErrors : undefined;
-  return new ApiError(apiErrorMessage(data), isFieldErrors(fieldErrors) ? fieldErrors : undefined);
+  const error = data && typeof data === "object" ? (data as { error?: { code?: unknown; fieldErrors?: unknown } }).error : undefined;
+  const fieldErrors = error?.fieldErrors;
+  const code = typeof error?.code === "string" ? error.code : undefined;
+  return new ApiError(apiErrorMessage(data), isFieldErrors(fieldErrors) ? fieldErrors : undefined, code);
 }
 
 function isFieldErrors(value: unknown): value is FieldErrors {

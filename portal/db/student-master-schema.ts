@@ -506,10 +506,15 @@ export const admissionDrafts = sqliteTable(
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
     confirmedAt: text("confirmed_at"),
+    confirmationLockedAt: text("confirmation_locked_at"),
+    confirmationSnapshotJson: text("confirmation_snapshot_json"),
+    confirmationSnapshotVersion: text("confirmation_snapshot_version"),
+    confirmationLockedByLoginAccountId: text("confirmation_locked_by_login_account_id"),
   },
   (table) => [
     index("admission_drafts_enquiry_id_idx").on(table.enquiryId),
     index("admission_drafts_person_id_idx").on(table.personId),
+    index("admission_drafts_confirmation_lock_idx").on(table.confirmationLockedAt),
     check("admission_drafts_status_check", sql`${table.status} in ('draft', 'confirmed', 'cancelled')`),
   ],
 );

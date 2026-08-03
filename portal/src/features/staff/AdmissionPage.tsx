@@ -43,6 +43,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const [saved, setSaved] = useState<string | null>(null);
   const [approvalStatus, setApprovalStatus] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<AdmissionConfirmation | null>(null);
+  const [isLocked, setIsLocked] = useState(false);
   const confirmPendingRef = useRef(false);
 
   useEffect(() => {
@@ -59,6 +60,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       const next = draftData.draft?.payload ? mergeAdmissionPayload(defaultAdmissionPayload(detailData), draftData.draft.payload) : defaultAdmissionPayload(detailData);
       setPayload(next);
       setCurrentStep(draftData.draft?.currentStep || "identity");
+      setIsLocked(Boolean(draftData.draft?.confirmationLockedAt));
     }
     void load()
       .catch((reason) => setError(reason instanceof Error ? reason.message : "Could not load admission."))
@@ -67,12 +69,13 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
 
   const admissionCourses = useMemo(() => configuredAdmissionCourses(courses), [courses]);
   const selectedCourse = useMemo(() => admissionCourses.find((course) => course.id === payload.course.courseId), [admissionCourses, payload.course.courseId]);
-  const review = useMemo(() => admissionReview(payload, selectedCourse), [payload, selectedCourse]);
+  const reviewCourse = useMemo(() => courseForReview(payload, selectedCourse, isLocked), [isLocked, payload, selectedCourse]);
+  const review = useMemo(() => admissionReview(payload, reviewCourse), [payload, reviewCourse]);
   const optionGroups = useMemo(() => groupOptions(configuration), [configuration]);
   const allowedPaymentRules = useMemo(() => allowedPaymentRulesForCourse(selectedCourse, configuration.paymentPlanRules), [configuration.paymentPlanRules, selectedCourse]);
 
   useEffect(() => {
-    if (!selectedCourse) return;
+    if (!selectedCourse || isLocked) return;
     setPayload((current) => ({
       ...current,
       fee: {
@@ -81,10 +84,15 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         finalAgreedFeePaise: current.fee.finalAgreedFeePaise || selectedCourse.default_fee_paise || 0,
       },
     }));
-  }, [selectedCourse]);
+  }, [isLocked, selectedCourse]);
 
   async function handleSave(event?: FormEvent) {
     event?.preventDefault();
+    if (isLocked) {
+      setSaved(null);
+      setError("Admission confirmation has started. Retry confirmation to finish recovery.");
+      return;
+    }
     setIsSaving(true);
     try {
       const result = await saveAdmissionDraft(enquiryId, payload as unknown as Record<string, unknown>, currentStep);
@@ -93,7 +101,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       setSaved(Object.keys(result.fieldErrors || {}).length ? "Draft saved with warnings." : "Draft saved.");
       setError(null);
     } catch (reason) {
-      captureApiError(reason, setError, setFieldErrors, "Could not save draft.");
+      captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, "Could not save draft.");
     } finally {
       setIsSaving(false);
     }
@@ -104,12 +112,12 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
     confirmPendingRef.current = true;
     setIsConfirming(true);
     try {
-      await saveAdmissionDraft(enquiryId, payload as unknown as Record<string, unknown>, "review");
+      if (shouldSaveDraftBeforeConfirm(isLocked)) await saveAdmissionDraft(enquiryId, payload as unknown as Record<string, unknown>, "review");
       const result = await confirmAdmission(enquiryId);
       setConfirmation(result);
       setError(null);
     } catch (reason) {
-      captureApiError(reason, setError, setFieldErrors, "Could not confirm admission.");
+      captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, "Could not confirm admission.");
     } finally {
       confirmPendingRef.current = false;
       setIsConfirming(false);
@@ -117,6 +125,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   }
 
   function setSection(section: keyof AdmissionPayload, key: string, value: string | boolean | number | null) {
+    if (isLocked) return;
     setPayload((current) => normalizeDependentFields({ ...current, [section]: { ...current[section], [key]: value } } as AdmissionPayload, section, key));
     setSaved(null);
     setFieldErrors((current) => {
@@ -127,6 +136,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   }
 
   function setOption(section: keyof AdmissionPayload, codeKey: string, labelKey: string, category: string, code: string) {
+    if (isLocked) return;
     const option = optionGroups[category]?.find((item) => item.code === code);
     const label = option && !Boolean(option.requires_custom_label) ? option.label : "";
     setPayload((current) => ({ ...current, [section]: { ...current[section], [codeKey]: code, [labelKey]: label } }));
@@ -140,6 +150,10 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   }
 
   async function handleRequestApproval() {
+    if (isLocked) {
+      setError("Admission confirmation has started. Retry confirmation to finish recovery.");
+      return;
+    }
     setIsSaving(true);
     try {
       await saveAdmissionDraft(enquiryId, payload as unknown as Record<string, unknown>, "fee");
@@ -147,7 +161,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       setApprovalStatus(result.status === "approved" ? "Approved" : "Requested");
       setError(null);
     } catch (reason) {
-      captureApiError(reason, setError, setFieldErrors, "Could not request approval.");
+      captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, "Could not request approval.");
     } finally {
       setIsSaving(false);
     }
@@ -170,7 +184,9 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       {error ? <ErrorState title="Could not continue" message={error} /> : null}
       {Object.keys(fieldErrors).length ? <ErrorSummary fieldErrors={fieldErrors} /> : null}
       {saved ? <div className="notice notice--success" role="status"><strong>{saved}</strong></div> : null}
+      {isLocked ? <AdmissionRecoveryNotice isConfirming={isConfirming} onRetry={() => void handleConfirm()} /> : null}
 
+      <AdmissionLockedFieldset isLocked={isLocked}>
       <AdmissionSection title="A · Official identity">
         <label>Full name as per Aadhaar<input value={String(payload.identity.officialFullName)} onChange={(e) => setSection("identity", "officialFullName", e.target.value)} required /></label>
         <label>First name<input value={String(payload.identity.firstName)} onChange={(e) => setSection("identity", "firstName", e.target.value)} /></label>
@@ -301,7 +317,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
           <Review label="Course" value={selectedCourse?.name || "Missing"} />
           <Review label="Joining date" value={String(payload.course.joiningDate || "Missing")} />
           <Review label="NSDC" value={String(payload.course.nsdcPreference)} />
-          <Review label="Course Master standard fee" value={formatMoney(Number(selectedCourse?.default_fee_paise ?? payload.fee.standardFeePaise ?? 0))} />
+          <Review label="Course Master standard fee" value={formatMoney(Number(reviewCourse?.default_fee_paise ?? payload.fee.standardFeePaise ?? 0))} />
           <Review label="Final fee" value={formatMoney(Number(payload.fee.finalAgreedFeePaise || 0))} />
           <Review label="Discount" value={formatMoney(review.discountPaise)} />
           <Review label="Payment plan" value={String(payload.fee.paymentPlanType)} />
@@ -309,11 +325,12 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
           <Review label="NSDC readiness" value={review.nsdcReady ? "Ready for pending profile" : "Regular admission can continue separately"} />
         </div>
         <div className="staff-form-actions">
-          <button type="submit" disabled={isSaving}>{isSaving ? "Saving..." : "Save Draft"}</button>
-          <button type="button" className="secondary-button" onClick={() => setCurrentStep("identity")}>Return for Correction</button>
-          <button type="button" disabled={isConfirming} onClick={() => void handleConfirm()}>{isConfirming ? "Confirming..." : "Confirm Admission"}</button>
+          <button type="submit" disabled={isSaving || isLocked}>{isSaving ? "Saving..." : "Save Draft"}</button>
+          <button type="button" className="secondary-button" disabled={isLocked} onClick={() => setCurrentStep("identity")}>Return for Correction</button>
+          <button type="button" disabled={isConfirming} onClick={() => void handleConfirm()}>{isConfirming ? "Confirming..." : isLocked ? "Retry Confirmation" : "Confirm Admission"}</button>
         </div>
       </section>
+      </AdmissionLockedFieldset>
     </form>
   );
 }
@@ -392,6 +409,18 @@ export function admissionReview(payload: AdmissionPayload, selectedCourse?: Staf
   return { discountPaise, canConfirmRegularAdmission: regularReady, nsdcReady, ownerApprovalRequired };
 }
 
+export function courseForReview(payload: AdmissionPayload, selectedCourse: StaffCourse | undefined, isLocked: boolean) {
+  if (!isLocked || !selectedCourse) return selectedCourse;
+  return {
+    ...selectedCourse,
+    default_fee_paise: Number(payload.fee.standardFeePaise ?? selectedCourse.default_fee_paise ?? 0),
+  };
+}
+
+export function shouldSaveDraftBeforeConfirm(isLocked: boolean) {
+  return !isLocked;
+}
+
 export function configuredAdmissionCourses(courses: StaffCourse[]) {
   return courses.filter((course) => course.status === "active" && Boolean(course.admission_configuration_complete));
 }
@@ -442,13 +471,32 @@ function branchDisplay(detail: EnquiryDetail) {
   return String(branchName || "Enquiry branch");
 }
 
-function captureApiError(reason: unknown, setError: (message: string | null) => void, setFieldErrors: (errors: FieldErrors) => void, fallback: string) {
+export function isAdmissionLockedError(reason: unknown) {
+  return reason instanceof ApiError && reason.code === "admission_confirmation_locked";
+}
+
+function captureAdmissionError(reason: unknown, setError: (message: string | null) => void, setFieldErrors: (errors: FieldErrors) => void, setIsLocked: (isLocked: boolean) => void, fallback: string) {
+  if (isAdmissionLockedError(reason)) setIsLocked(true);
   if (reason instanceof ApiError) {
     setError(reason.message);
     setFieldErrors(reason.fieldErrors || {});
     return;
   }
   setError(reason instanceof Error ? reason.message : fallback);
+}
+
+export function AdmissionRecoveryNotice({ isConfirming, onRetry }: { isConfirming: boolean; onRetry: () => void }) {
+  return (
+    <div className="notice admission-recovery-notice" role="status">
+      <strong>Admission confirmation is locked for recovery.</strong>
+      <span>The saved details are frozen while the system finishes the admission. Retry confirmation to continue from the locked snapshot.</span>
+      <button type="button" disabled={isConfirming} onClick={onRetry}>{isConfirming ? "Confirming..." : "Retry Confirmation"}</button>
+    </div>
+  );
+}
+
+export function AdmissionLockedFieldset({ isLocked, children }: { isLocked: boolean; children: ReactNode }) {
+  return <fieldset className="admission-locked-fieldset" disabled={isLocked}>{children}</fieldset>;
 }
 
 function ErrorSummary({ fieldErrors }: { fieldErrors: FieldErrors }) {

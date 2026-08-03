@@ -233,6 +233,7 @@ describe("confirmAdmission service integration", () => {
     expect(count(db, "students")).toBe(1);
     expect(count(db, "enrolments")).toBe(1);
     expect(count(db, "fee_agreements")).toBe(1);
+    expect(count(db, "admission_drafts where confirmation_locked_at is not null")).toBe(1);
     db.close();
   });
 
@@ -244,10 +245,18 @@ describe("confirmAdmission service integration", () => {
 
     await expect(confirmAdmission(c, staff, "enq_first")).rejects.toThrow("Simulated D1 write failure");
     expect(count(db, "enrolments")).toBe(1);
+    const locked = confirmationSnapshot(db);
+    expect(locked).toMatchObject({ courseId: "course_full_stack", listedFeePaise: 5000000 });
     expect(row(db, "select status, converted_enrolment_id from enquiries where id = 'enq_first'")).toMatchObject({
       status: "admission_pending",
       converted_enrolment_id: null,
     });
+
+    const changed = validPayload();
+    changed.course.courseId = "course_data";
+    seedCourse(db, "course_data", "DA", "Data Analytics", 4500000, 3800000);
+    const save = await saveAdmissionDraft(c, staff, "enq_first", { payload: changed, currentStep: "course" });
+    expect(save).toMatchObject({ ok: false, status: 409, code: "admission_confirmation_locked" });
 
     const recovered = await expectOk(confirmAdmission(c, staff, "enq_first"));
     expect(row(db, "select converted_enrolment_id from enquiries where id = 'enq_first'")?.converted_enrolment_id).toBe(recovered.enrolmentId);
@@ -256,6 +265,93 @@ describe("confirmAdmission service integration", () => {
     expect(count(db, "fee_agreements")).toBe(1);
     expect(count(db, "person_localities")).toBe(1);
     expect(count(db, "education_records")).toBe(1);
+    db.close();
+  });
+
+  it("creates a safe snapshot before enrolment creation and recovers when enrolment insertion initially fails", async () => {
+    const db = testDb();
+    const c = context(db);
+    await createAdmissionDraft(c, "enq_first");
+    db.failOnceSqlIncludes = "insert or ignore into enrolments";
+
+    await expect(confirmAdmission(c, staff, "enq_first")).rejects.toThrow("Simulated D1 write failure");
+    expect(count(db, "enrolments")).toBe(0);
+    const snapshotJson = String(row(db, "select confirmation_snapshot_json from admission_drafts where enquiry_id = 'enq_first'")?.confirmation_snapshot_json || "");
+    expect(snapshotJson).toContain("course_full_stack");
+    expect(snapshotJson).not.toContain("9876543210");
+    expect(snapshotJson).not.toMatch(/aadhaarNumber|bank|secret|document/i);
+
+    db.database.exec("update courses set status = 'inactive', default_fee_paise = 5100000, lowest_acceptable_fee_paise = 4100000 where id = 'course_full_stack'");
+    const recovered = await expectOk(confirmAdmission(c, staff, "enq_first"));
+    expect(recovered.studentNumber).toMatch(/^SYK-SION-/);
+    expect(row(db, "select course_id, admission_date from enrolments")).toMatchObject({ course_id: "course_full_stack", admission_date: "2026-08-01" });
+    expect(row(db, "select standard_fee_paise, final_agreed_fee_paise from fee_agreements")).toMatchObject({
+      standard_fee_paise: 5000000,
+      final_agreed_fee_paise: 5000000,
+    });
+    db.close();
+  });
+
+  it.each([
+    ["course", (payload: AdmissionTestPayload) => { payload.course.courseId = "course_data"; }],
+    ["admission date", (payload: AdmissionTestPayload) => { payload.course.admissionDate = "2026-09-01"; }],
+    ["final fee", (payload: AdmissionTestPayload) => { payload.fee.finalAgreedFeePaise = 4500000; payload.fee.discountReasonCode = "merit"; payload.fee.discountReason = "Merit scholarship"; }],
+    ["payment plan", (payload: AdmissionTestPayload) => { payload.fee.paymentPlanType = "three_instalments"; payload.fee.numberOfInstalments = 3; }],
+  ])("rejects %s edits after confirmation lock", async (_label, mutate) => {
+    const db = testDb();
+    const c = context(db);
+    seedCourse(db, "course_data", "DA", "Data Analytics", 4500000, 3800000);
+    await createAdmissionDraft(c, "enq_first");
+    db.failOnceSqlIncludes = "insert or ignore into enrolments";
+    await expect(confirmAdmission(c, staff, "enq_first")).rejects.toThrow("Simulated D1 write failure");
+
+    const changed = validPayload();
+    mutate(changed);
+    const save = await saveAdmissionDraft(c, staff, "enq_first", { payload: changed, currentStep: "review" });
+
+    expect(save).toMatchObject({ ok: false, status: 409, code: "admission_confirmation_locked" });
+    expect(JSON.parse(String(row(db, "select payload_json from admission_drafts where enquiry_id = 'enq_first'")?.payload_json)).course.courseId).toBe("course_full_stack");
+    db.close();
+  });
+
+  it("recovers below-floor approval using locked approval values after Course Master floor changes", async () => {
+    const db = testDb();
+    const c = context(db);
+    await createAdmissionDraft(c, "enq_first", belowFloorPayload());
+    const requested = await requestDiscountApproval(c, staff, "enq_first");
+    expect(requested.ok).toBe(true);
+    if (!requested.ok) throw new Error(requested.message);
+    await decideDiscountApproval(c, staffForRole("owner", "acct_owner"), requested.approvalId, "approved");
+    db.failOnceSqlIncludes = "insert into fee_agreements";
+
+    await expect(confirmAdmission(c, staff, "enq_first")).rejects.toThrow("Simulated D1 write failure");
+    db.database.exec("update courses set lowest_acceptable_fee_paise = 4500000 where id = 'course_full_stack'");
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
+
+    expect(row(db, "select standard_fee_paise, final_agreed_fee_paise, discount_approval_id, discount_approved_by from fee_agreements")).toMatchObject({
+      standard_fee_paise: 5000000,
+      final_agreed_fee_paise: 3500000,
+      discount_approval_id: requested.approvalId,
+      discount_approved_by: "acct_owner",
+    });
+    db.close();
+  });
+
+  it.each([
+    ["course", (db: SqliteD1) => { seedCourse(db, "course_data", "DA", "Data Analytics", 4500000, 3800000); db.database.exec("update enrolments set course_id = 'course_data'"); }],
+    ["branch", (db: SqliteD1) => { seedBranch(db, "branch_wadala", "WAD"); db.database.exec("update enrolments set branch_id = 'branch_wadala'"); }],
+    ["person", (db: SqliteD1) => { db.database.exec("update students set person_id = 'person_staff' where id in (select student_id from enrolments)"); }],
+  ])("stops recovery when existing enrolment %s differs from the snapshot", async (_label, mutate) => {
+    const db = testDb();
+    const c = context(db);
+    await createAdmissionDraft(c, "enq_first");
+    db.failOnceSqlIncludes = "insert into fee_agreements";
+    await expect(confirmAdmission(c, staff, "enq_first")).rejects.toThrow("Simulated D1 write failure");
+
+    mutate(db);
+    const recovered = await confirmAdmission(c, staff, "enq_first");
+    expect(recovered).toMatchObject({ ok: false, status: 409, code: "recovery_integrity_error" });
+    expect(count(db, "fee_agreements")).toBe(0);
     db.close();
   });
 
@@ -706,6 +802,19 @@ function seedCourse(db: SqliteD1, id: string, code: string, name: string, listed
        (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
      values (?, 'org_samyak', ?, ?, '6 months', 6, ?, ?, 1, 0, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z')`,
   ).run(id, code, name, listedFeePaise, floorFeePaise);
+}
+
+function seedBranch(db: SqliteD1, id: string, code: string) {
+  db.database.prepare(
+    `insert into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at)
+     values (?, 'org_samyak', ?, ?, 'Asia/Kolkata', 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z')`,
+  ).run(id, code, code);
+}
+
+function confirmationSnapshot(db: SqliteD1) {
+  const snapshotJson = row(db, "select confirmation_snapshot_json from admission_drafts where enquiry_id = 'enq_first'")?.confirmation_snapshot_json;
+  expect(snapshotJson).toBeTruthy();
+  return JSON.parse(String(snapshotJson)) as Record<string, unknown>;
 }
 
 function row(db: SqliteD1, sql: string) {
