@@ -281,6 +281,15 @@ export type AdmissionConfirmationResult = {
   isNewStudent: boolean;
 };
 
+const REQUIRED_ADMISSION_OPTION_CATEGORIES = [
+  "preferred_language",
+  "qualification_level",
+  "stream",
+  "occupation_status",
+  "batch_preference",
+  "discount_reason",
+] as const;
+
 export function validateAdmissionDraftPayload(payload: unknown) {
   const sensitive = findSensitivePayloadKey(payload);
   if (sensitive) {
@@ -908,7 +917,19 @@ export async function getAdmissionConfiguration(c: AppContext) {
       .bind(ORG_ID)
       .all<Record<string, unknown>>(),
   ]);
-  return { options: options.results || [], paymentPlanRules: paymentPlanRules.results || [] };
+  const activeOptions = options.results || [];
+  const activePaymentPlanRules = paymentPlanRules.results || [];
+  const availableCategories = new Set(activeOptions.map((option) => option.category));
+  const missingCategories = REQUIRED_ADMISSION_OPTION_CATEGORIES.filter((category) => !availableCategories.has(category));
+  return {
+    options: activeOptions,
+    paymentPlanRules: activePaymentPlanRules,
+    configuration: {
+      ready: missingCategories.length === 0 && activePaymentPlanRules.length > 0,
+      missingCategories,
+      paymentPlanRulesConfigured: activePaymentPlanRules.length > 0,
+    },
+  };
 }
 
 export async function requestDiscountApproval(c: AppContext, staff: StaffContext, enquiryId: string) {

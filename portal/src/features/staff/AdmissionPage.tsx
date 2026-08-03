@@ -29,10 +29,13 @@ export type AdmissionPayload = {
   declarations: Record<string, boolean>;
 };
 
+export const ADMISSION_CONFIGURATION_MISSING_MESSAGE = "Admission settings are incomplete. Ask an owner or administrator to configure admission options.";
+export const PAYMENT_PLAN_MISSING_MESSAGE = "No payment plan is configured for this course duration.";
+
 export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const [detail, setDetail] = useState<EnquiryDetail | null>(null);
   const [courses, setCourses] = useState<StaffCourse[]>([]);
-  const [configuration, setConfiguration] = useState<AdmissionConfiguration>({ options: [], paymentPlanRules: [] });
+  const [configuration, setConfiguration] = useState<AdmissionConfiguration>(emptyAdmissionConfiguration());
   const [payload, setPayload] = useState<AdmissionPayload>(defaultAdmissionPayload());
   const [currentStep, setCurrentStep] = useState("identity");
   const [isLoading, setIsLoading] = useState(true);
@@ -46,8 +49,9 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const [isLocked, setIsLocked] = useState(false);
   const confirmPendingRef = useRef(false);
 
-  useEffect(() => {
-    async function load() {
+  async function loadAdmissionData() {
+    setIsLoading(true);
+    try {
       const [detailData, courseData, draftData, configData] = await Promise.all([
         getEnquiryDetail(enquiryId),
         getActiveCourses(),
@@ -61,10 +65,16 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       setPayload(next);
       setCurrentStep(draftData.draft?.currentStep || "identity");
       setIsLocked(Boolean(draftData.draft?.confirmationLockedAt));
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not load admission.");
+    } finally {
+      setIsLoading(false);
     }
-    void load()
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "Could not load admission."))
-      .finally(() => setIsLoading(false));
+  }
+
+  useEffect(() => {
+    void loadAdmissionData();
   }, [enquiryId]);
 
   const admissionCourses = useMemo(() => configuredAdmissionCourses(courses), [courses]);
@@ -73,6 +83,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const review = useMemo(() => admissionReview(payload, reviewCourse), [payload, reviewCourse]);
   const optionGroups = useMemo(() => groupOptions(configuration), [configuration]);
   const allowedPaymentRules = useMemo(() => allowedPaymentRulesForCourse(selectedCourse, configuration.paymentPlanRules), [configuration.paymentPlanRules, selectedCourse]);
+  const paymentPlanNotice = paymentPlanPolicyMessage(selectedCourse, configuration.paymentPlanRules, allowedPaymentRules);
+  const configurationReady = isAdmissionConfigurationReady(configuration);
 
   useEffect(() => {
     if (!selectedCourse || isLocked) return;
@@ -109,6 +121,14 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
 
   async function handleConfirm() {
     if (confirmPendingRef.current) return;
+    if (!configurationReady) {
+      setError(ADMISSION_CONFIGURATION_MISSING_MESSAGE);
+      return;
+    }
+    if (paymentPlanNotice) {
+      setFieldErrors({ "fee.paymentPlanType": [paymentPlanNotice] });
+      return;
+    }
     confirmPendingRef.current = true;
     setIsConfirming(true);
     try {
@@ -185,8 +205,9 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       {Object.keys(fieldErrors).length ? <ErrorSummary fieldErrors={fieldErrors} /> : null}
       {saved ? <div className="notice notice--success" role="status"><strong>{saved}</strong></div> : null}
       {isLocked ? <AdmissionRecoveryNotice isConfirming={isConfirming} onRetry={() => void handleConfirm()} /> : null}
+      {!configurationReady ? <AdmissionConfigurationMissing onRetry={() => void loadAdmissionData()} /> : null}
 
-      <AdmissionLockedFieldset isLocked={isLocked}>
+      {configurationReady ? <AdmissionLockedFieldset isLocked={isLocked}>
       <AdmissionSection title="A · Official identity">
         <label>Full name as per Aadhaar<input value={String(payload.identity.officialFullName)} onChange={(e) => setSection("identity", "officialFullName", e.target.value)} required /></label>
         <label>First name<input value={String(payload.identity.firstName)} onChange={(e) => setSection("identity", "firstName", e.target.value)} /></label>
@@ -297,7 +318,12 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
           onCustomLabelChange={(value) => setSection("fee", "discountReason", value)}
           error={errorFor("fee.discountReasonCode") || errorFor("fee.discountReason")}
         />
-        <label>Payment plan<RequiredMark /><select value={String(payload.fee.paymentPlanType)} onChange={(e) => setSection("fee", "paymentPlanType", e.target.value)} aria-invalid={Boolean(errorFor("fee.paymentPlanType"))}><option value="">Select plan</option>{allowedPaymentRules.map((rule) => <option key={rule.plan_type} value={rule.plan_type}>{paymentPlanLabel(rule.plan_type)}</option>)}</select><FieldMessage message={errorFor("fee.paymentPlanType")} /></label>
+        <PaymentPlanField
+          value={String(payload.fee.paymentPlanType)}
+          rules={allowedPaymentRules}
+          message={paymentPlanNotice || errorFor("fee.paymentPlanType")}
+          onChange={(value) => setSection("fee", "paymentPlanType", value)}
+        />
         <label>Number of instalments<input type="number" min="1" value={String(payload.fee.numberOfInstalments)} onChange={(e) => setSection("fee", "numberOfInstalments", Number(e.target.value || 1))} disabled={String(payload.fee.paymentPlanType) !== "custom"} aria-invalid={Boolean(errorFor("fee.numberOfInstalments"))} /><FieldMessage message={errorFor("fee.numberOfInstalments")} /></label>
         <label>Initial payment expected<input type="number" min="0" value={Number(payload.fee.initialPaymentExpectedPaise || 0) / 100} onChange={(e) => setSection("fee", "initialPaymentExpectedPaise", Math.round(Number(e.target.value || 0) * 100))} required /></label>
         {review.ownerApprovalRequired ? <div className="staff-form-actions"><button type="button" className="secondary-button" disabled={isSaving} onClick={() => void handleRequestApproval()}>{approvalStatus || "Request owner approval"}</button></div> : null}
@@ -327,10 +353,10 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         <div className="staff-form-actions">
           <button type="submit" disabled={isSaving || isLocked}>{isSaving ? "Saving..." : "Save Draft"}</button>
           <button type="button" className="secondary-button" disabled={isLocked} onClick={() => setCurrentStep("identity")}>Return for Correction</button>
-          <button type="button" disabled={isConfirming} onClick={() => void handleConfirm()}>{isConfirming ? "Confirming..." : isLocked ? "Retry Confirmation" : "Confirm Admission"}</button>
+          <button type="button" disabled={isConfirming || Boolean(paymentPlanNotice)} onClick={() => void handleConfirm()}>{isConfirming ? "Confirming..." : isLocked ? "Retry Confirmation" : "Confirm Admission"}</button>
         </div>
       </section>
-      </AdmissionLockedFieldset>
+      </AdmissionLockedFieldset> : null}
     </form>
   );
 }
@@ -421,6 +447,18 @@ export function shouldSaveDraftBeforeConfirm(isLocked: boolean) {
   return !isLocked;
 }
 
+export function emptyAdmissionConfiguration(): AdmissionConfiguration {
+  return {
+    options: [],
+    paymentPlanRules: [],
+    configuration: { ready: false, missingCategories: [], paymentPlanRulesConfigured: false },
+  };
+}
+
+export function isAdmissionConfigurationReady(configuration: AdmissionConfiguration) {
+  return configuration.configuration.ready;
+}
+
 export function configuredAdmissionCourses(courses: StaffCourse[]) {
   return courses.filter((course) => course.status === "active" && Boolean(course.admission_configuration_complete));
 }
@@ -447,9 +485,20 @@ function groupOptions(configuration: AdmissionConfiguration) {
   }, {});
 }
 
-function allowedPaymentRulesForCourse(course: StaffCourse | undefined, rules: PaymentPlanRule[]) {
+export function allowedPaymentRulesForCourse(course: StaffCourse | undefined, rules: PaymentPlanRule[]) {
   const duration = Number(course?.duration_months || 0);
-  return rules.filter((rule) => duration >= rule.min_duration_months && (rule.max_duration_months == null || duration <= rule.max_duration_months));
+  const seen = new Set<string>();
+  return rules.filter((rule) => {
+    const allowed = duration >= rule.min_duration_months && (rule.max_duration_months == null || duration <= rule.max_duration_months);
+    if (!allowed || seen.has(rule.plan_type)) return false;
+    seen.add(rule.plan_type);
+    return true;
+  });
+}
+
+export function paymentPlanPolicyMessage(course: StaffCourse | undefined, rules: PaymentPlanRule[], allowedRules: PaymentPlanRule[]) {
+  if (!course || !rules.length || allowedRules.length) return "";
+  return PAYMENT_PLAN_MISSING_MESSAGE;
 }
 
 function normalizeDependentFields(payload: AdmissionPayload, section: keyof AdmissionPayload, key: string) {
@@ -495,8 +544,31 @@ export function AdmissionRecoveryNotice({ isConfirming, onRetry }: { isConfirmin
   );
 }
 
+export function AdmissionConfigurationMissing({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="notice admission-configuration-missing" role="alert">
+      <strong>{ADMISSION_CONFIGURATION_MISSING_MESSAGE}</strong>
+      <span>Save only when the draft does not depend on missing dropdown values. Confirmation is blocked until configuration is available.</span>
+      <button type="button" onClick={onRetry}>Retry</button>
+    </div>
+  );
+}
+
 export function AdmissionLockedFieldset({ isLocked, children }: { isLocked: boolean; children: ReactNode }) {
   return <fieldset className="admission-locked-fieldset" disabled={isLocked}>{children}</fieldset>;
+}
+
+export function PaymentPlanField({ value, rules, message, onChange }: { value: string; rules: PaymentPlanRule[]; message?: string; onChange: (value: string) => void }) {
+  return (
+    <label>
+      Payment plan<RequiredMark />
+      <select value={value} onChange={(e) => onChange(e.target.value)} aria-invalid={Boolean(message)} disabled={!rules.length}>
+        <option value="">Select plan</option>
+        {rules.map((rule) => <option key={rule.plan_type} value={rule.plan_type}>{paymentPlanLabel(rule.plan_type)}</option>)}
+      </select>
+      <FieldMessage message={message} />
+    </label>
+  );
 }
 
 function ErrorSummary({ fieldErrors }: { fieldErrors: FieldErrors }) {
@@ -517,7 +589,7 @@ function FieldMessage({ message }: { message?: string }) {
   return message ? <span className="field-error">{message}</span> : null;
 }
 
-function OptionSelect({
+export function OptionSelect({
   label,
   required = false,
   options,

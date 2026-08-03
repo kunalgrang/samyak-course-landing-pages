@@ -242,6 +242,11 @@ const admissionConfigurationSchema = z.object({
       is_active: z.union([z.number(), z.boolean()]),
     }),
   ),
+  configuration: z.object({
+    ready: z.boolean(),
+    missingCategories: z.array(z.string()),
+    paymentPlanRulesConfigured: z.boolean(),
+  }),
 });
 
 const discountApprovalsSchema = z.object({

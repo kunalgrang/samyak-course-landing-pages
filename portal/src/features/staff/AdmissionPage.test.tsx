@@ -2,14 +2,21 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   AdmissionLockedFieldset,
+  AdmissionConfigurationMissing,
   AdmissionRecoveryNotice,
   AdmissionSuccess,
+  OptionSelect,
+  PaymentPlanField,
   admissionReview,
+  allowedPaymentRulesForCourse,
   configuredAdmissionCourses,
   courseForReview,
   defaultAdmissionPayload,
+  emptyAdmissionConfiguration,
   isAdmissionLockedError,
+  isAdmissionConfigurationReady,
   mergeAdmissionPayload,
+  paymentPlanPolicyMessage,
   shouldSaveDraftBeforeConfirm,
 } from "./AdmissionPage";
 import { ApiError } from "../../lib/api";
@@ -57,7 +64,7 @@ describe("AdmissionPage helpers", () => {
     const payload = readyPayload();
     payload.fee.finalAgreedFeePaise = 4500000;
     payload.fee.discountReason = "Scholarship";
-    payload.fee.discountReasonCode = "merit";
+    payload.fee.discountReasonCode = "scholarship_financial_support";
     const review = admissionReview(payload, course);
 
     expect(review.discountPaise).toBe(500000);
@@ -69,7 +76,7 @@ describe("AdmissionPage helpers", () => {
     payload.fee.standardFeePaise = 1;
     payload.fee.finalAgreedFeePaise = 4500000;
     payload.fee.discountReason = "Scholarship";
-    payload.fee.discountReasonCode = "merit";
+    payload.fee.discountReasonCode = "scholarship_financial_support";
 
     expect(admissionReview(payload, course).discountPaise).toBe(500000);
   });
@@ -165,7 +172,155 @@ describe("AdmissionPage helpers", () => {
     expect(html).toContain("Asha Student");
     expect(html).toContain("Full Stack");
   });
+
+  it("renders populated configuration choices through the dropdown components", () => {
+    const configuration = populatedConfiguration();
+    const html = renderToStaticMarkup(
+      <>
+        {["preferred_language", "qualification_level", "stream", "occupation_status", "batch_preference", "discount_reason"].map((category) => (
+          <OptionSelect
+            key={category}
+            label={category}
+            options={configuration.options.filter((option) => option.category === category)}
+            code=""
+            customLabel=""
+            onCodeChange={() => undefined}
+            onCustomLabelChange={() => undefined}
+          />
+        ))}
+        <PaymentPlanField value="" rules={configuration.paymentPlanRules} onChange={() => undefined} />
+      </>,
+    );
+
+    for (const label of [
+      "Gujarati",
+      "Below 10th",
+      "Undergraduate",
+      "Postgraduate",
+      "Doctorate",
+      "General",
+      "Engineering",
+      "Management",
+      "Vocational",
+      "Employed / Salaried",
+      "Self-employed / Business",
+      "Freelancer",
+      "Unemployed / Seeking Work",
+      "Homemaker",
+      "8 AM to 11 AM",
+      "5 PM to 8 PM",
+      "Full upfront payment",
+      "Management approval",
+      "Custom",
+    ]) {
+      expect(html).toContain(label);
+    }
+  });
+
+  it("shows an explicit page-level error when admission configuration is missing", () => {
+    const html = renderToStaticMarkup(<AdmissionConfigurationMissing onRetry={() => undefined} />);
+
+    expect(isAdmissionConfigurationReady(emptyAdmissionConfiguration())).toBe(false);
+    expect(html).toContain("Admission settings are incomplete. Ask an owner or administrator to configure admission options.");
+  });
+
+  it("does not render silent empty selects for missing configuration", () => {
+    const html = renderToStaticMarkup(<AdmissionConfigurationMissing onRetry={() => undefined} />);
+    expect(html).not.toContain("<select");
+  });
+
+  it("renders a retry action for reloading missing configuration", () => {
+    const html = renderToStaticMarkup(<AdmissionConfigurationMissing onRetry={() => undefined} />);
+    expect(html).toContain("Retry");
+    expect(html).toContain("button");
+  });
+
+  it("shows an explicit payment-plan duration policy error when no rule matches", () => {
+    const message = paymentPlanPolicyMessage({ ...course, duration_months: 13 }, populatedConfiguration().paymentPlanRules.filter((rule) => rule.max_duration_months === 6), []);
+    const html = renderToStaticMarkup(<PaymentPlanField value="" rules={[]} message={message} onChange={() => undefined} />);
+
+    expect(message).toBe("No payment plan is configured for this course duration.");
+    expect(html).toContain("No payment plan is configured for this course duration.");
+  });
+
+  it("updates payment-plan choices when course duration changes", () => {
+    const rules = populatedConfiguration().paymentPlanRules;
+
+    expect(allowedPaymentRulesForCourse({ ...course, duration_months: 1 }, rules).map((rule) => rule.plan_type)).toEqual(["full"]);
+    expect(allowedPaymentRulesForCourse({ ...course, duration_months: 2 }, rules).map((rule) => rule.plan_type)).toEqual(["full", "two_instalments"]);
+    expect(allowedPaymentRulesForCourse({ ...course, duration_months: 7 }, rules).map((rule) => rule.plan_type)).toEqual(["full", "two_instalments", "three_instalments", "custom"]);
+  });
 });
+
+function populatedConfiguration() {
+  return {
+    options: [
+      option("preferred_language", "english", "English", 10),
+      option("preferred_language", "hindi", "Hindi", 20),
+      option("preferred_language", "marathi", "Marathi", 30),
+      option("preferred_language", "gujarati", "Gujarati", 40),
+      option("preferred_language", "other", "Other", 90, true),
+      option("qualification_level", "below_10th", "Below 10th", 10),
+      option("qualification_level", "ssc", "SSC / 10th", 20),
+      option("qualification_level", "hsc", "HSC / 12th", 30),
+      option("qualification_level", "diploma", "Diploma", 40),
+      option("qualification_level", "undergraduate", "Undergraduate", 50),
+      option("qualification_level", "graduate", "Graduate", 60),
+      option("qualification_level", "postgraduate", "Postgraduate", 70),
+      option("qualification_level", "doctorate", "Doctorate", 80),
+      option("qualification_level", "other", "Other", 90, true),
+      option("stream", "general", "General", 10),
+      option("stream", "arts", "Arts", 20),
+      option("stream", "commerce", "Commerce", 30),
+      option("stream", "science", "Science", 40),
+      option("stream", "it_computer_science", "IT / Computer Science", 50),
+      option("stream", "engineering", "Engineering", 60),
+      option("stream", "management", "Management", 70),
+      option("stream", "vocational", "Vocational", 80),
+      option("stream", "other", "Other", 90, true),
+      option("occupation_status", "student", "Student", 10),
+      option("occupation_status", "employed_salaried", "Employed / Salaried", 20),
+      option("occupation_status", "self_employed_business", "Self-employed / Business", 30),
+      option("occupation_status", "freelancer", "Freelancer", 40),
+      option("occupation_status", "unemployed_seeking_work", "Unemployed / Seeking Work", 50),
+      option("occupation_status", "homemaker", "Homemaker", 60),
+      option("occupation_status", "other", "Other", 90, true),
+      option("batch_preference", "08_11", "8 AM to 11 AM", 10),
+      option("batch_preference", "11_14", "11 AM to 2 PM", 20),
+      option("batch_preference", "14_17", "2 PM to 5 PM", 30),
+      option("batch_preference", "17_20", "5 PM to 8 PM", 40),
+      option("discount_reason", "full_upfront", "Full upfront payment", 10),
+      option("discount_reason", "early_admission", "Early admission", 20),
+      option("discount_reason", "repeat_student", "Repeat student", 30),
+      option("discount_reason", "referral", "Referral", 40),
+      option("discount_reason", "scholarship_financial_support", "Scholarship / Financial support", 50),
+      option("discount_reason", "promotional_offer", "Promotional offer", 60),
+      option("discount_reason", "management_approval", "Management approval", 70),
+      option("discount_reason", "other", "Other", 90, true),
+    ],
+    paymentPlanRules: [
+      plan(1, 1, "full", 1),
+      plan(2, 3, "full", 1),
+      plan(2, 3, "two_instalments", 2),
+      plan(4, 6, "full", 1),
+      plan(4, 6, "two_instalments", 2),
+      plan(4, 6, "three_instalments", 3),
+      plan(7, null, "full", 1),
+      plan(7, null, "two_instalments", 2),
+      plan(7, null, "three_instalments", 3),
+      plan(7, null, "custom", null),
+    ],
+    configuration: { ready: true, missingCategories: [], paymentPlanRulesConfigured: true },
+  };
+}
+
+function option(category: string, code: string, label: string, sortOrder: number, requiresCustomLabel = false) {
+  return { category, code, label, sort_order: sortOrder, requires_custom_label: requiresCustomLabel, is_active: true };
+}
+
+function plan(min: number, max: number | null, planType: string, instalments: number | null) {
+  return { min_duration_months: min, max_duration_months: max, plan_type: planType, fixed_instalments: instalments, is_active: true };
+}
 
 function readyPayload() {
   const payload = defaultAdmissionPayload();

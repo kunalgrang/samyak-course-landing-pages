@@ -107,6 +107,26 @@
   justify-self: start;
 }
 
+.admission-configuration-missing {
+  display: grid;
+  gap: 8px;
+  border-color: rgba(180, 35, 24, 0.28);
+  background: #fff4f2;
+}
+
+.admission-configuration-missing strong {
+  color: #8a1f14;
+}
+
+.admission-configuration-missing span {
+  color: var(--color-ink);
+  line-height: 1.45;
+}
+
+.admission-configuration-missing button {
+  justify-self: start;
+}
+
 .staff-search-row {
   display: grid;
   gap: 10px;

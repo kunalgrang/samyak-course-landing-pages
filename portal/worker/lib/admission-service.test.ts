@@ -10,6 +10,7 @@ import { decryptText } from "./crypto";
 import {
   confirmAdmission,
   decideDiscountApproval,
+  getAdmissionConfiguration,
   listDiscountApprovals,
   requestDiscountApproval,
   saveAdmissionDraft,
@@ -149,6 +150,102 @@ describe("Admission Workflow v1 rules", () => {
   it("blocks sensitive draft payload keys", () => {
     expect(validateAdmissionDraftPayload({ identity: {}, aadhaarNumber: "123412341234" })).toMatchObject({ success: false });
     expect(validateAdmissionDraftPayload({ bankDetails: "secret" })).toMatchObject({ success: false });
+  });
+});
+
+describe("admission configuration defaults migration", () => {
+  it("applies through 0011 without seed.sql and returns populated API configuration", async () => {
+    const db = configurationDb();
+    const c = context(db);
+    const config = await getAdmissionConfiguration(c);
+
+    expect(optionCounts(db)).toEqual({
+      batch_preference: 4,
+      discount_reason: 8,
+      occupation_status: 7,
+      preferred_language: 5,
+      qualification_level: 9,
+      stream: 9,
+    });
+    expect(config.configuration).toEqual({ ready: true, missingCategories: [], paymentPlanRulesConfigured: true });
+    expect(config.options).toHaveLength(42);
+    expect(config.paymentPlanRules).toHaveLength(10);
+    expect(codesFor(db, "preferred_language")).toContain("gujarati");
+    expect(codesFor(db, "qualification_level")).toEqual(expect.arrayContaining(["below_10th", "undergraduate", "postgraduate", "doctorate"]));
+    expect(codesFor(db, "stream")).toEqual(expect.arrayContaining(["general", "engineering", "management", "vocational"]));
+    expect(codesFor(db, "occupation_status")).toEqual(expect.arrayContaining(["employed_salaried", "self_employed_business", "freelancer", "unemployed_seeking_work", "homemaker"]));
+    expect(codesFor(db, "batch_preference")).toEqual(["08_11", "11_14", "14_17", "17_20"]);
+    expect(codesFor(db, "discount_reason")).toEqual(expect.arrayContaining(["full_upfront", "early_admission", "repeat_student", "referral", "scholarship_financial_support", "promotional_offer", "management_approval", "other"]));
+    db.close();
+  });
+
+  it("corrects partially populated legacy data without duplicates and preserves obsolete labels", () => {
+    const db = new SqliteD1();
+    applyMigrations(db, "0010_admission_confirmation_lock.sql");
+    seedOrganisation(db, "org_samyak");
+    db.database.exec(`
+      insert into admission_option_values
+        (id, organisation_id, category, code, label, sort_order, requires_custom_label, is_active, created_at, updated_at)
+      values
+        ('legacy_lang_other', 'org_samyak', 'preferred_language', 'other', 'Something else', 1, 0, 1, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'),
+        ('legacy_batch_weekend', 'org_samyak', 'batch_preference', 'weekend', 'Weekend', 50, 0, 1, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'),
+        ('legacy_batch_old', 'org_samyak', 'batch_preference', '8_11', '8 AM to 11 AM', 10, 0, 1, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'),
+        ('legacy_discount_merit', 'org_samyak', 'discount_reason', 'merit', 'Merit scholarship', 10, 0, 1, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z');
+      insert into payment_plan_rules
+        (id, organisation_id, min_duration_months, max_duration_months, plan_type, fixed_instalments, is_active, created_at, updated_at)
+      values
+        ('payrule_short_two', 'org_samyak', 1, 3, 'two_instalments', 2, 1, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'),
+        ('legacy_duplicate_two', 'org_samyak', 2, 3, 'two_instalments', 2, 1, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z');
+    `);
+
+    applyMigrationFile(db, "0011_admission_configuration_defaults.sql");
+
+    expect(row(db, "select label, requires_custom_label, is_active from admission_option_values where organisation_id = 'org_samyak' and category = 'preferred_language' and code = 'other'")).toMatchObject({
+      label: "Other",
+      requires_custom_label: 1,
+      is_active: 1,
+    });
+    expect(row(db, "select label, is_active from admission_option_values where code = 'weekend'")).toMatchObject({ label: "Weekend", is_active: 0 });
+    expect(row(db, "select label, is_active from admission_option_values where code = '8_11'")).toMatchObject({ label: "8 AM to 11 AM", is_active: 0 });
+    expect(row(db, "select is_active from admission_option_values where code = 'merit'")).toMatchObject({ is_active: 0 });
+    expect(count(db, "admission_option_values where organisation_id = 'org_samyak' and is_active = 1")).toBe(42);
+    expect(count(db, "select category, code from admission_option_values where organisation_id = 'org_samyak' and is_active = 1 group by category, code having count(*) > 1")).toBe(0);
+    expect(row(db, "select min_duration_months, max_duration_months from payment_plan_rules where id = 'payrule_short_two'")).toMatchObject({
+      min_duration_months: 2,
+      max_duration_months: 3,
+    });
+    expect(count(db, "select min_duration_months, coalesce(max_duration_months, -1), plan_type from payment_plan_rules where organisation_id = 'org_samyak' and is_active = 1 group by min_duration_months, coalesce(max_duration_months, -1), plan_type having count(*) > 1")).toBe(0);
+    db.close();
+  });
+
+  it("does not insert Samyak defaults for another organisation", () => {
+    const db = new SqliteD1();
+    applyMigrations(db, "0010_admission_confirmation_lock.sql");
+    seedOrganisation(db, "org_samyak");
+    seedOrganisation(db, "org_other");
+
+    applyMigrationFile(db, "0011_admission_configuration_defaults.sql");
+
+    expect(count(db, "admission_option_values where organisation_id = 'org_other'")).toBe(0);
+    expect(count(db, "payment_plan_rules where organisation_id = 'org_other'")).toBe(0);
+    db.close();
+  });
+
+  it.each([
+    [1, ["full"]],
+    [2, ["full", "two_instalments"]],
+    [3, ["full", "two_instalments"]],
+    [4, ["full", "two_instalments", "three_instalments"]],
+    [6, ["full", "two_instalments", "three_instalments"]],
+    [7, ["full", "two_instalments", "three_instalments", "custom"]],
+    [12, ["full", "two_instalments", "three_instalments", "custom"]],
+  ])("returns the exact active payment plans for %s-month courses", (duration, expected) => {
+    const db = configurationDb();
+    const plans = planTypesForDuration(db, duration);
+
+    expect(plans).toEqual(expected);
+    expect(new Set(plans).size).toBe(plans.length);
+    db.close();
   });
 });
 
@@ -295,7 +392,7 @@ describe("confirmAdmission service integration", () => {
   it.each([
     ["course", (payload: AdmissionTestPayload) => { payload.course.courseId = "course_data"; }],
     ["admission date", (payload: AdmissionTestPayload) => { payload.course.admissionDate = "2026-09-01"; }],
-    ["final fee", (payload: AdmissionTestPayload) => { payload.fee.finalAgreedFeePaise = 4500000; payload.fee.discountReasonCode = "merit"; payload.fee.discountReason = "Merit scholarship"; }],
+    ["final fee", (payload: AdmissionTestPayload) => { payload.fee.finalAgreedFeePaise = 4500000; payload.fee.discountReasonCode = "scholarship_financial_support"; payload.fee.discountReason = "Scholarship / Financial support"; }],
     ["payment plan", (payload: AdmissionTestPayload) => { payload.fee.paymentPlanType = "three_instalments"; payload.fee.numberOfInstalments = 3; }],
   ])("rejects %s edits after confirmation lock", async (_label, mutate) => {
     const db = testDb();
@@ -362,7 +459,7 @@ describe("confirmAdmission service integration", () => {
     payload.fee.standardFeePaise = 1;
     payload.fee.finalAgreedFeePaise = 4500000;
     payload.fee.discountReason = "Approved scholarship";
-    payload.fee.discountReasonCode = "merit";
+    payload.fee.discountReasonCode = "scholarship_financial_support";
     await createAdmissionDraft(c, "enq_first", payload);
 
     await expectOk(confirmAdmission(c, staff, "enq_first"));
@@ -404,13 +501,42 @@ describe("confirmAdmission service integration", () => {
     db.close();
   });
 
+  it("rejects a two-instalment plan for a one-month course", async () => {
+    const db = testDb();
+    const c = context(db);
+    db.database.exec("update courses set duration_label = '1 month', duration_months = 1 where id = 'course_full_stack'");
+    await createAdmissionDraft(c, "enq_first");
+
+    const confirmed = await confirmAdmission(c, staff, "enq_first");
+
+    expect(confirmed).toMatchObject({ ok: false, status: 400, code: "invalid_admission" });
+    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.paymentPlanType"]?.[0]).toContain("allowed");
+    db.close();
+  });
+
+  it("accepts a two-instalment plan for a two-month course", async () => {
+    const db = testDb();
+    const c = context(db);
+    db.database.exec("update courses set duration_label = '2 months', duration_months = 2 where id = 'course_full_stack'");
+    await createAdmissionDraft(c, "enq_first");
+
+    const confirmed = await expectOk(confirmAdmission(c, staff, "enq_first"));
+
+    expect(confirmed.enrolmentNumber).toMatch(/^ENR-SION-2026-/);
+    expect(row(db, "select payment_plan_type, number_of_instalments from fee_agreements")).toMatchObject({
+      payment_plan_type: "two_instalments",
+      number_of_instalments: 2,
+    });
+    db.close();
+  });
+
   it("requires matching owner approval for below-floor final fees", async () => {
     const db = testDb();
     const c = context(db);
     const payload = validPayload();
     payload.fee.finalAgreedFeePaise = 3500000;
     payload.fee.discountReason = "Merit scholarship";
-    payload.fee.discountReasonCode = "merit";
+    payload.fee.discountReasonCode = "scholarship_financial_support";
     await createAdmissionDraft(c, "enq_first", payload);
 
     const blocked = await confirmAdmission(c, staff, "enq_first");
@@ -457,7 +583,7 @@ describe("confirmAdmission service integration", () => {
     const payload = validPayload();
     payload.fee.finalAgreedFeePaise = 4500000;
     payload.fee.discountReason = "Merit scholarship";
-    payload.fee.discountReasonCode = "merit";
+    payload.fee.discountReasonCode = "scholarship_financial_support";
     await createAdmissionDraft(c, "enq_first", payload);
 
     await expectOk(confirmAdmission(c, staff, "enq_first"));
@@ -485,7 +611,7 @@ describe("confirmAdmission service integration", () => {
 
   it.each([
     ["final fee", (payload: AdmissionTestPayload) => { payload.fee.finalAgreedFeePaise = 3400000; }],
-    ["discount reason", (payload: AdmissionTestPayload) => { payload.fee.discountReasonCode = "custom"; payload.fee.discountReason = "Owner exception"; }],
+    ["discount reason", (payload: AdmissionTestPayload) => { payload.fee.discountReasonCode = "management_approval"; payload.fee.discountReason = "Management approval"; }],
     ["course", (payload: AdmissionTestPayload, db: SqliteD1) => { seedCourse(db, "course_data", "DA", "Data Analytics", 4500000, 3800000); payload.course.courseId = "course_data"; }],
   ])("supersedes approval when %s changes", async (_label, mutate) => {
     const db = testDb();
@@ -673,7 +799,7 @@ function validPayload(): AdmissionTestPayload {
       branchId: "branch_sion",
       trainingMode: "classroom",
       batchPreference: "8 AM to 11 AM",
-      batchPreferenceCode: "8_11",
+      batchPreferenceCode: "08_11",
       admissionDate: "2026-08-01",
       joiningDate: "2026-08-05",
       nsdcPreference: "no",
@@ -703,7 +829,7 @@ function belowFloorPayload() {
   const payload = validPayload();
   payload.fee.finalAgreedFeePaise = 3500000;
   payload.fee.discountReason = "Merit scholarship";
-  payload.fee.discountReasonCode = "merit";
+  payload.fee.discountReasonCode = "scholarship_financial_support";
   return payload;
 }
 
@@ -725,7 +851,16 @@ function testDb() {
   const db = new SqliteD1();
   applyMigrations(db);
   seedBase(db);
+  applyMigrationFile(db, "0011_admission_configuration_defaults.sql");
   seedEnquiry(db, { id: "enq_first", personId: "person_asha", number: "ENQ-SION-2026-001" });
+  return db;
+}
+
+function configurationDb() {
+  const db = new SqliteD1();
+  applyMigrations(db, "0010_admission_confirmation_lock.sql");
+  seedOrganisation(db, "org_samyak");
+  applyMigrationFile(db, "0011_admission_configuration_defaults.sql");
   return db;
 }
 
@@ -744,13 +879,18 @@ function context(db: SqliteD1): AppContext {
   } as AppContext;
 }
 
-function applyMigrations(db: SqliteD1) {
+function applyMigrations(db: SqliteD1, throughFile?: string) {
   const migrationsDir = join(process.cwd(), "migrations");
   for (const file of readdirSync(migrationsDir).filter((name: string) => /^\d{4}_.+\.sql$/.test(name)).sort()) {
-    const sql = readFileSync(join(migrationsDir, file), "utf8");
-    for (const statement of sql.split("--> statement-breakpoint").map((part: string) => part.trim()).filter(Boolean)) {
-      db.database.exec(statement);
-    }
+    if (throughFile && file > throughFile) continue;
+    applyMigrationFile(db, file);
+  }
+}
+
+function applyMigrationFile(db: SqliteD1, file: string) {
+  const sql = readFileSync(join(process.cwd(), "migrations", file), "utf8");
+  for (const statement of sql.split("--> statement-breakpoint").map((part: string) => part.trim()).filter(Boolean)) {
+    db.database.exec(statement);
   }
 }
 
@@ -773,19 +913,14 @@ function seedBase(db: SqliteD1) {
     select 'acct_owner', roles.id, null, '2026-07-21T00:00:00.000Z' from roles where roles.organisation_id = 'org_samyak' and roles.code = 'owner';
     insert into courses (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
     values ('course_full_stack', 'org_samyak', 'FSD', 'Full Stack Development', '6 months', 6, 5000000, 4000000, 1, 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
-    insert into admission_option_values (id, organisation_id, category, code, label, sort_order, requires_custom_label, is_active, created_at, updated_at)
-    values
-      ('opt_lang_en', 'org_samyak', 'preferred_language', 'english', 'English', 1, 0, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
-      ('opt_qual_hsc', 'org_samyak', 'qualification_level', 'hsc', 'HSC / 12th', 1, 0, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
-      ('opt_occ_student', 'org_samyak', 'occupation_status', 'student', 'Student', 1, 0, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
-      ('opt_batch_8_11', 'org_samyak', 'batch_preference', '8_11', '8 AM to 11 AM', 1, 0, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
-      ('opt_discount_merit', 'org_samyak', 'discount_reason', 'merit', 'Merit scholarship', 1, 0, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
-    insert into payment_plan_rules (id, organisation_id, min_duration_months, max_duration_months, plan_type, fixed_instalments, is_active, created_at, updated_at)
-    values
-      ('rule_full', 'org_samyak', 4, 6, 'full', 1, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
-      ('rule_two', 'org_samyak', 4, 6, 'two_instalments', 2, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
-      ('rule_three', 'org_samyak', 4, 6, 'three_instalments', 3, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
   `);
+}
+
+function seedOrganisation(db: SqliteD1, id: string) {
+  db.database.prepare(
+    `insert into organisations (id, name, slug, status, created_at, updated_at)
+     values (?, ?, ?, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z')`,
+  ).run(id, id, id);
 }
 
 function seedEnquiry(db: SqliteD1, input: { id: string; personId: string; number: string }) {
@@ -828,6 +963,42 @@ function all(db: SqliteD1, sql: string) {
 function count(db: SqliteD1, tableOrSql: string) {
   const source = tableOrSql.trim().toLowerCase().startsWith("select") ? `(${tableOrSql})` : tableOrSql;
   return Number(row(db, `select count(*) as count from ${source}`)?.count || 0);
+}
+
+function optionCounts(db: SqliteD1) {
+  return Object.fromEntries(
+    all(
+      db,
+      `select category, count(*) as total
+       from admission_option_values
+       where organisation_id = 'org_samyak' and is_active = 1
+       group by category
+       order by category`,
+    ).map((item) => [String(item.category), Number(item.total)]),
+  );
+}
+
+function codesFor(db: SqliteD1, category: string) {
+  return all(
+    db,
+    `select code
+     from admission_option_values
+     where organisation_id = 'org_samyak' and category = '${category}' and is_active = 1
+     order by sort_order, label`,
+  ).map((item) => String(item.code));
+}
+
+function planTypesForDuration(db: SqliteD1, duration: number) {
+  return all(
+    db,
+    `select plan_type
+     from payment_plan_rules
+     where organisation_id = 'org_samyak'
+       and is_active = 1
+       and min_duration_months <= ${duration}
+       and (max_duration_months is null or max_duration_months >= ${duration})
+     order by coalesce(fixed_instalments, 999), plan_type`,
+  ).map((item) => String(item.plan_type));
 }
 
 function compactSql(sql: string) {
