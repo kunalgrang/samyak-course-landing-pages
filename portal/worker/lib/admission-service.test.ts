@@ -151,6 +151,58 @@ describe("Admission Workflow v1 rules", () => {
     expect(validateAdmissionDraftPayload({ identity: {}, aadhaarNumber: "123412341234" })).toMatchObject({ success: false });
     expect(validateAdmissionDraftPayload({ bankDetails: "secret" })).toMatchObject({ success: false });
   });
+
+  it("returns every confirmation field error instead of only the first one", () => {
+    const result = validateAdmissionForConfirmation({});
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error("Expected confirmation validation to fail");
+    expect(result.fieldErrors).toMatchObject({
+      "identity.officialFullName": expect.any(Array),
+      "identity.dateOfBirth": expect.any(Array),
+      "contact.primaryMobile": expect.any(Array),
+      "contact.preferredLanguageCode": expect.any(Array),
+      "locality.locality": expect.any(Array),
+      "locality.city": expect.any(Array),
+      "education.qualificationLevelCode": expect.any(Array),
+      "course.courseId": expect.any(Array),
+      "declarations.informationCorrect": expect.any(Array),
+    });
+  });
+});
+
+describe("saveAdmissionDraft incomplete draft behavior", () => {
+  it("persists a structurally valid incomplete draft and returns all readiness errors", async () => {
+    const db = testDb();
+    const c = context(db);
+
+    const saved = await saveAdmissionDraft(c, staff, "enq_first", { payload: {}, currentStep: "identity" });
+
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) throw new Error(saved.message);
+    expect(count(db, "admission_drafts where enquiry_id = 'enq_first'")).toBe(1);
+    expect(saved.fieldErrors).toMatchObject({
+      "identity.officialFullName": expect.any(Array),
+      "contact.primaryMobile": expect.any(Array),
+      "contact.preferredLanguageCode": expect.any(Array),
+      "locality.locality": expect.any(Array),
+      "education.qualificationLevelCode": expect.any(Array),
+      "course.courseId": expect.any(Array),
+      "declarations.informationCorrect": expect.any(Array),
+    });
+    db.close();
+  });
+
+  it("rejects sensitive draft payload fields before persisting", async () => {
+    const db = testDb();
+    const c = context(db);
+
+    const saved = await saveAdmissionDraft(c, staff, "enq_first", { payload: { identity: {}, aadhaarNumber: "123412341234" } as never, currentStep: "identity" });
+
+    expect(saved.ok).toBe(false);
+    expect(count(db, "admission_drafts where enquiry_id = 'enq_first'")).toBe(0);
+    db.close();
+  });
 });
 
 describe("admission configuration defaults migration", () => {

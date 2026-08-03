@@ -131,6 +131,7 @@ const confirmationSchema = admissionPayloadSchema.superRefine((payload, ctx) => 
   requireField(ctx, identity.officialFullName, ["identity", "officialFullName"], "Official Aadhaar name is required.");
   requireField(ctx, identity.dateOfBirth, ["identity", "dateOfBirth"], "Date of birth is required.");
   requireField(ctx, identity.gender, ["identity", "gender"], "Gender is required.");
+  requireField(ctx, contact.primaryMobile, ["contact", "primaryMobile"], "Primary mobile is required.");
   requireField(ctx, locality.locality, ["locality", "locality"], "Locality is required.");
   requireField(ctx, locality.city, ["locality", "city"], "City is required.");
   requireField(ctx, contact.preferredLanguageCode, ["contact", "preferredLanguageCode"], "Preferred language is required.");
@@ -296,7 +297,13 @@ export function validateAdmissionDraftPayload(payload: unknown) {
     return { success: false as const, message: `Admission draft cannot contain ${sensitive}.` };
   }
   const parsed = admissionPayloadSchema.safeParse(payload);
-  if (!parsed.success) return { success: false as const, message: "Please check the admission draft details." };
+  if (!parsed.success) {
+    return {
+      success: false as const,
+      message: "Please correct the highlighted fields.",
+      fieldErrors: fieldErrorsFromIssues(parsed.error.issues),
+    };
+  }
   return { success: true as const, payload: parsed.data };
 }
 
@@ -343,12 +350,16 @@ export async function saveAdmissionDraft(c: AppContext, staff: StaffContext, enq
     };
   }
   const validated = validateAdmissionDraftPayload(input.payload);
-  if (!validated.success) return { ok: false as const, status: 400, code: "invalid_draft", message: validated.message };
+  if (!validated.success) return { ok: false as const, status: 400, code: "invalid_draft", message: validated.message, fieldErrors: validated.fieldErrors };
+  const mobileFieldErrors: FieldErrors = {};
   if (validated.payload.contact?.primaryMobile && !normalizeIndianMobile(String(validated.payload.contact.primaryMobile))) {
-    return { ok: false as const, status: 400, code: "invalid_mobile", message: "Enter a valid Indian primary mobile number." };
+    addFieldError(mobileFieldErrors, "contact.primaryMobile", "Enter a valid Indian primary mobile number.");
   }
   if (validated.payload.contact?.alternateMobile && !normalizeIndianMobile(String(validated.payload.contact.alternateMobile))) {
-    return { ok: false as const, status: 400, code: "invalid_mobile", message: "Enter a valid Indian alternate mobile number." };
+    addFieldError(mobileFieldErrors, "contact.alternateMobile", "Enter a valid Indian alternate mobile number.");
+  }
+  if (Object.keys(mobileFieldErrors).length) {
+    return { ok: false as const, status: 400, code: "invalid_mobile", message: "Please correct the highlighted fields.", fieldErrors: mobileFieldErrors };
   }
 
   const now = new Date().toISOString();
@@ -378,7 +389,7 @@ export async function saveAdmissionDraft(c: AppContext, staff: StaffContext, enq
       .run();
   }
   await audit(c, staff, enquiry.branch_id, "admission_draft_saved", "admission_draft", draftId, { enquiryId });
-  const readiness = await getAdmissionReadiness(c, enquiry, storedPayload, draftId);
+  const readiness = await getAdmissionReadiness(c, enquiry, validated.payload, draftId);
   return { ok: true as const, draftId, payload: storedPayload, currentStep: input.currentStep, fieldErrors: readiness.fieldErrors };
 }
 
@@ -400,9 +411,9 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
   const snapshotResult = await getOrCreateConfirmationSnapshot(c, staff, enquiry, draft);
   if (!snapshotResult.ok) return snapshotResult;
   const snapshot = snapshotResult.snapshot;
-  const validated = validateAdmissionForConfirmation(JSON.parse(draft.payload_json));
+  const validated = validateAdmissionForConfirmation(await payloadForConfirmationValidation(c, draft));
   if (!validated.success) return { ok: false, status: 400, code: "invalid_admission", message: validated.message, fieldErrors: validated.fieldErrors };
-  const payload = validated.payload;
+  const payload = JSON.parse(draft.payload_json) as AdmissionPayload;
   const identity = payload.identity!;
   const locality = payload.locality!;
   const education = payload.education!;
@@ -766,7 +777,7 @@ async function getOrCreateConfirmationSnapshot(c: AppContext, staff: StaffContex
   if (existing) return { ok: true as const, snapshot: existing };
 
   if (draft.status !== "draft") return { ok: false as const, status: 404, code: "draft_not_found", message: "Save an admission draft before confirming." };
-  const validated = validateAdmissionForConfirmation(JSON.parse(draft.payload_json));
+  const validated = validateAdmissionForConfirmation(await payloadForConfirmationValidation(c, draft));
   if (!validated.success) return { ok: false as const, status: 400, code: "invalid_admission", message: validated.message, fieldErrors: validated.fieldErrors };
   const payload = validated.payload;
   const branchFieldErrors = await validateBranchLock(c, enquiry, payload, draft.branch_id);
@@ -1052,6 +1063,25 @@ async function getAdmissionReadiness(c: AppContext, enquiry: EnquiryRecord, payl
   mergeFieldErrors(fieldErrors, await paymentPlanFieldErrors(c, payload, course));
   mergeFieldErrors(fieldErrors, await discountApprovalFieldErrors(c, payload, draftId, course));
   return { fieldErrors };
+}
+
+async function payloadForConfirmationValidation(c: AppContext, draft: DraftRecord) {
+  const payload = JSON.parse(draft.payload_json) as AdmissionPayload;
+  if (payload.contact?.primaryMobile) return payload;
+  const hasStoredPrimary = await c.env.DB.prepare(
+    "select id from person_contacts where person_id = ? and contact_type = 'mobile' and is_primary = 1 limit 1",
+  )
+    .bind(draft.person_id)
+    .first<{ id: string }>();
+  if (!hasStoredPrimary) return payload;
+  // Draft JSON redacts mobile numbers; presence of the encrypted contact satisfies confirmation validation.
+  return {
+    ...payload,
+    contact: {
+      ...(payload.contact || {}),
+      primaryMobile: "+919999999999",
+    },
+  } satisfies AdmissionPayload;
 }
 
 async function validateBranchLock(c: AppContext, enquiry: EnquiryRecord, payload: AdmissionPayload, expectedBranchId: string) {
@@ -1614,7 +1644,7 @@ function requireField(ctx: z.RefinementCtx, value: unknown, path: (string | numb
   if (typeof value !== "string" || !value.trim()) ctx.addIssue({ code: "custom", path, message });
 }
 
-function fieldErrorsFromIssues(issues: z.ZodIssue[]): FieldErrors {
+export function fieldErrorsFromIssues(issues: z.ZodIssue[]): FieldErrors {
   const fieldErrors: FieldErrors = {};
   for (const issue of issues) addFieldError(fieldErrors, issue.path.join("."), issue.message);
   return fieldErrors;

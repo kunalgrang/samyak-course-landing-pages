@@ -1,20 +1,52 @@
+import { Window } from "happy-dom";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const apiMocks = vi.hoisted(() => ({
+  confirmAdmission: vi.fn(),
+  getAdmissionConfiguration: vi.fn(),
+  getAdmissionDraft: vi.fn(),
+  getActiveCourses: vi.fn(),
+  getEnquiryDetail: vi.fn(),
+  requestDiscountApproval: vi.fn(),
+  saveAdmissionDraft: vi.fn(),
+}));
+
+vi.mock("../../lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/api")>();
+  return {
+    ...actual,
+    confirmAdmission: apiMocks.confirmAdmission,
+    getAdmissionConfiguration: apiMocks.getAdmissionConfiguration,
+    getAdmissionDraft: apiMocks.getAdmissionDraft,
+    getActiveCourses: apiMocks.getActiveCourses,
+    getEnquiryDetail: apiMocks.getEnquiryDetail,
+    requestDiscountApproval: apiMocks.requestDiscountApproval,
+    saveAdmissionDraft: apiMocks.saveAdmissionDraft,
+  };
+});
+
 import {
+  AdmissionPage,
   AdmissionLockedFieldset,
   AdmissionConfigurationMissing,
   AdmissionRecoveryNotice,
   AdmissionSuccess,
   OptionSelect,
   PaymentPlanField,
+  admissionFieldId,
   admissionReview,
   allowedPaymentRulesForCourse,
   configuredAdmissionCourses,
   courseForReview,
   defaultAdmissionPayload,
+  draftSavedMessage,
   emptyAdmissionConfiguration,
   isAdmissionLockedError,
   isAdmissionConfigurationReady,
+  mergeDraftResponsePayload,
   mergeAdmissionPayload,
   paymentPlanPolicyMessage,
   shouldSaveDraftBeforeConfirm,
@@ -26,6 +58,7 @@ const course = {
   code: "FSD",
   name: "Full Stack",
   duration_label: "6 months",
+  duration_months: 6,
   default_fee_paise: 5000000,
   lowest_acceptable_fee_paise: 4000000,
   admission_configuration_complete: true,
@@ -58,6 +91,17 @@ describe("AdmissionPage helpers", () => {
     expect(merged.identity.officialFullName).toBe("Asha Student");
     expect(merged.locality.city).toBe("Mumbai");
     expect(merged.declarations.dataProcessingAccepted).toBe(false);
+  });
+
+  it("preserves in-session mobiles when the saved draft response redacts contact values", () => {
+    const payload = defaultAdmissionPayload();
+    payload.contact.primaryMobile = "+919876543210";
+    payload.contact.alternateMobile = "+919876543211";
+
+    const merged = mergeDraftResponsePayload(payload, { contact: { primaryMobile: "", alternateMobile: "" } });
+
+    expect(merged.contact.primaryMobile).toBe("+919876543210");
+    expect(merged.contact.alternateMobile).toBe("+919876543211");
   });
 
   it("calculates final fee discount and review readiness", () => {
@@ -250,7 +294,239 @@ describe("AdmissionPage helpers", () => {
     expect(allowedPaymentRulesForCourse({ ...course, duration_months: 2 }, rules).map((rule) => rule.plan_type)).toEqual(["full", "two_instalments"]);
     expect(allowedPaymentRulesForCourse({ ...course, duration_months: 7 }, rules).map((rule) => rule.plan_type)).toEqual(["full", "two_instalments", "three_instalments", "custom"]);
   });
+
+  it("counts unique draft warning fields in the saved message", () => {
+    expect(draftSavedMessage({})).toBe("Draft saved.");
+    expect(draftSavedMessage({ "identity.officialFullName": ["Required"] })).toBe("Draft saved. 1 field is still required before confirmation.");
+    expect(draftSavedMessage({ "identity.officialFullName": ["Required"], "locality.city": ["Required"] })).toBe("Draft saved. 2 fields are still required before confirmation.");
+  });
 });
+
+describe("AdmissionPage draft validation interactions", () => {
+  let windowRef: Window;
+  let roots: Root[];
+
+  beforeEach(() => {
+    roots = [];
+    windowRef = new Window({ url: "http://localhost/app/staff/enquiries/enq_first/admission" });
+    vi.stubGlobal("window", windowRef);
+    vi.stubGlobal("document", windowRef.document);
+    vi.stubGlobal("navigator", windowRef.navigator);
+    vi.stubGlobal("HTMLElement", windowRef.HTMLElement);
+    vi.stubGlobal("HTMLInputElement", windowRef.HTMLInputElement);
+    vi.stubGlobal("HTMLSelectElement", windowRef.HTMLSelectElement);
+    vi.stubGlobal("HTMLButtonElement", windowRef.HTMLButtonElement);
+    vi.stubGlobal("Event", windowRef.Event);
+    vi.stubGlobal("MouseEvent", windowRef.MouseEvent);
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.clearAllMocks();
+    setDefaultAdmissionApiMocks();
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      for (const root of roots) root.unmount();
+    });
+    roots = [];
+    windowRef.happyDOM.cancelAsync();
+    vi.unstubAllGlobals();
+  });
+
+  it("saves an incomplete draft from the explicit Save Draft button and shows all field errors together", async () => {
+    apiMocks.saveAdmissionDraft.mockImplementation(async (_enquiryId, payload, currentStep) => ({
+      success: true,
+      draftId: "draft_1",
+      payload,
+      currentStep,
+      fieldErrors: incompleteFieldErrors(),
+    }));
+    const container = await renderAdmissionPage(roots);
+
+    const form = container.querySelector("form");
+    const saveButton = buttonByText(container, "Save Draft");
+    expect(form?.noValidate).toBe(true);
+    expect((saveButton as HTMLButtonElement).type).toBe("button");
+
+    await click(saveButton);
+
+    expect(apiMocks.saveAdmissionDraft).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Draft saved. 7 fields are still required before confirmation.");
+    expect(container.textContent).toContain("Official Aadhaar name is required.");
+    expect(container.textContent).toContain("City is required.");
+    expect(container.textContent).toContain("Preferred language is required.");
+    expect(windowRef.document.activeElement?.id).toBe("admission-error-summary");
+
+    const fullName = windowRef.document.getElementById(admissionFieldId("identity.officialFullName")) as unknown as HTMLInputElement;
+    expect(fullName.getAttribute("aria-invalid")).toBe("true");
+
+    await click(buttonByText(container, "Full name as per Aadhaar"));
+    expect(windowRef.document.activeElement).toBe(fullName);
+
+    await changeValue(fullName, "Asha Student");
+    expect(container.textContent).not.toContain("Official Aadhaar name is required.");
+    expect(container.textContent).toContain("City is required.");
+  });
+
+  it("saves before confirmation and blocks the confirm endpoint when readiness errors remain", async () => {
+    apiMocks.saveAdmissionDraft.mockImplementation(async (_enquiryId, payload, currentStep) => ({
+      success: true,
+      draftId: "draft_1",
+      payload,
+      currentStep,
+      fieldErrors: incompleteFieldErrors(),
+    }));
+    const container = await renderAdmissionPage(roots);
+
+    await click(buttonByText(container, "Confirm Admission"));
+
+    expect(apiMocks.saveAdmissionDraft).toHaveBeenCalledWith("enq_first", expect.any(Object), "review");
+    expect(apiMocks.confirmAdmission).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Draft saved. 7 fields are still required before confirmation.");
+    expect(windowRef.document.activeElement?.id).toBe("admission-error-summary");
+  });
+
+  it("calls the confirmation endpoint after the pre-confirm save returns no field errors", async () => {
+    apiMocks.saveAdmissionDraft.mockImplementation(async (_enquiryId, payload, currentStep) => ({
+      success: true,
+      draftId: "draft_1",
+      payload,
+      currentStep,
+      fieldErrors: {},
+    }));
+    const container = await renderAdmissionPage(roots);
+
+    await click(buttonByText(container, "Confirm Admission"));
+
+    expect(apiMocks.confirmAdmission).toHaveBeenCalledWith("enq_first");
+    expect(container.textContent).toContain("Admission Confirmed");
+  });
+
+  it("preserves typed values when draft save returns an API error", async () => {
+    apiMocks.saveAdmissionDraft.mockRejectedValueOnce(new ApiError("Temporary network failure", undefined, "network_error"));
+    const container = await renderAdmissionPage(roots);
+    const fullName = windowRef.document.getElementById(admissionFieldId("identity.officialFullName")) as unknown as HTMLInputElement;
+
+    await changeValue(fullName, "Asha Manual");
+    await click(buttonByText(container, "Save Draft"));
+
+    expect(fullName.value).toBe("Asha Manual");
+    expect(container.textContent).toContain("Temporary network failure");
+  });
+
+  it("keeps locked recovery retry on confirm without saving the editable draft first", async () => {
+    apiMocks.getAdmissionDraft.mockResolvedValueOnce({
+      draft: {
+        payload: readyPayload(),
+        currentStep: "review",
+        confirmationLockedAt: "2026-08-03T00:00:00.000Z",
+      },
+    });
+    const container = await renderAdmissionPage(roots);
+
+    await click(buttonByText(container, "Retry Confirmation"));
+
+    expect(apiMocks.saveAdmissionDraft).not.toHaveBeenCalled();
+    expect(apiMocks.confirmAdmission).toHaveBeenCalledWith("enq_first");
+  });
+});
+
+function setDefaultAdmissionApiMocks() {
+  apiMocks.getEnquiryDetail.mockResolvedValue({
+    enquiry: {
+      enquiry_number: "ENQ-SION-2026-001",
+      full_name: "",
+      date_of_birth: "",
+      course_id: "",
+      branch_id: "branch_sion",
+      branch_name: "Sion",
+      branch_code: "SION",
+    },
+    primaryMobile: "",
+    alternateMobile: "",
+    mobileDisplay: null,
+    previousEnrolments: [],
+    activeDraft: null,
+  });
+  apiMocks.getActiveCourses.mockResolvedValue({ courses: [course] });
+  apiMocks.getAdmissionDraft.mockResolvedValue({ draft: null });
+  apiMocks.getAdmissionConfiguration.mockResolvedValue(populatedConfiguration());
+  apiMocks.confirmAdmission.mockResolvedValue({
+    success: true,
+    studentId: "student_1",
+    studentNumber: "SYK-SION-000001",
+    enrolmentId: "enrol_1",
+    enrolmentNumber: "ENR-SION-2026-000001",
+    enquiryNumber: "ENQ-SION-2026-001",
+    isNewStudent: true,
+  });
+  apiMocks.requestDiscountApproval.mockResolvedValue({ status: "requested" });
+  apiMocks.saveAdmissionDraft.mockImplementation(async (_enquiryId, payload, currentStep) => ({
+    success: true,
+    draftId: "draft_1",
+    payload,
+    currentStep,
+    fieldErrors: {},
+  }));
+}
+
+async function renderAdmissionPage(roots: Root[]) {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  roots.push(root);
+  await act(async () => {
+    root.render(<AdmissionPage enquiryId="enq_first" />);
+  });
+  await flushAdmissionPage();
+  return container;
+}
+
+async function flushAdmissionPage() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+function buttonByText(container: HTMLElement, text: string) {
+  const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.includes(text));
+  if (!button) throw new Error(`Button not found: ${text}`);
+  return button as HTMLButtonElement;
+}
+
+async function click(element: HTMLElement) {
+  await act(async () => {
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushAdmissionPage();
+}
+
+async function changeValue(input: HTMLInputElement, value: string) {
+  const valueSetter = Object.getOwnPropertyDescriptor(input.constructor.prototype, "value")?.set;
+  const eventWindow = input.ownerDocument.defaultView!;
+  await act(async () => {
+    if (valueSetter) valueSetter.call(input, value);
+    else input.value = value;
+    input.dispatchEvent(new eventWindow.Event("input", { bubbles: true }));
+    input.dispatchEvent(new eventWindow.Event("change", { bubbles: true }));
+    const propsKey = Object.keys(input).find((key) => key.startsWith("__reactProps$"));
+    const onChange = propsKey ? (input as unknown as Record<string, { onChange?: (event: { target: HTMLInputElement }) => void }>)[propsKey]?.onChange : undefined;
+    onChange?.({ target: input });
+  });
+  await flushAdmissionPage();
+}
+
+function incompleteFieldErrors() {
+  return {
+    "identity.officialFullName": ["Official Aadhaar name is required."],
+    "contact.primaryMobile": ["Primary mobile is required."],
+    "contact.preferredLanguageCode": ["Preferred language is required."],
+    "locality.locality": ["Locality is required."],
+    "locality.city": ["City is required."],
+    "education.qualificationLevelCode": ["Highest/current qualification is required."],
+    "declarations.informationCorrect": ["Information correctness declaration is required."],
+  };
+}
 
 function populatedConfiguration() {
   return {
@@ -325,6 +601,7 @@ function plan(min: number, max: number | null, planType: string, instalments: nu
 function readyPayload() {
   const payload = defaultAdmissionPayload();
   payload.identity = { ...payload.identity, officialFullName: "Asha Student", dateOfBirth: "2001-02-03", gender: "female", identityConfirmed: true };
+  payload.contact = { ...payload.contact, primaryMobile: "+919876543210", preferredLanguage: "English", preferredLanguageCode: "english" };
   payload.locality = { ...payload.locality, locality: "Sion", city: "Mumbai" };
   payload.education = { ...payload.education, qualificationLevel: "HSC", occupationStatus: "student" };
   payload.course = { ...payload.course, courseId: "course_full_stack", branchId: "branch_sion", joiningDate: "2026-08-05" };

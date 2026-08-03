@@ -78,6 +78,18 @@
   color: #8a1f14;
 }
 
+.admission-error-summary button {
+  border: 0;
+  padding: 0;
+  color: #8a1f14;
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .admission-locked-fieldset {
   display: grid;
   gap: 16px;

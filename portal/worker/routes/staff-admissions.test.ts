@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { registerStaffAdmissionRoutes } from "./staff-admissions";
+import * as admissionService from "../lib/admission-service";
 
 const mocks = vi.hoisted(() => ({
   getSessionFromRequest: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("../lib/auth-store", () => ({
 vi.mock("../lib/admission-service", () => ({
   confirmAdmission: vi.fn(),
   decideDiscountApproval: mocks.decideDiscountApproval,
+  fieldErrorsFromIssues: vi.fn(() => ({ payload: ["Expected object"] })),
   getAdmissionConfiguration: vi.fn(),
   getAdmissionDraft: vi.fn(),
   listDiscountApprovals: mocks.listDiscountApprovals,
@@ -75,5 +77,63 @@ describe("staff admission discount approval routes", () => {
     expect((await postDecision(app)).status).toBe(403);
     expect(mocks.listDiscountApprovals).not.toHaveBeenCalled();
     expect(mocks.decideDiscountApproval).not.toHaveBeenCalled();
+  });
+});
+
+describe("staff admission draft routes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns structured field errors when route-level draft parsing fails", async () => {
+    const app = routeApp();
+    authenticateAs(["admission_admin"]);
+    vi.mocked(admissionService.saveAdmissionDraftSchema.safeParse).mockReturnValueOnce({
+      success: false,
+      error: { issues: [{ path: ["payload"], message: "Expected object" }] },
+    } as never);
+
+    const response = await app.request("/api/staff/enquiries/enq_first/admission-draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload: null, currentStep: "identity" }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      error: {
+        code: "invalid_draft",
+        message: "Please correct the highlighted fields.",
+        fieldErrors: { payload: ["Expected object"] },
+      },
+    });
+  });
+
+  it("passes service field errors through on draft save failures", async () => {
+    const app = routeApp();
+    authenticateAs(["admission_admin"]);
+    vi.mocked(admissionService.saveAdmissionDraft).mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      code: "invalid_mobile",
+      message: "Please correct the highlighted fields.",
+      fieldErrors: { "contact.primaryMobile": ["Enter a valid Indian primary mobile number."] },
+    } as never);
+
+    const response = await app.request("/api/staff/enquiries/enq_first/admission-draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload: {}, currentStep: "identity" }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      error: {
+        code: "invalid_mobile",
+        fieldErrors: { "contact.primaryMobile": ["Enter a valid Indian primary mobile number."] },
+      },
+    });
   });
 });

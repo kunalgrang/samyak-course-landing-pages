@@ -5,6 +5,7 @@ import { ORG_ID } from "../lib/auth-store";
 import {
   confirmAdmission,
   decideDiscountApproval,
+  fieldErrorsFromIssues,
   getAdmissionConfiguration,
   getAdmissionDraft,
   listDiscountApprovals,
@@ -211,9 +212,9 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
     const parsed = saveAdmissionDraftSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_draft", message: "Please check the admission draft." });
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_draft", message: "Please correct the highlighted fields.", fieldErrors: fieldErrorsFromIssues(parsed.error.issues) });
     const result = await saveAdmissionDraft(c, staff, c.req.param("enquiryId"), parsed.data);
-    if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message });
+    if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message, fieldErrors: result.fieldErrors });
     return jsonPlain(c, { success: true, draftId: result.draftId, payload: result.payload, currentStep: result.currentStep, fieldErrors: result.fieldErrors });
   });
 

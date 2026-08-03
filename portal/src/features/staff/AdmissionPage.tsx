@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import type { FormEvent, ReactNode, RefObject } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
 import {
@@ -32,6 +32,41 @@ export type AdmissionPayload = {
 export const ADMISSION_CONFIGURATION_MISSING_MESSAGE = "Admission settings are incomplete. Ask an owner or administrator to configure admission options.";
 export const PAYMENT_PLAN_MISSING_MESSAGE = "No payment plan is configured for this course duration.";
 
+export const ADMISSION_FIELD_LABELS: Record<string, string> = {
+  "identity.officialFullName": "Full name as per Aadhaar",
+  "identity.dateOfBirth": "Date of birth as per Aadhaar",
+  "identity.gender": "Gender",
+  "identity.fatherName": "Father's full name",
+  "identity.identityConfirmed": "Name and DOB confirmed against Aadhaar",
+  "contact.primaryMobile": "Primary mobile",
+  "contact.preferredLanguageCode": "Preferred language",
+  "contact.preferredLanguage": "Preferred language",
+  "locality.locality": "Locality/area",
+  "locality.city": "City",
+  "education.qualificationLevelCode": "Highest/current qualification",
+  "education.qualificationLevel": "Highest/current qualification",
+  "education.currentYearSemester": "Current year/semester",
+  "education.passingYear": "Passing year",
+  "education.occupationStatusCode": "Occupation status",
+  "education.occupationStatus": "Occupation status",
+  "course.courseId": "Configured active course",
+  "course.trainingMode": "Training mode",
+  "course.admissionDate": "Admission date",
+  "course.joiningDate": "Joining date",
+  "fee.finalAgreedFeePaise": "Final agreed fee",
+  "fee.discountReasonCode": "Discount reason",
+  "fee.discountReason": "Discount reason",
+  "fee.paymentPlanType": "Payment plan",
+  "fee.numberOfInstalments": "Number of instalments",
+  "declarations.informationCorrect": "Information entered is correct",
+  "declarations.nameDobMatchesAadhaar": "Name and DOB match Aadhaar",
+  "declarations.courseRulesExplained": "Course rules explained",
+  "declarations.feeTermsAccepted": "Fee and cancellation terms accepted",
+  "declarations.dataProcessingAccepted": "Data processing for admission accepted",
+  "declarations.nsdcProcessingAccepted": "NSDC/Skill India processing authorised",
+  "declarations.nsdcPendingDocumentsUnderstood": "Aadhaar and document completion is pending",
+};
+
 export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const [detail, setDetail] = useState<EnquiryDetail | null>(null);
   const [courses, setCourses] = useState<StaffCourse[]>([]);
@@ -48,6 +83,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const [confirmation, setConfirmation] = useState<AdmissionConfirmation | null>(null);
   const [isLocked, setIsLocked] = useState(false);
   const confirmPendingRef = useRef(false);
+  const errorSummaryRef = useRef<HTMLDivElement>(null);
+  const focusSummaryRequestedRef = useRef(false);
 
   async function loadAdmissionData() {
     setIsLoading(true);
@@ -87,6 +124,12 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const configurationReady = isAdmissionConfigurationReady(configuration);
 
   useEffect(() => {
+    if (!focusSummaryRequestedRef.current) return;
+    focusSummaryRequestedRef.current = false;
+    if (Object.keys(fieldErrors).length) errorSummaryRef.current?.focus();
+  }, [fieldErrors]);
+
+  useEffect(() => {
     if (!selectedCourse || isLocked) return;
     setPayload((current) => ({
       ...current,
@@ -98,6 +141,21 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
     }));
   }, [isLocked, selectedCourse]);
 
+  function requestSummaryFocus(errors: FieldErrors) {
+    if (Object.keys(errors).length) focusSummaryRequestedRef.current = true;
+  }
+
+  async function persistDraft(step: string, focusWarnings: boolean) {
+    const result = await saveAdmissionDraft(enquiryId, payload as unknown as Record<string, unknown>, step);
+    const nextErrors = result.fieldErrors || {};
+    setPayload(mergeDraftResponsePayload(payload, result.payload));
+    setFieldErrors(nextErrors);
+    if (focusWarnings) requestSummaryFocus(nextErrors);
+    setSaved(draftSavedMessage(nextErrors));
+    setError(null);
+    return { fieldErrors: nextErrors };
+  }
+
   async function handleSave(event?: FormEvent) {
     event?.preventDefault();
     if (isLocked) {
@@ -107,13 +165,9 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
     }
     setIsSaving(true);
     try {
-      const result = await saveAdmissionDraft(enquiryId, payload as unknown as Record<string, unknown>, currentStep);
-      setPayload(mergeAdmissionPayload(payload, result.payload));
-      setFieldErrors(result.fieldErrors || {});
-      setSaved(Object.keys(result.fieldErrors || {}).length ? "Draft saved with warnings." : "Draft saved.");
-      setError(null);
+      await persistDraft(currentStep, true);
     } catch (reason) {
-      captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, "Could not save draft.");
+      captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, requestSummaryFocus, "Could not save draft.");
     } finally {
       setIsSaving(false);
     }
@@ -121,23 +175,22 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
 
   async function handleConfirm() {
     if (confirmPendingRef.current) return;
-    if (!configurationReady) {
+    if (!isLocked && !configurationReady) {
       setError(ADMISSION_CONFIGURATION_MISSING_MESSAGE);
-      return;
-    }
-    if (paymentPlanNotice) {
-      setFieldErrors({ "fee.paymentPlanType": [paymentPlanNotice] });
       return;
     }
     confirmPendingRef.current = true;
     setIsConfirming(true);
     try {
-      if (shouldSaveDraftBeforeConfirm(isLocked)) await saveAdmissionDraft(enquiryId, payload as unknown as Record<string, unknown>, "review");
+      if (shouldSaveDraftBeforeConfirm(isLocked)) {
+        const savedDraft = await persistDraft("review", true);
+        if (Object.keys(savedDraft.fieldErrors).length) return;
+      }
       const result = await confirmAdmission(enquiryId);
       setConfirmation(result);
       setError(null);
     } catch (reason) {
-      captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, "Could not confirm admission.");
+      captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, requestSummaryFocus, "Could not confirm admission.");
     } finally {
       confirmPendingRef.current = false;
       setIsConfirming(false);
@@ -148,11 +201,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
     if (isLocked) return;
     setPayload((current) => normalizeDependentFields({ ...current, [section]: { ...current[section], [key]: value } } as AdmissionPayload, section, key));
     setSaved(null);
-    setFieldErrors((current) => {
-      const next = { ...current };
-      delete next[`${section}.${key}`];
-      return next;
-    });
+    clearFieldErrors(errorPathsForChange(section, key));
   }
 
   function setOption(section: keyof AdmissionPayload, codeKey: string, labelKey: string, category: string, code: string) {
@@ -181,7 +230,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       setApprovalStatus(result.status === "approved" ? "Approved" : "Requested");
       setError(null);
     } catch (reason) {
-      captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, "Could not request approval.");
+      captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, requestSummaryFocus, "Could not request approval.");
     } finally {
       setIsSaving(false);
     }
@@ -191,44 +240,69 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
     return fieldErrors[path]?.[0] || "";
   }
 
+  function clearFieldErrors(paths: string[]) {
+    setFieldErrors((current) => {
+      const next = { ...current };
+      for (const path of paths) delete next[path];
+      return next;
+    });
+  }
+
+  function controlProps(path: string) {
+    const message = errorFor(path);
+    return {
+      id: admissionFieldId(path),
+      "aria-invalid": Boolean(message),
+      "aria-describedby": message ? admissionFieldErrorId(path) : undefined,
+    };
+  }
+
+  function focusAdmissionField(path: string) {
+    const control = document.getElementById(admissionFieldId(path)) as HTMLElement | null;
+    control?.scrollIntoView({ block: "center" });
+    control?.focus();
+  }
+
   if (isLoading) return <LoadingState label="Loading admission" />;
   if (!detail) return <ErrorState title="Could not load admission" message={error || "Please try again."} />;
   if (confirmation) return <AdmissionSuccess confirmation={confirmation} />;
 
   return (
-    <form className="content-stack staff-enquiries-page" onSubmit={handleSave}>
+    <form className="content-stack staff-enquiries-page" onSubmit={handleSave} noValidate>
       <header className="page-header">
         <h1>Admission Form</h1>
         <p>{String(detail.enquiry.enquiry_number)} · {String(detail.enquiry.full_name || "Student")}</p>
       </header>
       {error ? <ErrorState title="Could not continue" message={error} /> : null}
-      {Object.keys(fieldErrors).length ? <ErrorSummary fieldErrors={fieldErrors} /> : null}
+      {Object.keys(fieldErrors).length ? <ErrorSummary fieldErrors={fieldErrors} summaryRef={errorSummaryRef} onFocusField={focusAdmissionField} /> : null}
       {saved ? <div className="notice notice--success" role="status"><strong>{saved}</strong></div> : null}
       {isLocked ? <AdmissionRecoveryNotice isConfirming={isConfirming} onRetry={() => void handleConfirm()} /> : null}
       {!configurationReady ? <AdmissionConfigurationMissing onRetry={() => void loadAdmissionData()} /> : null}
 
       {configurationReady ? <AdmissionLockedFieldset isLocked={isLocked}>
       <AdmissionSection title="A · Official identity">
-        <label>Full name as per Aadhaar<input value={String(payload.identity.officialFullName)} onChange={(e) => setSection("identity", "officialFullName", e.target.value)} required /></label>
+        <label>Full name as per Aadhaar<RequiredMark /><input {...controlProps("identity.officialFullName")} value={String(payload.identity.officialFullName)} onChange={(e) => setSection("identity", "officialFullName", e.target.value)} /><FieldMessage id={admissionFieldErrorId("identity.officialFullName")} message={errorFor("identity.officialFullName")} /></label>
         <label>First name<input value={String(payload.identity.firstName)} onChange={(e) => setSection("identity", "firstName", e.target.value)} /></label>
         <label>Middle name<input value={String(payload.identity.middleName)} onChange={(e) => setSection("identity", "middleName", e.target.value)} /></label>
         <label>Last name<input value={String(payload.identity.lastName)} onChange={(e) => setSection("identity", "lastName", e.target.value)} /></label>
-        <label>Date of birth as per Aadhaar<input type="date" value={String(payload.identity.dateOfBirth)} onChange={(e) => setSection("identity", "dateOfBirth", e.target.value)} required /></label>
-        <label>Gender<select value={String(payload.identity.gender)} onChange={(e) => setSection("identity", "gender", e.target.value)} required><option value="">Select</option><option value="female">Female</option><option value="male">Male</option><option value="other">Other</option></select></label>
-        <label>Father's full name<input value={String(payload.identity.fatherName)} onChange={(e) => setSection("identity", "fatherName", e.target.value)} required={payload.course.nsdcPreference === "yes"} /></label>
+        <label>Date of birth as per Aadhaar<RequiredMark /><input {...controlProps("identity.dateOfBirth")} type="date" value={String(payload.identity.dateOfBirth)} onChange={(e) => setSection("identity", "dateOfBirth", e.target.value)} /><FieldMessage id={admissionFieldErrorId("identity.dateOfBirth")} message={errorFor("identity.dateOfBirth")} /></label>
+        <label>Gender<RequiredMark /><select {...controlProps("identity.gender")} value={String(payload.identity.gender)} onChange={(e) => setSection("identity", "gender", e.target.value)}><option value="">Select</option><option value="female">Female</option><option value="male">Male</option><option value="other">Other</option></select><FieldMessage id={admissionFieldErrorId("identity.gender")} message={errorFor("identity.gender")} /></label>
+        <label>Father's full name{payload.course.nsdcPreference === "yes" ? <RequiredMark /> : null}<input {...controlProps("identity.fatherName")} value={String(payload.identity.fatherName)} onChange={(e) => setSection("identity", "fatherName", e.target.value)} /><FieldMessage id={admissionFieldErrorId("identity.fatherName")} message={errorFor("identity.fatherName")} /></label>
         <label>Mother's full name<input value={String(payload.identity.motherName)} onChange={(e) => setSection("identity", "motherName", e.target.value)} /></label>
-        <label className="checkbox-label"><input type="checkbox" checked={Boolean(payload.identity.identityConfirmed)} onChange={(e) => setSection("identity", "identityConfirmed", e.target.checked)} /> Name and DOB confirmed against Aadhaar</label>
+        <label className="checkbox-label"><input {...controlProps("identity.identityConfirmed")} type="checkbox" checked={Boolean(payload.identity.identityConfirmed)} onChange={(e) => setSection("identity", "identityConfirmed", e.target.checked)} /> Name and DOB confirmed against Aadhaar<RequiredMark /><FieldMessage id={admissionFieldErrorId("identity.identityConfirmed")} message={errorFor("identity.identityConfirmed")} /></label>
         <p className="preview-line">Certificate preview: <strong>{String(payload.identity.officialFullName || "").toUpperCase()}</strong></p>
       </AdmissionSection>
 
       <AdmissionSection title="B · Contact">
-        <label>Primary mobile<input value={String(payload.contact.primaryMobile)} onChange={(e) => setSection("contact", "primaryMobile", e.target.value)} required /></label>
+        <label>Primary mobile<RequiredMark /><input {...controlProps("contact.primaryMobile")} value={String(payload.contact.primaryMobile)} onChange={(e) => setSection("contact", "primaryMobile", e.target.value)} /><FieldMessage id={admissionFieldErrorId("contact.primaryMobile")} message={errorFor("contact.primaryMobile")} /></label>
         <label>Mobile belongs to<select value={String(payload.contact.belongsTo)} onChange={(e) => setSection("contact", "belongsTo", e.target.value)}><option value="student">Student</option><option value="father">Father</option><option value="mother">Mother</option><option value="guardian">Guardian</option><option value="family">Family</option><option value="other">Other</option></select></label>
         <label>WhatsApp available<select value={payload.contact.isWhatsapp ? "yes" : "no"} onChange={(e) => setSection("contact", "isWhatsapp", e.target.value === "yes")}><option value="yes">Yes</option><option value="no">No</option></select></label>
         <label>Alternate mobile<input value={String(payload.contact.alternateMobile)} onChange={(e) => setSection("contact", "alternateMobile", e.target.value)} /></label>
         <label>Email<input type="email" value={String(payload.contact.email)} onChange={(e) => setSection("contact", "email", e.target.value)} /></label>
         <OptionSelect
           label="Preferred language"
+          path="contact.preferredLanguageCode"
+          customPath="contact.preferredLanguage"
           required
           options={optionGroups.preferred_language || []}
           code={String(payload.contact.preferredLanguageCode || "")}
@@ -240,8 +314,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       </AdmissionSection>
 
       <AdmissionSection title="C · Locality">
-        <label>Locality/area<input value={String(payload.locality.locality)} onChange={(e) => setSection("locality", "locality", e.target.value)} required /></label>
-        <label>City<input value={String(payload.locality.city)} onChange={(e) => setSection("locality", "city", e.target.value)} required /></label>
+        <label>Locality/area<RequiredMark /><input {...controlProps("locality.locality")} value={String(payload.locality.locality)} onChange={(e) => setSection("locality", "locality", e.target.value)} /><FieldMessage id={admissionFieldErrorId("locality.locality")} message={errorFor("locality.locality")} /></label>
+        <label>City<RequiredMark /><input {...controlProps("locality.city")} value={String(payload.locality.city)} onChange={(e) => setSection("locality", "city", e.target.value)} /><FieldMessage id={admissionFieldErrorId("locality.city")} message={errorFor("locality.city")} /></label>
         <label>PIN code<input value={String(payload.locality.postalCode)} onChange={(e) => setSection("locality", "postalCode", e.target.value)} /></label>
         <label>State<input value={String(payload.locality.state)} onChange={(e) => setSection("locality", "state", e.target.value)} /></label>
         <label>Residence type<select value={String(payload.locality.residenceType)} onChange={(e) => setSection("locality", "residenceType", e.target.value)}><option value="">Optional</option><option value="family_home">Family home</option><option value="hostel">Hostel</option><option value="pg">PG</option><option value="rented">Rented</option><option value="other">Other</option></select></label>
@@ -251,6 +325,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       <AdmissionSection title="D · Education and profile">
         <OptionSelect
           label="Highest/current qualification"
+          path="education.qualificationLevelCode"
+          customPath="education.qualificationLevel"
           required
           options={optionGroups.qualification_level || []}
           code={String(payload.education.qualificationLevelCode || "")}
@@ -262,6 +338,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         <label>Qualification/course name<input value={String(payload.education.qualificationName)} onChange={(e) => setSection("education", "qualificationName", e.target.value)} /></label>
         <OptionSelect
           label="Stream"
+          path="education.streamCode"
+          customPath="education.stream"
           options={optionGroups.stream || []}
           code={String(payload.education.streamCode || "")}
           customLabel={String(payload.education.stream || "")}
@@ -271,10 +349,12 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         />
         <label>Institution<input value={String(payload.education.institutionName)} onChange={(e) => setSection("education", "institutionName", e.target.value)} /></label>
         <label>Currently pursuing<select value={payload.education.currentlyPursuing ? "yes" : "no"} onChange={(e) => setSection("education", "currentlyPursuing", e.target.value === "yes")}><option value="no">No</option><option value="yes">Yes</option></select></label>
-        <label>Current year/semester{payload.education.currentlyPursuing ? <RequiredMark /> : null}<input value={String(payload.education.currentYearSemester)} onChange={(e) => setSection("education", "currentYearSemester", e.target.value)} disabled={!payload.education.currentlyPursuing} aria-invalid={Boolean(errorFor("education.currentYearSemester"))} /></label>
-        <label>Passing year{!payload.education.currentlyPursuing ? <RequiredMark /> : null}<input type="number" value={String(payload.education.passingYear || "")} onChange={(e) => setSection("education", "passingYear", e.target.value ? Number(e.target.value) : null)} disabled={Boolean(payload.education.currentlyPursuing)} aria-invalid={Boolean(errorFor("education.passingYear"))} /></label>
+        <label>Current year/semester{payload.education.currentlyPursuing ? <RequiredMark /> : null}<input {...controlProps("education.currentYearSemester")} value={String(payload.education.currentYearSemester)} onChange={(e) => setSection("education", "currentYearSemester", e.target.value)} disabled={!payload.education.currentlyPursuing} /><FieldMessage id={admissionFieldErrorId("education.currentYearSemester")} message={errorFor("education.currentYearSemester")} /></label>
+        <label>Passing year{!payload.education.currentlyPursuing ? <RequiredMark /> : null}<input {...controlProps("education.passingYear")} type="number" value={String(payload.education.passingYear || "")} onChange={(e) => setSection("education", "passingYear", e.target.value ? Number(e.target.value) : null)} disabled={Boolean(payload.education.currentlyPursuing)} /><FieldMessage id={admissionFieldErrorId("education.passingYear")} message={errorFor("education.passingYear")} /></label>
         <OptionSelect
           label="Occupation status"
+          path="education.occupationStatusCode"
+          customPath="education.occupationStatus"
           required
           options={optionGroups.occupation_status || []}
           code={String(payload.education.occupationStatusCode || "")}
@@ -286,11 +366,13 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       </AdmissionSection>
 
       <AdmissionSection title="E · Course enrolment">
-        <label>Configured active course<select value={String(payload.course.courseId)} onChange={(e) => setSection("course", "courseId", e.target.value)} required><option value="">Select course</option>{admissionCourses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select></label>
+        <label>Configured active course<RequiredMark /><select {...controlProps("course.courseId")} value={String(payload.course.courseId)} onChange={(e) => setSection("course", "courseId", e.target.value)}><option value="">Select course</option>{admissionCourses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select><FieldMessage id={admissionFieldErrorId("course.courseId")} message={errorFor("course.courseId")} /></label>
         <label>Branch<input value={branchDisplay(detail)} readOnly aria-readonly="true" /></label>
-        <label>Training mode<select value={String(payload.course.trainingMode)} onChange={(e) => setSection("course", "trainingMode", e.target.value)} required><option value="classroom">Classroom</option><option value="online">Online</option><option value="hybrid">Hybrid</option></select></label>
+        <label>Training mode<RequiredMark /><select {...controlProps("course.trainingMode")} value={String(payload.course.trainingMode)} onChange={(e) => setSection("course", "trainingMode", e.target.value)}><option value="classroom">Classroom</option><option value="online">Online</option><option value="hybrid">Hybrid</option></select><FieldMessage id={admissionFieldErrorId("course.trainingMode")} message={errorFor("course.trainingMode")} /></label>
         <OptionSelect
           label="Batch preference"
+          path="course.batchPreferenceCode"
+          customPath="course.batchPreference"
           options={optionGroups.batch_preference || []}
           code={String(payload.course.batchPreferenceCode || "")}
           customLabel={String(payload.course.batchPreference || "")}
@@ -298,18 +380,20 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
           onCustomLabelChange={(value) => setSection("course", "batchPreference", value)}
           error={errorFor("course.batchPreferenceCode") || errorFor("course.batchPreference")}
         />
-        <label>Admission date<input type="date" value={String(payload.course.admissionDate)} onChange={(e) => setSection("course", "admissionDate", e.target.value)} required /></label>
-        <label>Joining date<input type="date" value={String(payload.course.joiningDate)} onChange={(e) => setSection("course", "joiningDate", e.target.value)} required /></label>
+        <label>Admission date<RequiredMark /><input {...controlProps("course.admissionDate")} type="date" value={String(payload.course.admissionDate)} onChange={(e) => setSection("course", "admissionDate", e.target.value)} /><FieldMessage id={admissionFieldErrorId("course.admissionDate")} message={errorFor("course.admissionDate")} /></label>
+        <label>Joining date<RequiredMark /><input {...controlProps("course.joiningDate")} type="date" value={String(payload.course.joiningDate)} onChange={(e) => setSection("course", "joiningDate", e.target.value)} /><FieldMessage id={admissionFieldErrorId("course.joiningDate")} message={errorFor("course.joiningDate")} /></label>
         <label>Expected completion<input type="date" value={String(payload.course.expectedCompletionDate)} onChange={(e) => setSection("course", "expectedCompletionDate", e.target.value)} /></label>
         <label>NSDC preference<select value={String(payload.course.nsdcPreference)} onChange={(e) => setSection("course", "nsdcPreference", e.target.value)}><option value="no">No</option><option value="yes">Yes</option><option value="decide_later">Decide later</option></select></label>
       </AdmissionSection>
 
       <AdmissionSection title="F · Fee agreement">
         <label>Standard fee<input type="number" value={Number(selectedCourse?.default_fee_paise ?? payload.fee.standardFeePaise ?? 0) / 100} disabled /></label>
-        <label>Final agreed fee<input type="number" min="0" value={Number(payload.fee.finalAgreedFeePaise || 0) / 100} onChange={(e) => setSection("fee", "finalAgreedFeePaise", Math.round(Number(e.target.value || 0) * 100))} required /></label>
+        <label>Final agreed fee<RequiredMark /><input {...controlProps("fee.finalAgreedFeePaise")} type="number" min="0" value={Number(payload.fee.finalAgreedFeePaise || 0) / 100} onChange={(e) => setSection("fee", "finalAgreedFeePaise", Math.round(Number(e.target.value || 0) * 100))} /><FieldMessage id={admissionFieldErrorId("fee.finalAgreedFeePaise")} message={errorFor("fee.finalAgreedFeePaise")} /></label>
         <label>Discount<input value={formatMoney(review.discountPaise)} disabled /></label>
         <OptionSelect
           label="Discount reason"
+          path="fee.discountReasonCode"
+          customPath="fee.discountReason"
           required={review.discountPaise > 0}
           options={optionGroups.discount_reason || []}
           code={String(payload.fee.discountReasonCode || "")}
@@ -319,19 +403,20 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
           error={errorFor("fee.discountReasonCode") || errorFor("fee.discountReason")}
         />
         <PaymentPlanField
+          path="fee.paymentPlanType"
           value={String(payload.fee.paymentPlanType)}
           rules={allowedPaymentRules}
           message={paymentPlanNotice || errorFor("fee.paymentPlanType")}
           onChange={(value) => setSection("fee", "paymentPlanType", value)}
         />
-        <label>Number of instalments<input type="number" min="1" value={String(payload.fee.numberOfInstalments)} onChange={(e) => setSection("fee", "numberOfInstalments", Number(e.target.value || 1))} disabled={String(payload.fee.paymentPlanType) !== "custom"} aria-invalid={Boolean(errorFor("fee.numberOfInstalments"))} /><FieldMessage message={errorFor("fee.numberOfInstalments")} /></label>
-        <label>Initial payment expected<input type="number" min="0" value={Number(payload.fee.initialPaymentExpectedPaise || 0) / 100} onChange={(e) => setSection("fee", "initialPaymentExpectedPaise", Math.round(Number(e.target.value || 0) * 100))} required /></label>
+        <label>Number of instalments<input {...controlProps("fee.numberOfInstalments")} type="number" min="1" value={String(payload.fee.numberOfInstalments)} onChange={(e) => setSection("fee", "numberOfInstalments", Number(e.target.value || 1))} disabled={String(payload.fee.paymentPlanType) !== "custom"} /><FieldMessage id={admissionFieldErrorId("fee.numberOfInstalments")} message={errorFor("fee.numberOfInstalments")} /></label>
+        <label>Initial payment expected<input type="number" min="0" value={Number(payload.fee.initialPaymentExpectedPaise || 0) / 100} onChange={(e) => setSection("fee", "initialPaymentExpectedPaise", Math.round(Number(e.target.value || 0) * 100))} /></label>
         {review.ownerApprovalRequired ? <div className="staff-form-actions"><button type="button" className="secondary-button" disabled={isSaving} onClick={() => void handleRequestApproval()}>{approvalStatus || "Request owner approval"}</button></div> : null}
       </AdmissionSection>
 
       <AdmissionSection title="G · Declarations">
         {requiredDeclarations(payload.course.nsdcPreference === "yes").map(([key, label]) => (
-          <label key={key} className="checkbox-label"><input type="checkbox" checked={Boolean(payload.declarations[key])} onChange={(e) => setSection("declarations", key, e.target.checked)} /> {label}</label>
+          <label key={key} className="checkbox-label"><input {...controlProps(`declarations.${key}`)} type="checkbox" checked={Boolean(payload.declarations[key])} onChange={(e) => setSection("declarations", key, e.target.checked)} /> {label}{requiredDeclarationKeys.has(key) ? <RequiredMark /> : null}<FieldMessage id={admissionFieldErrorId(`declarations.${key}`)} message={errorFor(`declarations.${key}`)} /></label>
         ))}
       </AdmissionSection>
 
@@ -351,9 +436,9 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
           <Review label="NSDC readiness" value={review.nsdcReady ? "Ready for pending profile" : "Regular admission can continue separately"} />
         </div>
         <div className="staff-form-actions">
-          <button type="submit" disabled={isSaving || isLocked}>{isSaving ? "Saving..." : "Save Draft"}</button>
+          <button type="button" disabled={isSaving || isLocked} onClick={() => void handleSave()}>{isSaving ? "Saving..." : "Save Draft"}</button>
           <button type="button" className="secondary-button" disabled={isLocked} onClick={() => setCurrentStep("identity")}>Return for Correction</button>
-          <button type="button" disabled={isConfirming || Boolean(paymentPlanNotice)} onClick={() => void handleConfirm()}>{isConfirming ? "Confirming..." : isLocked ? "Retry Confirmation" : "Confirm Admission"}</button>
+          <button type="button" disabled={isConfirming} onClick={() => void handleConfirm()}>{isConfirming ? "Confirming..." : isLocked ? "Retry Confirmation" : "Confirm Admission"}</button>
         </div>
       </section>
       </AdmissionLockedFieldset> : null}
@@ -416,6 +501,7 @@ export function admissionReview(payload: AdmissionPayload, selectedCourse?: Staf
       payload.identity.dateOfBirth &&
       payload.identity.gender &&
       payload.identity.identityConfirmed &&
+      payload.contact.primaryMobile &&
       payload.locality.locality &&
       payload.locality.city &&
       payload.education.qualificationLevel &&
@@ -447,6 +533,20 @@ export function shouldSaveDraftBeforeConfirm(isLocked: boolean) {
   return !isLocked;
 }
 
+export function admissionFieldId(path: string) {
+  return `admission-field-${path.replace(/[^a-zA-Z0-9_-]+/g, "-")}`;
+}
+
+export function admissionFieldErrorId(path: string) {
+  return `${admissionFieldId(path)}-error`;
+}
+
+export function draftSavedMessage(fieldErrors: FieldErrors) {
+  const count = Object.keys(fieldErrors).length;
+  if (!count) return "Draft saved.";
+  return `Draft saved. ${count} ${count === 1 ? "field is" : "fields are"} still required before confirmation.`;
+}
+
 export function emptyAdmissionConfiguration(): AdmissionConfiguration {
   return {
     options: [],
@@ -475,6 +575,15 @@ export function mergeAdmissionPayload(base: AdmissionPayload, incoming: Record<s
     fee: { ...base.fee, ...((incoming.fee as Record<string, unknown>) || {}) },
     declarations: { ...base.declarations, ...((incoming.declarations as Record<string, unknown>) || {}) },
   } as AdmissionPayload;
+}
+
+export function mergeDraftResponsePayload(base: AdmissionPayload, incoming: Record<string, unknown>): AdmissionPayload {
+  const merged = mergeAdmissionPayload(base, incoming);
+  const incomingContact = (incoming.contact as Record<string, unknown>) || {};
+  for (const key of ["primaryMobile", "alternateMobile"] as const) {
+    if (incomingContact[key] === "" && base.contact[key]) merged.contact[key] = base.contact[key];
+  }
+  return merged;
 }
 
 function groupOptions(configuration: AdmissionConfiguration) {
@@ -515,6 +624,17 @@ function normalizeDependentFields(payload: AdmissionPayload, section: keyof Admi
   return next;
 }
 
+function errorPathsForChange(section: keyof AdmissionPayload, key: string) {
+  const path = `${section}.${key}`;
+  const related: Record<string, string[]> = {
+    "education.currentlyPursuing": ["education.currentYearSemester", "education.passingYear"],
+    "course.nsdcPreference": ["identity.fatherName", "declarations.nsdcProcessingAccepted", "declarations.nsdcPendingDocumentsUnderstood"],
+    "fee.finalAgreedFeePaise": ["fee.discountReasonCode", "fee.discountReason"],
+    "fee.paymentPlanType": ["fee.numberOfInstalments"],
+  };
+  return [path, ...(related[path] || [])];
+}
+
 function branchDisplay(detail: EnquiryDetail) {
   const branchName = detail.enquiry.branch_name || detail.enquiry.branch_code || detail.enquiry.branch_id;
   return String(branchName || "Enquiry branch");
@@ -524,11 +644,20 @@ export function isAdmissionLockedError(reason: unknown) {
   return reason instanceof ApiError && reason.code === "admission_confirmation_locked";
 }
 
-function captureAdmissionError(reason: unknown, setError: (message: string | null) => void, setFieldErrors: (errors: FieldErrors) => void, setIsLocked: (isLocked: boolean) => void, fallback: string) {
+function captureAdmissionError(
+  reason: unknown,
+  setError: (message: string | null) => void,
+  setFieldErrors: (errors: FieldErrors) => void,
+  setIsLocked: (isLocked: boolean) => void,
+  requestSummaryFocus: (errors: FieldErrors) => void,
+  fallback: string,
+) {
   if (isAdmissionLockedError(reason)) setIsLocked(true);
   if (reason instanceof ApiError) {
+    const nextErrors = reason.fieldErrors || {};
     setError(reason.message);
-    setFieldErrors(reason.fieldErrors || {});
+    setFieldErrors(nextErrors);
+    requestSummaryFocus(nextErrors);
     return;
   }
   setError(reason instanceof Error ? reason.message : fallback);
@@ -558,25 +687,42 @@ export function AdmissionLockedFieldset({ isLocked, children }: { isLocked: bool
   return <fieldset className="admission-locked-fieldset" disabled={isLocked}>{children}</fieldset>;
 }
 
-export function PaymentPlanField({ value, rules, message, onChange }: { value: string; rules: PaymentPlanRule[]; message?: string; onChange: (value: string) => void }) {
+export function PaymentPlanField({ path, value, rules, message, onChange }: { path?: string; value: string; rules: PaymentPlanRule[]; message?: string; onChange: (value: string) => void }) {
+  const errorId = path ? admissionFieldErrorId(path) : undefined;
   return (
     <label>
       Payment plan<RequiredMark />
-      <select value={value} onChange={(e) => onChange(e.target.value)} aria-invalid={Boolean(message)} disabled={!rules.length}>
+      <select
+        id={path ? admissionFieldId(path) : undefined}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-invalid={Boolean(message)}
+        aria-describedby={message ? errorId : undefined}
+        disabled={!rules.length}
+      >
         <option value="">Select plan</option>
         {rules.map((rule) => <option key={rule.plan_type} value={rule.plan_type}>{paymentPlanLabel(rule.plan_type)}</option>)}
       </select>
-      <FieldMessage message={message} />
+      <FieldMessage id={errorId} message={message} />
     </label>
   );
 }
 
-function ErrorSummary({ fieldErrors }: { fieldErrors: FieldErrors }) {
-  const entries = Object.entries(fieldErrors).flatMap(([path, messages]) => messages.map((message) => ({ path, message })));
+function ErrorSummary({ fieldErrors, summaryRef, onFocusField }: { fieldErrors: FieldErrors; summaryRef: RefObject<HTMLDivElement | null>; onFocusField: (path: string) => void }) {
+  const entries = Object.entries(fieldErrors).map(([path, messages]) => ({ path, message: messages[0] || "This field is required." }));
   return (
-    <div className="notice admission-error-summary" role="alert" tabIndex={-1}>
-      <strong>Review required fields</strong>
-      <ul>{entries.map((entry) => <li key={`${entry.path}-${entry.message}`}>{entry.message}</li>)}</ul>
+    <div id="admission-error-summary" ref={summaryRef} className="notice admission-error-summary" role="alert" tabIndex={-1}>
+      <strong>Please complete the following fields</strong>
+      <span>{entries.length} {entries.length === 1 ? "field needs" : "fields need"} attention before confirmation.</span>
+      <ul>
+        {entries.map((entry) => (
+          <li key={entry.path}>
+            <button type="button" className="link-button" onClick={() => onFocusField(entry.path)}>
+              {ADMISSION_FIELD_LABELS[entry.path] || entry.path}: {entry.message}
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -585,12 +731,14 @@ function RequiredMark() {
   return <span className="required-mark" aria-hidden="true">*</span>;
 }
 
-function FieldMessage({ message }: { message?: string }) {
-  return message ? <span className="field-error">{message}</span> : null;
+function FieldMessage({ id, message }: { id?: string; message?: string }) {
+  return message ? <span id={id} className="field-error">{message}</span> : null;
 }
 
 export function OptionSelect({
   label,
+  path,
+  customPath,
   required = false,
   options,
   code,
@@ -600,6 +748,8 @@ export function OptionSelect({
   error,
 }: {
   label: string;
+  path?: string;
+  customPath?: string;
   required?: boolean;
   options: AdmissionConfiguration["options"];
   code: string;
@@ -610,15 +760,31 @@ export function OptionSelect({
 }) {
   const selected = options.find((option) => option.code === code);
   const needsCustom = Boolean(selected?.requires_custom_label);
+  const errorId = path ? admissionFieldErrorId(path) : undefined;
+  const customErrorId = customPath ? admissionFieldErrorId(customPath) : errorId;
   return (
     <label>
       {label}{required ? <RequiredMark /> : null}
-      <select value={code} onChange={(event) => onCodeChange(event.target.value)} aria-invalid={Boolean(error)}>
+      <select
+        id={path ? admissionFieldId(path) : undefined}
+        value={code}
+        onChange={(event) => onCodeChange(event.target.value)}
+        aria-invalid={Boolean(error)}
+        aria-describedby={error ? errorId : undefined}
+      >
         <option value="">Select</option>
         {options.map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
       </select>
-      {needsCustom ? <input value={customLabel} onChange={(event) => onCustomLabelChange(event.target.value)} aria-invalid={Boolean(error)} /> : null}
-      <FieldMessage message={error} />
+      {needsCustom ? (
+        <input
+          id={customPath ? admissionFieldId(customPath) : undefined}
+          value={customLabel}
+          onChange={(event) => onCustomLabelChange(event.target.value)}
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? customErrorId : undefined}
+        />
+      ) : null}
+      <FieldMessage id={errorId} message={error} />
     </label>
   );
 }
@@ -663,6 +829,16 @@ function requiredDeclarations(nsdc: boolean): Array<[keyof AdmissionPayload["dec
   }
   return base;
 }
+
+const requiredDeclarationKeys = new Set<keyof AdmissionPayload["declarations"]>([
+  "informationCorrect",
+  "nameDobMatchesAadhaar",
+  "courseRulesExplained",
+  "feeTermsAccepted",
+  "dataProcessingAccepted",
+  "nsdcProcessingAccepted",
+  "nsdcPendingDocumentsUnderstood",
+]);
 
 function paymentPlanLabel(value: string) {
   if (value === "full") return "Full payment";
