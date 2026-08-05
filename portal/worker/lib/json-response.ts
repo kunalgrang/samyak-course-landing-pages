@@ -18,6 +18,7 @@ type ErrorBody = {
     code: string;
     message: string;
     requestId: string;
+    fieldErrors?: Record<string, string[]>;
   };
 };
 
@@ -47,10 +48,12 @@ export function jsonError(
     status,
     code,
     message,
+    fieldErrors,
   }: {
     status: ContentfulStatusCode;
     code: string;
     message: string;
+    fieldErrors?: Record<string, string[]>;
   },
 ) {
   return c.json<ErrorBody>(
@@ -60,6 +63,7 @@ export function jsonError(
         code,
         message,
         requestId: c.get("requestId"),
+        ...(fieldErrors ? { fieldErrors } : {}),
       },
     },
     status,

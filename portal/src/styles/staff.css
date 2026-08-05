@@ -23,7 +23,8 @@
 }
 
 .staff-form input,
-.staff-form select {
+.staff-form select,
+.action-row select {
   width: 100%;
   min-height: 46px;
   border: 1px solid var(--color-line);
@@ -34,7 +35,8 @@
   font: inherit;
 }
 
-.staff-form input:disabled {
+.staff-form input:disabled,
+.staff-form select:disabled {
   color: var(--color-muted);
   background: #f3f6f8;
 }
@@ -43,6 +45,98 @@
 .staff-form select:focus-visible {
   outline: 3px solid rgba(13, 148, 136, 0.25);
   outline-offset: 2px;
+}
+
+.staff-form [aria-invalid="true"] {
+  border-color: #b42318;
+}
+
+.required-mark {
+  color: #b42318;
+  margin-left: 4px;
+}
+
+.field-error {
+  color: #b42318;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.admission-error-summary {
+  border-color: rgba(180, 35, 24, 0.28);
+  background: #fff4f2;
+}
+
+.admission-error-summary strong {
+  color: #8a1f14;
+}
+
+.admission-error-summary ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #8a1f14;
+}
+
+.admission-error-summary button {
+  border: 0;
+  padding: 0;
+  color: #8a1f14;
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.admission-locked-fieldset {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.admission-recovery-notice {
+  display: grid;
+  gap: 8px;
+  border-color: rgba(14, 116, 144, 0.28);
+  background: #ecfeff;
+}
+
+.admission-recovery-notice strong {
+  color: #155e75;
+}
+
+.admission-recovery-notice span {
+  color: var(--color-ink);
+  line-height: 1.45;
+}
+
+.admission-recovery-notice button {
+  justify-self: start;
+}
+
+.admission-configuration-missing {
+  display: grid;
+  gap: 8px;
+  border-color: rgba(180, 35, 24, 0.28);
+  background: #fff4f2;
+}
+
+.admission-configuration-missing strong {
+  color: #8a1f14;
+}
+
+.admission-configuration-missing span {
+  color: var(--color-ink);
+  line-height: 1.45;
+}
+
+.admission-configuration-missing button {
+  justify-self: start;
 }
 
 .staff-search-row {
@@ -113,8 +207,94 @@
 }
 
 .staff-form-actions {
+  gap: 10px;
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.secondary-button,
+.button-link {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 0 16px;
+  color: var(--color-navy);
+  background: #fff;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.detail-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.detail-grid div {
+  display: grid;
+  gap: 4px;
+}
+
+.detail-grid small {
+  color: var(--color-muted);
+  font-weight: 800;
+}
+
+.detail-grid strong {
+  color: var(--color-navy);
+  overflow-wrap: anywhere;
+}
+
+.action-row {
+  display: grid;
+  gap: 12px;
+  align-items: end;
+}
+
+.action-row label,
+.checkbox-label {
+  display: grid;
+  gap: 7px;
+  color: var(--color-navy);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.checkbox-label {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.checkbox-label input {
+  width: 18px;
+  height: 18px;
+}
+
+.table-list {
+  display: grid;
+  gap: 10px;
+}
+
+.table-row {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.table-row small,
+.preview-line {
+  color: var(--color-muted);
+}
+
+.table-row a {
+  color: var(--color-teal-dark);
+  font-weight: 800;
 }
 
 .notice--success {
@@ -124,6 +304,23 @@
 
 .notice--success strong {
   color: var(--color-teal-dark);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0.5rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.status-pill--warning {
+  border: 1px solid #f59e0b;
+  background: #fffbeb;
+  color: #92400e;
 }
 
 @media (min-width: 640px) {
@@ -137,6 +334,14 @@
 
   .staff-form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .detail-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .action-row {
+    grid-template-columns: minmax(220px, 1fr) auto auto auto;
   }
 
   .staff-form-actions {

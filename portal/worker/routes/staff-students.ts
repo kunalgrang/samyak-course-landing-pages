@@ -1,16 +1,15 @@
 import { z } from "zod";
 import type { Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
-import { ORG_ID, getAccountRoles, getSessionFromRequest, mobileHash } from "../lib/auth-store";
+import { ORG_ID, getSessionFromRequest, mobileHash } from "../lib/auth-store";
 import { createOpaqueId, encryptText } from "../lib/crypto";
 import { jsonError, jsonPlain } from "../lib/json-response";
+import { ADMISSION_STAFF_ROLES, requireStaffRoles } from "../lib/staff-auth";
 
 type PortalHono = Hono<{
   Bindings: WorkerBindings;
   Variables: WorkerVariables;
 }>;
-
-const STAFF_ROLES = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
 
 const createEnquirySchema = z
   .object({
@@ -42,7 +41,7 @@ export function registerStaffStudentRoutes(app: PortalHono) {
         .bind(ORG_ID)
         .all(),
       c.env.DB.prepare(
-        "select id, code, name, nsdc_available from courses where organisation_id = ? and status = 'active' order by name",
+        "select id, code, name, duration_label, default_fee_paise, nsdc_available from courses where organisation_id = ? and status = 'active' and admission_configuration_complete = 1 order by name",
       )
         .bind(ORG_ID)
         .all(),
@@ -85,6 +84,7 @@ export function registerStaffStudentRoutes(app: PortalHono) {
          people.id as person_id,
          coalesce(person_identity_details.official_full_name, people.full_name) as full_name,
          person_identity_details.date_of_birth as date_of_birth,
+         students.id as student_id,
          students.student_number as student_number,
          students.current_status as student_status,
          person_contacts.last_four as mobile_last_four
@@ -145,7 +145,7 @@ export function registerStaffStudentRoutes(app: PortalHono) {
 
     if (parsed.data.courseInterestId) {
       const course = await c.env.DB.prepare(
-        "select id from courses where id = ? and organisation_id = ? and status = 'active'",
+        "select id from courses where id = ? and organisation_id = ? and status = 'active' and admission_configuration_complete = 1",
       )
         .bind(parsed.data.courseInterestId, ORG_ID)
         .first();
@@ -253,11 +253,7 @@ async function addMobileIfMissing(
 }
 
 async function requireStaff(c: Parameters<typeof getSessionFromRequest>[0]) {
-  const session = await getSessionFromRequest(c);
-  if (!session) return null;
-  const roles = await getAccountRoles(c, session.record.login_account_id);
-  if (!roles.some((role) => STAFF_ROLES.has(role))) return null;
-  return { loginAccountId: session.record.login_account_id, roles };
+  return requireStaffRoles(c, ADMISSION_STAFF_ROLES);
 }
 
 export function normalizeIndianMobile(value: string) {

@@ -110,6 +110,8 @@ const enquiryOptionsSchema = z.object({
       id: z.string(),
       code: z.string(),
       name: z.string(),
+      duration_label: z.string().nullable().optional(),
+      default_fee_paise: z.number().nullable().optional(),
       nsdc_available: z.union([z.number(), z.boolean()]),
     }),
   ),
@@ -121,6 +123,7 @@ const studentSearchSchema = z.object({
   possiblePeople: z.array(
     z.object({
       person_id: z.string(),
+      student_id: z.string().nullable().optional(),
       full_name: z.string(),
       date_of_birth: z.string().nullable(),
       student_number: z.string().nullable(),
@@ -148,9 +151,132 @@ const createEnquiryResponseSchema = z.object({
   personId: z.string(),
 });
 
+const courseSchema = z.object({
+  id: z.string(),
+  code: z.string(),
+  name: z.string(),
+  duration_label: z.string().nullable(),
+  duration_months: z.number().nullable().optional(),
+  default_fee_paise: z.number().nullable(),
+  lowest_acceptable_fee_paise: z.number().nullable().optional(),
+  admission_configuration_complete: z.union([z.number(), z.boolean()]).optional(),
+  nsdc_available: z.union([z.number(), z.boolean()]),
+  status: z.string(),
+  created_at: z.string().optional(),
+  updated_at: z.string().optional(),
+});
+
+const courseListSchema = z.object({ courses: z.array(courseSchema) });
+
+const admissionDraftPayloadSchema = z.record(z.string(), z.unknown());
+
+const admissionDraftSchema = z.object({
+  draft: z
+    .object({
+      id: z.string(),
+      currentStep: z.string(),
+      status: z.string(),
+      payload: admissionDraftPayloadSchema,
+      confirmedAt: z.string().nullable(),
+      confirmationLockedAt: z.string().nullable().optional(),
+      confirmationSnapshotVersion: z.string().nullable().optional(),
+    })
+    .nullable(),
+});
+
+const admissionDraftSaveSchema = z.object({
+  success: z.literal(true),
+  draftId: z.string(),
+  payload: admissionDraftPayloadSchema,
+  currentStep: z.string(),
+  fieldErrors: z.record(z.string(), z.array(z.string())).optional(),
+});
+
+const admissionConfirmationSchema = z.object({
+  success: z.literal(true),
+  studentId: z.string(),
+  studentNumber: z.string(),
+  enrolmentId: z.string(),
+  enrolmentNumber: z.string(),
+  enquiryNumber: z.string(),
+  isNewStudent: z.boolean(),
+});
+
+const enquiryDetailSchema = z.object({
+  enquiry: z.record(z.string(), z.unknown()),
+  primaryMobile: z.string().nullable(),
+  alternateMobile: z.string().nullable().optional(),
+  mobileDisplay: z.string().nullable(),
+  alternateMobileDisplay: z.string().nullable().optional(),
+  previousEnrolments: z.array(z.record(z.string(), z.unknown())),
+  activeDraft: z.object({ id: z.string(), status: z.string(), currentStep: z.string() }).nullable(),
+});
+
+const studentProfileSchema = z.object({
+  student: z.record(z.string(), z.unknown()),
+  primaryMobile: z.string().nullable(),
+  mobileDisplay: z.string().nullable(),
+  locality: z.record(z.string(), z.unknown()).nullable(),
+  education: z.record(z.string(), z.unknown()).nullable(),
+  enrolments: z.array(z.record(z.string(), z.unknown())),
+  enquiries: z.array(z.record(z.string(), z.unknown())),
+});
+
+const admissionConfigurationSchema = z.object({
+  options: z.array(
+    z.object({
+      category: z.string(),
+      code: z.string(),
+      label: z.string(),
+      sort_order: z.number().optional(),
+      requires_custom_label: z.union([z.number(), z.boolean()]),
+      is_active: z.union([z.number(), z.boolean()]),
+    }),
+  ),
+  paymentPlanRules: z.array(
+    z.object({
+      min_duration_months: z.number(),
+      max_duration_months: z.number().nullable().optional(),
+      plan_type: z.string(),
+      fixed_instalments: z.number().nullable().optional(),
+      is_active: z.union([z.number(), z.boolean()]),
+    }),
+  ),
+  configuration: z.object({
+    ready: z.boolean(),
+    missingCategories: z.array(z.string()),
+    paymentPlanRulesConfigured: z.boolean(),
+  }),
+});
+
+const discountApprovalsSchema = z.object({
+  approvals: z.array(z.record(z.string(), z.unknown())),
+});
+
 export type EnquiryOptions = z.infer<typeof enquiryOptionsSchema>;
 export type StudentSearchResult = z.infer<typeof studentSearchSchema>;
 export type CreateEnquiryResponse = z.infer<typeof createEnquiryResponseSchema>;
+export type StaffCourse = z.infer<typeof courseSchema>;
+export type EnquiryDetail = z.infer<typeof enquiryDetailSchema>;
+export type AdmissionDraft = z.infer<typeof admissionDraftSchema>["draft"];
+export type AdmissionConfirmation = z.infer<typeof admissionConfirmationSchema>;
+export type StaffStudentProfile = z.infer<typeof studentProfileSchema>;
+export type AdmissionConfiguration = z.infer<typeof admissionConfigurationSchema>;
+export type AdmissionOptionValue = AdmissionConfiguration["options"][number];
+export type PaymentPlanRule = AdmissionConfiguration["paymentPlanRules"][number];
+export type FieldErrors = Record<string, string[]>;
+
+export class ApiError extends Error {
+  code?: string;
+  fieldErrors?: FieldErrors;
+
+  constructor(message: string, fieldErrors?: FieldErrors, code?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.fieldErrors = fieldErrors;
+    this.code = code;
+  }
+}
 
 export type CreateEnquiryInput = {
   mobile: string;
@@ -209,6 +335,62 @@ export async function createEnquiry(input: CreateEnquiryInput) {
   return postJson("/api/staff/enquiries", input, createEnquiryResponseSchema);
 }
 
+export async function getActiveCourses() {
+  return getJson("/api/staff/courses/active", courseListSchema);
+}
+
+export async function getAdmissionConfiguration() {
+  return getJson("/api/staff/admission-configuration", admissionConfigurationSchema);
+}
+
+export async function getStaffCourses() {
+  return getJson("/api/staff/courses", courseListSchema);
+}
+
+export async function createCourse(input: Record<string, unknown>) {
+  return postJson("/api/staff/courses", input, z.object({ success: z.literal(true), courseId: z.string() }));
+}
+
+export async function updateCourse(courseId: string, input: Record<string, unknown>) {
+  return patchJson(`/api/staff/courses/${encodeURIComponent(courseId)}`, input, z.object({ success: z.literal(true), courseId: z.string() }));
+}
+
+export async function getEnquiryDetail(enquiryId: string) {
+  return getJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}`, enquiryDetailSchema);
+}
+
+export async function updateEnquiryStatus(enquiryId: string, status: string) {
+  return patchJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}`, { status }, z.object({ success: z.literal(true) }));
+}
+
+export async function getAdmissionDraft(enquiryId: string) {
+  return getJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/admission-draft`, admissionDraftSchema);
+}
+
+export async function saveAdmissionDraft(enquiryId: string, payload: Record<string, unknown>, currentStep: string) {
+  return postJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/admission-draft`, { payload, currentStep }, admissionDraftSaveSchema);
+}
+
+export async function confirmAdmission(enquiryId: string) {
+  return postJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/confirm-admission`, {}, admissionConfirmationSchema);
+}
+
+export async function getStaffStudentProfile(studentId: string) {
+  return getJson(`/api/staff/students/${encodeURIComponent(studentId)}`, studentProfileSchema);
+}
+
+export async function requestDiscountApproval(enquiryId: string) {
+  return postJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/discount-approval`, {}, z.object({ success: z.literal(true), approvalId: z.string(), status: z.string() }));
+}
+
+export async function getDiscountApprovals() {
+  return getJson("/api/staff/discount-approvals", discountApprovalsSchema);
+}
+
+export async function decideDiscountApproval(approvalId: string, decision: "approved" | "rejected") {
+  return postJson(`/api/staff/discount-approvals/${encodeURIComponent(approvalId)}/decision`, { decision }, z.object({ success: z.literal(true), approvalId: z.string(), status: z.string() }));
+}
+
 async function getJson<T extends z.ZodType>(url: string, schema: T): Promise<z.infer<T>> {
   const response = await fetch(url, {
     method: "GET",
@@ -216,7 +398,7 @@ async function getJson<T extends z.ZodType>(url: string, schema: T): Promise<z.i
     headers: { Accept: "application/json" },
   });
   const data: unknown = await response.json();
-  if (!response.ok) throw new Error(apiErrorMessage(data));
+  if (!response.ok) throw apiError(data);
   return schema.parse(data);
 }
 
@@ -231,7 +413,22 @@ async function postJson<T extends z.ZodType>(url: string, body: Record<string, u
     body: JSON.stringify(body),
   });
   const data: unknown = await response.json();
-  if (!response.ok) throw new Error(apiErrorMessage(data));
+  if (!response.ok) throw apiError(data);
+  return schema.parse(data);
+}
+
+async function patchJson<T extends z.ZodType>(url: string, body: Record<string, unknown>, schema: T): Promise<z.infer<T>> {
+  const response = await fetch(url, {
+    method: "PATCH",
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const data: unknown = await response.json();
+  if (!response.ok) throw apiError(data);
   return schema.parse(data);
 }
 
@@ -239,4 +436,19 @@ function apiErrorMessage(data: unknown) {
   if (!data || typeof data !== "object") return "The request could not be completed.";
   const error = (data as { error?: { message?: unknown } }).error;
   return typeof error?.message === "string" ? error.message : "The request could not be completed.";
+}
+
+function apiError(data: unknown) {
+  const error = data && typeof data === "object" ? (data as { error?: { code?: unknown; fieldErrors?: unknown } }).error : undefined;
+  const fieldErrors = error?.fieldErrors;
+  const code = typeof error?.code === "string" ? error.code : undefined;
+  return new ApiError(apiErrorMessage(data), isFieldErrors(fieldErrors) ? fieldErrors : undefined, code);
+}
+
+function isFieldErrors(value: unknown): value is FieldErrors {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      Object.values(value as Record<string, unknown>).every((messages) => Array.isArray(messages) && messages.every((message) => typeof message === "string")),
+  );
 }

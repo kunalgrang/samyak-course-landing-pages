@@ -513,6 +513,26 @@ describe("auth routes", () => {
       env(),
     );
     expect(response.status).toBe(403);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    expect(response.headers.get("Access-Control-Allow-Credentials")).toBeNull();
+  });
+
+  it("does not enable permissive CORS for preflight requests", async () => {
+    const response = await app.request(
+      "http://localhost/api/auth/request-otp",
+      {
+        method: "OPTIONS",
+        headers: {
+          Origin: "https://evil.test",
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": "Content-Type",
+        },
+      },
+      env(),
+    );
+    expect(response.status).toBeLessThan(500);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    expect(response.headers.get("Access-Control-Allow-Credentials")).toBeNull();
   });
 
   it("returns generic unknown-mobile challenge shape and stores no plaintext mobile in D1", async () => {

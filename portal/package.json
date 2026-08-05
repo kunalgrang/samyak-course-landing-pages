@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
-    "hono": "4.12.31",
+    "hono": "4.12.34",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "zod": "4.4.3"
@@ -34,6 +34,7 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",
     "drizzle-kit": "0.31.10",
+    "happy-dom": "^20.11.1",
     "typescript": "7.0.2",
     "vite": "8.1.5",
     "vitest": "4.1.10",

@@ -1,21 +1,3 @@
-INSERT INTO organisations (id, name, slug, status, created_at, updated_at)
-VALUES ('org_samyak', 'Samyak Computer Classes', 'samyak', 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z')
-ON CONFLICT(id) DO UPDATE SET
-  name = excluded.name,
-  slug = excluded.slug,
-  status = excluded.status,
-  updated_at = excluded.updated_at;
-
-INSERT INTO branches (id, organisation_id, name, code, timezone, status, created_at, updated_at)
-VALUES ('branch_sion', 'org_samyak', 'Sion', 'SION', 'Asia/Kolkata', 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z')
-ON CONFLICT(id) DO UPDATE SET
-  organisation_id = excluded.organisation_id,
-  name = excluded.name,
-  code = excluded.code,
-  timezone = excluded.timezone,
-  status = excluded.status,
-  updated_at = excluded.updated_at;
-
 WITH defaults(id, category, code, label, sort_order, requires_custom_label) AS (
   VALUES
     ('adopt_lang_english', 'preferred_language', 'english', 'English', 10, 0),
@@ -73,7 +55,7 @@ ON CONFLICT(organisation_id, category, code) DO UPDATE SET
   requires_custom_label = excluded.requires_custom_label,
   is_active = 1,
   updated_at = excluded.updated_at;
-
+--> statement-breakpoint
 UPDATE admission_option_values
 SET is_active = 0,
     updated_at = '2026-08-03T00:00:00.000Z'
@@ -87,7 +69,7 @@ WHERE organisation_id = 'org_samyak'
     '08_11', '11_14', '14_17', '17_20',
     'full_upfront', 'early_admission', 'repeat_student', 'referral', 'scholarship_financial_support', 'promotional_offer', 'management_approval'
   );
-
+--> statement-breakpoint
 WITH defaults(id, min_duration_months, max_duration_months, plan_type, fixed_instalments) AS (
   VALUES
     ('payrule_one_full', 1, 1, 'full', 1),
@@ -115,7 +97,7 @@ ON CONFLICT(id) DO UPDATE SET
   fixed_instalments = excluded.fixed_instalments,
   is_active = 1,
   updated_at = excluded.updated_at;
-
+--> statement-breakpoint
 UPDATE payment_plan_rules
 SET is_active = 0,
     updated_at = '2026-08-03T00:00:00.000Z'
@@ -132,18 +114,3 @@ WHERE organisation_id = 'org_samyak'
     'payrule_long_three',
     'payrule_long_custom'
   );
-
-INSERT INTO roles (id, organisation_id, code, name, created_at)
-VALUES
-  ('role_owner', 'org_samyak', 'owner', 'Owner', '2026-07-21T00:00:00.000Z'),
-  ('role_student', 'org_samyak', 'student', 'Student', '2026-07-21T00:00:00.000Z'),
-  ('role_alumni', 'org_samyak', 'alumni', 'Alumni', '2026-07-21T00:00:00.000Z'),
-  ('role_admin', 'org_samyak', 'admin', 'Admin', '2026-07-21T00:00:00.000Z'),
-  ('role_counsellor', 'org_samyak', 'counsellor', 'Counsellor', '2026-07-21T00:00:00.000Z'),
-  ('role_admission_admin', 'org_samyak', 'admission_admin', 'Admission Admin', '2026-07-21T00:00:00.000Z'),
-  ('role_trainer', 'org_samyak', 'trainer', 'Trainer', '2026-07-21T00:00:00.000Z'),
-  ('role_system_admin', 'org_samyak', 'system_admin', 'System Admin', '2026-07-21T00:00:00.000Z')
-ON CONFLICT(id) DO UPDATE SET
-  organisation_id = excluded.organisation_id,
-  code = excluded.code,
-  name = excluded.name;

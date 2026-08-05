@@ -43,6 +43,48 @@
       "when": 1785408420000,
       "tag": "0005_enquiry_course_interest",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785484800000,
+      "tag": "0006_admission_workflow",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1785571200000,
+      "tag": "0007_admission_confirmation_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1785657600000,
+      "tag": "0008_admission_options_and_pricing",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1785744000000,
+      "tag": "0009_admission_approval_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1785830400000,
+      "tag": "0010_admission_confirmation_lock",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1785916800000,
+      "tag": "0011_admission_configuration_defaults",
+      "breakpoints": true
     }
   ]
 }
