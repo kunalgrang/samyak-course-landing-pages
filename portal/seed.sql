@@ -147,3 +147,98 @@ ON CONFLICT(id) DO UPDATE SET
   organisation_id = excluded.organisation_id,
   code = excluded.code,
   name = excluded.name;
+
+WITH programme_defaults AS (
+  SELECT
+    'rprog_samyak_skill_circle' AS id,
+    organisations.id AS organisation_id,
+    'samyak_skill_circle' AS code,
+    'Samyak Skill Circle' AS name,
+    90 AS validity_days,
+    50 AS minimum_fee_percentage,
+    'active' AS status,
+    '2026-08-05T00:00:00.000Z' AS starts_at,
+    '2026-08-05T00:00:00.000Z' AS created_at,
+    '2026-08-05T00:00:00.000Z' AS updated_at
+  FROM organisations
+  WHERE organisations.id = 'org_samyak'
+)
+INSERT INTO referral_programmes
+  (id, organisation_id, code, name, validity_days, minimum_fee_percentage, status, starts_at, ends_at, created_at, updated_at)
+SELECT id, organisation_id, code, name, validity_days, minimum_fee_percentage, status, starts_at, NULL, created_at, updated_at
+FROM programme_defaults
+WHERE true
+ON CONFLICT(organisation_id, code) DO UPDATE SET
+  name = excluded.name,
+  validity_days = excluded.validity_days,
+  minimum_fee_percentage = excluded.minimum_fee_percentage,
+  status = excluded.status,
+  updated_at = excluded.updated_at;
+
+WITH referrer_type_defaults(referrer_type) AS (
+  VALUES ('student'), ('alumni')
+)
+INSERT OR IGNORE INTO referral_programme_referrer_types
+  (referral_programme_id, referrer_type, created_at)
+SELECT referral_programmes.id, referrer_type_defaults.referrer_type, '2026-08-05T00:00:00.000Z'
+FROM referrer_type_defaults
+JOIN referral_programmes ON referral_programmes.organisation_id = 'org_samyak'
+  AND referral_programmes.code = 'samyak_skill_circle';
+
+WITH rule_defaults AS (
+  SELECT
+    'rrs_samyak_skill_circle_v1' AS id,
+    referral_programmes.organisation_id,
+    referral_programmes.id AS referral_programme_id,
+    1 AS version,
+    'Samyak Skill Circle Rewards v1' AS name,
+    'active' AS status,
+    '2026-08-05T00:00:00.000Z' AS effective_from,
+    '2026-08-05T00:00:00.000Z' AS created_at,
+    '2026-08-05T00:00:00.000Z' AS updated_at
+  FROM referral_programmes
+  WHERE referral_programmes.organisation_id = 'org_samyak'
+    AND referral_programmes.code = 'samyak_skill_circle'
+)
+INSERT INTO referral_reward_rule_sets
+  (id, organisation_id, referral_programme_id, version, name, status, effective_from, effective_until, created_by_login_account_id, created_at, updated_at)
+SELECT id, organisation_id, referral_programme_id, version, name, status, effective_from, NULL, NULL, created_at, updated_at
+FROM rule_defaults
+WHERE true
+ON CONFLICT(referral_programme_id, version) DO UPDATE SET
+  name = excluded.name,
+  status = excluded.status,
+  effective_from = excluded.effective_from,
+  effective_until = excluded.effective_until,
+  updated_at = excluded.updated_at;
+
+WITH slab_defaults(id, min_final_fee_paise, max_final_fee_paise, cash_reward_paise, course_credit_paise, sort_order) AS (
+  VALUES
+    ('rrs_samyak_skill_circle_v1_slab_1', 0, 999999, 50000, 75000, 10),
+    ('rrs_samyak_skill_circle_v1_slab_2', 1000000, 1999999, 75000, 100000, 20),
+    ('rrs_samyak_skill_circle_v1_slab_3', 2000000, 2999999, 100000, 150000, 30),
+    ('rrs_samyak_skill_circle_v1_slab_4', 3000000, NULL, 150000, 200000, 40)
+)
+INSERT INTO referral_reward_slabs
+  (id, reward_rule_set_id, min_final_fee_paise, max_final_fee_paise, cash_reward_paise, course_credit_paise, sort_order, created_at, updated_at)
+SELECT
+  slab_defaults.id,
+  referral_reward_rule_sets.id,
+  slab_defaults.min_final_fee_paise,
+  slab_defaults.max_final_fee_paise,
+  slab_defaults.cash_reward_paise,
+  slab_defaults.course_credit_paise,
+  slab_defaults.sort_order,
+  '2026-08-05T00:00:00.000Z',
+  '2026-08-05T00:00:00.000Z'
+FROM slab_defaults
+JOIN referral_reward_rule_sets ON referral_reward_rule_sets.id = 'rrs_samyak_skill_circle_v1'
+JOIN referral_programmes ON referral_programmes.id = referral_reward_rule_sets.referral_programme_id
+WHERE referral_programmes.organisation_id = 'org_samyak'
+  AND referral_programmes.code = 'samyak_skill_circle'
+ON CONFLICT(reward_rule_set_id, sort_order) DO UPDATE SET
+  min_final_fee_paise = excluded.min_final_fee_paise,
+  max_final_fee_paise = excluded.max_final_fee_paise,
+  cash_reward_paise = excluded.cash_reward_paise,
+  course_credit_paise = excluded.course_credit_paise,
+  updated_at = excluded.updated_at;

@@ -321,6 +321,7 @@ export const enrolments = sqliteTable(
     status: text("status").notNull().default("provisional"),
     nsdcPreference: text("nsdc_preference").notNull().default("decide_later"),
     referrerProfileId: text("referrer_profile_id"),
+    referralId: text("referral_id"),
     ...timestamps,
   },
   (table) => [
@@ -328,6 +329,8 @@ export const enrolments = sqliteTable(
     index("enrolments_student_id_idx").on(table.studentId),
     index("enrolments_course_id_idx").on(table.courseId),
     index("enrolments_enquiry_id_idx").on(table.enquiryId),
+    index("enrolments_referrer_profile_id_idx").on(table.referrerProfileId),
+    index("enrolments_referral_id_idx").on(table.referralId),
     check("enrolments_training_mode_check", sql`${table.trainingMode} in ('classroom', 'online', 'hybrid')`),
     check(
       "enrolments_status_check",
