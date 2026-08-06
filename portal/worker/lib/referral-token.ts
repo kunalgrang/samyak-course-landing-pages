@@ -13,7 +13,7 @@ export class ReferralTokenConfigurationError extends Error {
 
 export function requireReferralTokenPepper(pepper: string) {
   if (typeof pepper !== "string" || pepper.trim().length < 16) {
-    throw new ReferralTokenConfigurationError("REFERRAL_TOKEN_PEPPER is not configured.");
+    throw new ReferralTokenConfigurationError("Referral token pepper is not configured.");
   }
   return pepper;
 }

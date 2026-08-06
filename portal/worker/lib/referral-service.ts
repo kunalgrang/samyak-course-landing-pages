@@ -7,7 +7,7 @@ import { normalizeIndianMobile } from "./mobile";
 export type ReferralServiceEnv = {
   DB: ReferralDb;
   SESSION_PEPPER: string;
-  REFERRAL_TOKEN_PEPPER: string;
+  referralTokenPepper: string;
 };
 
 export type ReferralRejectionCode =
@@ -57,6 +57,30 @@ export type IssueReferralLinkResult = {
   };
 };
 
+export type RotateReferralLinkInput = ActorIdentity & {
+  organisationId: string;
+  referralProgrammeId: string;
+  referrerProfileId: string;
+  expiresAt?: string | null;
+  now?: Date | string;
+  tokenPepper?: string;
+};
+
+export type RotateReferralLinkResult = {
+  rawToken: string;
+  link: {
+    id: string;
+    referralProgrammeId: string;
+    referrerProfileId: string;
+    tokenLastFour: string;
+    linkVersion: number;
+    status: string;
+    activatedAt: string;
+    expiresAt: string | null;
+  };
+  previousLinkId: string | null;
+};
+
 export type ResolveReferralLinkResult =
   | {
       valid: true;
@@ -103,7 +127,7 @@ type InternalResolution =
 export async function issueReferralLink(env: ReferralServiceEnv, input: IssueReferralLinkInput): Promise<IssueReferralLinkResult> {
   const repo = new ReferralRepository(env.DB);
   const nowIso = toIso(input.now);
-  const tokenPepper = input.tokenPepper || env.REFERRAL_TOKEN_PEPPER;
+  const tokenPepper = input.tokenPepper || env.referralTokenPepper;
 
   await assertOrganisationProgrammeAndReferrer(repo, input.organisationId, input.referralProgrammeId, input.referrerProfileId, nowIso, input);
 
@@ -148,10 +172,52 @@ export async function issueReferralLink(env: ReferralServiceEnv, input: IssueRef
   throw new ReferralServiceError("configuration_error", "Referral link could not be issued.");
 }
 
+export async function rotateReferralLink(env: ReferralServiceEnv, input: RotateReferralLinkInput): Promise<RotateReferralLinkResult> {
+  const repo = new ReferralRepository(env.DB);
+  const nowIso = toIso(input.now);
+  const tokenPepper = input.tokenPepper || env.referralTokenPepper;
+
+  await assertOrganisationProgrammeAndReferrer(repo, input.organisationId, input.referralProgrammeId, input.referrerProfileId, nowIso, input);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const rawToken = generateReferralToken();
+    const tokenHash = await hashReferralToken(rawToken, tokenPepper);
+    try {
+      const rotated = await repo.rotateReferralLink({
+        organisationId: input.organisationId,
+        referralProgrammeId: input.referralProgrammeId,
+        referrerProfileId: input.referrerProfileId,
+        tokenHash,
+        tokenLastFour: referralTokenLastFour(rawToken),
+        rotatedAt: nowIso,
+        expiresAt: input.expiresAt || null,
+        actor: input,
+      });
+      return {
+        rawToken,
+        previousLinkId: rotated.previousLinkId,
+        link: {
+          id: rotated.linkId,
+          referralProgrammeId: input.referralProgrammeId,
+          referrerProfileId: input.referrerProfileId,
+          tokenLastFour: referralTokenLastFour(rawToken),
+          linkVersion: rotated.linkVersion,
+          status: "active",
+          activatedAt: nowIso,
+          expiresAt: input.expiresAt || null,
+        },
+      };
+    } catch (error) {
+      if (!isUniqueConstraintError(error) || attempt === 1) throw error;
+    }
+  }
+  throw new ReferralServiceError("configuration_error", "Referral link could not be rotated.");
+}
+
 export async function resolveReferralLink(env: ReferralServiceEnv, input: { organisationId: string; rawToken: string; now?: Date | string; tokenPepper?: string }): Promise<ResolveReferralLinkResult> {
   const repo = new ReferralRepository(env.DB);
   const nowIso = toIso(input.now);
-  const resolved = await resolveReferralLinkInternal(repo, input.organisationId, input.rawToken, input.tokenPepper || env.REFERRAL_TOKEN_PEPPER, nowIso);
+  const resolved = await resolveReferralLinkInternal(repo, input.organisationId, input.rawToken, input.tokenPepper || env.referralTokenPepper, nowIso);
   if (!resolved.ok) return { valid: false, reason: "invalid_link" };
   const courses = await repo.listEligibleReferralCourses(input.organisationId, resolved.link.referral_programme_id, nowIso);
   return {
@@ -186,7 +252,7 @@ export async function submitReferralAndCreateEnquiry(env: ReferralServiceEnv, in
   const repo = new ReferralRepository(env.DB);
   const nowIso = toIso(input.now);
   const sessionPepper = input.sessionPepper || env.SESSION_PEPPER;
-  const tokenPepper = input.tokenPepper || env.REFERRAL_TOKEN_PEPPER;
+  const tokenPepper = input.tokenPepper || env.referralTokenPepper;
 
   const basicError = validateSubmissionInput(input);
   if (basicError) return { ok: false, code: basicError };

@@ -61,6 +61,11 @@ export type EligibleCourseRecord = {
   code: string;
   name: string;
   duration_label: string | null;
+  duration_months: number | null;
+  category_id: string;
+  category_code: string;
+  category_name: string;
+  category_sort_order: number;
 };
 
 export type IdempotentReferralRecord = {
@@ -231,6 +236,66 @@ export class ReferralRepository {
     return linkId;
   }
 
+  async rotateReferralLink(input: {
+    organisationId: string;
+    referralProgrammeId: string;
+    referrerProfileId: string;
+    tokenHash: string;
+    tokenLastFour: string;
+    rotatedAt: string;
+    expiresAt?: string | null;
+    actor?: ActorIdentity;
+  }) {
+    const active = await this.findActiveReferralLink(input.organisationId, input.referralProgrammeId, input.referrerProfileId, input.rotatedAt);
+    const linkId = createOpaqueId("rlink");
+    const nextVersion = Math.max(1, Number(active?.link_version || 0) + 1);
+    await this.db.batch([
+      this.db.prepare(
+        `update referral_links
+         set status = 'revoked',
+             revoked_at = ?,
+             updated_at = ?
+         where organisation_id = ?
+           and referral_programme_id = ?
+           and referrer_profile_id = ?
+           and status = 'active'
+           and revoked_at is null`,
+      ).bind(input.rotatedAt, input.rotatedAt, input.organisationId, input.referralProgrammeId, input.referrerProfileId),
+      this.db.prepare(
+        `insert into referral_links
+          (id, organisation_id, referral_programme_id, referrer_profile_id, token_hash, token_last_four, link_version,
+           status, activated_at, expires_at, revoked_at, last_used_at, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, null, null, ?, ?)`,
+      ).bind(
+        linkId,
+        input.organisationId,
+        input.referralProgrammeId,
+        input.referrerProfileId,
+        input.tokenHash,
+        input.tokenLastFour,
+        nextVersion,
+        input.rotatedAt,
+        input.expiresAt || null,
+        input.rotatedAt,
+        input.rotatedAt,
+      ),
+      this.db.prepare(
+        `insert into audit_logs
+          (id, organisation_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
+         values (?, ?, ?, ?, 'referral_link_rotated', 'referral_link', ?, ?, ?)`,
+      ).bind(
+        createOpaqueId("audit"),
+        input.organisationId,
+        input.actor?.loginAccountId || null,
+        input.actor?.personId || null,
+        linkId,
+        JSON.stringify({ previousLinkId: active?.id || null, linkVersion: nextVersion, tokenLastFour: input.tokenLastFour }),
+        input.rotatedAt,
+      ),
+    ]);
+    return { linkId, linkVersion: nextVersion, previousLinkId: active?.id || null };
+  }
+
   findLinkByTokenHash(organisationId: string, tokenHash: string) {
     return this.db.prepare(
       `select
@@ -272,10 +337,21 @@ export class ReferralRepository {
 
   listEligibleReferralCourses(organisationId: string, referralProgrammeId: string, nowIso: string) {
     return this.db.prepare(
-      `select courses.id, courses.code, courses.name, courses.duration_label
+      `select
+         courses.id,
+         courses.code,
+         courses.name,
+         courses.duration_label,
+         courses.duration_months,
+         course_categories.id as category_id,
+         course_categories.code as category_code,
+         course_categories.name as category_name,
+         course_categories.sort_order as category_sort_order
        from referral_programme_courses
        join referral_programmes on referral_programmes.id = referral_programme_courses.referral_programme_id
        join courses on courses.id = referral_programme_courses.course_id
+       join course_categories on course_categories.id = courses.category_id
+         and course_categories.organisation_id = courses.organisation_id
        where referral_programmes.id = ?
          and referral_programmes.organisation_id = ?
          and referral_programmes.status = 'active'
@@ -284,7 +360,8 @@ export class ReferralRepository {
          and referral_programme_courses.is_active = 1
          and courses.organisation_id = referral_programmes.organisation_id
          and courses.status = 'active'
-       order by courses.name`,
+         and course_categories.is_active = 1
+       order by course_categories.sort_order, courses.code`,
     )
       .bind(referralProgrammeId, organisationId, nowIso, nowIso)
       .all<EligibleCourseRecord>();
