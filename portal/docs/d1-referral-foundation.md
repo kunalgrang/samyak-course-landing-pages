@@ -1,6 +1,6 @@
 # D1 Referral Foundation
 
-This phase adds the database and pure-domain foundation for Samyak Skill Circle referrals. It does not cut over the public form, portal dashboard, OTP eligibility lookup, staff UI, Apps Script runtime calls, Google Sheet import, partner organisations, reward approvals, or payouts.
+This phase adds the database and native Worker foundation for Samyak Skill Circle referrals. Public referral APIs, the static referral form, portal OTP/profile lookup, the portal referral dashboard, and referral-link issuance/rotation now use D1-backed Worker code locally. Apps Script is retained only as archived reference. Staff UI, partner organisations, reward approvals, payouts, remote D1 migration, and deployment remain out of scope for this local cutover.
 
 `referrer_profiles` remains the identity/profile table. The existing `external_referrer_id`, `referral_token`, `personal_link`, and `last_synced_at` columns are preserved as legacy Apps Script-era sync fields so current auth/session behavior is not broken. New public referral credentials must be stored in `referral_links` as keyed lookup hashes only; raw tokens and full public URLs are not stored in the new schema.
 
@@ -8,7 +8,7 @@ This phase adds the database and pure-domain foundation for Samyak Skill Circle 
 
 Programme referrer eligibility is represented by `referral_programme_referrer_types`. Samyak Skill Circle seeds exactly two eligible referrer types: `student` and `alumni`. Institute partners are intentionally out of scope for this phase.
 
-Course eligibility is intentionally unseeded. The published referral programme names course examples through the current Apps Script Course sheet, but the D1 Course Master does not yet have a reliable canonical rule for which rows should be referral-eligible. Staff configuration or an import phase should populate `referral_programme_courses`.
+Course eligibility is seeded from the owner-approved `SAMYAK_COURSE_MASTER_WITH_CODES.xlsx` workbook. Migration `0014_course_master_and_referral_courses.sql` adds 13 canonical Samyak categories, 41 canonical active Course Master rows with stable codes, and 41 explicit Samyak Skill Circle eligibility rows. There is no fallback to all active courses.
 
 Reward slab non-overlap is a service invariant. SQLite check constraints cover non-negative values and row-local min/max validity, while `validateRewardSlabNonOverlap` rejects overlaps before service writes.
 
@@ -18,9 +18,9 @@ The next service phase should reuse `normalizeIndianMobile`, `hmacHex`, and `enc
 
 `issueReferralLink` generates a 256-bit URL-safe token and returns the raw token only on first issuance. D1 stores `token_hash`, `token_last_four`, `link_version`, status, activation, and expiry metadata. The hash is an HMAC using the dedicated `REFERRAL_TOKEN_PEPPER` secret with the domain-separated input `samyak-referral-link:v1:<raw-token>`. The raw token, full public URL, and token hash are not written to audit metadata.
 
-`REFERRAL_TOKEN_PEPPER` is a Worker-only secret. It is not a React value, not stored in D1, not committed, and not a replacement for `SESSION_PEPPER`, OTP provider credentials, `PORTAL_APPS_SCRIPT_SECRET`, or any referral API shared secret.
+`REFERRAL_TOKEN_PEPPER` is a Worker-only secret. It is not a React value, not stored in D1, not committed, and not a replacement for `SESSION_PEPPER` or OTP provider credentials.
 
-The service permits one active link per organisation, programme, and referrer profile. Migration `0013_referral_service_integrity.sql` adds a partial unique index for that invariant. Re-issuing an already active link returns link metadata without the unavailable raw token; rotation should be implemented as a separate revoke-and-issue service.
+The service permits one active link per organisation, programme, and referrer profile. Migration `0013_referral_service_integrity.sql` adds a partial unique index for that invariant. Re-issuing an already active link returns link metadata without the unavailable raw token. Rotation revokes the existing active link, issues a new token, stores only hash/last four, and returns the new raw URL once.
 
 `resolveReferralLink` performs token format validation, HMAC lookup, organisation scoping, link status/expiry checks, programme active/effective-date checks, referrer profile activity, active person status, and configured student/alumni role eligibility. Public resolution returns only generic invalid-link results and safe display data for a future form.
 

@@ -90,7 +90,7 @@ npm run db:seed:local
 npm run dev
 ```
 
-Use a mocked/local Apps Script response for `portal_lookup_mobile`, request an OTP from `http://localhost`, enter the configured `DEV_OTP`, confirm the session cookie is set, open the referral dashboard, log out, and confirm `GET /api/auth/session` returns unauthenticated.
+Seed local D1 data, request an OTP from `http://localhost`, enter the configured `DEV_OTP`, confirm the session cookie is set, open the referral dashboard, log out, and confirm `GET /api/auth/session` returns unauthenticated.
 
 ## Roles And Profiles
 
@@ -98,9 +98,9 @@ Use a mocked/local Apps Script response for `portal_lookup_mobile`, request an O
 
 Effective roles for an active profile are the union of account-level staff roles and the active profile's person roles. Authorization helpers must use `getAccountRoles`, `getPersonRoles`, `getEffectiveRolesForActiveProfile`, `requireAuthenticatedProfile`, and `requireActiveProfileRole` so staff/account permissions and selected-profile permissions are not confused.
 
-## Profile Synchronisation
+## Profile Lookup
 
-OTP verification calls `portal_lookup_mobile` again and treats returned active profiles as the source of truth for that mobile. Bootstrap/sync upserts returned people and referrer profiles, links returned people to the login account, marks returned links available, deactivates referrer profiles no longer returned for that account, marks stale links unavailable, clears stale active profile selections from sessions, and records audit entries for profile activation/deactivation. Historical people, sessions, audit logs, and auth events are not deleted.
+OTP verification is D1-backed. Shared-family mobiles can link multiple people to one login account through `login_account_people`, but people are never merged by mobile. The portal returns only active, available linked people; referral eligibility comes from each selected person's roles and active referrer profile in D1. No referral profile is fabricated from mobile alone, and no Apps Script sync occurs.
 
 `GET /api/auth/session` returns only active, available linked profiles with active referrer profiles. `GET /api/student/referrals` rejects stale or missing active profiles safely.
 
@@ -118,14 +118,6 @@ The MSG91 V5 provider is implemented for send, resend, and verify with mocked-fe
 
 Production must not fall back to `DEV_OTP`.
 
-## Apps Script Requirement
-
-Create this Script Property manually in the Apps Script project:
-
-- `PORTAL_API_SECRET`
-
-Keep the existing `REFERRAL_API_SECRET` unchanged. Existing actions `courses`, `referrer`, and `submit` use only `REFERRAL_API_SECRET`; new `portal_*` actions use only `PORTAL_API_SECRET`.
-
 ## Worker Variables And Secrets
 
 Non-secret Worker variables:
@@ -136,12 +128,11 @@ Non-secret Worker variables:
 Private Worker secrets:
 
 - `TURNSTILE_SECRET_KEY`
-- `PORTAL_APPS_SCRIPT_URL`
-- `PORTAL_APPS_SCRIPT_SECRET`
 - `MSG91_AUTH_KEY`
 - `MSG91_TEMPLATE_ID`
 - `MSG91_SENDER_ID`
 - `SESSION_PEPPER`
+- `REFERRAL_TOKEN_PEPPER`
 - `DEV_OTP` for local development only
 
 Set production secrets with `wrangler secret put NAME`.
@@ -186,28 +177,19 @@ npm run db:migrate:remote
 
 The migration adds `login_account_people.is_available` and `person_roles` with a non-null `branch_key` so nullable branch scope is unique safely.
 
-## Apps Script Redeployment
+## Archived Apps Script Reference
 
-1. Open the existing Apps Script project.
-2. Copy updated `google-apps-script/Code.gs` into the project.
-3. Confirm `Config.gs`, `Setup.gs`, and workbook tabs remain unchanged unless intentionally updated.
-4. Add Script Property `PORTAL_API_SECRET`.
-5. Deploy a new Web App version.
-6. Keep the same endpoint URL where possible; otherwise update Worker secret `PORTAL_APPS_SCRIPT_URL`.
-7. Smoke test `courses`, `referrer`, and `submit` with `REFERRAL_API_SECRET`.
-8. Smoke test `portal_lookup_mobile` and `portal_referral_dashboard` server-to-server with `PORTAL_API_SECRET`.
+The `google-apps-script/` folders are retained only as historical reference. They are not an operational backend, are not called by public or portal referral flows, and are not the referral system of record. Current referral APIs, OTP/profile lookup, dashboard data, referral-link issuance, and referral submissions use Worker routes backed by D1.
 
 ## Production Deployment Order
 
-1. Update and redeploy Apps Script.
-2. Add `PORTAL_API_SECRET` as Script Property.
-3. Configure Cloudflare Turnstile.
-4. Set Worker variables and secrets.
-5. Apply D1 migrations remotely.
-6. Deploy Worker.
-7. Run production smoke tests.
-8. Add MSG91 credentials only after DLT template approval.
-9. Run one controlled real OTP login.
+1. Configure Cloudflare Turnstile.
+2. Set Worker variables and secrets.
+3. Apply D1 migrations remotely.
+4. Deploy Worker.
+5. Run production smoke tests.
+6. Add MSG91 credentials only after DLT template approval.
+7. Run one controlled real OTP login.
 
 Do not include real secret values in commits, logs, screenshots, tickets, or frontend variables.
 

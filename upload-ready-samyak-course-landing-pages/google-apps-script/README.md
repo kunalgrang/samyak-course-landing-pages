@@ -1,6 +1,8 @@
 # Samyak Skill Circle Apps Script
 
-This folder contains the Google Apps Script backend for the Samyak Skill Circle referral programme.
+Archived reference only. This folder contains the former Google Apps Script backend for the Samyak Skill Circle referral programme.
+
+It is not an operational backend for the current public or portal referral flows. Native Worker APIs backed by D1 are the sole referral system of record. The public referral form, portal OTP/profile lookup, portal referral dashboard, and referral-link generation/rotation do not call this code.
 
 ## Files
 

@@ -1,6 +1,8 @@
 # Samyak Skill Circle Referral System Setup
 
-This guide explains how to install the Google Sheets, Google Apps Script and Cloudflare Pages Functions foundation for the referral programme.
+Archived reference only. This guide describes the former Google Sheets, Google Apps Script and Cloudflare Pages Functions referral setup.
+
+It is not the operational backend for current referrals. Native Worker APIs backed by D1 are the sole referral system of record, and the public referral form, portal OTP/profile lookup, portal referral dashboard, and referral-link generation/rotation do not call Apps Script.
 
 ## 1. Create a New Google Sheet
 
