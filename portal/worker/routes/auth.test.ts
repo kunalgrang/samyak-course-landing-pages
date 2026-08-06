@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../index";
 import type { WorkerBindings } from "../bindings";
+import { hmacHex } from "../lib/crypto";
 
 type Row = Record<string, any>;
+type LookupOptions = Parameters<typeof installFetch>[0];
+
+let currentLookupOptions: LookupOptions = {};
 
 class FakeD1Statement {
   constructor(
@@ -34,8 +38,31 @@ class FakeD1Statement {
     if (sql.includes("select 1 as ok from login_account_people")) {
       return (this.db.isLinkedProfileAvailable(String(this.values[0]), String(this.values[1])) ? { ok: 1 } : null) as T;
     }
+    if (sql.includes("select * from referrer_profiles where person_id = ? and active = 1")) {
+      return (this.db.referrerProfiles.find((row) => row.person_id === this.values[0] && row.active === 1) ?? null) as T;
+    }
     if (sql.includes("select external_referrer_id from referrer_profiles where person_id = ? and active = 1")) {
       return (this.db.referrerProfiles.find((row) => row.person_id === this.values[0] && row.active === 1) ?? null) as T;
+    }
+    if (sql.includes("from people join referrer_profiles") && sql.includes("where people.id = ?")) {
+      const person = this.db.people.find((row) => row.id === this.values[0] && row.organisation_id === this.values[1] && row.status === "active");
+      if (!person) return null as T;
+      const referrer = this.db.referrerProfiles.find((row) => row.person_id === person.id && row.active === 1);
+      if (!referrer) return null as T;
+      const personRole = this.db.personRoles.find((row) => row.person_id === person.id);
+      const role = personRole ? this.db.roles.find((row) => row.id === personRole.role_id) : null;
+      return {
+        person_id: person.id,
+        full_name: person.full_name,
+        public_name: person.public_name,
+        external_referrer_id: referrer.external_referrer_id,
+        referral_token: referrer.referral_token,
+        personal_link: referrer.personal_link,
+        active: referrer.active,
+        created_at: referrer.created_at,
+        role_code: role?.code ?? null,
+        course_studied: "Full Stack Development",
+      } as T;
     }
     if (sql.includes("from user_sessions")) return null as T;
     return null as T;
@@ -56,6 +83,33 @@ class FakeD1Statement {
             };
           }),
       } as T;
+    }
+    if (sql.includes("from person_contacts join people") && sql.includes("join referral_programme_referrer_types")) {
+      const [mobileHash, organisationId] = this.values;
+      const results: Row[] = [];
+      for (const contact of this.db.personContacts.filter((row) => row.contact_type === "mobile" && row.normalized_value === mobileHash)) {
+        const person = this.db.people.find((row) => row.id === contact.person_id && row.organisation_id === organisationId && row.status === "active");
+        if (!person) continue;
+        const referrer = this.db.referrerProfiles.find((row) => row.person_id === person.id && row.organisation_id === organisationId && row.active === 1);
+        if (!referrer) continue;
+        for (const personRole of this.db.personRoles.filter((row) => row.person_id === person.id)) {
+          const role = this.db.roles.find((row) => row.id === personRole.role_id && ["student", "alumni"].includes(String(row.code)));
+          if (!role) continue;
+          results.push({
+            person_id: person.id,
+            full_name: person.full_name,
+            public_name: person.public_name,
+            external_referrer_id: referrer.external_referrer_id,
+            referral_token: referrer.referral_token,
+            personal_link: referrer.personal_link,
+            active: referrer.active,
+            created_at: referrer.created_at,
+            role_code: role.code,
+            course_studied: "Full Stack Development",
+          });
+        }
+      }
+      return { results } as T;
     }
     if (sql.includes("from login_account_people join people") && sql.includes("left join person_roles")) {
       const accountId = this.values[0];
@@ -371,8 +425,6 @@ function env(db = new FakeD1(), overrides: Partial<WorkerBindings> = {}): Worker
     ENVIRONMENT: "development",
     TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
     TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
-    PORTAL_APPS_SCRIPT_URL: "https://script.test",
-    PORTAL_APPS_SCRIPT_SECRET: "portal-secret",
     SESSION_PEPPER: "test-pepper",
     DEV_OTP: "123456",
     ...overrides,
@@ -392,11 +444,10 @@ function installFetch(options: {
     personalLink: string;
     active: boolean;
   }>;
-  appsScriptError?: boolean;
-  invalidAppsSchema?: boolean;
   turnstileOk?: boolean;
   msg91Ok?: boolean;
 } = {}) {
+  currentLookupOptions = options;
   const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
     const href = String(url);
     if (href.includes("siteverify")) {
@@ -405,31 +456,7 @@ function installFetch(options: {
     if (href.includes("control.msg91.com")) {
       return response(options.msg91Ok === false ? { type: "error", message: "rejected" } : { type: "success", message: "success", request_id: "msg91-request" }, options.msg91Ok === false ? 500 : 200);
     }
-    const body = JSON.parse(String(init?.body || "{}"));
-    if (options.appsScriptError) throw new Error("Apps Script timeout");
-    if (options.invalidAppsSchema) return response({ success: false }, 200);
-    if (body.action === "portal_referral_dashboard") {
-      return response({
-        success: true,
-        profile: {
-          externalReferrerId: body.payload.externalReferrerId,
-          fullName: "Asha Student",
-          publicName: "Asha",
-          referrerType: "Student",
-          courseStudied: "Full Stack Development",
-          memberSince: "2026-07-01",
-          personalLink: "https://example.test/r/ASH",
-          active: true,
-        },
-        summary: { totalReferrals: 0, successfulAdmissions: 0, cashRewardsEarned: 0, courseCreditEarned: 0 },
-        referrals: [],
-      }, 200);
-    }
-    return response({
-      success: true,
-      eligible: options.eligible ?? true,
-      profiles: options.profiles ?? [profile("STU1", "Asha Student", "Asha", "Student")],
-    }, 200);
+    throw new Error(`Unexpected external fetch in D1 auth test: ${href}`);
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
@@ -450,6 +477,7 @@ function profile(externalReferrerId: string, fullName: string, publicName: strin
 }
 
 async function requestOtp(db: FakeD1, mobile = "9876543210", bindings = env(db)) {
+  await seedLookupProfiles(db, mobile, currentLookupOptions, bindings.SESSION_PEPPER);
   return app.request(
     "http://localhost/api/auth/request-otp",
     {
@@ -459,6 +487,41 @@ async function requestOtp(db: FakeD1, mobile = "9876543210", bindings = env(db))
     },
     bindings,
   );
+}
+
+async function seedLookupProfiles(db: FakeD1, mobile: string, options: LookupOptions, sessionPepper: string) {
+  if (options?.eligible === false) return;
+  const profiles = options?.profiles ?? [profile("STU1", "Asha Student", "Asha", "Student")];
+  const returnedExternalIds = new Set(profiles.map((item) => item.externalReferrerId));
+  for (const existing of db.referrerProfiles) {
+    if (!returnedExternalIds.has(String(existing.external_referrer_id))) existing.active = 0;
+  }
+  const mobileHash = await hmacHex(sessionPepper, "mobile", mobile);
+  for (const item of profiles) {
+    const personId = stableTestId("person", item.externalReferrerId);
+    const referrerId = stableTestId("ref", item.externalReferrerId);
+    const contactId = stableTestId("contact", `${item.externalReferrerId}-mobile`);
+    const roleId = item.referrerType.toLowerCase().includes("alumni") ? "role_alumni" : "role_student";
+    if (!db.people.some((row) => row.id === personId)) {
+      db.people.push({ id: personId, organisation_id: "org_samyak", full_name: item.fullName, public_name: item.publicName, status: "active", created_at: item.memberSince, updated_at: item.memberSince });
+    }
+    if (!db.personContacts.some((row) => row.person_id === personId && row.contact_type === "mobile" && row.normalized_value === mobileHash)) {
+      db.personContacts.push({ id: contactId, person_id: personId, contact_type: "mobile", normalized_value: mobileHash, last_four: mobile.slice(-4), is_primary: 1, is_verified: 1, created_at: item.memberSince, updated_at: item.memberSince });
+    }
+    const existingReferrer = db.referrerProfiles.find((row) => row.organisation_id === "org_samyak" && row.external_referrer_id === item.externalReferrerId);
+    if (existingReferrer) {
+      Object.assign(existingReferrer, { person_id: personId, referral_token: item.referralToken, personal_link: item.personalLink, active: item.active ? 1 : 0, updated_at: item.memberSince });
+    } else {
+      db.referrerProfiles.push({ id: referrerId, organisation_id: "org_samyak", person_id: personId, external_referrer_id: item.externalReferrerId, referral_token: item.referralToken, personal_link: item.personalLink, active: item.active ? 1 : 0, created_at: item.memberSince, updated_at: item.memberSince });
+    }
+    if (!db.personRoles.some((row) => row.person_id === personId && row.role_id === roleId)) {
+      db.personRoles.push({ person_id: personId, role_id: roleId, branch_id: null, branch_key: "", created_at: item.memberSince });
+    }
+  }
+}
+
+function stableTestId(prefix: string, value: string) {
+  return `${prefix}_${value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80)}`;
 }
 
 async function verifyOtp(db: FakeD1, challengeId: string, otp = "000000", cookie?: string, bindings = env(db)) {
@@ -681,7 +744,7 @@ describe("auth routes", () => {
     const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: cookie } }, env(db));
     expect(referrals.status).toBe(200);
     await expect(referrals.json()).resolves.toMatchObject({ success: true, referrals: [] });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("accepts a session after simulated Worker restart and ordinary deployment when SESSION_PEPPER is stable", async () => {
@@ -764,16 +827,7 @@ describe("auth routes", () => {
     expect(JSON.stringify(unknownDb)).not.toContain("9876543210");
   });
 
-  it("counts Apps Script and provider failures after Turnstile but does not call external services on Turnstile failure", async () => {
-    for (const options of [{ appsScriptError: true }, { invalidAppsSchema: true }]) {
-      const db = new FakeD1();
-      installFetch(options);
-      const response = await requestOtp(db);
-      expect(response.status).toBe(503);
-      expect(db.otpChallenges).toHaveLength(1);
-      expect(db.otpChallenges[0].status).toBe("failed");
-    }
-
+  it("counts provider failures after Turnstile and does not call external services on Turnstile failure", async () => {
     const providerDb = new FakeD1();
     installFetch({ msg91Ok: false });
     const providerFailure = await requestOtp(

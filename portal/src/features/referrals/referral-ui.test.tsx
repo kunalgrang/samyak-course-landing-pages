@@ -26,6 +26,15 @@ const dashboard: ReferralDashboard = {
     personalLink: "https://portal.samyaksion.com/r/ASHA123",
     active: true,
   },
+  linkStatus: {
+    hasActiveLink: true,
+    lastFour: "A123",
+    activatedAt: "2026-07-01",
+    expiresAt: null,
+    canGenerate: false,
+    canRotate: true,
+    message: "Your active referral link cannot be displayed again. Rotate it to create a new link.",
+  },
   summary: {
     totalReferrals: 3,
     successfulAdmissions: 1,
@@ -113,21 +122,19 @@ describe("student referral portal UI", () => {
   });
 
   it("renders overview with profile name, summary and no development placeholders", () => {
-    const html = renderToStaticMarkup(
-      <OverviewContent dashboard={dashboard} copied={false} canShare={false} onCopy={() => undefined} onNativeShare={() => undefined} />,
-    );
+    const html = renderToStaticMarkup(<OverviewContent dashboard={dashboard} />);
     expect(html).toContain("Hi, Asha");
     expect(html).toContain("Total referrals");
     expect(html).toContain("₹1,500");
     expect(html).toContain("Rahul S.");
+    expect(html).toContain("Active link ending ...A123");
+    expect(html).not.toContain("https://portal.samyaksion.com/r/ASHA123");
     expect(html).not.toMatch(/Portal foundation|API health routes|D1 schema|Phase 1|Temporary client guard|No dashboard data yet|records are deliberately not mocked|coding pass/i);
   });
 
   it("shows the empty referral state", () => {
     const emptyDashboard = { ...dashboard, referrals: [] };
-    const html = renderToStaticMarkup(
-      <OverviewContent dashboard={emptyDashboard} copied={false} canShare={false} onCopy={() => undefined} onNativeShare={() => undefined} />,
-    );
+    const html = renderToStaticMarkup(<OverviewContent dashboard={emptyDashboard} />);
     expect(html).toContain("No referrals yet");
     expect(html).toContain("Share your personal link with a friend who may benefit from learning a new skill.");
   });
@@ -161,10 +168,54 @@ describe("student referral portal UI", () => {
 
   it("renders referral share actions", () => {
     const html = renderToStaticMarkup(
-      <ReferralsContent dashboard={dashboard} copied={true} canShare={true} onCopy={() => undefined} onNativeShare={() => undefined} />,
+      <ReferralsContent
+        dashboard={dashboard}
+        oneTimeLink="https://go.samyaksion.com/r/NEW123"
+        copied={true}
+        canShare={true}
+        onCopy={() => undefined}
+        onNativeShare={() => undefined}
+      />,
     );
     expect(html).toContain("Copied");
     expect(html).toContain("Share on WhatsApp");
     expect(html).toContain("Referral link copied.");
+    expect(html).toContain("https://go.samyaksion.com/r/NEW123");
+    expect(html).not.toContain("https://portal.samyaksion.com/r/ASHA123");
+  });
+
+  it("renders active-link metadata without reconstructing the raw token", () => {
+    const html = renderToStaticMarkup(
+      <ReferralsContent dashboard={dashboard} copied={false} canShare={false} onCopy={() => undefined} onNativeShare={() => undefined} />,
+    );
+    expect(html).toContain("Active link ending ...A123");
+    expect(html).toContain("Rotate referral link");
+    expect(html).not.toContain("https://portal.samyaksion.com/r/ASHA123");
+  });
+
+  it("renders generate controls when no active referral link exists", () => {
+    const html = renderToStaticMarkup(
+      <ReferralsContent
+        dashboard={{
+          ...dashboard,
+          linkStatus: {
+            hasActiveLink: false,
+            lastFour: null,
+            activatedAt: null,
+            expiresAt: null,
+            canGenerate: true,
+            canRotate: false,
+            message: "Generate a referral link to share with friends.",
+          },
+        }}
+        copied={false}
+        canShare={false}
+        onCopy={() => undefined}
+        onNativeShare={() => undefined}
+      />,
+    );
+    expect(html).toContain("No active referral link");
+    expect(html).toContain("Generate referral link");
+    expect(html).not.toContain("Copy Link");
   });
 });
