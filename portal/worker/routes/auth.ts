@@ -1,7 +1,6 @@
 import { z } from "zod";
 import type { Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
-import { callPortalLookup } from "../lib/apps-script";
 import {
   bootstrapAccount,
   buildSessionCookie,
@@ -15,6 +14,7 @@ import {
   getSessionValidationResult,
   hasSessionCookie,
   incrementChallengeAttemptsIfAllowed,
+  lookupPortalProfilesByMobile,
   markChallengeFailed,
   markChallengeVerified,
   markRequestedChallengeBlocked,
@@ -108,14 +108,7 @@ export function registerAuthRoutes(app: PortalHono) {
       ipHash: fingerprint.ipHash,
     });
 
-    let lookup;
-    try {
-      lookup = await callPortalLookup(c.env, mobile);
-    } catch {
-      await markChallengeFailed(c, challengeId);
-      await recordAuthEvent(c, "otp_request", "APPS_SCRIPT_ERROR", { mobileHash: hash, mobileLastFour: mobile.slice(-4), ipHash: fingerprint.ipHash });
-      return jsonWithRequestId(c, { success: false, code: "OTP_SERVICE_PENDING", message: "Mobile login is temporarily unavailable." }, 503);
-    }
+    const lookup = await lookupPortalProfilesByMobile(c, mobile);
 
     if (!lookup.eligible) {
       await markRequestedChallengeBlocked(c, challengeId);
@@ -225,7 +218,7 @@ export function registerAuthRoutes(app: PortalHono) {
       return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
     }
 
-    const lookup = await callPortalLookup(c.env, mobile);
+    const lookup = await lookupPortalProfilesByMobile(c, mobile);
     if (!lookup.eligible) {
       return jsonWithRequestId(c, { success: false, code: "PROFILE_NOT_AVAILABLE", message: "Mobile login is temporarily unavailable." }, 403);
     }
@@ -234,7 +227,7 @@ export function registerAuthRoutes(app: PortalHono) {
       return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
     }
     const accountId = await bootstrapAccount(c, mobile, lookup);
-    const activePersonId = lookup.profiles.length === 1 ? `person_${lookup.profiles[0].externalReferrerId.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80)}` : null;
+    const activePersonId = lookup.profiles.length === 1 ? lookup.profiles[0].personId || `person_${lookup.profiles[0].externalReferrerId.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80)}` : null;
     const token = await createSession(c, accountId, activePersonId);
     await recordAuthEvent(c, "otp_verify", "LOGIN_SUCCESS", { loginAccountId: accountId, mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
     await recordAuditLog(c, accountId, activePersonId, "login");

@@ -110,7 +110,6 @@ export function ProfileContent({
         <ProfileField label="Member since" value={profile.memberSince || "Not available"} />
         <ProfileField label="Registered mobile" value={maskedMobileFromLastFour(session.mobileLastFour)} />
         <ProfileField label="Referral programme status" value={programmeStatus(profile.active)} />
-        <ProfileField label="Personal referral link" value={profile.personalLink} wrap />
       </section>
     </div>
   );

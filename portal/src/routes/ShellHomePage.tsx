@@ -2,33 +2,11 @@ import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import type { ReferralDashboard } from "../lib/api";
-import { buildWhatsAppShareUrl, copyReferralLink, firstName, formatIndianCurrency, recentReferrals } from "../features/referrals/referralUtils";
+import { firstName, formatIndianCurrency, recentReferrals } from "../features/referrals/referralUtils";
 import { useReferralDashboard } from "../features/referrals/useReferralDashboard";
-import { useEffect, useState } from "react";
 
 export function ShellHomePage() {
   const { dashboard, error } = useReferralDashboard();
-  const [copied, setCopied] = useState(false);
-  const [canShare, setCanShare] = useState(false);
-
-  useEffect(() => {
-    setCanShare(typeof navigator !== "undefined" && typeof navigator.share === "function");
-  }, []);
-
-  async function handleCopy(personalLink: string) {
-    await copyReferralLink(personalLink);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1800);
-  }
-
-  async function handleNativeShare(dashboard: ReferralDashboard) {
-    if (!navigator.share) return;
-    await navigator.share({
-      title: "Samyak Skill Circle",
-      text: "Refer your friends to Samyak Computer Classes.",
-      url: dashboard.profile.personalLink,
-    });
-  }
 
   if (error) {
     return <ErrorState title="Could not load referrals" message="We could not load your referral information. Please try again." />;
@@ -41,29 +19,16 @@ export function ShellHomePage() {
   return (
     <OverviewContent
       dashboard={dashboard}
-      copied={copied}
-      canShare={canShare}
-      onCopy={() => void handleCopy(dashboard.profile.personalLink)}
-      onNativeShare={() => void handleNativeShare(dashboard)}
     />
   );
 }
 
 export function OverviewContent({
   dashboard,
-  copied,
-  canShare,
-  onCopy,
-  onNativeShare,
 }: {
   dashboard: ReferralDashboard;
-  copied: boolean;
-  canShare: boolean;
-  onCopy: () => void;
-  onNativeShare: () => void;
 }) {
   const referrals = recentReferrals(dashboard);
-  const whatsAppUrl = buildWhatsAppShareUrl(dashboard.profile.personalLink);
 
   return (
     <div className="content-stack">
@@ -80,25 +45,12 @@ export function OverviewContent({
       <section className="link-panel link-panel--feature" aria-label="Personal referral link">
         <div>
           <span className="field-label">Personal referral link</span>
-          <strong>{dashboard.profile.personalLink}</strong>
-          <p>Your friend can submit a course enquiry through this personal link.</p>
+          <strong>{dashboard.linkStatus.hasActiveLink ? `Active link ending ${dashboard.linkStatus.lastFour ? `...${dashboard.linkStatus.lastFour}` : "with hidden token"}` : "No active link yet"}</strong>
+          <p>{dashboard.linkStatus.message}</p>
         </div>
         <div className="link-actions">
-          <button type="button" onClick={onCopy}>
-            {copied ? "Copied" : "Copy Link"}
-          </button>
-          {canShare ? (
-            <button type="button" className="button-secondary" onClick={onNativeShare}>
-              Share
-            </button>
-          ) : null}
-          <a className="button-link" href={whatsAppUrl} target="_blank" rel="noreferrer">
-            Share on WhatsApp
-          </a>
+          <a className="button-link" href="/app/referrals">{dashboard.linkStatus.hasActiveLink ? "Manage Link" : "Generate Link"}</a>
         </div>
-        <p className="copy-feedback" aria-live="polite">
-          {copied ? "Referral link copied." : ""}
-        </p>
       </section>
 
       <section className="metric-grid" aria-label="Referral summary">

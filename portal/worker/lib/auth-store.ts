@@ -1,7 +1,5 @@
 import type { AppContext } from "./http";
 import { createOpaqueId, createSessionToken, daysFromNow, decryptText, encryptText, hmacHex, secondsFromNow } from "./crypto";
-import type { PortalLookup, PortalDashboard } from "./apps-script";
-import { callPortalDashboard } from "./apps-script";
 
 export const ORG_ID = "org_samyak";
 export const OTP_MAX_ATTEMPTS = 5;
@@ -88,6 +86,63 @@ type D1RunResult = {
     changes?: number;
     rows_written?: number;
   };
+};
+
+export type PortalProfile = {
+  personId?: string;
+  externalReferrerId: string;
+  fullName: string;
+  publicName: string;
+  referrerType: string;
+  courseStudied: string;
+  memberSince: string;
+  referralToken: string;
+  personalLink: string;
+  active: boolean;
+};
+
+export type PortalLookup = {
+  success: true;
+  eligible: boolean;
+  profiles: PortalProfile[];
+};
+
+export type PortalDashboard = {
+  success: true;
+  profile: Omit<PortalProfile, "personId" | "referralToken">;
+  linkStatus: {
+    hasActiveLink: boolean;
+    lastFour: string | null;
+    activatedAt: string | null;
+    expiresAt: string | null;
+    canGenerate: boolean;
+    canRotate: boolean;
+    message: string;
+  };
+  summary: {
+    totalReferrals: number;
+    successfulAdmissions: number;
+    cashRewardsEarned: number;
+    courseCreditEarned: number;
+  };
+  pagination: {
+    limit: number;
+    offset: number;
+    hasMore: boolean;
+  };
+  referrals: Array<{
+    referralId: string;
+    prospectPublicName: string;
+    courseInterested: string;
+    submissionDate: string;
+    publicStatus: string;
+    rewardStatus: string;
+    rewardChoice: string;
+    cashReward: number;
+    courseCredit: number;
+    approvedRewardAmount: number;
+    rewardPaymentDate: string;
+  }>;
 };
 
 export async function mobileHash(c: AppContext, mobile: string) {
@@ -277,7 +332,7 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
     .run();
 
   for (const profile of lookup.profiles) {
-    const personId = stableId("person", profile.externalReferrerId);
+    const personId = profile.personId || stableId("person", profile.externalReferrerId);
     const referrerId = stableId("ref", profile.externalReferrerId);
     const roleCode = profile.referrerType.toLowerCase().includes("alumni") ? "alumni" : "student";
     returnedPersonIds.add(personId);
@@ -541,15 +596,278 @@ export async function revokeSession(c: AppContext, tokenHash: string) {
 }
 
 export async function activeReferrerForPerson(c: AppContext, personId: string) {
-  return c.env.DB.prepare("select external_referrer_id from referrer_profiles where person_id = ? and active = 1")
+  return c.env.DB.prepare("select * from referrer_profiles where person_id = ? and active = 1")
     .bind(personId)
-    .first<{ external_referrer_id: string }>();
+    .first<{ id: string; external_referrer_id: string; personal_link: string; active: number; created_at: string }>();
 }
 
 export async function fetchDashboardForActiveProfile(c: AppContext, personId: string): Promise<PortalDashboard> {
   const referrer = await activeReferrerForPerson(c, personId);
   if (!referrer) throw new Error("No active referrer profile");
-  return callPortalDashboard(c.env, referrer.external_referrer_id);
+  const profile = await profileForPerson(c, personId);
+  if (!profile) throw new Error("No active profile");
+  const limit = 25;
+  const offset = 0;
+  const activeLink = await activeReferralLinkForProfile(c, referrer.id);
+  const referrals = await c.env.DB.prepare(
+    `select
+       referrals.id as referral_id,
+       referrals.prospect_name,
+       courses.name as course_name,
+       referrals.submitted_at,
+       referrals.status,
+       coalesce(referral_reward_snapshots.cash_reward_paise, 0) as cash_reward_paise,
+       coalesce(referral_reward_snapshots.course_credit_paise, 0) as course_credit_paise
+     from referrals
+     left join courses on courses.id = referrals.course_interest_id
+     left join referral_reward_snapshots on referral_reward_snapshots.referral_id = referrals.id
+     where referrals.referrer_profile_id = ?
+     order by referrals.submitted_at desc, referrals.id desc
+     limit ? offset ?`,
+  )
+    .bind(referrer.id, limit + 1, offset)
+    .all<{
+      referral_id: string;
+      prospect_name: string;
+      course_name: string | null;
+      submitted_at: string;
+      status: string;
+      cash_reward_paise: number;
+      course_credit_paise: number;
+    }>();
+  const items = (referrals.results || []).slice(0, limit).map((row) => {
+    const cashReward = Math.round(Number(row.cash_reward_paise || 0) / 100);
+    const courseCredit = Math.round(Number(row.course_credit_paise || 0) / 100);
+    const hasRewardSnapshot = cashReward > 0 || courseCredit > 0;
+    return {
+      referralId: row.referral_id,
+      prospectPublicName: publicProspectName(row.prospect_name),
+      courseInterested: row.course_name || "",
+      submissionDate: row.submitted_at.slice(0, 10),
+      publicStatus: publicReferralStatus(row.status),
+      rewardStatus: hasRewardSnapshot ? "Calculated" : "Pending",
+      rewardChoice: hasRewardSnapshot ? "Available" : "Pending",
+      cashReward,
+      courseCredit,
+      approvedRewardAmount: hasRewardSnapshot ? cashReward : 0,
+      rewardPaymentDate: "",
+    };
+  });
+  return {
+    success: true,
+    profile: {
+      externalReferrerId: profile.externalReferrerId,
+      fullName: profile.fullName,
+      publicName: profile.publicName,
+      referrerType: profile.referrerType,
+      courseStudied: profile.courseStudied,
+      memberSince: profile.memberSince,
+      personalLink: "",
+      active: Boolean(referrer.active),
+    },
+    linkStatus: activeLink
+      ? {
+          hasActiveLink: true,
+          lastFour: activeLink.token_last_four,
+          activatedAt: activeLink.activated_at,
+          expiresAt: activeLink.expires_at,
+          canGenerate: false,
+          canRotate: true,
+          message: "Your active referral link cannot be displayed again. Rotate it to create a new link.",
+        }
+      : {
+          hasActiveLink: false,
+          lastFour: null,
+          activatedAt: null,
+          expiresAt: null,
+          canGenerate: Boolean(referrer.active),
+          canRotate: false,
+          message: "Generate a referral link to share with friends.",
+        },
+    summary: {
+      totalReferrals: items.length,
+      successfulAdmissions: items.filter((item) => item.publicStatus === "Converted").length,
+      cashRewardsEarned: items.reduce((sum, item) => sum + item.cashReward, 0),
+      courseCreditEarned: items.reduce((sum, item) => sum + item.courseCredit, 0),
+    },
+    pagination: {
+      limit,
+      offset,
+      hasMore: (referrals.results || []).length > limit,
+    },
+    referrals: items,
+  };
+}
+
+async function activeReferralLinkForProfile(c: AppContext, referrerProfileId: string) {
+  const now = new Date().toISOString();
+  return c.env.DB.prepare(
+    `select id, token_last_four, activated_at, expires_at
+     from referral_links
+     where organisation_id = ?
+       and referrer_profile_id = ?
+       and status = 'active'
+       and revoked_at is null
+       and (expires_at is null or expires_at > ?)
+     order by activated_at desc, id desc
+     limit 1`,
+  )
+    .bind(ORG_ID, referrerProfileId, now)
+    .first<{ id: string; token_last_four: string | null; activated_at: string | null; expires_at: string | null }>();
+}
+
+export async function lookupPortalProfilesByMobile(c: AppContext, mobile: string): Promise<PortalLookup> {
+  const hash = await mobileHash(c, mobile);
+  const rows = await c.env.DB.prepare(
+    `select
+       people.id as person_id,
+       people.full_name,
+       people.public_name,
+       referrer_profiles.external_referrer_id,
+       referrer_profiles.referral_token,
+       referrer_profiles.personal_link,
+       referrer_profiles.active,
+       referrer_profiles.created_at,
+       roles.code as role_code,
+       (
+         select courses.name
+         from students
+         join enrolments on enrolments.student_id = students.id
+         join courses on courses.id = enrolments.course_id
+         where students.person_id = people.id
+         order by enrolments.admission_date desc
+         limit 1
+       ) as course_studied
+     from person_contacts
+     join people on people.id = person_contacts.person_id
+     join referrer_profiles on referrer_profiles.person_id = people.id
+       and referrer_profiles.organisation_id = people.organisation_id
+     join person_roles on person_roles.person_id = people.id
+     join roles on roles.id = person_roles.role_id
+       and roles.organisation_id = people.organisation_id
+     join referral_programmes on referral_programmes.organisation_id = people.organisation_id
+       and referral_programmes.code = 'samyak_skill_circle'
+       and referral_programmes.status = 'active'
+     join referral_programme_referrer_types on referral_programme_referrer_types.referral_programme_id = referral_programmes.id
+       and referral_programme_referrer_types.referrer_type = roles.code
+     where person_contacts.contact_type = 'mobile'
+       and person_contacts.normalized_value = ?
+       and people.organisation_id = ?
+       and people.status = 'active'
+       and referrer_profiles.active = 1
+     order by people.full_name`,
+  )
+    .bind(hash, ORG_ID)
+    .all<{
+      person_id: string;
+      full_name: string;
+      public_name: string | null;
+      external_referrer_id: string;
+      referral_token: string;
+      personal_link: string;
+      active: number;
+      created_at: string;
+      role_code: string;
+      course_studied: string | null;
+    }>();
+  const profiles = (rows.results || []).map((row) => ({
+    personId: row.person_id,
+    externalReferrerId: row.external_referrer_id,
+    fullName: row.full_name,
+    publicName: row.public_name || row.full_name,
+    referrerType: row.role_code === "alumni" ? "Alumni" : "Student",
+    courseStudied: row.course_studied || "",
+    memberSince: row.created_at.slice(0, 10),
+    referralToken: row.referral_token || "",
+    personalLink: row.personal_link || "",
+    active: row.active === 1,
+  }));
+  return { success: true, eligible: profiles.length > 0, profiles };
+}
+
+async function profileForPerson(c: AppContext, personId: string) {
+  const row = await c.env.DB.prepare(
+    `select
+       people.id as person_id,
+       people.full_name,
+       people.public_name,
+       referrer_profiles.external_referrer_id,
+       referrer_profiles.referral_token,
+       referrer_profiles.personal_link,
+       referrer_profiles.active,
+       referrer_profiles.created_at,
+       roles.code as role_code,
+       (
+         select courses.name
+         from students
+         join enrolments on enrolments.student_id = students.id
+         join courses on courses.id = enrolments.course_id
+         where students.person_id = people.id
+         order by enrolments.admission_date desc
+         limit 1
+       ) as course_studied
+     from people
+     join referrer_profiles on referrer_profiles.person_id = people.id
+       and referrer_profiles.organisation_id = people.organisation_id
+     left join person_roles on person_roles.person_id = people.id
+     left join roles on roles.id = person_roles.role_id
+       and roles.organisation_id = people.organisation_id
+       and roles.code in ('student', 'alumni')
+     where people.id = ?
+       and people.organisation_id = ?
+       and people.status = 'active'
+       and referrer_profiles.active = 1
+     order by case roles.code when 'student' then 1 when 'alumni' then 2 else 3 end
+     limit 1`,
+  )
+    .bind(personId, ORG_ID)
+    .first<{
+      person_id: string;
+      full_name: string;
+      public_name: string | null;
+      external_referrer_id: string;
+      referral_token: string;
+      personal_link: string;
+      active: number;
+      created_at: string;
+      role_code: string | null;
+      course_studied: string | null;
+    }>();
+  if (!row) return null;
+  return {
+    personId: row.person_id,
+    externalReferrerId: row.external_referrer_id,
+    fullName: row.full_name,
+    publicName: row.public_name || row.full_name,
+    referrerType: row.role_code === "alumni" ? "Alumni" : "Student",
+    courseStudied: row.course_studied || "",
+    memberSince: row.created_at.slice(0, 10),
+    referralToken: row.referral_token || "",
+    personalLink: row.personal_link || "",
+    active: row.active === 1,
+  };
+}
+
+function publicReferralStatus(status: string) {
+  const labels: Record<string, string> = {
+    submitted: "Submitted",
+    accepted: "Accepted",
+    active: "In counselling",
+    converted: "Converted",
+    rejected: "Not eligible",
+    expired: "Expired",
+    cancelled: "Cancelled",
+    closed: "Closed",
+  };
+  return labels[status] || "Submitted";
+}
+
+function publicProspectName(value: string | null) {
+  const normalized = String(value || "").trim().replace(/\s+/g, " ");
+  if (!normalized) return "Friend";
+  const parts = normalized.split(" ");
+  if (parts.length === 1) return parts[0].slice(0, 40);
+  return `${parts[0].slice(0, 30)} ${parts[parts.length - 1].slice(0, 1).toUpperCase()}.`;
 }
 
 export async function recordAuthEvent(
