@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { check, index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { branches, organisations, people, personContacts } from "./schema";
 
 const timestamps = {
@@ -165,8 +165,8 @@ export const educationRecords = sqliteTable(
   (table) => [index("education_records_person_id_idx").on(table.personId)],
 );
 
-export const courses = sqliteTable(
-  "courses",
+export const courseCategories = sqliteTable(
+  "course_categories",
   {
     id: text("id").primaryKey(),
     organisationId: text("organisation_id")
@@ -174,8 +174,29 @@ export const courses = sqliteTable(
       .references(() => organisations.id),
     code: text("code").notNull(),
     name: text("name").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("course_categories_organisation_code_unique").on(table.organisationId, table.code),
+    index("course_categories_org_active_sort_idx").on(table.organisationId, table.isActive, table.sortOrder),
+    check("course_categories_active_check", sql`${table.isActive} in (0, 1)`),
+  ],
+);
+
+export const courses = sqliteTable(
+  "courses",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    categoryId: text("category_id").references(() => courseCategories.id),
+    code: text("code").notNull(),
+    name: text("name").notNull(),
     durationLabel: text("duration_label"),
-    durationMonths: integer("duration_months"),
+    durationMonths: real("duration_months"),
     defaultFeePaise: integer("default_fee_paise"),
     lowestAcceptableFeePaise: integer("lowest_acceptable_fee_paise"),
     admissionConfigurationComplete: integer("admission_configuration_complete", { mode: "boolean" }).notNull().default(false),
@@ -186,6 +207,7 @@ export const courses = sqliteTable(
   (table) => [
     uniqueIndex("courses_organisation_code_unique").on(table.organisationId, table.code),
     index("courses_organisation_id_idx").on(table.organisationId),
+    index("courses_category_status_idx").on(table.categoryId, table.status),
     check("courses_status_check", sql`${table.status} in ('active', 'inactive', 'archived')`),
   ],
 );

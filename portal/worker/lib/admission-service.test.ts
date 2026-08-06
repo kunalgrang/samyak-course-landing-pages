@@ -923,8 +923,6 @@ function context(db: SqliteD1): AppContext {
       ENVIRONMENT: "development",
       TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
       TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
-      PORTAL_APPS_SCRIPT_URL: "https://script.test",
-      PORTAL_APPS_SCRIPT_SECRET: "portal-secret",
       SESSION_PEPPER: "test-pepper",
       DEV_OTP: "123456",
     } satisfies WorkerBindings,
