@@ -85,6 +85,7 @@ export const personContacts = sqliteTable(
       table.normalizedValue,
     ),
     index("person_contacts_person_id_idx").on(table.personId),
+    index("person_contacts_type_value_idx").on(table.contactType, table.normalizedValue),
     check("person_contacts_contact_type_check", sql`${table.contactType} in ('mobile', 'email')`),
   ],
 );

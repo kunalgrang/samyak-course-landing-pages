@@ -95,6 +95,9 @@ export const referralLinks = sqliteTable(
   },
   (table) => [
     uniqueIndex("referral_links_organisation_token_hash_unique").on(table.organisationId, table.tokenHash),
+    uniqueIndex("referral_links_one_active_referrer_programme_unique")
+      .on(table.organisationId, table.referralProgrammeId, table.referrerProfileId)
+      .where(sql`${table.status} = 'active'`),
     index("referral_links_referrer_status_idx").on(table.referrerProfileId, table.status),
     index("referral_links_programme_status_idx").on(table.referralProgrammeId, table.status),
     index("referral_links_expires_at_idx").on(table.expiresAt),
@@ -133,12 +136,15 @@ export const referrals = sqliteTable(
     expiredAt: text("expired_at"),
     closedAt: text("closed_at"),
     closureReason: text("closure_reason"),
+    prospectName: text("prospect_name").notNull(),
     prospectMobileHash: text("prospect_mobile_hash").notNull(),
     prospectMobileLastFour: text("prospect_mobile_last_four"),
     prospectMobileCiphertext: text("prospect_mobile_ciphertext"),
     prospectEmailCiphertext: text("prospect_email_ciphertext"),
     consentRecordedAt: text("consent_recorded_at"),
     idempotencyKeyHash: text("idempotency_key_hash"),
+    idempotencyPayloadHash: text("idempotency_payload_hash"),
+    activeDuplicateKey: text("active_duplicate_key"),
     ...timestamps,
   },
   (table) => [
@@ -154,6 +160,11 @@ export const referrals = sqliteTable(
     uniqueIndex("referrals_organisation_idempotency_unique")
       .on(table.organisationId, table.idempotencyKeyHash)
       .where(sql`${table.idempotencyKeyHash} is not null`),
+    index("referrals_organisation_mobile_status_valid_idx").on(table.organisationId, table.prospectMobileHash, table.status, table.validUntil),
+    uniqueIndex("referrals_active_duplicate_unique")
+      .on(table.organisationId, table.activeDuplicateKey)
+      .where(sql`${table.activeDuplicateKey} is not null`),
+    index("referrals_idempotency_payload_idx").on(table.organisationId, table.idempotencyKeyHash, table.idempotencyPayloadHash),
     check("referrals_source_check", sql`${table.source} in ('personal_link', 'staff_entry', 'import')`),
     check("referrals_status_check", sql`${table.status} in ('submitted', 'accepted', 'rejected', 'active', 'converted', 'expired', 'cancelled', 'closed')`),
     check(

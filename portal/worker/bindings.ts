@@ -9,6 +9,7 @@ export type WorkerBindings = {
   MSG91_TEMPLATE_ID?: string;
   MSG91_SENDER_ID?: string;
   SESSION_PEPPER: string;
+  REFERRAL_TOKEN_PEPPER?: string;
   DEV_OTP?: string;
 };
 

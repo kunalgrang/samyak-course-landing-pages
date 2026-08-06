@@ -230,12 +230,13 @@ describe("referral domain helpers", () => {
   });
 
   it("uses keyed HMAC for referral token lookup and keeps only support-safe last four", async () => {
-    const first = await referralTokenLookupHash("secret", "token_ABCD123456");
-    const second = await referralTokenLookupHash("secret", "token_ABCD123456");
+    const rawToken = "token_ABCD1234567890abcdEFGHijklMNOP";
+    const first = await referralTokenLookupHash("secret-referral-pepper", rawToken);
+    const second = await referralTokenLookupHash("secret-referral-pepper", rawToken);
 
     expect(first).toBe(second);
-    expect(first).not.toContain("token_ABCD123456");
-    expect(referralTokenLastFour("token_ABCD123456")).toBe("3456");
+    expect(first).not.toContain(rawToken);
+    expect(referralTokenLastFour(rawToken)).toBe("MNOP");
     await expect(referralTokenLookupHash("secret", "short")).rejects.toThrow("Invalid referral token shape");
   });
 
@@ -290,13 +291,14 @@ function testDb() {
   applyMigrations(db);
   seedOrganisation(db, "org_samyak");
   applyMigrationFile(db, "0012_d1_referral_foundation.sql");
+  applyMigrationFile(db, "0013_referral_service_integrity.sql");
   return db;
 }
 
 function applyMigrations(db: DatabaseSync, throughFile?: string) {
   const migrationsDir = join(process.cwd(), "migrations");
   for (const file of readdirSync(migrationsDir).filter((name) => /^\d{4}_.+\.sql$/.test(name)).sort()) {
-    if (file === "0012_d1_referral_foundation.sql") continue;
+    if (file === "0012_d1_referral_foundation.sql" || file === "0013_referral_service_integrity.sql") continue;
     if (throughFile && file > throughFile) continue;
     applyMigrationFile(db, file);
   }
@@ -365,8 +367,8 @@ function insertReferralLink(db: DatabaseSync, id: string, tokenHash: string, las
 function insertReferral(db: DatabaseSync, id: string, linkId: string, enquiryId: string, idempotencyKeyHash: string | null = null) {
   db.prepare(
     `insert into referrals
-      (id, organisation_id, branch_id, referral_programme_id, referral_link_id, referrer_profile_id, enquiry_id, course_interest_id, source, status, submitted_at, valid_until, prospect_mobile_hash, prospect_mobile_last_four, consent_recorded_at, idempotency_key_hash, created_at, updated_at)
-     values (?, 'org_samyak', 'branch_sion', 'rprog_samyak_skill_circle', ?, 'refprof_one', ?, 'course_full_stack', 'personal_link', 'accepted', '2026-08-05T00:00:00.000Z', '2026-11-03T00:00:00.000Z', 'mobile_hash', '1234', '2026-08-05T00:00:00.000Z', ?, '2026-08-05T00:00:00.000Z', '2026-08-05T00:00:00.000Z')`,
+      (id, organisation_id, branch_id, referral_programme_id, referral_link_id, referrer_profile_id, enquiry_id, course_interest_id, source, status, submitted_at, valid_until, prospect_name, prospect_mobile_hash, prospect_mobile_last_four, consent_recorded_at, idempotency_key_hash, created_at, updated_at)
+     values (?, 'org_samyak', 'branch_sion', 'rprog_samyak_skill_circle', ?, 'refprof_one', ?, 'course_full_stack', 'personal_link', 'accepted', '2026-08-05T00:00:00.000Z', '2026-11-03T00:00:00.000Z', 'Prospect Name', 'mobile_hash', '1234', '2026-08-05T00:00:00.000Z', ?, '2026-08-05T00:00:00.000Z', '2026-08-05T00:00:00.000Z')`,
   ).run(id, linkId, enquiryId, idempotencyKeyHash);
 }
 

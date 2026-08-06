@@ -1,4 +1,4 @@
-import { hmacHex } from "./crypto";
+import { hashReferralToken, referralTokenLastFour as referralTokenLastFourValue } from "./referral-token";
 
 export const REFERRAL_STATUSES = ["submitted", "accepted", "rejected", "active", "converted", "expired", "cancelled", "closed"] as const;
 export type ReferralStatus = (typeof REFERRAL_STATUSES)[number];
@@ -120,14 +120,11 @@ export function assertReferralStatusTransition(from: ReferralStatus, to: Referra
 }
 
 export async function referralTokenLookupHash(secret: string, rawToken: string) {
-  const token = rawToken.trim();
-  if (!/^[A-Za-z0-9_-]{12,128}$/.test(token)) throw new Error("Invalid referral token shape");
-  return hmacHex(secret, "referral-link-token", token);
+  return hashReferralToken(rawToken, secret);
 }
 
 export function referralTokenLastFour(rawToken: string) {
-  const token = rawToken.trim();
-  return token.slice(-4);
+  return referralTokenLastFourValue(rawToken);
 }
 
 export function classifyProspectRejection(input: {
