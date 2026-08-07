@@ -33,7 +33,7 @@ export function registerStudentRoutes(app: PortalHono) {
       return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
     }
     try {
-      return jsonPlain(c, await fetchDashboardForActiveProfile(c, view.activeProfile.personId));
+      return jsonPlain(c, await fetchDashboardForActiveProfile(c, view.activeProfile.personId, dashboardPagination(c)));
     } catch {
       return jsonError(c, { status: 503, code: "dashboard_unavailable", message: "Referral dashboard is temporarily unavailable." });
     }
@@ -167,6 +167,20 @@ async function ipHash(c: PortalContext) {
 
 function buildPublicReferralUrl(rawToken: string) {
   return `${REFERRAL_PUBLIC_ORIGIN}/r/${encodeURIComponent(rawToken)}`;
+}
+
+function dashboardPagination(c: PortalContext) {
+  const url = new URL(c.req.url);
+  return {
+    limit: clampInteger(url.searchParams.get("limit"), 25, 1, 50),
+    offset: clampInteger(url.searchParams.get("offset"), 0, 0, 5000),
+  };
+}
+
+function clampInteger(value: string | null, fallback: number, min: number, max: number) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 function linkServiceError(c: PortalContext, error: unknown) {

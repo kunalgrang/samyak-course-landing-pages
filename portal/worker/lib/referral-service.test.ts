@@ -353,6 +353,31 @@ describe("native referral services", () => {
       workerEnv,
     )).status).toBe(403);
     expect((await app.request(
+      "https://go.samyaksion.com/api/public/referrals/resolve/not-a-valid-token",
+      { headers: { Origin: "http://localhost:5173" } },
+      { ...workerEnv, ENVIRONMENT: "production" },
+    )).status).toBe(403);
+    expect((await app.request(
+      "https://go.samyaksion.com/api/public/referrals/resolve/not-a-valid-token",
+      { headers: { Origin: "https://feature-123.pages.dev" } },
+      { ...workerEnv, ENVIRONMENT: "production" },
+    )).status).toBe(403);
+    expect((await app.request(
+      "https://go.samyaksion.com/api/public/referrals/resolve/not-a-valid-token",
+      { headers: { Origin: "http://localhost:5173" } },
+      { ...workerEnv, ENVIRONMENT: "development" },
+    )).status).toBe(404);
+    expect((await app.request(
+      "https://go.samyaksion.com/api/public/referrals/resolve/not-a-valid-token",
+      { headers: { Origin: "https://staging-go.samyaksion.com" } },
+      { ...workerEnv, ENVIRONMENT: "staging", REFERRAL_PUBLIC_ALLOWED_ORIGINS: "https://staging-go.samyaksion.com" },
+    )).status).toBe(404);
+    expect((await app.request(
+      "https://go.samyaksion.com/api/public/referrals/resolve/not-a-valid-token",
+      { headers: { Origin: "https://other-staging.samyaksion.com" } },
+      { ...workerEnv, ENVIRONMENT: "staging", REFERRAL_PUBLIC_ALLOWED_ORIGINS: "https://staging-go.samyaksion.com" },
+    )).status).toBe(403);
+    expect((await app.request(
       "https://go.samyaksion.com/api/public/referrals/resolve/bad",
       { headers: { Origin: "https://go.samyaksion.com" } },
       workerEnv,
@@ -419,6 +444,55 @@ describe("native referral services", () => {
     await expect(replay.json()).resolves.toMatchObject({ success: true, idempotent: true });
     expect(count(fixture.sqlite, "referrals")).toBe(1);
     expect(JSON.stringify(all(fixture.sqlite, "select * from auth_events"))).not.toContain("9876543210");
+    fixture.close();
+  });
+
+  it("reports dashboard totals across all referrals independently of pagination", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
+    const sessionCookie = await seedSession(fixture.sqlite, "acct_student", "person_student");
+
+    for (let index = 0; index < 30; index += 1) {
+      const status = index % 5 === 0 ? "converted" : "accepted";
+      seedDashboardReferral(fixture.sqlite, index, status);
+      if (status === "converted") seedRewardSnapshot(fixture.sqlite, index);
+    }
+
+    const app = studentRouteApp();
+    const workerEnv = { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER };
+    const firstPage = await app.request(
+      "https://portal.samyaksion.com/api/student/referrals?limit=20&offset=0",
+      { headers: { Cookie: sessionCookie } },
+      workerEnv,
+    );
+    const secondPage = await app.request(
+      "https://portal.samyaksion.com/api/student/referrals?limit=20&offset=20",
+      { headers: { Cookie: sessionCookie } },
+      workerEnv,
+    );
+    const firstBody = await firstPage.json() as {
+      summary: { totalReferrals: number; successfulAdmissions: number; cashRewardsEarned: number; courseCreditEarned: number };
+      pagination: { limit: number; offset: number; hasMore: boolean };
+      referrals: Array<{ referralId: string }>;
+    };
+    const secondBody = await secondPage.json() as typeof firstBody;
+
+    expect(firstPage.status).toBe(200);
+    expect(secondPage.status).toBe(200);
+    expect(firstBody.summary).toEqual({
+      totalReferrals: 30,
+      successfulAdmissions: 6,
+      cashRewardsEarned: 600,
+      courseCreditEarned: 300,
+    });
+    expect(secondBody.summary).toEqual(firstBody.summary);
+    expect(firstBody.referrals).toHaveLength(20);
+    expect(firstBody.pagination).toEqual({ limit: 20, offset: 0, hasMore: true });
+    expect(secondBody.referrals).toHaveLength(10);
+    expect(secondBody.pagination).toEqual({ limit: 20, offset: 20, hasMore: false });
+    expect(firstBody.referrals[0].referralId).toBe("referral_29");
+    expect(secondBody.referrals[0].referralId).toBe("referral_09");
     fixture.close();
   });
 
@@ -763,6 +837,49 @@ async function seedProspectStudent(db: DatabaseSync, suffix: string, mobile: str
     .run(`contact_${suffix}`, `person_${suffix}_prospect`, mobileHash, mobile.slice(-4), NOW, NOW);
   db.prepare("insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at) values (?, 'org_samyak', ?, 'branch_sion', ?, ?, ?, ?, 'active', ?, ?)")
     .run(`student_${suffix}`, `person_${suffix}_prospect`, `STU-${suffix}`, suffix === "current" ? 1 : 2, NOW, status, NOW, NOW);
+}
+
+function seedDashboardReferral(db: DatabaseSync, index: number, status: string) {
+  const suffix = String(index).padStart(2, "0");
+  const submittedAt = `2026-08-${String(index + 1).padStart(2, "0")}T10:00:00.000Z`;
+  db.prepare(
+    `insert into referrals
+      (id, organisation_id, branch_id, referral_programme_id, referral_link_id, referrer_profile_id,
+       prospect_person_id, enquiry_id, course_interest_id, source, status, submitted_at, valid_until,
+       attributed_at, prospect_mobile_hash, prospect_mobile_last_four, prospect_name, created_at, updated_at)
+     values (?, 'org_samyak', 'branch_sion', 'rprog_samyak_skill_circle', null, 'refprof_student',
+       null, null, 'course_fsd', 'personal_link', ?, ?, '2026-12-31T10:00:00.000Z',
+       ?, ?, ?, ?, ?, ?)`,
+  ).run(`referral_${suffix}`, status, submittedAt, submittedAt, `mobile_hash_${suffix}`, suffix, `Prospect ${suffix}`, submittedAt, submittedAt);
+}
+
+function seedRewardSnapshot(db: DatabaseSync, index: number) {
+  const suffix = String(index).padStart(2, "0");
+  db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values (?, 'org_samyak', 'branch_sion', ?, ?, 'active', ?, ?)")
+    .run(`person_reward_${suffix}`, `Reward Student ${suffix}`, `Reward Student ${suffix}`, NOW, NOW);
+  db.prepare("insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at) values (?, 'org_samyak', ?, 'branch_sion', ?, ?, ?, 'active', 'active', ?, ?)")
+    .run(`student_reward_${suffix}`, `person_reward_${suffix}`, `STU-REWARD-${suffix}`, 1000 + index, NOW, NOW, NOW);
+  db.prepare(
+    `insert into enrolments
+      (id, student_id, branch_id, course_id, enquiry_id, enrolment_number, training_mode,
+       admission_date, joining_date, status, nsdc_preference, referrer_profile_id, referral_id, created_at, updated_at)
+     values (?, ?, 'branch_sion', 'course_fsd', null, ?, 'classroom',
+       ?, ?, 'active', 'decide_later', 'refprof_student', ?, ?, ?)`,
+  ).run(`enrolment_${suffix}`, `student_reward_${suffix}`, `ENR-${suffix}`, NOW, NOW, `referral_${suffix}`, NOW, NOW);
+  db.prepare(
+    `insert into fee_agreements
+      (id, enrolment_id, standard_fee_paise, final_agreed_fee_paise, discount_paise, gst_rate_basis_points,
+       payment_plan_type, number_of_instalments, initial_payment_expected_paise, status, created_at, updated_at)
+     values (?, ?, 1000000, 900000, 100000, 0, 'single', 1, 900000, 'active', ?, ?)`,
+  ).run(`fee_${suffix}`, `enrolment_${suffix}`, NOW, NOW);
+  db.prepare(
+    `insert into referral_reward_snapshots
+      (id, referral_id, enrolment_id, fee_agreement_id, reward_rule_set_id, slab_id,
+       final_agreed_fee_paise, minimum_fee_percentage, minimum_qualifying_payment_paise,
+       cash_reward_paise, course_credit_paise, snapshot_version, snapshot_json, created_at)
+     values (?, ?, ?, ?, 'rrs_samyak_skill_circle_v1', null,
+       900000, 50, 450000, 10000, 5000, 1, '{}', ?)`,
+  ).run(`reward_${suffix}`, `referral_${suffix}`, `enrolment_${suffix}`, `fee_${suffix}`, NOW);
 }
 
 async function mobileLookupHash(value: string) {

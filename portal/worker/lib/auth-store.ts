@@ -601,14 +601,31 @@ export async function activeReferrerForPerson(c: AppContext, personId: string) {
     .first<{ id: string; external_referrer_id: string; personal_link: string; active: number; created_at: string }>();
 }
 
-export async function fetchDashboardForActiveProfile(c: AppContext, personId: string): Promise<PortalDashboard> {
+export async function fetchDashboardForActiveProfile(c: AppContext, personId: string, pagination: { limit?: number; offset?: number } = {}): Promise<PortalDashboard> {
   const referrer = await activeReferrerForPerson(c, personId);
   if (!referrer) throw new Error("No active referrer profile");
   const profile = await profileForPerson(c, personId);
   if (!profile) throw new Error("No active profile");
-  const limit = 25;
-  const offset = 0;
+  const limit = pagination.limit || 25;
+  const offset = pagination.offset || 0;
   const activeLink = await activeReferralLinkForProfile(c, referrer.id);
+  const summary = await c.env.DB.prepare(
+    `select
+       count(*) as total_referrals,
+       sum(case when status = 'converted' then 1 else 0 end) as successful_admissions,
+       coalesce(sum(referral_reward_snapshots.cash_reward_paise), 0) as cash_reward_paise,
+       coalesce(sum(referral_reward_snapshots.course_credit_paise), 0) as course_credit_paise
+     from referrals
+     left join referral_reward_snapshots on referral_reward_snapshots.referral_id = referrals.id
+     where referrals.referrer_profile_id = ?`,
+  )
+    .bind(referrer.id)
+    .first<{
+      total_referrals: number;
+      successful_admissions: number;
+      cash_reward_paise: number;
+      course_credit_paise: number;
+    }>();
   const referrals = await c.env.DB.prepare(
     `select
        referrals.id as referral_id,
@@ -685,10 +702,10 @@ export async function fetchDashboardForActiveProfile(c: AppContext, personId: st
           message: "Generate a referral link to share with friends.",
         },
     summary: {
-      totalReferrals: items.length,
-      successfulAdmissions: items.filter((item) => item.publicStatus === "Converted").length,
-      cashRewardsEarned: items.reduce((sum, item) => sum + item.cashReward, 0),
-      courseCreditEarned: items.reduce((sum, item) => sum + item.courseCredit, 0),
+      totalReferrals: Number(summary?.total_referrals || 0),
+      successfulAdmissions: Number(summary?.successful_admissions || 0),
+      cashRewardsEarned: Math.round(Number(summary?.cash_reward_paise || 0) / 100),
+      courseCreditEarned: Math.round(Number(summary?.course_credit_paise || 0) / 100),
     },
     pagination: {
       limit,
