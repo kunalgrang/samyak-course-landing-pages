@@ -8,7 +8,7 @@ Standalone React and Cloudflare Workers application for secure Samyak student/re
 - `worker/index.ts` runs a Hono API Worker for same-origin `/api/*` routes.
 - Cloudflare Worker Static Assets serves the SPA with single-page fallback.
 - Cloudflare D1 stores only portal auth state: hashed mobile identifiers, encrypted eligible challenge mobile values, hashed session tokens, people/profile links, person-scoped roles, audit logs, and auth events.
-- The existing Google Sheet remains the operational referral source. The browser never calls Apps Script directly.
+- The public referral cutover uses native Worker routes backed by D1. The browser never calls Apps Script directly.
 
 `login_accounts.mobile_normalized` is a legacy column name. It stores the keyed mobile HMAC lookup value, not the plaintext normalized mobile number.
 
@@ -136,6 +136,36 @@ Private Worker secrets:
 - `DEV_OTP` for local development only
 
 Set production secrets with `wrangler secret put NAME`.
+
+## Public Referral Routing
+
+Production uses two Cloudflare surfaces:
+
+- `go.samyaksion.com/r/{token}` is served by the root static Cloudflare Pages project.
+- `go.samyaksion.com/api/public/referrals/*` is routed narrowly to this portal Worker through `portal/wrangler.jsonc`.
+
+The static referral form should keep using same-origin `/api/public/referrals/*` URLs. CORS is defense-in-depth only: production allows configured production origins, development allows explicit localhost dev origins, and staging/preview allows only the configured staging origin. Do not add wildcard `*.pages.dev` trust.
+
+## D1 Environment Separation
+
+Local development uses Wrangler local D1 state by default.
+
+Production uses the `DB` binding configured in `portal/wrangler.jsonc`.
+
+Staging/preview must use the same `DB` binding name but a different Cloudflare D1 database from production. The staging block in `portal/wrangler.jsonc` is intentionally documented as a commented template because a real staging `database_id` must be created and verified in the Cloudflare dashboard before deployment. Do not copy the production `database_id` into staging.
+
+Before preview manual QA, verify in Cloudflare:
+
+- the Pages project serving `go.samyaksion.com`
+- the Worker name and route for `go.samyaksion.com/api/public/referrals/*`
+- the production D1 database name and binding name
+- the staging/preview D1 database name and binding name
+- that production and staging/preview D1 databases are different
+- required secrets are configured without exposing values
+
+## Local Secret Build Guard
+
+Cloudflare's Vite plugin copies the active `.dev.vars` file into the build output for `vite preview` and documents that file as not deployed. The repository build command avoids emitting local secrets by temporarily moving `.dev.vars` out of the project while `vite build` runs, restoring it afterward, then running the scrub check as defense-in-depth.
 
 ## Session Policy
 
