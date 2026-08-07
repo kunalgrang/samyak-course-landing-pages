@@ -7,8 +7,6 @@ const env: WorkerBindings = {
   ENVIRONMENT: "production",
   TURNSTILE_SITE_KEY: "site",
   TURNSTILE_SECRET_KEY: "secret",
-  PORTAL_APPS_SCRIPT_URL: "https://script.test",
-  PORTAL_APPS_SCRIPT_SECRET: "portal-secret",
   SESSION_PEPPER: "pepper",
 };
 

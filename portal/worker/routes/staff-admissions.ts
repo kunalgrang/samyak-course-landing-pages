@@ -25,8 +25,9 @@ type PortalHono = Hono<{
 const baseCourseSchema = z.object({
   code: z.string().trim().min(2).max(30).regex(/^[A-Za-z0-9_-]+$/),
   name: z.string().trim().min(2).max(140),
+  categoryId: z.string().trim().max(120).nullable().optional(),
   durationLabel: z.string().trim().max(80).nullable().optional(),
-  durationMonths: z.coerce.number().int().min(1),
+  durationMonths: z.coerce.number().min(0.5),
   standardFeePaise: z.coerce.number().int().min(0),
   lowestAcceptableFeePaise: z.coerce.number().int().min(0),
   nsdcAvailable: z.boolean().default(false),
@@ -63,7 +64,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
     const courses = await c.env.DB.prepare(
-      `select id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status
+      `select id, code, name, category_id, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status
        from courses
        where organisation_id = ? and status = 'active' and admission_configuration_complete = 1
        order by name`,
@@ -77,7 +78,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     const staff = await requireStaffRoles(c, COURSE_ADMIN_ROLES);
     if (!staff) return forbidden(c);
     const courses = await c.env.DB.prepare(
-      `select id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at
+      `select id, code, name, category_id, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at
        from courses
        where organisation_id = ?
        order by case status when 'active' then 1 when 'inactive' then 2 else 3 end, name`,
@@ -97,14 +98,15 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     try {
       await c.env.DB.prepare(
         `insert into courses
-           (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+           (id, organisation_id, code, name, category_id, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
       )
         .bind(
           courseId,
           ORG_ID,
           parsed.data.code.toUpperCase(),
           parsed.data.name,
+          parsed.data.categoryId || null,
           parsed.data.durationLabel || null,
           parsed.data.durationMonths,
           parsed.data.standardFeePaise,
@@ -147,10 +149,10 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     try {
       await c.env.DB.prepare(
         `update courses
-         set code = ?, name = ?, duration_label = ?, duration_months = ?, default_fee_paise = ?, lowest_acceptable_fee_paise = ?, admission_configuration_complete = ?, nsdc_available = ?, status = ?, updated_at = ?
+         set code = ?, name = ?, category_id = ?, duration_label = ?, duration_months = ?, default_fee_paise = ?, lowest_acceptable_fee_paise = ?, admission_configuration_complete = ?, nsdc_available = ?, status = ?, updated_at = ?
          where id = ? and organisation_id = ?`,
       )
-        .bind(next.code, next.name, next.duration_label ?? null, next.duration_months, next.default_fee_paise ?? 0, next.lowest_acceptable_fee_paise ?? 0, admissionConfigurationComplete ? 1 : 0, next.nsdc_available ? 1 : 0, next.status, next.updated_at, existing.id, ORG_ID)
+        .bind(next.code, next.name, next.category_id ?? null, next.duration_label ?? null, next.duration_months, next.default_fee_paise ?? 0, next.lowest_acceptable_fee_paise ?? 0, admissionConfigurationComplete ? 1 : 0, next.nsdc_available ? 1 : 0, next.status, next.updated_at, existing.id, ORG_ID)
         .run();
     } catch {
       return jsonError(c, { status: 409, code: "course_code_exists", message: "Course code already exists." });
@@ -400,6 +402,7 @@ function toCourseRow(input: Partial<z.infer<typeof courseSchema>>) {
   return {
     ...(input.code ? { code: input.code.toUpperCase() } : {}),
     ...(input.name ? { name: input.name } : {}),
+    ...(input.categoryId !== undefined ? { category_id: input.categoryId || null } : {}),
     ...(input.durationLabel !== undefined ? { duration_label: input.durationLabel || null } : {}),
     ...(input.durationMonths !== undefined ? { duration_months: input.durationMonths } : {}),
     ...(input.standardFeePaise !== undefined ? { default_fee_paise: input.standardFeePaise } : {}),

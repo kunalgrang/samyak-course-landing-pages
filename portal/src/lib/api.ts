@@ -78,12 +78,26 @@ const dashboardSchema = z.object({
     personalLink: z.string(),
     active: z.boolean(),
   }),
+  linkStatus: z.object({
+    hasActiveLink: z.boolean(),
+    lastFour: z.string().nullable(),
+    activatedAt: z.string().nullable(),
+    expiresAt: z.string().nullable(),
+    canGenerate: z.boolean(),
+    canRotate: z.boolean(),
+    message: z.string(),
+  }),
   summary: z.object({
     totalReferrals: z.number(),
     successfulAdmissions: z.number(),
     cashRewardsEarned: z.number(),
     courseCreditEarned: z.number(),
   }),
+  pagination: z.object({
+    limit: z.number(),
+    offset: z.number(),
+    hasMore: z.boolean(),
+  }).optional(),
   referrals: z.array(
     z.object({
       referralId: z.string(),
@@ -102,6 +116,27 @@ const dashboardSchema = z.object({
 });
 
 export type ReferralDashboard = z.infer<typeof dashboardSchema>;
+
+const referralLinkResponseSchema = z.union([
+  z.object({
+    created: z.literal(true),
+    link: z.string(),
+    shownOnce: z.literal(true),
+    lastFour: z.string(),
+    rotated: z.boolean().optional(),
+    previousLinkId: z.string().nullable().optional(),
+  }),
+  z.object({
+    created: z.literal(false),
+    hasActiveLink: z.literal(true),
+    lastFour: z.string().nullable(),
+    activatedAt: z.string().nullable(),
+    expiresAt: z.string().nullable(),
+    message: z.string(),
+  }),
+]);
+
+export type ReferralLinkResponse = z.infer<typeof referralLinkResponseSchema>;
 
 const enquiryOptionsSchema = z.object({
   branches: z.array(z.object({ id: z.string(), code: z.string(), name: z.string() })),
@@ -155,6 +190,7 @@ const courseSchema = z.object({
   id: z.string(),
   code: z.string(),
   name: z.string(),
+  category_id: z.string().nullable().optional(),
   duration_label: z.string().nullable(),
   duration_months: z.number().nullable().optional(),
   default_fee_paise: z.number().nullable(),
@@ -321,6 +357,14 @@ export async function logout() {
 
 export async function getReferralDashboard() {
   return getJson("/api/student/referrals", dashboardSchema);
+}
+
+export async function generateReferralLink() {
+  return postJson("/api/referrals/link", {}, referralLinkResponseSchema);
+}
+
+export async function rotateReferralLink() {
+  return postJson("/api/referrals/link/rotate", {}, referralLinkResponseSchema);
 }
 
 export async function getEnquiryOptions() {

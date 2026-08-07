@@ -3,15 +3,17 @@
 
   var CONTACT_PHONE = '917413832777';
   var API_TIMEOUT_MS = 12000;
-  var TOKEN_PATTERN = /^[A-Za-z0-9_-]{12,80}$/;
+  var TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 
   var state = {
     token: '',
     referrerName: '',
     language: 'en',
     courses: [],
+    categories: [],
     submitting: false,
     submitted: false,
+    idempotencyKey: '',
     retryAction: null
   };
 
@@ -193,7 +195,7 @@
     var match = path.match(/^\/r\/([^/?#]+)\/?$/);
     if (!match) return '';
     try {
-      return decodeURIComponent(match[1]).slice(0, 80);
+      return decodeURIComponent(match[1]).slice(0, 128);
     } catch (_error) {
       return '';
     }
@@ -240,10 +242,10 @@
   function validateReferralToken() {
     state.retryAction = validateReferralToken;
     showPanel('loading');
-    postJson('/api/referrals/referrer', { token: state.token })
+    fetchJson('/api/public/referrals/resolve/' + encodeURIComponent(state.token), { method: 'GET' })
       .then(function (data) {
         if (data && data.valid === true) {
-          state.referrerName = sanitizePublicReferrerName(data.referrerName);
+          state.referrerName = sanitizePublicReferrerName(data.referrer && data.referrer.displayName);
           updateReferrerName();
           loadCourses();
         } else {
@@ -258,13 +260,21 @@
   function loadCourses() {
     state.retryAction = loadCourses;
     showPanel('courses');
-    fetchJson('/api/referrals/courses', { method: 'GET' })
+    fetchJson('/api/public/referrals/resolve/' + encodeURIComponent(state.token) + '/courses', { method: 'GET' })
       .then(function (data) {
-        if (!data || data.success !== true || !Array.isArray(data.courses)) {
+        if (!data || data.success !== true || !Array.isArray(data.categories)) {
           throw new Error('COURSES_UNAVAILABLE');
         }
-        state.courses = data.courses.filter(function (course) {
-          return course && typeof course.id === 'string' && typeof course.name === 'string';
+        state.categories = data.categories.filter(function (category) {
+          return category && typeof category.id === 'string' && typeof category.name === 'string' && Array.isArray(category.courses);
+        });
+        state.courses = [];
+        state.categories.forEach(function (category) {
+          category.courses.forEach(function (course) {
+            if (course && typeof course.id === 'string' && typeof course.name === 'string') {
+              state.courses.push(course);
+            }
+          });
         });
         if (!state.courses.length) {
           showRecoverableError(text[state.language].noCourses, loadCourses);
@@ -282,11 +292,16 @@
     while (fields.course.options.length > 1) {
       fields.course.remove(1);
     }
-    state.courses.forEach(function (course) {
-      var option = document.createElement('option');
-      option.value = course.id.slice(0, 80);
-      option.textContent = course.name.slice(0, 120);
-      fields.course.appendChild(option);
+    state.categories.forEach(function (category) {
+      var group = document.createElement('optgroup');
+      group.label = category.name.slice(0, 120);
+      category.courses.forEach(function (course) {
+        var option = document.createElement('option');
+        option.value = course.id.slice(0, 120);
+        option.textContent = course.name.slice(0, 120);
+        group.appendChild(option);
+      });
+      if (group.children.length) fields.course.appendChild(group);
     });
     updateCoursePlaceholder();
   }
@@ -323,8 +338,9 @@
     state.submitting = true;
     submitButton.disabled = true;
     submitButton.textContent = text[state.language].submittingButton;
+    state.idempotencyKey = state.idempotencyKey || generateIdempotencyKey();
 
-    postJson('/api/referrals/submit', payload)
+    postJson('/api/public/referrals/submit', payload, { 'Idempotency-Key': state.idempotencyKey })
       .then(function (data) {
         if (data && data.success === true) {
           state.submitted = true;
@@ -373,8 +389,7 @@
       mobile: mobile,
       email: email,
       courseId: courseId,
-      consent: true,
-      source: 'Online'
+      consent: true
     };
   }
 
@@ -452,7 +467,7 @@
   }
 
   function showSuccess(data) {
-    var referralId = typeof data.referralId === 'string' ? data.referralId.slice(0, 40) : '';
+    var referralId = typeof data.enquiryNumber === 'string' ? data.enquiryNumber.slice(0, 40) : (typeof data.referralId === 'string' ? data.referralId.slice(0, 40) : '');
     var validUntil = typeof data.validUntil === 'string' ? data.validUntil.slice(0, 30) : '';
     successReferralId.textContent = referralId;
     successValidUntil.textContent = validUntil;
@@ -512,10 +527,10 @@
       });
   }
 
-  function postJson(url, payload) {
+  function postJson(url, payload, headers) {
     return fetchJson(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: Object.assign({ 'Content-Type': 'application/json' }, headers || {}),
       body: JSON.stringify(payload)
     });
   }
@@ -533,5 +548,13 @@
 
   function isValidEmail(value) {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  }
+
+  function generateIdempotencyKey() {
+    var bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return Array.prototype.map.call(bytes, function (byte) {
+      return byte.toString(16).padStart(2, '0');
+    }).join('');
   }
 }());

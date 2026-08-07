@@ -1,5 +1,7 @@
 # Samyak Course Landing Pages
 
+Archived upload-ready snapshot note: this directory is not the current referral runtime source. Its legacy referral Pages Functions and Apps Script files are retained only for reference. Current public and portal referral flows run through native Worker APIs backed by D1; this archived snapshot is not called by the live referral form, portal OTP/profile lookup, portal referral dashboard, or referral-link generation/rotation.
+
 Static Google Ads landing pages for Samyak Computer Classes, Sion, Mumbai.
 
 ## Project Purpose

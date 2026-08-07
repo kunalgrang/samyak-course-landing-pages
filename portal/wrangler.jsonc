@@ -3,12 +3,19 @@
   "name": "samyak-student-portal",
   "compatibility_date": "2026-07-21",
   "main": "worker/index.ts",
+  "routes": [
+    {
+      "pattern": "go.samyaksion.com/api/public/referrals/*",
+      "zone_name": "samyaksion.com"
+    }
+  ],
   "assets": {
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },
   "vars": {
     "ENVIRONMENT": "production",
+    "REFERRAL_PUBLIC_ALLOWED_ORIGINS": "https://go.samyaksion.com,https://refer.samyaksion.com,https://samyaksion.com,https://www.samyaksion.com",
     "TURNSTILE_SITE_KEY": "0x4AAAAAAD_9LJVUBqi8lIkK"
   },
   "d1_databases": [
@@ -18,4 +25,31 @@
       "database_id": "fe9beb06-7c41-43ff-a475-2e345d48dbad"
     }
   ]
+  /*
+  Staging/preview must be configured with a separate D1 database before use.
+  Do not duplicate the production database_id into this environment.
+  "env": {
+    "staging": {
+      "name": "samyak-student-portal-staging",
+      "routes": [
+        {
+          "pattern": "staging-go.samyaksion.com/api/public/referrals/*",
+          "zone_name": "samyaksion.com"
+        }
+      ],
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "REFERRAL_PUBLIC_ALLOWED_ORIGINS": "https://staging-go.samyaksion.com",
+        "TURNSTILE_SITE_KEY": "<STAGING_TURNSTILE_SITE_KEY>"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "samyak-student-portal-staging",
+          "database_id": "<STAGING_D1_DATABASE_ID>"
+        }
+      ],
+    }
+  }
+  */
 }

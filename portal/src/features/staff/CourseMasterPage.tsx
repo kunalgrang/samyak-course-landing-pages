@@ -99,7 +99,7 @@ export function CourseMasterPage() {
           <label>Course code<input value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} required /></label>
           <label>Course name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label>
           <label>Duration label<input value={form.durationLabel} onChange={(event) => setForm({ ...form, durationLabel: event.target.value })} placeholder="e.g. 6 months" /></label>
-          <label>Duration months<input type="number" min="1" value={form.durationMonths} onChange={(event) => setForm({ ...form, durationMonths: event.target.value })} required /></label>
+          <label>Duration months<input type="number" min="0.5" step="0.5" value={form.durationMonths} onChange={(event) => setForm({ ...form, durationMonths: event.target.value })} required /></label>
           <label>Listed price<input type="number" min="0" value={form.standardFeeRupees} onChange={(event) => setForm({ ...form, standardFeeRupees: event.target.value })} required /></label>
           <label>Lowest acceptable fee<input type="number" min="0" value={form.lowestAcceptableFeeRupees} onChange={(event) => setForm({ ...form, lowestAcceptableFeeRupees: event.target.value })} required /></label>
           <label>NSDC available<select value={form.nsdcAvailable ? "yes" : "no"} onChange={(event) => setForm({ ...form, nsdcAvailable: event.target.value === "yes" })}><option value="no">No</option><option value="yes">Yes</option></select></label>
