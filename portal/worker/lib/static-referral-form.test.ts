@@ -15,6 +15,14 @@ describe("static referral form cutover", () => {
     expect(script).not.toMatch(/script\.google|Apps Script|APPS_SCRIPT/i);
   });
 
+  it("documents the narrow Worker route needed by the static referral page", () => {
+    const wranglerConfig = readFileSync(join(process.cwd(), "wrangler.jsonc"), "utf8");
+    expect(wranglerConfig).toContain('"pattern": "go.samyaksion.com/api/public/referrals/*"');
+    expect(wranglerConfig).toContain('"zone_name": "samyaksion.com"');
+    expect(wranglerConfig).not.toContain("go.samyaksion.com/*");
+    expect(wranglerConfig).not.toMatch(/\*\.pages\.dev/);
+  });
+
   it("submits actual course IDs with a bounded idempotency key and grouped categories", () => {
     const script = readFileSync(join(repoRoot, "assets/js/referral-form.js"), "utf8");
     expect(script).toContain("course.id");

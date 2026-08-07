@@ -40,6 +40,26 @@ In Cloudflare Pages, add `go.samyaksion.com` as the custom domain. Cloudflare wi
 
 Do not change DNS from this repository.
 
+## Referral API Routing
+
+The referral form is served by the root static Pages project at:
+
+- `https://go.samyaksion.com/r/{token}`
+
+The form intentionally calls same-origin native Worker endpoints:
+
+- `/api/public/referrals/resolve/{token}`
+- `/api/public/referrals/resolve/{token}/courses`
+- `/api/public/referrals/submit`
+
+Those API requests are handled by the portal Worker through the narrow Worker route configured in `portal/wrangler.jsonc`:
+
+- `go.samyaksion.com/api/public/referrals/*`
+
+Keep the route scoped to `/api/public/referrals/*`. Do not route `go.samyaksion.com/*` through the portal Worker because the static landing pages must continue to be served by the root Pages project.
+
+Preview referral submissions must use either local development or a dedicated staging hostname with a separate staging D1 database. Do not enable wildcard `*.pages.dev` CORS for referral submissions.
+
 ## Google Ads Conversion Testing
 
 1. Open a course page in Incognito.

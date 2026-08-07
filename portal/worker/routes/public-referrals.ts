@@ -30,11 +30,17 @@ const RESOLVE_LIMIT = { count: 60, windowSeconds: 60 };
 const SUBMIT_IP_LIMIT = { count: 10, windowSeconds: 600 };
 const SUBMIT_MOBILE_LIMIT = { count: 3, windowSeconds: 3600 };
 const SUBMIT_TOKEN_LIMIT = { count: 20, windowSeconds: 3600 };
-const ALLOWED_ORIGINS = new Set([
+const PRODUCTION_PUBLIC_ORIGINS = new Set([
   "https://go.samyaksion.com",
   "https://refer.samyaksion.com",
   "https://samyaksion.com",
   "https://www.samyaksion.com",
+]);
+const DEVELOPMENT_PUBLIC_ORIGINS = new Set([
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:8787",
+  "http://127.0.0.1:8787",
 ]);
 
 const submitSchema = z.object({
@@ -93,7 +99,7 @@ export function registerPublicReferralRoutes(app: PortalHono) {
     const contentType = c.req.header("Content-Type") || "";
     if (!contentType.toLowerCase().startsWith("application/json")) return publicError(c, 415, "JSON_REQUIRED", "Only JSON requests are accepted.");
     const bodyText = await c.req.raw.text();
-    if (bodyText.length > MAX_SUBMIT_BODY_BYTES) return publicError(c, 413, "REQUEST_TOO_LARGE", "Please reduce the request size.");
+    if (new TextEncoder().encode(bodyText).byteLength > MAX_SUBMIT_BODY_BYTES) return publicError(c, 413, "REQUEST_TOO_LARGE", "Please reduce the request size.");
     const parsed = submitSchema.safeParse(safeJson(bodyText));
     if (!parsed.success) return publicError(c, 400, "INVALID_REQUEST", "Please check the referral form details.");
     const limits = [
@@ -282,8 +288,7 @@ function publicHash(c: PortalContext, context: string, value: string) {
 
 function publicCorsHeaders(c: PortalContext) {
   const origin = c.req.header("Origin") || "";
-  const localhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
-  const allowed = !origin || ALLOWED_ORIGINS.has(origin) || localhost;
+  const allowed = !origin || allowedPublicOrigins(c.env).has(origin);
   return {
     allowed,
     headers: {
@@ -292,4 +297,23 @@ function publicCorsHeaders(c: PortalContext) {
       ...(origin && allowed ? { "Access-Control-Allow-Origin": origin } : {}),
     },
   };
+}
+
+function allowedPublicOrigins(env: WorkerBindings) {
+  const environment = env.ENVIRONMENT || "production";
+  const configuredOrigins = parseConfiguredOrigins(env.REFERRAL_PUBLIC_ALLOWED_ORIGINS);
+  if (environment === "development") return new Set([...DEVELOPMENT_PUBLIC_ORIGINS, ...configuredOrigins]);
+  if (environment === "staging" || environment === "preview") return configuredOrigins;
+  return new Set([...PRODUCTION_PUBLIC_ORIGINS, ...configuredOrigins]);
+}
+
+function parseConfiguredOrigins(value?: string) {
+  return String(value || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .reduce((origins, origin) => {
+      origins.add(origin);
+      return origins;
+    }, new Set<string>());
 }
