@@ -1,8 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { appNavigation } from "../../app/navigation";
-import type { ReferralDashboard, SessionResponse } from "../../lib/api";
+import type { ReferralDashboard, SessionResponse, StudentHome } from "../../lib/api";
 import { ProfileContent } from "../profile/ProfilePage";
+import { OverviewContent } from "../../routes/ShellHomePage";
+import { RulesPage } from "../../routes/RulesPage";
 import { ReferralsContent } from "./ReferralsPage";
 import {
   buildWhatsAppShareUrl,
@@ -11,8 +13,6 @@ import {
   maskedMobileFromLastFour,
   rewardSlabs,
 } from "./referralUtils";
-import { OverviewContent } from "../../routes/ShellHomePage";
-import { RulesPage } from "../../routes/RulesPage";
 
 const dashboard: ReferralDashboard = {
   success: true,
@@ -87,10 +87,45 @@ const session: SessionResponse = {
   accountRoles: [],
 };
 
+const studentHome: StudentHome = {
+  success: true,
+  identity: {
+    personId: "person_ssc_001",
+    fullName: "Asha Student",
+    publicName: "Asha S.",
+    studentId: "SYK-SION-000001",
+    studentStatus: "on_hold",
+    lifecycleStatus: "CURRENT",
+    studentSince: "2025-04-10",
+    branchName: "Sion",
+  },
+  courseHistory: [
+    {
+      enrolmentId: "enrol_1",
+      enrolmentNumber: "ENR-SION-000001",
+      courseId: "course_full_stack",
+      courseCode: "FULL_STACK",
+      courseName: "Full Stack Development",
+      durationLabel: "12 months",
+      admissionDate: "2025-04-10",
+      joiningDate: "2025-04-12",
+      completionDate: null,
+      status: "on_hold",
+    },
+  ],
+  skillCircle: {
+    programmeName: "Samyak Skill Circle",
+    eligible: true,
+    hasActiveReferralLink: true,
+    referralDashboardPath: "/app/referrals",
+    message: "Your referral dashboard is ready.",
+  },
+};
+
 describe("student referral portal UI", () => {
   it("formats Indian currency with rupee symbol and Indian grouping", () => {
-    expect(formatIndianCurrency(1500)).toBe("₹1,500");
-    expect(formatIndianCurrency(200000)).toBe("₹2,00,000");
+    expect(formatIndianCurrency(1500)).toBe("\u20B91,500");
+    expect(formatIndianCurrency(200000)).toBe("\u20B92,00,000");
   });
 
   it("builds WhatsApp share URLs from the personal referral link", () => {
@@ -108,53 +143,54 @@ describe("student referral portal UI", () => {
 
   it("uses the exact reward slabs and friend benefit copy", () => {
     expect(rewardSlabs).toEqual([
-      { fee: "Below ₹10,000", cash: 500, credit: 750 },
-      { fee: "₹10,000-₹19,999", cash: 750, credit: 1000 },
-      { fee: "₹20,000-₹29,999", cash: 1000, credit: 1500 },
-      { fee: "₹30,000 and above", cash: 1500, credit: 2000 },
+      { fee: "Below \u20B910,000", cash: 500, credit: 750 },
+      { fee: "\u20B910,000-\u20B919,999", cash: 750, credit: 1000 },
+      { fee: "\u20B920,000-\u20B929,999", cash: 1000, credit: 1500 },
+      { fee: "\u20B930,000 and above", cash: 1500, credit: 2000 },
     ]);
     const html = renderToStaticMarkup(<RulesPage />);
     expect(html).toContain("Rewards &amp; Benefits");
     expect(html).toContain("A benefit for your friend too");
     expect(html).toContain("complimentary classroom AI Prompting Crash Course");
-    expect(html).toContain("₹1,500 cash");
-    expect(html).toContain("₹2,000 course credit");
+    expect(html).toContain("\u20B91,500 cash");
+    expect(html).toContain("\u20B92,000 course credit");
   });
 
-  it("renders overview with profile name, summary and no development placeholders", () => {
-    const html = renderToStaticMarkup(<OverviewContent dashboard={dashboard} />);
+  it("renders overview with student identity, course history and no development placeholders", () => {
+    const html = renderToStaticMarkup(<OverviewContent home={studentHome} />);
     expect(html).toContain("Hi, Asha");
-    expect(html).toContain("Total referrals");
-    expect(html).toContain("₹1,500");
-    expect(html).toContain("Rahul S.");
-    expect(html).toContain("Active link ending ...A123");
+    expect(html).toContain("SYK-SION-000001");
+    expect(html).toContain("Current student - On Hold");
+    expect(html).toContain("Full Stack Development");
+    expect(html).toContain("Samyak Skill Circle");
     expect(html).not.toContain("https://portal.samyaksion.com/r/ASHA123");
     expect(html).not.toMatch(/Portal foundation|API health routes|D1 schema|Phase 1|Temporary client guard|No dashboard data yet|records are deliberately not mocked|coding pass/i);
   });
 
-  it("shows the empty referral state", () => {
-    const emptyDashboard = { ...dashboard, referrals: [] };
-    const html = renderToStaticMarkup(<OverviewContent dashboard={emptyDashboard} />);
-    expect(html).toContain("No referrals yet");
-    expect(html).toContain("Share your personal link with a friend who may benefit from learning a new skill.");
+  it("shows the empty course-history state", () => {
+    const emptyHome = { ...studentHome, courseHistory: [] };
+    const html = renderToStaticMarkup(<OverviewContent home={emptyHome} />);
+    expect(html).toContain("No courses found");
+    expect(html).toContain("Your imported course history will appear here after it is available.");
   });
 
   it("renders safe profile fields and never renders a full mobile number", () => {
     const html = renderToStaticMarkup(
-      <ProfileContent dashboard={dashboard} session={session} switchingPersonId={null} switchError={false} onSwitch={() => undefined} />,
+      <ProfileContent home={studentHome} session={session} switchingPersonId={null} switchError={false} onSwitch={() => undefined} />,
     );
     expect(html).toContain("Asha Student");
     expect(html).toContain("Student");
     expect(html).toContain("Full Stack Development");
+    expect(html).toContain("SYK-SION-000001");
     expect(html).toContain("******3210");
-    expect(html).toContain("Active");
+    expect(html).toContain("On Hold");
     expect(html).not.toContain("9876543210");
     expect(maskedMobileFromLastFour("3210")).toBe("******3210");
   });
 
   it("keeps shared-mobile profile choices isolated by active state", () => {
     const html = renderToStaticMarkup(
-      <ProfileContent dashboard={dashboard} session={session} switchingPersonId={null} switchError={false} onSwitch={() => undefined} />,
+      <ProfileContent home={studentHome} session={session} switchingPersonId={null} switchError={false} onSwitch={() => undefined} />,
     );
     expect(html).toContain("Asha S.");
     expect(html).toContain("Ravi A.");

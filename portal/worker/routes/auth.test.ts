@@ -44,6 +44,10 @@ class FakeD1Statement {
     if (sql.includes("select external_referrer_id from referrer_profiles where person_id = ? and active = 1")) {
       return (this.db.referrerProfiles.find((row) => row.person_id === this.values[0] && row.active === 1) ?? null) as T;
     }
+    if (sql.includes("from referral_links") && sql.includes("referrer_profile_id = ?") && sql.includes("status = 'active'")) {
+      const [_organisationId, referrerProfileId] = this.values;
+      return (this.db.referralLinks.find((row) => row.referrer_profile_id === referrerProfileId && row.status === "active" && !row.revoked_at) ?? null) as T;
+    }
     if (sql.includes("from people join referrer_profiles") && sql.includes("where people.id = ?")) {
       const person = this.db.people.find((row) => row.id === this.values[0] && row.organisation_id === this.values[1] && row.status === "active");
       if (!person) return null as T;
@@ -64,24 +68,36 @@ class FakeD1Statement {
         course_studied: "Full Stack Development",
       } as T;
     }
+    if (sql.includes("from students join people") && sql.includes("where students.organisation_id = ?") && sql.includes("students.person_id = ?")) {
+      const [organisationId, personId] = this.values;
+      const student = this.db.students.find((row) => row.organisation_id === organisationId && row.person_id === personId && row.portal_status !== "disabled");
+      if (!student) return null as T;
+      const person = this.db.people.find((row) => row.id === student.person_id && row.organisation_id === organisationId && row.status === "active");
+      if (!person) return null as T;
+      const branch = this.db.branches.find((row) => row.id === student.home_branch_id);
+      const referrer = this.db.referrerProfiles.find((row) => row.person_id === person.id && row.organisation_id === organisationId && row.active === 1);
+      return {
+        full_name: person.full_name,
+        public_name: person.public_name,
+        student_id: student.id,
+        student_number: student.student_number,
+        student_since: student.student_since,
+        current_status: student.current_status,
+        branch_name: branch?.name ?? null,
+        referrer_profile_id: referrer?.id ?? null,
+      } as T;
+    }
     if (sql.includes("from user_sessions")) return null as T;
     return null as T;
   }
 
   async all<T>() {
     const sql = compactSql(this.sql);
-    if (sql.includes("from login_account_people left join referrer_profiles")) {
+    if (sql.includes("select person_id, is_available from login_account_people")) {
       return {
         results: this.db.loginAccountPeople
           .filter((row) => row.login_account_id === this.values[0])
-          .map((row) => {
-            const referrer = this.db.referrerProfiles.find((profile) => profile.person_id === row.person_id);
-            return {
-              person_id: row.person_id,
-              external_referrer_id: referrer?.external_referrer_id ?? null,
-              referrer_active: referrer?.active ?? null,
-            };
-          }),
+          .map((row) => ({ person_id: row.person_id, is_available: row.is_available })),
       } as T;
     }
     if (sql.includes("from person_contacts join people") && sql.includes("join referral_programme_referrer_types")) {
@@ -90,6 +106,10 @@ class FakeD1Statement {
       for (const contact of this.db.personContacts.filter((row) => row.contact_type === "mobile" && row.normalized_value === mobileHash)) {
         const person = this.db.people.find((row) => row.id === contact.person_id && row.organisation_id === organisationId && row.status === "active");
         if (!person) continue;
+        const details = this.db.personContactDetails.find((row) => row.contact_id === contact.id);
+        if (details && details.status !== "active") continue;
+        const student = this.db.students.find((row) => row.person_id === person.id && row.organisation_id === organisationId && row.portal_status !== "disabled");
+        if (!student) continue;
         const referrer = this.db.referrerProfiles.find((row) => row.person_id === person.id && row.organisation_id === organisationId && row.active === 1);
         if (!referrer) continue;
         for (const personRole of this.db.personRoles.filter((row) => row.person_id === person.id)) {
@@ -99,6 +119,8 @@ class FakeD1Statement {
             person_id: person.id,
             full_name: person.full_name,
             public_name: person.public_name,
+            student_number: student.student_number,
+            current_status: student.current_status,
             external_referrer_id: referrer.external_referrer_id,
             referral_token: referrer.referral_token,
             personal_link: referrer.personal_link,
@@ -109,6 +131,28 @@ class FakeD1Statement {
           });
         }
       }
+      return { results } as T;
+    }
+    if (sql.includes("from enrolments join students") && sql.includes("join courses on courses.id = enrolments.course_id")) {
+      const [organisationId, personId] = this.values;
+      const student = this.db.students.find((row) => row.organisation_id === organisationId && row.person_id === personId);
+      const results = this.db.enrolments
+        .filter((row) => row.student_id === student?.id)
+        .map((enrolment) => {
+          const course = this.db.courses.find((row) => row.id === enrolment.course_id);
+          return {
+            enrolment_id: enrolment.id,
+            enrolment_number: enrolment.enrolment_number,
+            admission_date: enrolment.admission_date,
+            joining_date: enrolment.joining_date,
+            actual_completion_date: enrolment.actual_completion_date ?? null,
+            status: enrolment.status,
+            course_id: course?.id ?? "",
+            course_code: course?.code ?? "",
+            course_name: course?.name ?? "",
+            duration_label: course?.duration_label ?? null,
+          };
+        });
       return { results } as T;
     }
     if (sql.includes("from login_account_people join people") && sql.includes("left join person_roles")) {
@@ -165,9 +209,15 @@ class FakeD1 {
   writes: Array<{ sql: string; values: unknown[] }> = [];
   otpChallenges: Row[] = [];
   loginAccounts: Row[] = [];
+  branches: Row[] = [{ id: "branch_sion", name: "Sion", code: "SION" }];
   people: Row[] = [];
   personContacts: Row[] = [];
+  personContactDetails: Row[] = [];
+  students: Row[] = [];
+  enrolments: Row[] = [];
+  courses: Row[] = [{ id: "course_full_stack", code: "FULL_STACK", name: "Full Stack Development", duration_label: "12 months" }];
   referrerProfiles: Row[] = [];
+  referralLinks: Row[] = [];
   loginAccountPeople: Row[] = [];
   loginAccountRoles: Row[] = [];
   personRoles: Row[] = [];
@@ -494,7 +544,10 @@ async function seedLookupProfiles(db: FakeD1, mobile: string, options: LookupOpt
   const profiles = options?.profiles ?? [profile("STU1", "Asha Student", "Asha", "Student")];
   const returnedExternalIds = new Set(profiles.map((item) => item.externalReferrerId));
   for (const existing of db.referrerProfiles) {
-    if (!returnedExternalIds.has(String(existing.external_referrer_id))) existing.active = 0;
+    if (returnedExternalIds.has(String(existing.external_referrer_id))) continue;
+    const contact = db.personContacts.find((row) => row.person_id === existing.person_id && row.contact_type === "mobile");
+    const details = contact ? db.personContactDetails.find((row) => row.contact_id === contact.id) : null;
+    if (details) details.status = "inactive";
   }
   const mobileHash = await hmacHex(sessionPepper, "mobile", mobile);
   for (const item of profiles) {
@@ -507,6 +560,41 @@ async function seedLookupProfiles(db: FakeD1, mobile: string, options: LookupOpt
     }
     if (!db.personContacts.some((row) => row.person_id === personId && row.contact_type === "mobile" && row.normalized_value === mobileHash)) {
       db.personContacts.push({ id: contactId, person_id: personId, contact_type: "mobile", normalized_value: mobileHash, last_four: mobile.slice(-4), is_primary: 1, is_verified: 1, created_at: item.memberSince, updated_at: item.memberSince });
+    }
+    if (!db.personContactDetails.some((row) => row.contact_id === contactId)) {
+      db.personContactDetails.push({ contact_id: contactId, status: "active" });
+    } else {
+      db.personContactDetails.find((row) => row.contact_id === contactId)!.status = "active";
+    }
+    if (!db.students.some((row) => row.person_id === personId && row.organisation_id === "org_samyak")) {
+      const sequence = db.students.length + 1;
+      db.students.push({
+        id: stableTestId("student", item.externalReferrerId),
+        organisation_id: "org_samyak",
+        person_id: personId,
+        home_branch_id: "branch_sion",
+        student_number: `SYK-SION-${String(sequence).padStart(6, "0")}`,
+        sequence_number: sequence,
+        student_since: item.memberSince,
+        current_status: item.referrerType.toLowerCase().includes("alumni") ? "completed" : "on_hold",
+        portal_status: "active",
+        created_at: item.memberSince,
+        updated_at: item.memberSince,
+      });
+    }
+    const student = db.students.find((row) => row.person_id === personId && row.organisation_id === "org_samyak");
+    if (student && !db.enrolments.some((row) => row.student_id === student.id)) {
+      db.enrolments.push({
+        id: stableTestId("enrol", item.externalReferrerId),
+        student_id: student.id,
+        branch_id: "branch_sion",
+        course_id: "course_full_stack",
+        enrolment_number: `ENR-SION-${String(db.enrolments.length + 1).padStart(6, "0")}`,
+        admission_date: item.memberSince,
+        joining_date: item.memberSince,
+        actual_completion_date: item.referrerType.toLowerCase().includes("alumni") ? item.memberSince : null,
+        status: item.referrerType.toLowerCase().includes("alumni") ? "completed" : "on_hold",
+      });
     }
     const existingReferrer = db.referrerProfiles.find((row) => row.organisation_id === "org_samyak" && row.external_referrer_id === item.externalReferrerId);
     if (existingReferrer) {
@@ -678,7 +766,37 @@ describe("auth routes", () => {
     expect(body.session.profiles.find((item: Row) => item.personId === "person_alu1").roles).not.toContain("student");
   });
 
-  it("synchronises returned profiles and deactivates stale linked profiles", async () => {
+  it("handles synthetic shared-mobile scale with one login account and distinct linked people", async () => {
+    const db = new FakeD1();
+    const profiles = Array.from({ length: 25 }, (_, index) =>
+      profile(`SHARED${index + 1}`, `Shared Person ${index + 1}`, `Shared ${index + 1}`, index % 2 === 0 ? "Student" : "Alumni"),
+    );
+    installFetch({ profiles });
+    let otpResponse = await requestOtp(db);
+    let verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    expect(verifyResponse.status).toBe(200);
+    let body = await jsonBody(verifyResponse);
+    expect(body.session.activeProfile).toBeNull();
+    expect(body.session.profiles).toHaveLength(25);
+    expect(new Set(body.session.profiles.map((item: Row) => item.personId)).size).toBe(25);
+    expect(db.loginAccounts).toHaveLength(1);
+    expect(db.loginAccountPeople).toHaveLength(25);
+    expect(db.people).toHaveLength(25);
+
+    db.otpChallenges.forEach((challenge) => {
+      challenge.requested_at = "2000-01-01T00:00:00.000Z";
+    });
+    otpResponse = await requestOtp(db);
+    verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    body = await jsonBody(verifyResponse);
+    expect(verifyResponse.status).toBe(200);
+    expect(body.session.profiles).toHaveLength(25);
+    expect(db.loginAccounts).toHaveLength(1);
+    expect(db.loginAccountPeople).toHaveLength(25);
+    expect(db.people).toHaveLength(25);
+  });
+
+  it("synchronises returned profiles without rewriting referrer profiles", async () => {
     const db = new FakeD1();
     installFetch({ profiles: [profile("STU1", "Asha Student", "Asha", "Student"), profile("ALU1", "Ravi Alumni", "Ravi", "Alumni")] });
     let otpResponse = await requestOtp(db);
@@ -703,7 +821,7 @@ describe("auth routes", () => {
     verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
     expect(verifyResponse.status).toBe(200);
     expect(db.loginAccountPeople.find((link) => link.person_id === "person_alu1")?.is_available).toBe(0);
-    expect(db.referrerProfiles.find((link) => link.person_id === "person_alu1")?.active).toBe(0);
+    expect(db.referrerProfiles.find((link) => link.person_id === "person_alu1")?.active).toBe(1);
     expect(db.userSessions.every((session) => session.active_person_id !== "person_alu1")).toBe(true);
     expect(db.auditLogs.length).toBeGreaterThan(0);
   });
@@ -744,6 +862,23 @@ describe("auth routes", () => {
     const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: cookie } }, env(db));
     expect(referrals.status).toBe(200);
     await expect(referrals.json()).resolves.toMatchObject({ success: true, referrals: [] });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const home = await app.request("http://localhost/api/student/home", { headers: { Cookie: cookie } }, env(db));
+    expect(home.status).toBe(200);
+    const homeBody = await jsonBody(home);
+    expect(homeBody).toMatchObject({
+      success: true,
+      identity: {
+        personId: "person_stu1",
+        studentId: "SYK-SION-000001",
+        lifecycleStatus: "CURRENT",
+        studentStatus: "on_hold",
+      },
+      courseHistory: [expect.objectContaining({ courseName: "Full Stack Development", status: "on_hold" })],
+      skillCircle: { programmeName: "Samyak Skill Circle", referralDashboardPath: "/app/referrals" },
+    });
+    expect(JSON.stringify(homeBody)).not.toContain("9876543210");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -808,7 +943,13 @@ describe("auth routes", () => {
     const knownDb = new FakeD1();
     installFetch({ eligible: true });
     const knownOtp = await requestOtp(knownDb);
+    const peopleBeforeLogin = knownDb.people.length;
+    const referrersBeforeLogin = knownDb.referrerProfiles.length;
+    const contactsBeforeLogin = knownDb.personContacts.length;
     await verifyOtp(knownDb, String((await jsonBody(knownOtp)).challengeId), "123456");
+    expect(knownDb.people).toHaveLength(peopleBeforeLogin);
+    expect(knownDb.referrerProfiles).toHaveLength(referrersBeforeLogin);
+    expect(knownDb.personContacts).toHaveLength(contactsBeforeLogin);
     expect(JSON.stringify(knownDb.loginAccounts)).not.toContain("9876543210");
     expect(JSON.stringify(knownDb.personContacts)).not.toContain("9876543210");
     expect(JSON.stringify(knownDb.authEvents)).not.toContain("9876543210");
