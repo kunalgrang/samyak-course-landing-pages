@@ -786,6 +786,10 @@ export async function fetchStudentHomeForActiveProfile(c: AppContext, personId: 
     }>();
 
   const activeLink = student.referrer_profile_id ? await activeReferralLinkForProfile(c, student.referrer_profile_id) : null;
+  const lifecycleStatus = studentLifecycleStatus(
+    student.current_status,
+    (courseRows.results || []).map((row) => row.status),
+  );
   return {
     success: true,
     identity: {
@@ -794,7 +798,7 @@ export async function fetchStudentHomeForActiveProfile(c: AppContext, personId: 
       publicName: student.public_name || student.full_name,
       studentId: student.student_number,
       studentStatus: student.current_status,
-      lifecycleStatus: studentLifecycleStatus(student.current_status),
+      lifecycleStatus,
       studentSince: student.student_since,
       branchName: student.branch_name || "",
     },
@@ -925,8 +929,9 @@ export async function lookupPortalProfilesByMobile(c: AppContext, mobile: string
   return { success: true, eligible: profiles.length > 0, profiles };
 }
 
-function studentLifecycleStatus(status: string): "CURRENT" | "ALUMNI" {
-  return ["active", "on_hold", "suspended"].includes(status) ? "CURRENT" : "ALUMNI";
+function studentLifecycleStatus(studentStatus: string, enrolmentStatuses: string[] = []): "CURRENT" | "ALUMNI" {
+  if (enrolmentStatuses.some((status) => ["active", "on_hold", "confirmed", "not_started"].includes(status))) return "CURRENT";
+  return ["active", "on_hold", "suspended"].includes(studentStatus) ? "CURRENT" : "ALUMNI";
 }
 
 async function profileForPerson(c: AppContext, personId: string) {

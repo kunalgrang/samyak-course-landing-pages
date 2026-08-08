@@ -764,6 +764,53 @@ describe("auth routes", () => {
     expect(body.session.mobileLastFour).toBe("3210");
     expect(body.session.profiles.find((item: Row) => item.personId === "person_stu1").roles).not.toContain("alumni");
     expect(body.session.profiles.find((item: Row) => item.personId === "person_alu1").roles).not.toContain("student");
+
+    const cookie = sessionCookie(verifyResponse);
+    const selected = await app.request(
+      "http://localhost/api/auth/select-profile",
+      {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ personId: "person_alu1" }),
+      },
+      env(db),
+    );
+    expect(selected.status).toBe(200);
+    const alumniHome = await app.request("http://localhost/api/student/home", { headers: { Cookie: cookie } }, env(db));
+    await expect(alumniHome.json()).resolves.toMatchObject({
+      identity: {
+        personId: "person_alu1",
+        studentId: "SYK-SION-000002",
+        lifecycleStatus: "ALUMNI",
+      },
+      courseHistory: [expect.objectContaining({ status: "completed" })],
+    });
+  });
+
+  it("rejects selecting unrelated or another account's linked person", async () => {
+    const db = new FakeD1();
+    installFetch();
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const cookie = sessionCookie(verifyResponse);
+    db.people.push({ id: "person_other", organisation_id: "org_samyak", full_name: "Other Student", public_name: "Other", status: "active", created_at: "2026-07-01", updated_at: "2026-07-01" });
+    db.students.push({ id: "student_other", organisation_id: "org_samyak", person_id: "person_other", home_branch_id: "branch_sion", student_number: "SYK-SION-999999", sequence_number: 999999, student_since: "2026-07-01", current_status: "active", portal_status: "active" });
+    db.referrerProfiles.push({ id: "ref_other", organisation_id: "org_samyak", person_id: "person_other", external_referrer_id: "OTHER", referral_token: "OTHER_TOKEN", personal_link: "https://example.test/r/OTHER", active: 1, created_at: "2026-07-01", updated_at: "2026-07-01" });
+    db.loginAccountPeople.push({ login_account_id: "acct_other", person_id: "person_other", access_type: "self", is_default: 1, is_available: 1, created_at: "2026-07-01" });
+
+    for (const personId of ["person_missing", "person_other"]) {
+      const response = await app.request(
+        "http://localhost/api/auth/select-profile",
+        {
+          method: "POST",
+          headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie },
+          body: JSON.stringify({ personId }),
+        },
+        env(db),
+      );
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ success: false, code: "PROFILE_NOT_LINKED" });
+    }
   });
 
   it("handles synthetic shared-mobile scale with one login account and distinct linked people", async () => {
@@ -880,6 +927,17 @@ describe("auth routes", () => {
     });
     expect(JSON.stringify(homeBody)).not.toContain("9876543210");
     expect(fetchMock).not.toHaveBeenCalled();
+
+    db.students.find((student) => student.person_id === "person_stu1")!.current_status = "completed";
+    const staleAggregateHome = await app.request("http://localhost/api/student/home", { headers: { Cookie: cookie } }, env(db));
+    expect(staleAggregateHome.status).toBe(200);
+    await expect(staleAggregateHome.json()).resolves.toMatchObject({
+      identity: {
+        lifecycleStatus: "CURRENT",
+        studentStatus: "completed",
+      },
+      courseHistory: [expect.objectContaining({ status: "on_hold" })],
+    });
   });
 
   it("accepts a session after simulated Worker restart and ordinary deployment when SESSION_PEPPER is stable", async () => {
