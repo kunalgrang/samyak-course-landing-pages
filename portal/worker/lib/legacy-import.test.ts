@@ -13,6 +13,12 @@ import {
   resolveLegacyCourse,
 } from "./legacy-import";
 import { applyLegacyImportCsv as applyLegacyImportToDb, buildPreflightLegacyImportCsv } from "./legacy-import-apply";
+import {
+  assertFreshProductionPreflight,
+  buildProductionApplySql,
+  PRODUCTION_IMPORT_DATABASE,
+  validateProductionApplyRequest,
+} from "./legacy-import-remote-apply";
 import { buildRemotePreflightLegacyImportCsv, type RemoteD1Client } from "./legacy-import-remote-preflight";
 import { hmacHex } from "./crypto";
 
@@ -99,7 +105,36 @@ Maybe Match,9123456789,SPOKEN ENGLISH,2024-03-01,COMPLETED
     const cli = ["--experimental-strip-types", "--experimental-specifier-resolution=node", "./worker/lib/legacy-import-cli.ts"];
     expect(() => execFileSync("node", [...cli, "--apply", "--file", file], { cwd: process.cwd(), encoding: "utf8" })).toThrow(/Local apply requires --confirm-apply/);
     expect(() => execFileSync("node", [...cli, "--apply", "--dry-run", "--file", file], { cwd: process.cwd(), encoding: "utf8" })).toThrow(/either --dry-run or --apply/);
-    expect(() => execFileSync("node", [...cli, "--remote", "--apply", "--confirm-remote-apply", "--file", file], { cwd: process.cwd(), encoding: "utf8" })).toThrow(/Remote apply is intentionally unavailable/);
+    expect(() => execFileSync("node", [...cli, "--remote", "--apply", "--file", file], { cwd: process.cwd(), encoding: "utf8" })).toThrow(/Production remote apply requires/);
+    expect(() => execFileSync("node", [...cli, "--remote", "--apply", "--confirm-apply", "--file", file], { cwd: process.cwd(), encoding: "utf8" })).toThrow(/confirm-production-import/);
+  }, 15000);
+
+  it("requires every production apply flag and locks the production target", () => {
+    const base = {
+      remote: true,
+      apply: true,
+      confirmApply: true,
+      confirmProductionImport: true,
+      organisationId: "org_samyak",
+      branch: "branch_sion",
+      databaseName: PRODUCTION_IMPORT_DATABASE,
+    };
+
+    expect(() => validateProductionApplyRequest(base)).not.toThrow();
+    expect(() => validateProductionApplyRequest({ ...base, confirmApply: false })).toThrow(/confirm-apply/);
+    expect(() => validateProductionApplyRequest({ ...base, confirmProductionImport: false })).toThrow(/confirm-production-import/);
+    expect(() => validateProductionApplyRequest({ ...base, apply: false })).toThrow(/--apply/);
+    expect(() => validateProductionApplyRequest({ ...base, remote: false })).toThrow(/--remote/);
+    expect(() => validateProductionApplyRequest({ ...base, organisationId: "other_org" })).toThrow(/organisation org_samyak/);
+    expect(() => validateProductionApplyRequest({ ...base, branch: "branch_other" })).toThrow(/branch branch_sion/);
+    expect(() => validateProductionApplyRequest({ ...base, databaseName: "other-d1" })).toThrow(/samyak-student-portal/);
+  });
+
+  it("blocks production apply when the mandatory fresh preflight drifts", () => {
+    expect(() => assertFreshProductionPreflight(productionPreflight())).not.toThrow();
+    expect(() => assertFreshProductionPreflight(productionPreflight({ matching: { ...productionPreflight().matching, possibleMatches: 1 } }))).toThrow(/possible matches=1/);
+    expect(() => assertFreshProductionPreflight(productionPreflight({ matching: { ...productionPreflight().matching, errors: 1 } }))).toThrow(/errors=1/);
+    expect(() => assertFreshProductionPreflight(productionPreflight({ productionCourseMaster: { ...productionPreflight().productionCourseMaster, courses: 41 } }))).toThrow(/courses=41/);
   });
 
   it("applies fresh migrations and seed.sql twice with the 42-course master and import tables intact", () => {
@@ -287,6 +322,42 @@ Varsha,9876543211,CCC,2024-01-02,COMPLETED
     expect(sensitiveJson).not.toContain("9876543211");
     expect(sensitiveJson).not.toContain("+919876543211");
     db.close();
+  });
+
+  it("builds production apply SQL from the local apply path without excluded write targets or raw contacts", async () => {
+    const generated = await buildProductionApplySql(SAMPLE_CSV, applyOptions());
+    const sql = generated.sql;
+
+    expect(generated.summary).toMatchObject({ status: "APPLIED", peopleCreated: 2, studentsCreated: 2, enrolmentsCreated: 3 });
+    for (const table of [
+      "legacy_import_batches",
+      "legacy_import_rows",
+      "legacy_import_entity_mappings",
+      "people",
+      "person_contacts",
+      "person_contact_details",
+      "person_contact_secrets",
+      "students",
+      "person_roles",
+      "enrolments",
+      "referrer_profiles",
+      "number_sequences",
+    ]) {
+      expect(sql).toContain(`insert into ${table}`);
+    }
+    for (const table of [
+      "login_accounts",
+      "login_account_people",
+      "referral_links",
+      "referrals",
+      "referral_status_events",
+      "referral_reward_snapshots",
+      "audit_logs",
+    ]) {
+      expect(sql).not.toContain(`insert into ${table}`);
+    }
+    expect(sql).not.toContain("9876543210");
+    expect(sql).not.toContain("+919876543210");
   });
 
   it("preflights without writes", async () => {
@@ -489,6 +560,48 @@ function remoteOptions(overrides: Partial<Parameters<typeof buildRemotePreflight
     sourceFileName: "synthetic.csv",
     sessionPepper: "test-pepper",
     ...overrides,
+  };
+}
+
+function productionPreflight(overrides: Partial<ReturnType<typeof baseProductionPreflight>> = {}) {
+  return { ...baseProductionPreflight(), ...overrides };
+}
+
+function baseProductionPreflight() {
+  return {
+    mode: "remote_preflight" as const,
+    status: "READY" as const,
+    sourceChecksumShort: "5f366307cb6a",
+    writeOperationsPerformed: false as const,
+    zeroWriteProof: { queries: 26, changedDbFalse: true, rowsWritten: 0 },
+    productionCountsBefore: {},
+    productionCountsAfter: {},
+    productionMigrationState: { latestApplied: "0016_legacy_student_import_foundation.sql", appliedThrough: "0016", has0015: true, has0016: true },
+    requiredFutureMigrations: [],
+    source: { people: 56, enrolments: 59, current: 20, alumni: 36 },
+    matching: { exactExistingMatches: 0, possibleMatches: 0, sharedContactNewPeople: 0, newPeople: 56, errors: 0, exactAndReviewRows: [] },
+    existingProductionPeople: [],
+    projectedProductionApply: {
+      peopleCreated: 56,
+      peopleReused: 0,
+      studentsCreated: 56,
+      studentsReused: 0,
+      enrolmentsCreated: 59,
+      enrolmentsReused: 0,
+      studentRolesCreated: 20,
+      studentRolesReused: 0,
+      alumniRolesCreated: 36,
+      alumniRolesReused: 0,
+      referrerProfilesCreated: 56,
+      referrerProfilesReused: 0,
+      referralLinksCreated: 0 as const,
+      referralsCreated: 0 as const,
+      rewardSnapshotsCreated: 0 as const,
+      projectedStudentIdRange: "SYK-SION-000001 through SYK-SION-000056",
+      projectedNewStudentIdsNeeded: 56,
+    },
+    productionCourseMaster: { categories: 14, courses: 42, eligibleCourses: 42, missingOrIneligibleSourceCourses: [] },
+    sharedMobileVerification: { maskedMobile: "******3211", proposedPeople: 2, collapsed: false },
   };
 }
 

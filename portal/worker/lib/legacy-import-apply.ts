@@ -211,25 +211,6 @@ export async function applyLegacyImportCsv(db: SqliteDb, csvText: string, option
            valid_rows = ?, error_rows = 0, review_required_count = ?, updated_at = ?
        where id = ?`,
     ).run(now, summary.peopleCreated, summary.peopleMatched, prepared.result.summary.validRows, prepared.result.summary.reviewRows, now, batchId);
-    db.prepare(
-      `insert into audit_logs
-        (id, organisation_id, branch_id, action, entity_type, entity_id, metadata_json, created_at)
-       values (?, ?, ?, 'legacy_import_applied', 'legacy_import_batch', ?, ?, ?)`,
-    ).run(
-      `audit_${batchId}`,
-      options.organisationId,
-      prepared.branch.id,
-      batchId,
-      JSON.stringify({
-        checksumShort: prepared.plan.batch.sourceChecksum.slice(0, 12),
-        rows: prepared.result.summary.totalRows,
-        peopleCreated: summary.peopleCreated,
-        studentsCreated: summary.studentsCreated,
-        enrolmentsCreated: summary.enrolmentsCreated,
-        referrerProfilesCreated: summary.referrerProfilesCreated,
-      }),
-      now,
-    );
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
