@@ -1,7 +1,17 @@
 import type { Context } from "hono";
 import type { Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
-import { clearSessionCookie, fetchDashboardForActiveProfile, getSessionFromRequest, hasSessionCookie, sessionView, activeReferrerForPerson, ORG_ID, recordAuthEvent } from "../lib/auth-store";
+import {
+  activeReferrerForPerson,
+  clearSessionCookie,
+  fetchDashboardForActiveProfile,
+  fetchStudentHomeForActiveProfile,
+  getSessionFromRequest,
+  hasSessionCookie,
+  ORG_ID,
+  recordAuthEvent,
+  sessionView,
+} from "../lib/auth-store";
 import { getClientIp, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { issueReferralLink, rotateReferralLink, ReferralServiceError, type ReferralServiceEnv } from "../lib/referral-service";
@@ -21,6 +31,27 @@ const REFERRAL_PROGRAMME_ID = "rprog_samyak_skill_circle";
 const REFERRAL_PUBLIC_ORIGIN = "https://go.samyaksion.com";
 
 export function registerStudentRoutes(app: PortalHono) {
+  app.get("/api/student/home", async (c) => {
+    const session = await getSessionFromRequest(c);
+    if (!session) {
+      const response = jsonError(c, { status: 401, code: "unauthenticated", message: "Please sign in again." });
+      if (hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
+      return response;
+    }
+    const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
+    if (!view.activeProfile) {
+      return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
+    }
+    if (!view.activeProfile.effectiveRoles?.some((role) => role === "student" || role === "alumni")) {
+      return jsonError(c, { status: 403, code: "student_profile_required", message: "This profile is not available." });
+    }
+    try {
+      return jsonPlain(c, await fetchStudentHomeForActiveProfile(c, view.activeProfile.personId));
+    } catch {
+      return jsonError(c, { status: 503, code: "student_home_unavailable", message: "Student dashboard is temporarily unavailable." });
+    }
+  });
+
   app.get("/api/student/referrals", async (c) => {
     const session = await getSessionFromRequest(c);
     if (!session) {

@@ -77,8 +77,7 @@ export type ChallengeRecord = {
 
 type PreviousProfileLink = {
   person_id: string;
-  external_referrer_id: string | null;
-  referrer_active: number | null;
+  is_available: number;
 };
 
 type D1RunResult = {
@@ -143,6 +142,39 @@ export type PortalDashboard = {
     approvedRewardAmount: number;
     rewardPaymentDate: string;
   }>;
+};
+
+export type StudentHome = {
+  success: true;
+  identity: {
+    personId: string;
+    fullName: string;
+    publicName: string;
+    studentId: string;
+    studentStatus: string;
+    lifecycleStatus: "CURRENT" | "ALUMNI";
+    studentSince: string;
+    branchName: string;
+  };
+  courseHistory: Array<{
+    enrolmentId: string;
+    enrolmentNumber: string;
+    courseId: string;
+    courseCode: string;
+    courseName: string;
+    durationLabel: string;
+    admissionDate: string;
+    joiningDate: string;
+    completionDate: string | null;
+    status: string;
+  }>;
+  skillCircle: {
+    programmeName: string;
+    eligible: boolean;
+    hasActiveReferralLink: boolean;
+    referralDashboardPath: "/app/referrals";
+    message: string;
+  };
 };
 
 export async function mobileHash(c: AppContext, mobile: string) {
@@ -312,15 +344,13 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
   if (!account) throw new Error("Account bootstrap failed");
 
   const previousLinks = await c.env.DB.prepare(
-    `select login_account_people.person_id, referrer_profiles.external_referrer_id, referrer_profiles.active as referrer_active
+    `select person_id, is_available
      from login_account_people
-     left join referrer_profiles on referrer_profiles.person_id = login_account_people.person_id
-     where login_account_people.login_account_id = ?`,
+     where login_account_id = ?`,
   )
     .bind(account.id)
     .all<PreviousProfileLink>();
-  const previousByExternalId = new Map((previousLinks.results || []).map((link) => [link.external_referrer_id, link]));
-  const returnedExternalIds = new Set(lookup.profiles.map((profile) => profile.externalReferrerId));
+  const previousByPersonId = new Map((previousLinks.results || []).map((link) => [link.person_id, link]));
   const returnedPersonIds = new Set<string>();
 
   await c.env.DB.prepare(
@@ -332,32 +362,10 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
     .run();
 
   for (const profile of lookup.profiles) {
-    const personId = profile.personId || stableId("person", profile.externalReferrerId);
-    const referrerId = stableId("ref", profile.externalReferrerId);
-    const roleCode = profile.referrerType.toLowerCase().includes("alumni") ? "alumni" : "student";
+    if (!profile.personId) continue;
+    const personId = profile.personId;
     returnedPersonIds.add(personId);
 
-    await c.env.DB.prepare(
-      `insert into people (id, organisation_id, full_name, public_name, status, created_at, updated_at)
-       values (?, ?, ?, ?, 'active', ?, ?)
-       on conflict(id) do update set full_name = excluded.full_name, public_name = excluded.public_name, status = 'active', updated_at = excluded.updated_at`,
-    )
-      .bind(personId, ORG_ID, profile.fullName, profile.publicName, now, now)
-      .run();
-    await c.env.DB.prepare(
-      `insert into person_contacts (id, person_id, contact_type, normalized_value, display_value, last_four, is_primary, is_verified, verified_at, created_at, updated_at)
-       values (?, ?, 'mobile', ?, ?, ?, 1, 1, ?, ?, ?)
-       on conflict(person_id, contact_type, normalized_value) do update set is_verified = 1, verified_at = excluded.verified_at, updated_at = excluded.updated_at`,
-    )
-      .bind(stableId("contact", `${profile.externalReferrerId}-mobile`), personId, accountHash, null, mobile.slice(-4), now, now, now)
-      .run();
-    await c.env.DB.prepare(
-      `insert into referrer_profiles (id, organisation_id, person_id, external_referrer_id, referral_token, personal_link, active, last_synced_at, created_at, updated_at)
-       values (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-       on conflict(organisation_id, external_referrer_id) do update set person_id = excluded.person_id, referral_token = excluded.referral_token, personal_link = excluded.personal_link, active = 1, last_synced_at = excluded.last_synced_at, updated_at = excluded.updated_at`,
-    )
-      .bind(referrerId, ORG_ID, personId, profile.externalReferrerId, profile.referralToken, profile.personalLink, now, now, now)
-      .run();
     await c.env.DB.prepare(
       `insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at)
        values (?, ?, 'self', ?, 1, ?)
@@ -365,32 +373,23 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
     )
       .bind(account.id, personId, lookup.profiles.length === 1 ? 1 : 0, now)
       .run();
-    await c.env.DB.prepare(
-      `insert into person_roles (person_id, role_id, branch_id, branch_key, created_at)
-       select ?, roles.id, null, '', ? from roles where roles.organisation_id = ? and roles.code = ?
-       on conflict(person_id, role_id, branch_key) do nothing`,
-    )
-      .bind(personId, now, ORG_ID, roleCode)
-      .run();
 
-    const previous = previousByExternalId.get(profile.externalReferrerId);
-    if (previous && previous.referrer_active === 0) {
-      await recordProfileAudit(c, account.id, personId, "profile_activated", referrerId);
+    const previous = previousByPersonId.get(personId);
+    if (previous && previous.is_available === 0) {
+      await recordProfileAudit(c, account.id, personId, "profile_activated", personId);
     }
   }
+  if (returnedPersonIds.size === 0) throw new Error("Account bootstrap requires existing linked people");
 
   for (const previous of previousLinks.results || []) {
-    if (!previous.external_referrer_id || returnedExternalIds.has(previous.external_referrer_id)) continue;
+    if (returnedPersonIds.has(previous.person_id)) continue;
     await c.env.DB.prepare("update login_account_people set is_available = 0 where login_account_id = ? and person_id = ?")
       .bind(account.id, previous.person_id)
-      .run();
-    await c.env.DB.prepare("update referrer_profiles set active = 0, last_synced_at = ?, updated_at = ? where person_id = ? and active = 1")
-      .bind(now, now, previous.person_id)
       .run();
     await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ?")
       .bind(account.id, previous.person_id)
       .run();
-    await recordProfileAudit(c, account.id, previous.person_id, "profile_deactivated", previous.external_referrer_id);
+    await recordProfileAudit(c, account.id, previous.person_id, "profile_unlinked", previous.person_id);
   }
 
   for (const previous of previousLinks.results || []) {
@@ -716,6 +715,113 @@ export async function fetchDashboardForActiveProfile(c: AppContext, personId: st
   };
 }
 
+export async function fetchStudentHomeForActiveProfile(c: AppContext, personId: string): Promise<StudentHome> {
+  const student = await c.env.DB.prepare(
+    `select
+       people.full_name,
+       people.public_name,
+       students.id as student_id,
+       students.student_number,
+       students.student_since,
+       students.current_status,
+       branches.name as branch_name,
+       referrer_profiles.id as referrer_profile_id
+     from students
+     join people on people.id = students.person_id
+       and people.organisation_id = students.organisation_id
+     left join branches on branches.id = students.home_branch_id
+     left join referrer_profiles on referrer_profiles.person_id = people.id
+       and referrer_profiles.organisation_id = people.organisation_id
+       and referrer_profiles.active = 1
+     where students.organisation_id = ?
+       and students.person_id = ?
+       and students.portal_status != 'disabled'
+       and people.status = 'active'
+     limit 1`,
+  )
+    .bind(ORG_ID, personId)
+    .first<{
+      full_name: string;
+      public_name: string | null;
+      student_id: string;
+      student_number: string;
+      student_since: string;
+      current_status: string;
+      branch_name: string | null;
+      referrer_profile_id: string | null;
+    }>();
+  if (!student) throw new Error("Student profile unavailable");
+
+  const courseRows = await c.env.DB.prepare(
+    `select
+       enrolments.id as enrolment_id,
+       enrolments.enrolment_number,
+       enrolments.admission_date,
+       enrolments.joining_date,
+       enrolments.actual_completion_date,
+       enrolments.status,
+       courses.id as course_id,
+       courses.code as course_code,
+       courses.name as course_name,
+       courses.duration_label
+     from enrolments
+     join students on students.id = enrolments.student_id
+     join courses on courses.id = enrolments.course_id
+     where students.organisation_id = ?
+       and students.person_id = ?
+     order by enrolments.admission_date desc, enrolments.id desc`,
+  )
+    .bind(ORG_ID, personId)
+    .all<{
+      enrolment_id: string;
+      enrolment_number: string;
+      admission_date: string;
+      joining_date: string;
+      actual_completion_date: string | null;
+      status: string;
+      course_id: string;
+      course_code: string;
+      course_name: string;
+      duration_label: string | null;
+    }>();
+
+  const activeLink = student.referrer_profile_id ? await activeReferralLinkForProfile(c, student.referrer_profile_id) : null;
+  return {
+    success: true,
+    identity: {
+      personId,
+      fullName: student.full_name,
+      publicName: student.public_name || student.full_name,
+      studentId: student.student_number,
+      studentStatus: student.current_status,
+      lifecycleStatus: studentLifecycleStatus(student.current_status),
+      studentSince: student.student_since,
+      branchName: student.branch_name || "",
+    },
+    courseHistory: (courseRows.results || []).map((row) => ({
+      enrolmentId: row.enrolment_id,
+      enrolmentNumber: row.enrolment_number,
+      courseId: row.course_id,
+      courseCode: row.course_code,
+      courseName: row.course_name,
+      durationLabel: row.duration_label || "",
+      admissionDate: row.admission_date,
+      joiningDate: row.joining_date,
+      completionDate: row.actual_completion_date,
+      status: row.status,
+    })),
+    skillCircle: {
+      programmeName: "Samyak Skill Circle",
+      eligible: Boolean(student.referrer_profile_id),
+      hasActiveReferralLink: Boolean(activeLink),
+      referralDashboardPath: "/app/referrals",
+      message: activeLink
+        ? "Your referral dashboard is ready."
+        : "Create or manage your referral link from My Referrals.",
+    },
+  };
+}
+
 async function activeReferralLinkForProfile(c: AppContext, referrerProfileId: string) {
   const now = new Date().toISOString();
   return c.env.DB.prepare(
@@ -735,11 +841,14 @@ async function activeReferralLinkForProfile(c: AppContext, referrerProfileId: st
 
 export async function lookupPortalProfilesByMobile(c: AppContext, mobile: string): Promise<PortalLookup> {
   const hash = await mobileHash(c, mobile);
+  const now = new Date().toISOString();
   const rows = await c.env.DB.prepare(
     `select
        people.id as person_id,
        people.full_name,
        people.public_name,
+       students.student_number,
+       students.current_status,
        referrer_profiles.external_referrer_id,
        referrer_profiles.referral_token,
        referrer_profiles.personal_link,
@@ -757,6 +866,10 @@ export async function lookupPortalProfilesByMobile(c: AppContext, mobile: string
        ) as course_studied
      from person_contacts
      join people on people.id = person_contacts.person_id
+     left join person_contact_details on person_contact_details.contact_id = person_contacts.id
+     join students on students.person_id = people.id
+       and students.organisation_id = people.organisation_id
+       and students.portal_status != 'disabled'
      join referrer_profiles on referrer_profiles.person_id = people.id
        and referrer_profiles.organisation_id = people.organisation_id
      join person_roles on person_roles.person_id = people.id
@@ -772,13 +885,17 @@ export async function lookupPortalProfilesByMobile(c: AppContext, mobile: string
        and people.organisation_id = ?
        and people.status = 'active'
        and referrer_profiles.active = 1
+       and (person_contact_details.status is null or person_contact_details.status = 'active')
+       and (person_contact_details.valid_until is null or person_contact_details.valid_until > ?)
      order by people.full_name`,
   )
-    .bind(hash, ORG_ID)
+    .bind(hash, ORG_ID, now)
     .all<{
       person_id: string;
       full_name: string;
       public_name: string | null;
+      student_number: string;
+      current_status: string;
       external_referrer_id: string;
       referral_token: string;
       personal_link: string;
@@ -787,19 +904,29 @@ export async function lookupPortalProfilesByMobile(c: AppContext, mobile: string
       role_code: string;
       course_studied: string | null;
     }>();
-  const profiles = (rows.results || []).map((row) => ({
-    personId: row.person_id,
-    externalReferrerId: row.external_referrer_id,
-    fullName: row.full_name,
-    publicName: row.public_name || row.full_name,
-    referrerType: row.role_code === "alumni" ? "Alumni" : "Student",
-    courseStudied: row.course_studied || "",
-    memberSince: row.created_at.slice(0, 10),
-    referralToken: row.referral_token || "",
-    personalLink: row.personal_link || "",
-    active: row.active === 1,
-  }));
+  const byPerson = new Map<string, PortalProfile>();
+  for (const row of rows.results || []) {
+    const profile = {
+      personId: row.person_id,
+      externalReferrerId: row.external_referrer_id,
+      fullName: row.full_name,
+      publicName: row.public_name || row.full_name,
+      referrerType: row.role_code === "alumni" ? "Alumni" : "Student",
+      courseStudied: row.course_studied || "",
+      memberSince: row.created_at.slice(0, 10),
+      referralToken: row.referral_token || "",
+      personalLink: row.personal_link || "",
+      active: row.active === 1,
+    };
+    const existing = byPerson.get(row.person_id);
+    if (!existing || (existing.referrerType === "Alumni" && profile.referrerType === "Student")) byPerson.set(row.person_id, profile);
+  }
+  const profiles = Array.from(byPerson.values());
   return { success: true, eligible: profiles.length > 0, profiles };
+}
+
+function studentLifecycleStatus(status: string): "CURRENT" | "ALUMNI" {
+  return ["active", "on_hold", "suspended"].includes(status) ? "CURRENT" : "ALUMNI";
 }
 
 async function profileForPerson(c: AppContext, personId: string) {

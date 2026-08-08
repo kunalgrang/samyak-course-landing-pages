@@ -227,7 +227,7 @@ export function registerAuthRoutes(app: PortalHono) {
       return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
     }
     const accountId = await bootstrapAccount(c, mobile, lookup);
-    const activePersonId = lookup.profiles.length === 1 ? lookup.profiles[0].personId || `person_${lookup.profiles[0].externalReferrerId.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80)}` : null;
+    const activePersonId = lookup.profiles.length === 1 ? lookup.profiles[0].personId || null : null;
     const token = await createSession(c, accountId, activePersonId);
     await recordAuthEvent(c, "otp_verify", "LOGIN_SUCCESS", { loginAccountId: accountId, mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
     await recordAuditLog(c, accountId, activePersonId, "login");
