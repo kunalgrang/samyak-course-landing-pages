@@ -1,8 +1,4 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import { parseArgs } from "node:util";
 
 export const REQUIRED_LEGACY_HEADERS = [
   "STUDENT FULL NAME",
@@ -23,7 +19,8 @@ export type LegacyCourse = {
 export type ExistingPersonCandidate = {
   personId: string;
   fullName: string;
-  mobileNormalized: string;
+  mobileNormalized?: string;
+  mobileHash?: string;
 };
 
 export type LegacyImportOptions = {
@@ -61,7 +58,7 @@ export type LegacyImportResult = {
     sourceChecksum: string;
     organisationId: string;
     branchCode: string;
-    mode: "dry_run";
+    mode: "dry_run" | "preflight" | "apply";
   };
   summary: {
     totalRows: number;
@@ -125,7 +122,7 @@ const DEFAULT_COURSE_ROWS: Array<[string, string, string, string, number]> = [
   ["course_syk_sft_001", "SYK-SFT-001", "SPOKEN ENGLISH", "SFT", 1.5],
 ];
 
-const DEFAULT_COURSES: LegacyCourse[] = DEFAULT_COURSE_ROWS.map(([id, code, name, categoryCode, durationMonths]) => ({ id, code, name, categoryCode, durationMonths }));
+export const DEFAULT_LEGACY_COURSES: LegacyCourse[] = DEFAULT_COURSE_ROWS.map(([id, code, name, categoryCode, durationMonths]) => ({ id, code, name, categoryCode, durationMonths }));
 
 const COURSE_ALIASES = new Map([
   ["ADVANCE EXCEL", "ADVANCED EXCEL"],
@@ -136,39 +133,31 @@ const COURSE_ALIASES = new Map([
   ["MSCIT", "MS CIT"],
 ]);
 
-type ParsedRow = {
+export type ParsedRow = {
   sourceRowNumber: number;
   values: Record<string, string>;
 };
 
-type InternalRow = LegacyImportRow & {
+export type InternalLegacyImportRow = LegacyImportRow & {
   normalizedName: string | null;
   normalizedMobile: string | null;
 };
 
+export type LegacyImportPlan = {
+  batch: LegacyImportResult["batch"];
+  rows: InternalLegacyImportRow[];
+};
+
 export function analyzeLegacyImportCsv(csvText: string, options: LegacyImportOptions = {}): LegacyImportResult {
-  const parsed = parseLegacyCsv(csvText);
-  assertRequiredHeaders(parsed.headers);
-
-  const sourceChecksum = sha256(csvText);
-  const catalog = buildCourseIndexes(options.courseCatalog || DEFAULT_COURSES);
-  const rows: InternalRow[] = parsed.rows.map((parsedRow) => analyzeRow(parsedRow, sourceChecksum, catalog));
-  assignPersonMatches(rows, options.existingPeople || []);
-  assignProposedStudentOrder(rows);
-
+  const plan = analyzeLegacyImportPlan(csvText, options);
+  const rows = plan.rows;
   const publicRows = rows.map(({ normalizedMobile: _mobile, normalizedName: _name, ...row }) => row);
   const uniqueValidPersonKeys = new Set(rows.filter((row) => row.validationStatus !== "error" && row.normalizedName && row.normalizedMobile).map((row) => `${row.normalizedName}|${row.normalizedMobile}`));
   const uniqueCurrentPersonKeys = new Set(rows.filter((row) => row.studentClassification === "CURRENT" && row.normalizedName && row.normalizedMobile).map((row) => `${row.normalizedName}|${row.normalizedMobile}`));
   const uniqueAlumniPersonKeys = new Set(rows.filter((row) => row.studentClassification === "ALUMNI" && row.normalizedName && row.normalizedMobile && !uniqueCurrentPersonKeys.has(`${row.normalizedName}|${row.normalizedMobile}`)).map((row) => `${row.normalizedName}|${row.normalizedMobile}`));
 
   return {
-    batch: {
-      sourceFileName: options.sourceFileName || "legacy-students.csv",
-      sourceChecksum,
-      organisationId: options.organisationId || "org_samyak",
-      branchCode: options.branchCode || "SION",
-      mode: "dry_run",
-    },
+    batch: plan.batch,
     summary: {
       totalRows: rows.length,
       validRows: rows.filter((row) => row.validationStatus !== "error").length,
@@ -187,7 +176,29 @@ export function analyzeLegacyImportCsv(csvText: string, options: LegacyImportOpt
   };
 }
 
-function countUniquePeopleByMatchStatus(rows: InternalRow[], status: LegacyImportRow["personMatchStatus"]) {
+export function analyzeLegacyImportPlan(csvText: string, options: LegacyImportOptions = {}): LegacyImportPlan {
+  const parsed = parseLegacyCsv(csvText);
+  assertRequiredHeaders(parsed.headers);
+
+  const sourceChecksum = sha256(csvText);
+  const catalog = buildCourseIndexes(options.courseCatalog || DEFAULT_LEGACY_COURSES);
+  const rows: InternalLegacyImportRow[] = parsed.rows.map((parsedRow) => analyzeRow(parsedRow, catalog));
+  assignPersonMatches(rows, options.existingPeople || []);
+  assignProposedStudentOrder(rows);
+
+  return {
+    batch: {
+      sourceFileName: options.sourceFileName || "legacy-students.csv",
+      sourceChecksum,
+      organisationId: options.organisationId || "org_samyak",
+      branchCode: options.branchCode || "SION",
+      mode: "dry_run",
+    },
+    rows,
+  };
+}
+
+function countUniquePeopleByMatchStatus(rows: InternalLegacyImportRow[], status: LegacyImportRow["personMatchStatus"]) {
   return new Set(rows
     .filter((row) => row.validationStatus !== "error" && row.personMatchStatus === status && row.normalizedName && row.normalizedMobile)
     .map((row) => `${row.normalizedName}|${row.normalizedMobile}`)).size;
@@ -241,7 +252,7 @@ export function mapLegacyStatus(value: string): { studentStatus: "active" | "on_
   return null;
 }
 
-export function resolveLegacyCourse(input: string, catalog: LegacyCourse[] = DEFAULT_COURSES): LegacyCourse | null {
+export function resolveLegacyCourse(input: string, catalog: LegacyCourse[] = DEFAULT_LEGACY_COURSES): LegacyCourse | null {
   const indexes = buildCourseIndexes(catalog);
   return resolveCourse(input, indexes);
 }
@@ -273,7 +284,7 @@ export function buildPrivacySafeReport(result: LegacyImportResult) {
   };
 }
 
-function analyzeRow(parsedRow: ParsedRow, sourceChecksum: string, catalog: ReturnType<typeof buildCourseIndexes>): InternalRow {
+function analyzeRow(parsedRow: ParsedRow, catalog: ReturnType<typeof buildCourseIndexes>): InternalLegacyImportRow {
   const nameInput = value(parsedRow, "STUDENT FULL NAME");
   const mobileInput = value(parsedRow, "PRIMARY MOBILE NUMBER");
   const courseInput = value(parsedRow, "COURSE ENROLLMENT");
@@ -299,8 +310,9 @@ function analyzeRow(parsedRow: ParsedRow, sourceChecksum: string, catalog: Retur
 
   const severity = validationCodes.some((code) => code !== "FORMULA_LIKE_VALUE") ? "error" : validationCodes.length ? "warning" : "info";
   const validationStatus = severity === "error" ? "error" : severity === "warning" ? "review" : "valid";
-  const identitySeed = `${sourceChecksum}:${normalizedName || "no-name"}:${normalizedMobile || "no-mobile"}`;
-  const rowSeed = `${identitySeed}:${parsedRow.sourceRowNumber}:${courseInput}:${admissionDateInput}:${statusInput}`;
+  const identitySeed = `${normalizedName || "no-name"}:${normalizedMobile || "no-mobile"}`;
+  const courseSeed = resolvedCourse?.code || normalizeCourseKey(courseInput || "unresolved-course");
+  const rowSeed = `${identitySeed}:${courseSeed}:${admissionDate || admissionDateInput || "no-date"}`;
 
   return {
     sourceRowNumber: parsedRow.sourceRowNumber,
@@ -326,14 +338,15 @@ function analyzeRow(parsedRow: ParsedRow, sourceChecksum: string, catalog: Retur
   };
 }
 
-function assignPersonMatches(rows: InternalRow[], existingPeople: ExistingPersonCandidate[]) {
+function assignPersonMatches(rows: InternalLegacyImportRow[], existingPeople: ExistingPersonCandidate[]) {
   const byMobile = new Map<string, ExistingPersonCandidate[]>();
   for (const candidate of existingPeople) {
-    const normalizedMobile = normalizeIndianMobile(candidate.mobileNormalized);
-    if (!normalizedMobile) continue;
-    const candidates = byMobile.get(normalizedMobile) || [];
+    const normalizedMobile = candidate.mobileNormalized ? normalizeIndianMobile(candidate.mobileNormalized) : null;
+    const mobileKey = normalizedMobile || candidate.mobileHash || null;
+    if (!mobileKey) continue;
+    const candidates = byMobile.get(mobileKey) || [];
     candidates.push({ ...candidate, fullName: normalizePersonName(candidate.fullName) || candidate.fullName });
-    byMobile.set(normalizedMobile, candidates);
+    byMobile.set(mobileKey, candidates);
   }
 
   const sourceNamesByMobile = new Map<string, Set<string>>();
@@ -372,8 +385,8 @@ function assignPersonMatches(rows: InternalRow[], existingPeople: ExistingPerson
   }
 }
 
-function assignProposedStudentOrder(rows: InternalRow[]) {
-  const groups = new Map<string, InternalRow[]>();
+function assignProposedStudentOrder(rows: InternalLegacyImportRow[]) {
+  const groups = new Map<string, InternalLegacyImportRow[]>();
   for (const row of rows) {
     if (row.validationStatus === "error" || !row.normalizedName || !row.normalizedMobile) continue;
     const key = `${row.normalizedName}|${row.normalizedMobile}`;
@@ -448,7 +461,7 @@ function validIsoDate(iso: string) {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === iso;
 }
 
-function earliestDate(rows: InternalRow[]) {
+function earliestDate(rows: InternalLegacyImportRow[]) {
   return rows.map((row) => row.admissionDate || "9999-12-31").sort()[0];
 }
 
@@ -456,7 +469,7 @@ function maskMobile(normalizedMobile: string) {
   return `******${normalizedMobile.slice(-4)}`;
 }
 
-function sha256(value: string) {
+export function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
 
@@ -497,42 +510,4 @@ function parseCsv(input: string): string[][] {
   row.push(cell.replace(/\r$/, ""));
   rows.push(row);
   return rows;
-}
-
-function runCli() {
-  const { values } = parseArgs({
-    options: {
-      file: { type: "string", short: "f" },
-      "dry-run": { type: "boolean", default: false },
-      apply: { type: "boolean", default: false },
-      branch: { type: "string", default: "SION" },
-      organisation: { type: "string", default: "org_samyak" },
-    },
-  });
-  if (values.apply) {
-    throw new Error("Apply mode is intentionally disabled for Phase 1. Run with --dry-run only.");
-  }
-  if (!values["dry-run"]) {
-    throw new Error("Phase 1 importer requires --dry-run.");
-  }
-  if (!values.file) {
-    throw new Error("Missing --file path to a CSV export.");
-  }
-  const filePath = resolve(values.file);
-  const csvText = readFileSync(filePath, "utf8");
-  const result = analyzeLegacyImportCsv(csvText, {
-    sourceFileName: basename(filePath),
-    branchCode: values.branch,
-    organisationId: values.organisation,
-  });
-  process.stdout.write(`${JSON.stringify(buildPrivacySafeReport(result), null, 2)}\n`);
-}
-
-if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
-  try {
-    runCli();
-  } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exit(1);
-  }
 }
