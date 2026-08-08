@@ -1,18 +1,10 @@
-# Legacy Student / Alumni Import Foundation
+# Legacy Student / Alumni Import
 
-Phase 1 creates the local-only foundation for importing historical Samyak students and alumni from the legacy admission workbook. It does not import production data.
-
-## Scope
-
-- Adds the Soft Skills category and `SYK-SFT-001` / `SPOKEN ENGLISH` course to the Samyak course master.
-- Makes `SPOKEN ENGLISH` eligible for Samyak Skill Circle referrals.
-- Adds import audit tables for batches, rows, and source-to-target mappings.
-- Provides a dry-run CSV analyser at `npm run import:legacy-students -- --file <path-to-csv>`.
-- Keeps apply mode blocked until the reviewed write path is built in a later phase.
+This importer handles historical Samyak students and alumni from a CSV export of the legacy admission workbook. It is designed for a reviewed dry-run/preflight/apply workflow and must not be used for production writes until the owner approves the production preflight and apply run.
 
 ## Source Columns
 
-The dry-run CSV must contain these headers:
+The CSV must contain exactly:
 
 - `STUDENT FULL NAME`
 - `PRIMARY MOBILE NUMBER`
@@ -20,58 +12,106 @@ The dry-run CSV must contain these headers:
 - `ADMISSION DATE`
 - `COURSE STATUS`
 
-Workbook files should be exported to CSV before running the importer. No Excel parsing dependency is added to the portal.
+Workbook files should be exported to CSV first. No Excel parsing dependency is added to the portal.
 
-## Course Resolution
+## Commands
 
-The importer resolves exact course codes, exact course names, and the approved legacy aliases:
+Dry-run is the default and performs zero database writes:
 
-- `ADVANCE EXCEL` -> `SYK-AEX-001` / `ADVANCED EXCEL`
-- `SPOKEN ENGLISH` -> `SYK-SFT-001` / `SPOKEN ENGLISH`
+```sh
+npm run import:legacy-students -- --file ./path/to/export.csv --organisation=org_samyak --branch=branch_sion --dry-run
+```
 
-Unknown course values are reported as row-level errors.
+Local preflight queries the selected local D1 database for existing-person matches and performs zero writes:
 
-## Status Mapping
+```sh
+npm run import:legacy-students -- --file ./path/to/export.csv --organisation=org_samyak --branch=branch_sion --preflight
+```
 
-Legacy statuses map to the existing student master states:
+Local apply requires an explicit confirmation flag:
 
-- `IN PROGRESS` -> current student, enrolment `active`
-- `ON HOLD` -> current student, enrolment `on_hold`
-- `COMPLETED` -> alumni student, enrolment `completed`
+```sh
+npm run import:legacy-students -- --file ./path/to/export.csv --organisation=org_samyak --branch=branch_sion --apply --confirm-apply
+```
 
-Historical enrolments are designed to avoid creating admission drafts, fee agreements, payments, batches, trainer assignments, or approval records unless those source values are explicitly available in a later phase.
+Remote apply is intentionally unavailable in Phase 2. A future production apply must use a separate owner-approved command or an explicit remote guard such as `--remote --apply --confirm-remote-apply`.
 
-## Identity And Matching
+## Matching
 
-Dry-run grouping uses normalised full name plus normalised Indian mobile number. Multiple course rows for the same identity become one proposed student with multiple proposed enrolments.
+The importer groups source rows by normalized name plus normalized Indian mobile number. Shared mobile numbers do not merge people.
 
-Existing-person outcomes supported by the analyser are:
+Automatic exact match is allowed only when:
 
-- `new_person`
-- `exact_existing_match`
-- `shared_contact_new_person`
-- `possible_match_review`
+- an existing legacy import mapping points to a Person, or
+- contact HMAC matches and normalized name is compatible/exact.
 
-Ambiguous possible matches require review before any future apply mode can write records.
+Mobile-only matches with a different name become `possible_match_review` and block apply. If a shared contact belongs to another exact source person, the other source person remains `shared_contact_new_person`.
+
+## Student IDs
+
+Imported Student Master rows use the existing `number_sequences` allocator pattern. Ordering is:
+
+1. earliest admission date across that person's imported enrolments
+2. deterministic source order for ties
+
+Existing matched students keep their existing Student ID. New local imports use `SYK-SION-000001` style numbers and retry if a stale counter collides with an existing unique student sequence.
+
+## Historical Data
+
+For each source row:
+
+- enrolment admission date = source `ADMISSION DATE`
+- enrolment joining date = source `ADMISSION DATE`
+
+For each student:
+
+- student joining date = earliest valid source admission date across that person's imported enrolments
+
+Unknown fields remain null. The importer does not fabricate DOB, gender, address, qualification, fees, payments, completion dates, trainers, batches, admission approvals, or Aadhaar data.
+
+## Status And Roles
+
+Status mapping:
+
+- `IN PROGRESS` -> enrolment `active`, CURRENT
+- `ON HOLD` -> enrolment `on_hold`, CURRENT
+- `COMPLETED` -> enrolment `completed`
+
+If any enrolment is active/on-hold, CURRENT wins and the student role is assigned. Completed-only people receive the alumni role. Roles are reconciled without duplicates.
+
+## Referral Eligibility
+
+All imported current students and alumni are eligible for Samyak Skill Circle. Apply mode creates or reuses `referrer_profiles`, but it does not create referral links, referral transactions, or reward snapshots. Historical enrolments never generate retrospective referral rewards.
+
+Because the current `referrer_profiles` schema still requires legacy token/link fields, imported profiles receive deterministic disabled placeholder values. No `referral_links` row is created.
+
+## Idempotency And Corrections
+
+`legacy_import_entity_mappings` stores stable mappings:
+
+- legacy student ref -> Person
+- legacy student ref -> Student
+- legacy enrolment ref -> Enrolment
+
+Legacy refs are based on normalized identity and enrolment-defining fields, not the file checksum. Reapplying the same checksum returns `ALREADY_IMPORTED`. A corrected file with a different checksum reuses existing mappings and does not duplicate people, students, or enrolments.
+
+Correction policy is conservative: mapped historical entities are reused, and immutable/history-sensitive fields are not silently overwritten. Any future safe correction fields must be explicitly designed and tested.
+
+## Transaction And Recovery
+
+Local apply runs in a single SQLite transaction:
+
+1. validate organisation, branch, canonical Course Master, rows, courses, and matches
+2. create a legacy import batch
+3. apply people, contacts, students, roles, enrolments, referrer profiles, rows, mappings, and a privacy-safe audit event
+4. mark the batch applied
+
+If validation fails, no batch or business rows are written. If a write fails, the transaction rolls back. Reruns use the checksum and mapping tables to avoid duplicates.
 
 ## Privacy
 
-Dry-run reports do not print raw mobile numbers, email addresses, token values, token hashes, or full referral URLs. Mobile values are masked to the last four digits only, and names are represented by a fingerprint in the privacy-safe report.
+Dry-run and apply summaries are privacy-safe and do not dump row-level contact PII. Raw mobile numbers must not appear in import batches, import rows, mapping rows, or audit metadata. Contact HMAC and ciphertext are stored only in the existing contact tables and should not be printed in operator reports.
 
-## Local Command
+## Rollback
 
-```sh
-npm run import:legacy-students -- --file ./path/to/export.csv
-```
-
-The command prints JSON and includes `writeOperationsPerformed: false`.
-
-Apply mode is intentionally blocked:
-
-```sh
-node --experimental-strip-types ./worker/lib/legacy-import.ts --apply --file ./path/to/export.csv
-```
-
-## Production Safety
-
-Phase 1 has no production D1 commands, no deployment requirement, and no production import flow. The migration files are additive and must be reviewed before any remote migration is applied.
+For local testing, recreate the local D1 state and rerun migrations/seed. For future production, take a D1 backup before preflight/apply. If rollback is required, use the `legacy_import_batches` and `legacy_import_entity_mappings` records to identify entities created by a specific batch; do not remove shared pre-existing entities without owner review.
