@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { getStudentHome, type StudentHome } from "../../lib/api";
 
-export function useStudentHome(refreshKey = 0) {
+export function useStudentHome(refreshKey = 0, enabled = true) {
   const [home, setHome] = useState<StudentHome | null>(null);
   const [error, setError] = useState(false);
 
@@ -9,6 +9,7 @@ export function useStudentHome(refreshKey = 0) {
     let active = true;
     setHome(null);
     setError(false);
+    if (!enabled) return;
 
     void getStudentHome()
       .then((data) => {
@@ -23,7 +24,7 @@ export function useStudentHome(refreshKey = 0) {
     return () => {
       active = false;
     };
-  }, [refreshKey]);
+  }, [enabled, refreshKey]);
 
   return { home, error };
 }

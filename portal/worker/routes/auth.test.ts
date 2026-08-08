@@ -109,7 +109,6 @@ class FakeD1Statement {
         const details = this.db.personContactDetails.find((row) => row.contact_id === contact.id);
         if (details && details.status !== "active") continue;
         const student = this.db.students.find((row) => row.person_id === person.id && row.organisation_id === organisationId && row.portal_status !== "disabled");
-        if (!student) continue;
         const referrer = this.db.referrerProfiles.find((row) => row.person_id === person.id && row.organisation_id === organisationId && row.active === 1);
         if (!referrer) continue;
         for (const personRole of this.db.personRoles.filter((row) => row.person_id === person.id)) {
@@ -119,8 +118,8 @@ class FakeD1Statement {
             person_id: person.id,
             full_name: person.full_name,
             public_name: person.public_name,
-            student_number: student.student_number,
-            current_status: student.current_status,
+            student_number: student?.student_number ?? null,
+            current_status: student?.current_status ?? null,
             external_referrer_id: referrer.external_referrer_id,
             referral_token: referrer.referral_token,
             personal_link: referrer.personal_link,
@@ -161,15 +160,16 @@ class FakeD1Statement {
       for (const link of this.db.loginAccountPeople.filter((row) => row.login_account_id === accountId && row.is_available === 1)) {
         const person = this.db.people.find((row) => row.id === link.person_id && row.status === "active");
         const referrer = this.db.referrerProfiles.find((row) => row.person_id === link.person_id && row.active === 1);
+        const student = this.db.students.find((row) => row.person_id === link.person_id && row.organisation_id === person?.organisation_id && row.portal_status !== "disabled");
         if (!person || !referrer) continue;
         const personRoles = this.db.personRoles.filter((row) => row.person_id === person.id);
         if (personRoles.length === 0) {
-          results.push({ person_id: person.id, public_name: person.public_name, access_type: link.access_type, role_code: null });
+          results.push({ person_id: person.id, public_name: person.public_name, access_type: link.access_type, role_code: null, has_student_profile: student ? 1 : 0 });
           continue;
         }
         for (const personRole of personRoles) {
           const role = this.db.roles.find((row) => row.id === personRole.role_id);
-          results.push({ person_id: person.id, public_name: person.public_name, access_type: link.access_type, role_code: role?.code ?? null });
+          results.push({ person_id: person.id, public_name: person.public_name, access_type: link.access_type, role_code: role?.code ?? null, has_student_profile: student ? 1 : 0 });
         }
       }
       return { results } as T;
@@ -1024,6 +1024,37 @@ describe("auth routes", () => {
     expect(unknownDb.referrerProfiles).toHaveLength(0);
     expect(unknownDb.otpChallenges[0].mobile_ciphertext).toBeNull();
     expect(JSON.stringify(unknownDb)).not.toContain("9876543210");
+  });
+
+  it("keeps existing referrer-only login accounts eligible without creating student records", async () => {
+    const db = new FakeD1();
+    installFetch({ eligible: false });
+    const mobile = "9876543210";
+    const mobileHash = await hmacHex("test-pepper", "mobile", mobile);
+    db.people.push({ id: "person_existing_referrer", organisation_id: "org_samyak", full_name: "Existing Referrer", public_name: "Existing", status: "active", created_at: "2026-07-01", updated_at: "2026-07-01" });
+    db.personContacts.push({ id: "contact_existing_referrer", person_id: "person_existing_referrer", contact_type: "mobile", normalized_value: mobileHash, last_four: "3210", is_primary: 1, is_verified: 1, created_at: "2026-07-01", updated_at: "2026-07-01" });
+    db.personContactDetails.push({ contact_id: "contact_existing_referrer", status: "active" });
+    db.referrerProfiles.push({ id: "ref_existing", organisation_id: "org_samyak", person_id: "person_existing_referrer", external_referrer_id: "EXISTING", referral_token: "EXISTING_TOKEN", personal_link: "https://example.test/r/EXISTING", active: 1, created_at: "2026-07-01", updated_at: "2026-07-01" });
+    db.personRoles.push({ person_id: "person_existing_referrer", role_id: "role_student", branch_id: null, branch_key: "", created_at: "2026-07-01" });
+    db.loginAccounts.push({ id: "acct_existing", organisation_id: "org_samyak", mobile_normalized: mobileHash, mobile_hash: mobileHash, mobile_last_four: "3210", login_enabled: 1, status: "active", created_at: "2026-07-01", updated_at: "2026-07-01" });
+
+    const otpResponse = await requestOtp(db, mobile);
+    expect(otpResponse.status).toBe(200);
+    expect(db.otpChallenges[0]).toMatchObject({ status: "sent", provider: "development" });
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    expect(verifyResponse.status).toBe(200);
+    const body = await jsonBody(verifyResponse);
+    expect(body.session).toMatchObject({
+      activeProfile: expect.objectContaining({ personId: "person_existing_referrer", hasStudentProfile: false }),
+      profiles: [expect.objectContaining({ personId: "person_existing_referrer", hasStudentProfile: false })],
+    });
+    expect(db.loginAccounts).toHaveLength(1);
+    expect(db.loginAccountPeople).toEqual([expect.objectContaining({ login_account_id: "acct_existing", person_id: "person_existing_referrer", is_available: 1 })]);
+    expect(db.students).toHaveLength(0);
+    expect(JSON.stringify(db)).not.toContain(mobile);
+
+    const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: sessionCookie(verifyResponse) } }, env(db));
+    expect(referrals.status).toBe(200);
   });
 
   it("counts provider failures after Turnstile and does not call external services on Turnstile failure", async () => {

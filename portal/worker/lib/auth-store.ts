@@ -15,6 +15,7 @@ export type ProfileChoice = {
   accessType: string;
   roles: string[];
   effectiveRoles?: string[];
+  hasStudentProfile?: boolean;
 };
 
 export type SessionView = {
@@ -488,10 +489,18 @@ export async function sessionView(c: AppContext, loginAccountId: string, activeP
     .bind(loginAccountId)
     .first<{ mobile_last_four: string | null }>();
   const rows = await c.env.DB.prepare(
-    `select people.id as person_id, people.public_name as public_name, login_account_people.access_type as access_type, roles.code as role_code
+    `select
+       people.id as person_id,
+       people.public_name as public_name,
+       login_account_people.access_type as access_type,
+       roles.code as role_code,
+       case when students.id is null then 0 else 1 end as has_student_profile
      from login_account_people
      join people on people.id = login_account_people.person_id
      join referrer_profiles on referrer_profiles.person_id = people.id and referrer_profiles.active = 1
+     left join students on students.person_id = people.id
+       and students.organisation_id = people.organisation_id
+       and students.portal_status != 'disabled'
      left join person_roles on person_roles.person_id = people.id
      left join roles on roles.id = person_roles.role_id
      where login_account_people.login_account_id = ?
@@ -499,7 +508,7 @@ export async function sessionView(c: AppContext, loginAccountId: string, activeP
        and people.status = 'active'`,
   )
     .bind(loginAccountId)
-    .all<{ person_id: string; public_name: string | null; access_type: string; role_code: string | null }>();
+    .all<{ person_id: string; public_name: string | null; access_type: string; role_code: string | null; has_student_profile: number }>();
 
   const byPerson = new Map<string, ProfileChoice>();
   for (const row of rows.results || []) {
@@ -512,6 +521,7 @@ export async function sessionView(c: AppContext, loginAccountId: string, activeP
         publicName: row.public_name || "Student",
         accessType: row.access_type,
         roles: row.role_code ? [row.role_code] : [],
+        hasStudentProfile: row.has_student_profile === 1,
       });
     }
   }
@@ -871,7 +881,7 @@ export async function lookupPortalProfilesByMobile(c: AppContext, mobile: string
      from person_contacts
      join people on people.id = person_contacts.person_id
      left join person_contact_details on person_contact_details.contact_id = person_contacts.id
-     join students on students.person_id = people.id
+     left join students on students.person_id = people.id
        and students.organisation_id = people.organisation_id
        and students.portal_status != 'disabled'
      join referrer_profiles on referrer_profiles.person_id = people.id
@@ -898,8 +908,8 @@ export async function lookupPortalProfilesByMobile(c: AppContext, mobile: string
       person_id: string;
       full_name: string;
       public_name: string | null;
-      student_number: string;
-      current_status: string;
+      student_number: string | null;
+      current_status: string | null;
       external_referrer_id: string;
       referral_token: string;
       personal_link: string;

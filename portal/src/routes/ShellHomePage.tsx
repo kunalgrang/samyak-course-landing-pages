@@ -1,12 +1,19 @@
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
+import { useAuth } from "../features/auth/AuthContext";
 import { firstName } from "../features/referrals/referralUtils";
 import { useStudentHome } from "../features/student/useStudentHome";
 import type { StudentHome } from "../lib/api";
 
 export function ShellHomePage() {
-  const { home, error } = useStudentHome();
+  const { session } = useAuth();
+  const hasStudentProfile = session?.activeProfile?.hasStudentProfile ?? true;
+  const { home, error } = useStudentHome(0, hasStudentProfile);
+
+  if (!hasStudentProfile) {
+    return <ReferralOnlyHome publicName={session?.activeProfile?.publicName || "there"} />;
+  }
 
   if (error) {
     return <ErrorState title="Could not load dashboard" message="We could not load your student information. Please try again." />;
@@ -17,6 +24,35 @@ export function ShellHomePage() {
   }
 
   return <OverviewContent home={home} />;
+}
+
+function ReferralOnlyHome({ publicName }: { publicName: string }) {
+  return (
+    <div className="content-stack">
+      <header className="overview-hero">
+        <div>
+          <h1>Hi, {firstName(publicName)}</h1>
+          <p>Welcome back to Samyak Skill Circle.</p>
+        </div>
+        <a className="button-link button-link--primary" href="/app/referrals">
+          My Referrals
+        </a>
+      </header>
+
+      <section className="link-panel link-panel--feature" aria-label="Samyak Skill Circle">
+        <div>
+          <span className="field-label">Samyak Skill Circle</span>
+          <strong>Referral dashboard ready</strong>
+          <p>Your referral tools and activity are available in My Referrals.</p>
+        </div>
+        <div className="link-actions">
+          <a className="button-link" href="/app/referrals">
+            Open Referrals
+          </a>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 export function OverviewContent({ home }: { home: StudentHome }) {
