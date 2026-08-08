@@ -157,6 +157,8 @@ Maybe Match,9123456789,SPOKEN ENGLISH,2024-03-01,COMPLETED
     expect(count(db, "person_contacts")).toBe(2);
     expect(count(db, "person_contact_details")).toBe(2);
     expect(count(db, "person_contact_secrets")).toBe(2);
+    expect(count(db, "legacy_import_rows where matched_person_id is not null")).toBe(0);
+    expect(count(db, "legacy_import_rows where result_person_id is not null and result_student_id is not null and result_enrolment_id is not null")).toBe(3);
     expect(count(db, "login_accounts")).toBe(0);
     expect(count(db, "login_account_people")).toBe(0);
     expect(count(db, "enrolments")).toBe(3);
