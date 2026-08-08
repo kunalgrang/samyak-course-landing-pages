@@ -1,102 +1,89 @@
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
-import type { ReferralDashboard } from "../lib/api";
-import { firstName, formatIndianCurrency, recentReferrals } from "../features/referrals/referralUtils";
-import { useReferralDashboard } from "../features/referrals/useReferralDashboard";
+import { firstName } from "../features/referrals/referralUtils";
+import { useStudentHome } from "../features/student/useStudentHome";
+import type { StudentHome } from "../lib/api";
 
 export function ShellHomePage() {
-  const { dashboard, error } = useReferralDashboard();
+  const { home, error } = useStudentHome();
 
   if (error) {
-    return <ErrorState title="Could not load referrals" message="We could not load your referral information. Please try again." />;
+    return <ErrorState title="Could not load dashboard" message="We could not load your student information. Please try again." />;
   }
 
-  if (!dashboard) {
-    return <LoadingState label="Loading your referral information" />;
+  if (!home) {
+    return <LoadingState label="Loading your student dashboard" />;
   }
 
-  return (
-    <OverviewContent
-      dashboard={dashboard}
-    />
-  );
+  return <OverviewContent home={home} />;
 }
 
-export function OverviewContent({
-  dashboard,
-}: {
-  dashboard: ReferralDashboard;
-}) {
-  const referrals = recentReferrals(dashboard);
+export function OverviewContent({ home }: { home: StudentHome }) {
+  const recentCourses = home.courseHistory.slice(0, 3);
+  const currentCourses = home.courseHistory.filter((course) => ["active", "on_hold", "confirmed", "not_started"].includes(course.status)).length;
 
   return (
     <div className="content-stack">
       <header className="overview-hero">
         <div>
-          <h1>Hi, {firstName(dashboard.profile.fullName || dashboard.profile.publicName)} 👋</h1>
-          <p>Refer your friends to Samyak and earn up to ₹1,500 cash or ₹2,000 course credit.</p>
+          <h1>Hi, {firstName(home.identity.fullName || home.identity.publicName)}</h1>
+          <p>
+            {home.identity.studentId} - {studentStatusLabel(home.identity.lifecycleStatus, home.identity.studentStatus)}
+          </p>
         </div>
         <a className="button-link button-link--primary" href="/app/referrals">
-          Share Referral Link
+          My Referrals
         </a>
       </header>
 
-      <section className="link-panel link-panel--feature" aria-label="Personal referral link">
+      <section className="metric-grid" aria-label="Student summary">
+        <Metric label="Student ID" value={home.identity.studentId} />
+        <Metric label="Status" value={home.identity.lifecycleStatus} />
+        <Metric label="Courses" value={home.courseHistory.length} />
+        <Metric label="Current courses" value={currentCourses} />
+      </section>
+
+      <section className="link-panel link-panel--feature" aria-label="Samyak Skill Circle">
         <div>
-          <span className="field-label">Personal referral link</span>
-          <strong>{dashboard.linkStatus.hasActiveLink ? `Active link ending ${dashboard.linkStatus.lastFour ? `...${dashboard.linkStatus.lastFour}` : "with hidden token"}` : "No active link yet"}</strong>
-          <p>{dashboard.linkStatus.message}</p>
+          <span className="field-label">{home.skillCircle.programmeName}</span>
+          <strong>{home.skillCircle.hasActiveReferralLink ? "Referral link active" : "Referral dashboard ready"}</strong>
+          <p>{home.skillCircle.message}</p>
         </div>
         <div className="link-actions">
-          <a className="button-link" href="/app/referrals">{dashboard.linkStatus.hasActiveLink ? "Manage Link" : "Generate Link"}</a>
+          <a className="button-link" href={home.skillCircle.referralDashboardPath}>
+            Open Referrals
+          </a>
         </div>
       </section>
 
-      <section className="metric-grid" aria-label="Referral summary">
-        <Metric label="Total referrals" value={dashboard.summary.totalReferrals} />
-        <Metric label="Successful admissions" value={dashboard.summary.successfulAdmissions} />
-        <Metric label="Cash rewards earned" value={formatIndianCurrency(dashboard.summary.cashRewardsEarned)} />
-        <Metric label="Course credit earned" value={formatIndianCurrency(dashboard.summary.courseCreditEarned)} />
-      </section>
-
-      <section className="content-stack" aria-labelledby="recent-referrals-title">
+      <section className="content-stack" aria-labelledby="course-history-title">
         <div className="section-heading">
-          <h2 id="recent-referrals-title">Recent referrals</h2>
-          <a href="/app/referrals">View all</a>
+          <h2 id="course-history-title">Course history</h2>
+          <a href="/app/profile">Profile</a>
         </div>
-        {referrals.length === 0 ? (
-          <EmptyState title="No referrals yet" message="Share your personal link with a friend who may benefit from learning a new skill." />
+        {recentCourses.length === 0 ? (
+          <EmptyState title="No courses found" message="Your imported course history will appear here after it is available." />
         ) : (
-          <div className="referral-list">
-            {referrals.map((referral) => (
-              <article className="referral-row" key={referral.referralId}>
+          <div className="student-course-list">
+            {recentCourses.map((course) => (
+              <article className="student-course-row" key={course.enrolmentId}>
                 <div>
-                  <strong>{referral.prospectPublicName}</strong>
-                  <span>{referral.courseInterested || "Course not selected"}</span>
+                  <strong>{course.courseName}</strong>
+                  <span>{course.courseCode || "Course code unavailable"}</span>
                 </div>
                 <div>
-                  <strong>{referral.publicStatus}</strong>
-                  <span>{referral.submissionDate || "Date not available"}</span>
+                  <strong>{courseStatusLabel(course.status)}</strong>
+                  <span>{course.joiningDate || course.admissionDate || "Date not available"}</span>
                 </div>
                 <div>
-                  <strong>{referral.rewardStatus || "Reward pending"}</strong>
-                  <span>{referral.rewardChoice || "Choice pending"}</span>
+                  <strong>{course.enrolmentNumber}</strong>
+                  <span>{course.durationLabel || "Duration not available"}</span>
                 </div>
               </article>
             ))}
           </div>
         )}
-      </section>
-
-      <section className="how-it-works" aria-labelledby="how-it-works-title">
-        <h2 id="how-it-works-title">How it works</h2>
-        <ol>
-          <li>Share your personal link</li>
-          <li>Your friend submits an enquiry</li>
-          <li>Your friend joins an eligible course</li>
-          <li>You receive cash or course credit</li>
-        </ol>
       </section>
     </div>
   );
@@ -109,4 +96,17 @@ function Metric({ label, value }: { label: string; value: number | string }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function studentStatusLabel(lifecycleStatus: string, status: string) {
+  const label = courseStatusLabel(status);
+  return lifecycleStatus === "CURRENT" ? `Current student - ${label}` : `Alumni - ${label}`;
+}
+
+function courseStatusLabel(status: string) {
+  return status
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ");
 }

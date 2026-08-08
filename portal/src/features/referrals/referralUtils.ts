@@ -1,10 +1,10 @@
 import type { ReferralDashboard } from "../../lib/api";
 
 export const rewardSlabs = [
-  { fee: "Below ₹10,000", cash: 500, credit: 750 },
-  { fee: "₹10,000-₹19,999", cash: 750, credit: 1000 },
-  { fee: "₹20,000-₹29,999", cash: 1000, credit: 1500 },
-  { fee: "₹30,000 and above", cash: 1500, credit: 2000 },
+  { fee: "Below \u20B910,000", cash: 500, credit: 750 },
+  { fee: "\u20B910,000-\u20B919,999", cash: 750, credit: 1000 },
+  { fee: "\u20B920,000-\u20B929,999", cash: 1000, credit: 1500 },
+  { fee: "\u20B930,000 and above", cash: 1500, credit: 2000 },
 ] as const;
 
 const currencyFormatter = new Intl.NumberFormat("en-IN", {

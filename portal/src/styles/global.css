@@ -330,6 +330,7 @@ a:focus-visible {
 .link-panel,
 .metric,
 .referral-row,
+.student-course-row,
 .rule,
 .reward-slabs,
 .reward-comparison article,
@@ -421,23 +422,27 @@ a:focus-visible {
 }
 
 .referral-list,
+.student-course-list,
 .rules-list {
   display: grid;
   gap: 12px;
 }
 
-.referral-row {
+.referral-row,
+.student-course-row {
   display: grid;
   gap: 12px;
   padding: 16px;
 }
 
-.referral-row div {
+.referral-row div,
+.student-course-row div {
   display: grid;
   gap: 4px;
 }
 
 .referral-row strong,
+.student-course-row strong,
 .rule h2 {
   color: var(--color-navy);
 }
@@ -810,6 +815,11 @@ a:focus-visible {
 
   .referral-row {
     grid-template-columns: 1.3fr 1fr 1fr;
+    align-items: center;
+  }
+
+  .student-course-row {
+    grid-template-columns: 1.4fr 1fr 1fr;
     align-items: center;
   }
 
