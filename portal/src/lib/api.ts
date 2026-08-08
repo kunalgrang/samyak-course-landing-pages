@@ -23,6 +23,7 @@ const profileSchema = z.object({
   accessType: z.string(),
   roles: z.array(z.string()).default([]),
   effectiveRoles: z.array(z.string()).default([]),
+  hasStudentProfile: z.boolean().optional(),
 });
 
 export const sessionSchema = z.object({
