@@ -117,6 +117,43 @@ const dashboardSchema = z.object({
 
 export type ReferralDashboard = z.infer<typeof dashboardSchema>;
 
+const studentHomeSchema = z.object({
+  success: z.literal(true),
+  identity: z.object({
+    personId: z.string(),
+    fullName: z.string(),
+    publicName: z.string(),
+    studentId: z.string(),
+    studentStatus: z.string(),
+    lifecycleStatus: z.union([z.literal("CURRENT"), z.literal("ALUMNI")]),
+    studentSince: z.string(),
+    branchName: z.string(),
+  }),
+  courseHistory: z.array(
+    z.object({
+      enrolmentId: z.string(),
+      enrolmentNumber: z.string(),
+      courseId: z.string(),
+      courseCode: z.string(),
+      courseName: z.string(),
+      durationLabel: z.string(),
+      admissionDate: z.string(),
+      joiningDate: z.string(),
+      completionDate: z.string().nullable(),
+      status: z.string(),
+    }),
+  ),
+  skillCircle: z.object({
+    programmeName: z.string(),
+    eligible: z.boolean(),
+    hasActiveReferralLink: z.boolean(),
+    referralDashboardPath: z.literal("/app/referrals"),
+    message: z.string(),
+  }),
+});
+
+export type StudentHome = z.infer<typeof studentHomeSchema>;
+
 const referralLinkResponseSchema = z.union([
   z.object({
     created: z.literal(true),
@@ -357,6 +394,10 @@ export async function logout() {
 
 export async function getReferralDashboard() {
   return getJson("/api/student/referrals", dashboardSchema);
+}
+
+export async function getStudentHome() {
+  return getJson("/api/student/home", studentHomeSchema);
 }
 
 export async function generateReferralLink() {
