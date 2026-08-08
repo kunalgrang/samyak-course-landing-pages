@@ -34,6 +34,14 @@ Local apply requires an explicit confirmation flag:
 npm run import:legacy-students -- --file ./path/to/export.csv --organisation=org_samyak --branch=branch_sion --apply --confirm-apply
 ```
 
+Production read-only preflight is enabled only with the explicit remote preflight flags:
+
+```bash
+npm run import:legacy-students -- --file ./path/to/export.csv --organisation=org_samyak --branch=branch_sion --preflight --remote
+```
+
+Remote preflight performs SELECT-only Wrangler D1 queries against production, checks every query metadata response for `changed_db = false` and `rows_written = 0`, and does not require the legacy import staging tables to exist. It is designed to work against production schema through migration `0014` and reports `PRODUCTION_COURSE_MIGRATION_REQUIRED` for source courses, such as Spoken English, that are valid locally but not yet deployed remotely.
+
 Remote apply is intentionally unavailable in Phase 2. A future production apply must use a separate owner-approved command or an explicit remote guard such as `--remote --apply --confirm-remote-apply`.
 
 ## Matching

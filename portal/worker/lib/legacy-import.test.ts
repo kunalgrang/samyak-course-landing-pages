@@ -13,6 +13,7 @@ import {
   resolveLegacyCourse,
 } from "./legacy-import";
 import { applyLegacyImportCsv as applyLegacyImportToDb, buildPreflightLegacyImportCsv } from "./legacy-import-apply";
+import { buildRemotePreflightLegacyImportCsv, type RemoteD1Client } from "./legacy-import-remote-preflight";
 import { hmacHex } from "./crypto";
 
 const SAMPLE_CSV = `STUDENT FULL NAME,PRIMARY MOBILE NUMBER,COURSE ENROLLMENT,ADMISSION DATE,COURSE STATUS
@@ -296,6 +297,72 @@ Varsha,9876543211,CCC,2024-01-02,COMPLETED
     db.close();
   });
 
+  it("remote-preflights a production-shaped 0014 database without import tables or writes", async () => {
+    const db = remoteProductionDbThrough0014();
+    const mobileHash = await hmacHex("test-pepper", "mobile", "+919876543210");
+    seedExistingProductionPerson(db, { fullName: "Ajay Test", mobileHash, withStudent: true, withReferrerProfile: true, withStudentRole: true });
+    db.prepare("insert into number_sequences (id, organisation_id, branch_id, sequence_key, next_sequence, created_at, updated_at) values ('seq_student', 'org_samyak', 'branch_sion', 'student', 2, ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+    const client = sqliteRemoteClient(db);
+
+    const report = await buildRemotePreflightLegacyImportCsv(client, SAMPLE_CSV, remoteOptions());
+
+    expect(report.status).toBe("READY");
+    expect(report.writeOperationsPerformed).toBe(false);
+    expect(report.zeroWriteProof.rowsWritten).toBe(0);
+    expect(report.productionCountsBefore).toEqual(report.productionCountsAfter);
+    expect(report.source).toMatchObject({ people: 2, enrolments: 3, current: 1, alumni: 1 });
+    expect(report.matching).toMatchObject({ exactExistingMatches: 1, possibleMatches: 0, sharedContactNewPeople: 0, newPeople: 1, errors: 0 });
+    expect(report.projectedProductionApply).toMatchObject({
+      peopleCreated: 1,
+      peopleReused: 1,
+      studentsCreated: 1,
+      studentsReused: 1,
+      enrolmentsCreated: 3,
+      studentRolesReused: 1,
+      alumniRolesCreated: 1,
+      referrerProfilesCreated: 1,
+      referrerProfilesReused: 1,
+      projectedStudentIdRange: "SYK-SION-000002 through SYK-SION-000002",
+    });
+    expect(report.productionCourseMaster).toMatchObject({ categories: 13, courses: 41, eligibleCourses: 41 });
+    expect(report.productionCourseMaster.missingOrIneligibleSourceCourses).toEqual([
+      { code: "SYK-SFT-001", name: "SPOKEN ENGLISH", status: "PRODUCTION_COURSE_MIGRATION_REQUIRED" },
+    ]);
+    expect(JSON.stringify(report)).not.toContain("9876543210");
+    expect(JSON.stringify(report)).not.toContain("+919876543210");
+    expect(JSON.stringify(report)).not.toContain(mobileHash);
+    expect(JSON.stringify(report)).not.toContain("v1:");
+    expect(client.statements.every((statement) => /^\s*select\b/i.test(statement))).toBe(true);
+    expect(count(db, "sqlite_master where type = 'table' and name like 'legacy_import_%'")).toBe(0);
+    db.close();
+  });
+
+  it("remote preflight classifies no match, possible match, and shared-contact source people conservatively", async () => {
+    const possibleDb = remoteProductionDbThrough0014();
+    seedExistingProductionPerson(possibleDb, {
+      fullName: "Different Name",
+      mobileHash: await hmacHex("test-pepper", "mobile", "+919876543210"),
+      withStudent: false,
+      withReferrerProfile: false,
+      withStudentRole: false,
+    });
+    const possible = await buildRemotePreflightLegacyImportCsv(sqliteRemoteClient(possibleDb), SAMPLE_CSV, remoteOptions());
+    expect(possible.status).toBe("OWNER_MATCH_RESOLUTION_REQUIRED");
+    expect(possible.matching).toMatchObject({ possibleMatches: 1, exactExistingMatches: 0, newPeople: 1 });
+    expect(possible.matching.exactAndReviewRows[0]).toMatchObject({ contactEvidence: true, nameEvidence: false, ownerReviewNeeded: true });
+    possibleDb.close();
+
+    const sharedDb = remoteProductionDbThrough0014();
+    const sharedCsv = `STUDENT FULL NAME,PRIMARY MOBILE NUMBER,COURSE ENROLLMENT,ADMISSION DATE,COURSE STATUS
+Rachit Rajak,9876543211,CCC,2024-01-01,IN PROGRESS
+Varsha,9876543211,CCC,2024-01-02,COMPLETED
+`;
+    const shared = await buildRemotePreflightLegacyImportCsv(sqliteRemoteClient(sharedDb), sharedCsv, remoteOptions({ sourceFileName: "shared.csv" }));
+    expect(shared.matching).toMatchObject({ newPeople: 2, sharedContactNewPeople: 0, possibleMatches: 0 });
+    expect(shared.sharedMobileVerification).toEqual({ maskedMobile: "******3211", proposedPeople: 2, collapsed: false });
+    sharedDb.close();
+  });
+
   it("retries Student ID allocation when a stale counter collides with an existing student", async () => {
     const db = migratedSeededDb();
     db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values ('person_seed', 'org_samyak', 'branch_sion', 'Seed Student', 'Seed Student', 'active', ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
@@ -355,6 +422,53 @@ function migratedSeededDb() {
   return db;
 }
 
+function remoteProductionDbThrough0014() {
+  const db = new DatabaseSync(":memory:");
+  applyMigrations(db, "0014_course_master_and_referral_courses.sql");
+  db.exec("create table d1_migrations (id integer primary key, name text, applied_at timestamp not null default current_timestamp)");
+  readdirSync(join(process.cwd(), "migrations"))
+    .filter((name) => /^\d{4}_.+\.sql$/.test(name) && name <= "0014_course_master_and_referral_courses.sql")
+    .sort()
+    .forEach((name, index) => {
+      db.prepare("insert into d1_migrations (id, name, applied_at) values (?, ?, ?)").run(index + 1, name, "2026-08-08 00:00:00");
+    });
+  db.prepare("insert into roles (id, organisation_id, code, name, created_at) values ('role_student', 'org_samyak', 'student', 'Student', ?)").run("2026-08-08T00:00:00.000Z");
+  db.prepare("insert into roles (id, organisation_id, code, name, created_at) values ('role_alumni', 'org_samyak', 'alumni', 'Alumni', ?)").run("2026-08-08T00:00:00.000Z");
+  return db;
+}
+
+function sqliteRemoteClient(db: DatabaseSync): RemoteD1Client & { statements: string[] } {
+  const statements: string[] = [];
+  return {
+    statements,
+    async execute<T extends Record<string, unknown> = Record<string, unknown>>(sql: string) {
+      if (!/^\s*select\b/i.test(sql)) throw new Error(`non-select statement: ${sql}`);
+      statements.push(sql);
+      return {
+        results: all(db, sql) as T[],
+        meta: { changed_db: false, changes: 0, rows_written: 0 },
+      };
+    },
+  };
+}
+
+function seedExistingProductionPerson(
+  db: DatabaseSync,
+  options: { fullName: string; mobileHash: string; withStudent: boolean; withReferrerProfile: boolean; withStudentRole: boolean },
+) {
+  db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values ('person_existing', 'org_samyak', 'branch_sion', ?, ?, 'active', ?, ?)").run(options.fullName, options.fullName, "2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+  db.prepare("insert into person_contacts (id, person_id, contact_type, normalized_value, last_four, is_primary, is_verified, created_at, updated_at) values ('contact_existing', 'person_existing', 'mobile', ?, '3210', 1, 1, ?, ?)").run(options.mobileHash, "2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+  if (options.withStudent) {
+    db.prepare("insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at) values ('student_existing', 'org_samyak', 'person_existing', 'branch_sion', 'SYK-SION-000001', 1, '2023-01-01', 'active', 'active', ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+  }
+  if (options.withReferrerProfile) {
+    db.prepare("insert into referrer_profiles (id, organisation_id, person_id, external_referrer_id, referral_token, personal_link, active, created_at, updated_at) values ('ref_existing', 'org_samyak', 'person_existing', 'existing-ref', 'existing-token', 'existing-link', 1, ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+  }
+  if (options.withStudentRole) {
+    db.prepare("insert into person_roles (person_id, role_id, branch_id, branch_key, created_at) values ('person_existing', 'role_student', 'branch_sion', 'branch_sion', ?)").run("2026-08-08T00:00:00.000Z");
+  }
+}
+
 function applyOptions(overrides: Partial<Parameters<typeof applyLegacyImportToDb>[2]> = {}) {
   return {
     organisationId: "org_samyak",
@@ -362,6 +476,16 @@ function applyOptions(overrides: Partial<Parameters<typeof applyLegacyImportToDb
     sourceFileName: "synthetic.csv",
     sessionPepper: "test-pepper",
     now: "2026-08-08T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function remoteOptions(overrides: Partial<Parameters<typeof buildRemotePreflightLegacyImportCsv>[2]> = {}) {
+  return {
+    organisationId: "org_samyak",
+    branch: "branch_sion",
+    sourceFileName: "synthetic.csv",
+    sessionPepper: "test-pepper",
     ...overrides,
   };
 }
