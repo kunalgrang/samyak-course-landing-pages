@@ -104,6 +104,8 @@ OTP verification is D1-backed. Shared-family mobiles can link multiple people to
 
 `GET /api/auth/session` returns only active, available linked profiles with active referrer profiles. `GET /api/student/referrals` rejects stale or missing active profiles safely.
 
+Phase 3 student onboarding is documented in `docs/student-portal-onboarding.md`. First verified login creates or reuses the login account and `login_account_people` links for existing imported People only; it does not create People, Student Master rows, referrer profiles, referral links, referrals, admissions, enrolments, or reward snapshots.
+
 ## MSG91 Production State
 
 The MSG91 V5 provider is implemented for send, resend, and verify with mocked-fetch tests. Until DLT approval and real credentials are available, production `POST /api/auth/request-otp` returns:
