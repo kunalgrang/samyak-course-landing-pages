@@ -61,6 +61,7 @@ const WORKBOOK_COURSES = [
   ["SYK-DSAI-005", "R PROGRAMMING LANGUAGE", "DSAI", 1.5, 2500000, 2250000],
   ["SYK-CIV-001", "PRIMAVERA", "CIV", 2, 2200000, 1980000],
   ["SYK-CIV-002", "MS PROJECT", "CIV", 1, 1000000, 900000],
+  ["SYK-SFT-001", "SPOKEN ENGLISH", "SFT", 1.5, 700000, 630000],
 ] as const;
 
 describe("native referral services", () => {
@@ -178,9 +179,10 @@ describe("native referral services", () => {
     });
 
     const eligibleCourses = await listEligibleReferralCourses(fixture.env, { organisationId: "org_samyak", referralProgrammeId: "rprog_samyak_skill_circle", now: NOW });
-    expect(eligibleCourses).toHaveLength(41);
+    expect(eligibleCourses).toHaveLength(42);
     expect(eligibleCourses.map((course) => course.code)).toContain("SYK-WDD-001");
     expect(eligibleCourses.map((course) => course.code)).toContain("SYK-DSAI-003");
+    expect(eligibleCourses.map((course) => course.code)).toContain("SYK-SFT-001");
     seedCourse(fixture.sqlite, "course_future", "FUTURE", "Future Course", "active", "ccat_wdd");
     const resolved = await resolveReferralLink(fixture.env, { organisationId: "org_samyak", rawToken: issued.rawToken!, now: NOW });
     expect(resolved).toMatchObject({
@@ -208,13 +210,13 @@ describe("native referral services", () => {
     fixture.close();
   });
 
-  it("seeds the owner-approved canonical Course Master and explicit 41-course referral eligibility", async () => {
+  it("seeds the owner-approved canonical Course Master and explicit 42-course referral eligibility", async () => {
     const fixture = testFixture();
-    expect(count(fixture.sqlite, "course_categories where organisation_id = 'org_samyak'")).toBe(13);
-    expect(count(fixture.sqlite, "courses where organisation_id = 'org_samyak'")).toBe(41);
-    expect(new Set(WORKBOOK_COURSES.map(([code]) => code)).size).toBe(41);
-    expect(count(fixture.sqlite, "courses where organisation_id = 'org_samyak' and status = 'active' and admission_configuration_complete = 1")).toBe(41);
-    expect(count(fixture.sqlite, "referral_programme_courses where referral_programme_id = 'rprog_samyak_skill_circle' and is_active = 1")).toBe(41);
+    expect(count(fixture.sqlite, "course_categories where organisation_id = 'org_samyak'")).toBe(14);
+    expect(count(fixture.sqlite, "courses where organisation_id = 'org_samyak'")).toBe(42);
+    expect(new Set(WORKBOOK_COURSES.map(([code]) => code)).size).toBe(42);
+    expect(count(fixture.sqlite, "courses where organisation_id = 'org_samyak' and status = 'active' and admission_configuration_complete = 1")).toBe(42);
+    expect(count(fixture.sqlite, "referral_programme_courses where referral_programme_id = 'rprog_samyak_skill_circle' and is_active = 1")).toBe(42);
     expect(count(fixture.sqlite, "courses group by organisation_id, code having count(*) > 1")).toBe(0);
     expect(count(fixture.sqlite, "courses left join course_categories on course_categories.id = courses.category_id where courses.organisation_id = 'org_samyak' and course_categories.id is null")).toBe(0);
 
@@ -266,6 +268,14 @@ describe("native referral services", () => {
     });
     expect(count(fixture.sqlite, "courses where code = 'SYK-AVX-001'")).toBe(1);
     expect(count(fixture.sqlite, "referral_programme_courses where course_id = 'course_syk_avx_001' and is_active = 1")).toBe(1);
+    expect(row(fixture.sqlite, "select courses.id, courses.name, course_categories.name as category_name, duration_months, default_fee_paise, lowest_acceptable_fee_paise from courses join course_categories on course_categories.id = courses.category_id where courses.code = 'SYK-SFT-001'")).toMatchObject({
+      id: "course_syk_sft_001",
+      name: "SPOKEN ENGLISH",
+      category_name: "Soft Skills",
+      duration_months: 1.5,
+      default_fee_paise: 700000,
+      lowest_acceptable_fee_paise: 630000,
+    });
     fixture.close();
   });
 
@@ -278,7 +288,7 @@ describe("native referral services", () => {
     addProgrammeCourse(fixture.sqlite, "course_other_org");
 
     const eligibleCodes = (await listEligibleReferralCourses(fixture.env, { organisationId: "org_samyak", referralProgrammeId: "rprog_samyak_skill_circle", now: NOW })).map((course) => course.code);
-    expect(eligibleCodes).toHaveLength(41);
+    expect(eligibleCodes).toHaveLength(42);
     expect(eligibleCodes).not.toContain("FUTURE");
     expect(eligibleCodes).not.toContain("INACTIVE");
     expect(eligibleCodes).not.toContain("OTHER");
@@ -288,8 +298,8 @@ describe("native referral services", () => {
   it("groups eligible courses by active categories for the public API without pricing fields", async () => {
     const fixture = testFixture();
     const grouped = groupEligibleCourses(await listEligibleReferralCourses(fixture.env, { organisationId: "org_samyak", referralProgrammeId: "rprog_samyak_skill_circle", now: NOW }));
-    expect(grouped).toHaveLength(13);
-    expect(grouped.flatMap((category) => category.courses)).toHaveLength(41);
+    expect(grouped).toHaveLength(14);
+    expect(grouped.flatMap((category) => category.courses)).toHaveLength(42);
     expect(grouped.find((category) => category.code === "DSAI")).toMatchObject({
       id: "ccat_dsai",
       name: "DATA SCIENCE & AI",
@@ -303,6 +313,12 @@ describe("native referral services", () => {
         { id: "course_syk_ccc_001", code: "SYK-CCC-001", name: "CCC", durationMonths: 2 },
         { id: "course_syk_ccc_002", code: "SYK-CCC-002", name: "CCC+", durationMonths: 2 },
       ]),
+    });
+    expect(grouped.find((category) => category.code === "SFT")).toMatchObject({
+      name: "Soft Skills",
+      courses: [
+        { id: "course_syk_sft_001", code: "SYK-SFT-001", name: "SPOKEN ENGLISH", durationMonths: 1.5 },
+      ],
     });
     expect(JSON.stringify(grouped)).not.toContain("lowest_acceptable_fee_paise");
     expect(JSON.stringify(grouped)).not.toContain("default_fee_paise");
@@ -343,7 +359,7 @@ describe("native referral services", () => {
     );
     const courseBody = await courseResponse.json() as { categories: Array<{ courses: Array<{ id: string; code: string }> }> };
     expect(courseResponse.status).toBe(200);
-    expect(courseBody.categories.flatMap((category) => category.courses)).toHaveLength(41);
+    expect(courseBody.categories.flatMap((category) => category.courses)).toHaveLength(42);
     expect(courseBody.categories.flatMap((category) => category.courses).map((course) => course.id)).toContain("course_syk_wdd_001");
     expect(JSON.stringify(courseBody)).not.toContain("default_fee_paise");
 
