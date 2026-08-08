@@ -12,6 +12,8 @@ import {
   normalizeIndianMobile,
   resolveLegacyCourse,
 } from "./legacy-import";
+import { applyLegacyImportCsv as applyLegacyImportToDb, buildPreflightLegacyImportCsv } from "./legacy-import-apply";
+import { hmacHex } from "./crypto";
 
 const SAMPLE_CSV = `STUDENT FULL NAME,PRIMARY MOBILE NUMBER,COURSE ENROLLMENT,ADMISSION DATE,COURSE STATUS
 Ajay Test,9876543210,ADVANCE EXCEL,01/02/2024,IN PROGRESS
@@ -83,7 +85,7 @@ Maybe Match,9123456789,SPOKEN ENGLISH,2024-03-01,COMPLETED
     expect(result.rows[2].validationCodes).toContain("POSSIBLE_EXISTING_PERSON_MATCH");
   });
 
-  it("reports row-level errors for unresolved data and blocks apply mode", () => {
+  it("reports row-level errors for unresolved data and requires explicit apply confirmation", () => {
     const csv = `STUDENT FULL NAME,PRIMARY MOBILE NUMBER,COURSE ENROLLMENT,ADMISSION DATE,COURSE STATUS
 ,12345,Unknown,31/02/2024,Left
 `;
@@ -93,7 +95,10 @@ Maybe Match,9123456789,SPOKEN ENGLISH,2024-03-01,COMPLETED
 
     const file = join(tmpdir(), `legacy-import-${Date.now()}.csv`);
     writeFileSync(file, SAMPLE_CSV, "utf8");
-    expect(() => execFileSync("node", ["--experimental-strip-types", "./worker/lib/legacy-import.ts", "--apply", "--file", file], { cwd: process.cwd(), encoding: "utf8" })).toThrow(/Apply mode is intentionally disabled/);
+    const cli = ["--experimental-strip-types", "--experimental-specifier-resolution=node", "./worker/lib/legacy-import-cli.ts"];
+    expect(() => execFileSync("node", [...cli, "--apply", "--file", file], { cwd: process.cwd(), encoding: "utf8" })).toThrow(/Local apply requires --confirm-apply/);
+    expect(() => execFileSync("node", [...cli, "--apply", "--dry-run", "--file", file], { cwd: process.cwd(), encoding: "utf8" })).toThrow(/either --dry-run or --apply/);
+    expect(() => execFileSync("node", [...cli, "--remote", "--apply", "--confirm-remote-apply", "--file", file], { cwd: process.cwd(), encoding: "utf8" })).toThrow(/Remote apply is intentionally unavailable/);
   });
 
   it("applies fresh migrations and seed.sql twice with the 42-course master and import tables intact", () => {
@@ -132,6 +137,178 @@ Maybe Match,9123456789,SPOKEN ENGLISH,2024-03-01,COMPLETED
     expect(count(db, "sqlite_master where type = 'table' and name in ('legacy_import_batches', 'legacy_import_rows', 'legacy_import_entity_mappings')")).toBe(3);
     db.close();
   });
+
+  it("applies a synthetic legacy import transactionally without logins, referral links, referrals, or rewards", async () => {
+    const db = migratedSeededDb();
+    const summary = await applyLegacyImportToDb(db, SAMPLE_CSV, applyOptions());
+
+    expect(summary).toMatchObject({
+      status: "APPLIED",
+      rows: 3,
+      peopleCreated: 2,
+      studentsCreated: 2,
+      enrolmentsCreated: 3,
+      referrerProfilesCreated: 2,
+      writeOperationsPerformed: true,
+    });
+    expect(count(db, "people")).toBe(2);
+    expect(count(db, "students")).toBe(2);
+    expect(count(db, "person_contacts")).toBe(2);
+    expect(count(db, "person_contact_details")).toBe(2);
+    expect(count(db, "person_contact_secrets")).toBe(2);
+    expect(count(db, "login_accounts")).toBe(0);
+    expect(count(db, "login_account_people")).toBe(0);
+    expect(count(db, "enrolments")).toBe(3);
+    expect(count(db, "referrer_profiles")).toBe(2);
+    expect(count(db, "referral_links")).toBe(0);
+    expect(count(db, "referrals")).toBe(0);
+    expect(count(db, "referral_reward_snapshots")).toBe(0);
+    expect(row(db, "select student_number, student_since, current_status from students order by sequence_number limit 1")).toMatchObject({
+      student_number: "SYK-SION-000001",
+      student_since: "2024-02-01",
+      current_status: "on_hold",
+    });
+    expect(all(db, "select status, admission_date, joining_date from enrolments order by admission_date")).toEqual([
+      { status: "active", admission_date: "2024-02-01", joining_date: "2024-02-01" },
+      { status: "on_hold", admission_date: "2024-03-15", joining_date: "2024-03-15" },
+      { status: "completed", admission_date: "2024-07-27", joining_date: "2024-07-27" },
+    ]);
+    db.close();
+  });
+
+  it("applies a 56-person and 59-enrolment synthetic fixture with expected current/alumni roles", async () => {
+    const db = migratedSeededDb();
+    const summary = await applyLegacyImportToDb(db, syntheticScaleCsv(), applyOptions({ sourceFileName: "scale.csv" }));
+
+    expect(summary).toMatchObject({ status: "APPLIED", rows: 59, peopleCreated: 56, studentsCreated: 56, enrolmentsCreated: 59, referrerProfilesCreated: 56 });
+    expect(count(db, "people")).toBe(56);
+    expect(count(db, "students")).toBe(56);
+    expect(count(db, "enrolments")).toBe(59);
+    expect(count(db, "referrer_profiles")).toBe(56);
+    expect(count(db, "referral_links")).toBe(0);
+    expect(count(db, "referrals")).toBe(0);
+    expect(count(db, "referral_reward_snapshots")).toBe(0);
+    expect(count(db, "person_roles join roles on roles.id = person_roles.role_id where roles.code = 'student'")).toBe(20);
+    expect(count(db, "person_roles join roles on roles.id = person_roles.role_id where roles.code = 'alumni'")).toBe(36);
+    expect(row(db, "select student_number from students order by sequence_number limit 1")).toMatchObject({ student_number: "SYK-SION-000001" });
+    expect(row(db, "select student_number from students order by sequence_number desc limit 1")).toMatchObject({ student_number: "SYK-SION-000056" });
+    db.close();
+  });
+
+  it("keeps the same file idempotent on second apply using batch and source mappings", async () => {
+    const db = migratedSeededDb();
+    await applyLegacyImportToDb(db, SAMPLE_CSV, applyOptions());
+    const second = await applyLegacyImportToDb(db, SAMPLE_CSV, applyOptions());
+
+    expect(second).toMatchObject({ status: "ALREADY_IMPORTED", peopleCreated: 0, studentsCreated: 0, enrolmentsCreated: 0, referrerProfilesCreated: 0, writeOperationsPerformed: false });
+    expect(count(db, "people")).toBe(2);
+    expect(count(db, "students")).toBe(2);
+    expect(count(db, "enrolments")).toBe(3);
+    expect(count(db, "legacy_import_entity_mappings")).toBe(7);
+    db.close();
+  });
+
+  it("blocks row errors before creating a batch or business rows", async () => {
+    const db = migratedSeededDb();
+    const invalid = `STUDENT FULL NAME,PRIMARY MOBILE NUMBER,COURSE ENROLLMENT,ADMISSION DATE,COURSE STATUS
+Bad Row,9876543210,UNKNOWN COURSE,2024-01-01,IN PROGRESS
+`;
+    await expect(applyLegacyImportToDb(db, invalid, applyOptions({ sourceFileName: "invalid.csv" }))).rejects.toThrow(/row errors/);
+    expect(count(db, "legacy_import_batches")).toBe(0);
+    expect(count(db, "people")).toBe(0);
+    expect(count(db, "students")).toBe(0);
+    expect(count(db, "enrolments")).toBe(0);
+    db.close();
+  });
+
+  it("does not duplicate entities when a corrected source file keeps the same stable refs", async () => {
+    const db = migratedSeededDb();
+    await applyLegacyImportToDb(db, SAMPLE_CSV, applyOptions());
+    const corrected = SAMPLE_CSV.replace("ON HOLD", "IN PROGRESS");
+    const second = await applyLegacyImportToDb(db, corrected, applyOptions({ sourceFileName: "corrected.csv" }));
+
+    expect(second).toMatchObject({ status: "APPLIED", peopleCreated: 0, studentsCreated: 0, enrolmentsCreated: 0 });
+    expect(count(db, "people")).toBe(2);
+    expect(count(db, "students")).toBe(2);
+    expect(count(db, "enrolments")).toBe(3);
+    expect(count(db, "legacy_import_batches")).toBe(2);
+    db.close();
+  });
+
+  it("reuses exact existing person, student, and referrer profile by contact hash and compatible name", async () => {
+    const db = migratedSeededDb();
+    const mobile = "+919876543210";
+    const mobileHash = await hmacHex("test-pepper", "mobile", mobile);
+    db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values ('person_existing', 'org_samyak', 'branch_sion', 'Ajay Test', 'Ajay Test', 'active', ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+    db.prepare("insert into person_contacts (id, person_id, contact_type, normalized_value, last_four, is_primary, is_verified, created_at, updated_at) values ('contact_existing', 'person_existing', 'mobile', ?, '3210', 1, 1, ?, ?)").run(mobileHash, "2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+    db.prepare("insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at) values ('student_existing', 'org_samyak', 'person_existing', 'branch_sion', 'SYK-SION-000099', 99, '2023-01-01', 'active', 'not_invited', ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+    db.prepare("insert into referrer_profiles (id, organisation_id, person_id, external_referrer_id, referral_token, personal_link, active, created_at, updated_at) values ('ref_existing', 'org_samyak', 'person_existing', 'legacy-existing', 'legacy-token-existing', 'legacy-link-existing', 1, ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+
+    const summary = await applyLegacyImportToDb(db, SAMPLE_CSV, applyOptions());
+
+    expect(summary.peopleMatched).toBe(1);
+    expect(summary.peopleCreated).toBe(1);
+    expect(summary.studentsCreated).toBe(1);
+    expect(summary.referrerProfilesReused).toBe(1);
+    expect(count(db, "people")).toBe(2);
+    expect(row(db, "select student_number from students where id = 'student_existing'")).toMatchObject({ student_number: "SYK-SION-000099" });
+    db.close();
+  });
+
+  it("blocks ambiguous same-contact different-name matches before writes", async () => {
+    const db = migratedSeededDb();
+    const mobileHash = await hmacHex("test-pepper", "mobile", "+919876543210");
+    db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values ('person_existing', 'org_samyak', 'branch_sion', 'Different Name', 'Different Name', 'active', ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+    db.prepare("insert into person_contacts (id, person_id, contact_type, normalized_value, last_four, is_primary, is_verified, created_at, updated_at) values ('contact_existing', 'person_existing', 'mobile', ?, '3210', 1, 1, ?, ?)").run(mobileHash, "2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+
+    await expect(applyLegacyImportToDb(db, SAMPLE_CSV, applyOptions())).rejects.toThrow(/possible existing-person matches/);
+    expect(count(db, "legacy_import_batches")).toBe(0);
+    expect(count(db, "students")).toBe(0);
+    expect(count(db, "enrolments")).toBe(0);
+    db.close();
+  });
+
+  it("keeps shared-mobile source people separate and stores no raw mobile in staging or audit", async () => {
+    const db = migratedSeededDb();
+    const csv = `STUDENT FULL NAME,PRIMARY MOBILE NUMBER,COURSE ENROLLMENT,ADMISSION DATE,COURSE STATUS
+Rachit Rajak,9876543211,CCC,2024-01-01,IN PROGRESS
+Varsha,9876543211,CCC,2024-01-02,COMPLETED
+`;
+    await applyLegacyImportToDb(db, csv, applyOptions());
+
+    expect(count(db, "people")).toBe(2);
+    expect(count(db, "students")).toBe(2);
+    expect(count(db, "person_contacts")).toBe(2);
+    expect(count(db, "person_contacts where contact_type = 'mobile' and last_four = '3211'")).toBe(2);
+    const sensitiveJson = JSON.stringify(all(db, "select * from legacy_import_batches")) + JSON.stringify(all(db, "select * from legacy_import_rows")) + JSON.stringify(all(db, "select * from legacy_import_entity_mappings")) + JSON.stringify(all(db, "select metadata_json from audit_logs"));
+    expect(sensitiveJson).not.toContain("9876543211");
+    expect(sensitiveJson).not.toContain("+919876543211");
+    db.close();
+  });
+
+  it("preflights without writes", async () => {
+    const db = migratedSeededDb();
+    const summary = await buildPreflightLegacyImportCsv(db, SAMPLE_CSV, applyOptions());
+
+    expect(summary).toMatchObject({ status: "READY", writeOperationsPerformed: false, rows: 3, peopleCreated: 2 });
+    expect(count(db, "people")).toBe(0);
+    expect(count(db, "legacy_import_batches")).toBe(0);
+    db.close();
+  });
+
+  it("retries Student ID allocation when a stale counter collides with an existing student", async () => {
+    const db = migratedSeededDb();
+    db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values ('person_seed', 'org_samyak', 'branch_sion', 'Seed Student', 'Seed Student', 'active', ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+    db.prepare("insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at) values ('student_seed', 'org_samyak', 'person_seed', 'branch_sion', 'SYK-SION-000001', 1, '2023-01-01', 'active', 'not_invited', ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+    db.prepare("insert into number_sequences (id, organisation_id, branch_id, sequence_key, next_sequence, created_at, updated_at) values ('seq_stale', 'org_samyak', 'branch_sion', 'student', 1, ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+
+    await applyLegacyImportToDb(db, `STUDENT FULL NAME,PRIMARY MOBILE NUMBER,COURSE ENROLLMENT,ADMISSION DATE,COURSE STATUS
+New Student,9876543210,CCC,2024-01-01,IN PROGRESS
+`, applyOptions({ sourceFileName: "collision.csv" }));
+
+    expect(row(db, "select student_number, sequence_number from students where person_id != 'person_seed'")).toMatchObject({ student_number: "SYK-SION-000002", sequence_number: 2 });
+    db.close();
+  });
 });
 
 function applyMigrations(db: DatabaseSync, throughFile?: string) {
@@ -165,4 +342,40 @@ function count(db: DatabaseSync, fromAndWhere: string) {
 
 function row(db: DatabaseSync, sql: string) {
   return db.prepare(sql).get() as Record<string, unknown> | undefined;
+}
+
+function all(db: DatabaseSync, sql: string) {
+  return db.prepare(sql).all() as Array<Record<string, unknown>>;
+}
+
+function migratedSeededDb() {
+  const db = new DatabaseSync(":memory:");
+  applyMigrations(db);
+  applySeed(db);
+  return db;
+}
+
+function applyOptions(overrides: Partial<Parameters<typeof applyLegacyImportToDb>[2]> = {}) {
+  return {
+    organisationId: "org_samyak",
+    branch: "branch_sion",
+    sourceFileName: "synthetic.csv",
+    sessionPepper: "test-pepper",
+    now: "2026-08-08T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function syntheticScaleCsv() {
+  const rows = ["STUDENT FULL NAME,PRIMARY MOBILE NUMBER,COURSE ENROLLMENT,ADMISSION DATE,COURSE STATUS"];
+  for (let index = 1; index <= 56; index += 1) {
+    const mobile = `98765${String(index).padStart(5, "0")}`;
+    const status = index <= 20 ? "IN PROGRESS" : "COMPLETED";
+    const date = `2024-01-${String(Math.min(index, 28)).padStart(2, "0")}`;
+    rows.push(`Synthetic ${index},${mobile},CCC,${date},${status}`);
+  }
+  rows.push("Synthetic 4,9876500004,SPOKEN ENGLISH,2024-02-04,COMPLETED");
+  rows.push("Synthetic 5,9876500005,MS OFFICE,2024-02-05,COMPLETED");
+  rows.push("Synthetic 6,9876500006,ADVANCE EXCEL,2024-02-06,COMPLETED");
+  return `${rows.join("\n")}\n`;
 }
