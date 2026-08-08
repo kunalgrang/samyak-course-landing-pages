@@ -298,7 +298,13 @@ function testDb() {
 function applyMigrations(db: DatabaseSync, throughFile?: string) {
   const migrationsDir = join(process.cwd(), "migrations");
   for (const file of readdirSync(migrationsDir).filter((name) => /^\d{4}_.+\.sql$/.test(name)).sort()) {
-    if (file === "0012_d1_referral_foundation.sql" || file === "0013_referral_service_integrity.sql" || file === "0014_course_master_and_referral_courses.sql") continue;
+    if (
+      file === "0012_d1_referral_foundation.sql" ||
+      file === "0013_referral_service_integrity.sql" ||
+      file === "0014_course_master_and_referral_courses.sql" ||
+      file === "0015_add_spoken_english_course.sql" ||
+      file === "0016_legacy_student_import_foundation.sql"
+    ) continue;
     if (throughFile && file > throughFile) continue;
     applyMigrationFile(db, file);
   }

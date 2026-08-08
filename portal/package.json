@@ -11,6 +11,7 @@
     "typecheck": "tsc -b",
     "test": "vitest",
     "test:run": "vitest run",
+    "import:legacy-students": "node --experimental-strip-types --experimental-specifier-resolution=node ./worker/lib/legacy-import-cli.ts",
     "smoke:production": "node ./scripts/smoke-production.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply samyak-student-portal --local",

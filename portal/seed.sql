@@ -260,7 +260,8 @@ WITH category_defaults(id, organisation_id, code, name, sort_order, is_active, c
     ('ccat_ved', 'org_samyak', 'VED', 'VIDEO EDITING', 100, 1, '2026-08-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z'),
     ('ccat_avx', 'org_samyak', 'AVX', 'ANIMATION & VFX', 110, 1, '2026-08-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z'),
     ('ccat_dsai', 'org_samyak', 'DSAI', 'DATA SCIENCE & AI', 120, 1, '2026-08-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z'),
-    ('ccat_civ', 'org_samyak', 'CIV', 'CIVIL & ARCHITECTURE', 130, 1, '2026-08-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z')
+    ('ccat_civ', 'org_samyak', 'CIV', 'CIVIL & ARCHITECTURE', 130, 1, '2026-08-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z'),
+    ('ccat_sft', 'org_samyak', 'SFT', 'Soft Skills', 140, 1, '2026-08-08T00:00:00.000Z', '2026-08-08T00:00:00.000Z')
 )
 INSERT INTO course_categories
   (id, organisation_id, code, name, sort_order, is_active, created_at, updated_at)
@@ -316,7 +317,8 @@ WITH course_defaults(id, organisation_id, code, name, category_id, duration_labe
     ('course_syk_dsai_004', 'org_samyak', 'SYK-DSAI-004', 'PYTHON - ADVANCED', 'ccat_dsai', '2 months', 2, 1600000, 1440000, 1, 0, 'active', '2026-08-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z'),
     ('course_syk_dsai_005', 'org_samyak', 'SYK-DSAI-005', 'R PROGRAMMING LANGUAGE', 'ccat_dsai', '1.5 months', 1.5, 2500000, 2250000, 1, 0, 'active', '2026-08-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z'),
     ('course_syk_civ_001', 'org_samyak', 'SYK-CIV-001', 'PRIMAVERA', 'ccat_civ', '2 months', 2, 2200000, 1980000, 1, 0, 'active', '2026-08-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z'),
-    ('course_syk_civ_002', 'org_samyak', 'SYK-CIV-002', 'MS PROJECT', 'ccat_civ', '1 month', 1, 1000000, 900000, 1, 0, 'active', '2026-08-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z')
+    ('course_syk_civ_002', 'org_samyak', 'SYK-CIV-002', 'MS PROJECT', 'ccat_civ', '1 month', 1, 1000000, 900000, 1, 0, 'active', '2026-08-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z'),
+    ('course_syk_sft_001', 'org_samyak', 'SYK-SFT-001', 'SPOKEN ENGLISH', 'ccat_sft', '1.5 months', 1.5, 700000, 630000, 1, 0, 'active', '2026-08-08T00:00:00.000Z', '2026-08-08T00:00:00.000Z')
 )
 INSERT INTO courses
   (id, organisation_id, code, name, category_id, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
@@ -347,7 +349,7 @@ WITH eligible_courses(course_id) AS (
     ('course_syk_wdd_007'), ('course_syk_gds_001'), ('course_syk_gds_002'), ('course_syk_gds_003'), ('course_syk_gds_004'),
     ('course_syk_gds_005'), ('course_syk_ved_001'), ('course_syk_ved_002'), ('course_syk_avx_001'), ('course_syk_dsai_001'),
     ('course_syk_dsai_002'), ('course_syk_dsai_003'), ('course_syk_dsai_004'), ('course_syk_dsai_005'), ('course_syk_civ_001'),
-    ('course_syk_civ_002')
+    ('course_syk_civ_002'), ('course_syk_sft_001')
 )
 INSERT INTO referral_programme_courses
   (referral_programme_id, course_id, is_active, created_at, updated_at)
