@@ -1,7 +1,10 @@
 import qrcode from "qrcode-generator";
 import type { CertificateRecord } from "./certificate-service";
-import { certificateLogo, certificateLogoCompressedBytes } from "./certificate-logo";
 import { branchDirectorSignature, branchDirectorSignatureBytes } from "./certificate-signature";
+import {
+  certificateTemplateSamyakCompletionV1,
+  certificateTemplateSamyakCompletionV1CompressedBytes,
+} from "./certificate-template";
 
 const encoder = new TextEncoder();
 
@@ -15,39 +18,22 @@ export async function generateCertificatePdf(input: CertificatePdfInput) {
   const pageHeight = 595;
   const pageCenterX = pageWidth / 2;
   const lines = certificateLines(input);
-  const nameLines = wrapText(input.certificate.student_name_snapshot, 560, 34, 2);
-  const nameSize = nameLines.length > 1 ? 26 : fitFontSize(input.certificate.student_name_snapshot, 560, 34, 22);
-  const courseLines = wrapText(input.certificate.course_name_snapshot, 560, 22, 3, "F3");
-  const courseSize = courseLines.length > 2 ? 14 : courseLines.length > 1 ? 17 : fitFontSize(input.certificate.course_name_snapshot, 560, 22, 15, "F3");
-  const headerText = "SAMYAK COMPUTER CLASSES";
-  const headerSize = 24;
-  const logoHeight = 60;
-  const logoWidth = logoHeight * (certificateLogo.width / certificateLogo.height);
-  const headerGap = 12;
-  const headerWidth = logoWidth + headerGap + approximateTextWidth(headerText, headerSize, "F3");
-  const headerX = pageCenterX - headerWidth / 2;
-  const samyakLineY = courseLines.length > 1 ? 184 : 216;
+  const nameLines = wrapText(input.certificate.student_name_snapshot, 560, 35, 2, "F2");
+  const nameSize = nameLines.length > 1 ? 24 : fitFontSize(input.certificate.student_name_snapshot, 560, 35, 24, "F2");
+  const courseLines = wrapText(input.certificate.course_name_snapshot, 610, 19, 2, "F4");
+  const courseSize = courseLines.length > 1 ? 16 : fitFontSize(input.certificate.course_name_snapshot, 610, 19, 14, "F4");
+  const nameStartY = nameLines.length > 1 ? 333 : 312;
+  const courseStartY = courseLines.length > 1 ? 234 : 226;
+  const nameGold = rgb(certificateTemplateSamyakCompletionV1.sampledGoldRgb);
   const content = [
     "q",
-    "1 1 1 rg 0 0 842 595 re f",
-    "0.035 0.137 0.239 RG 3 w 28 28 786 539 re S",
-    "0.051 0.580 0.533 RG 1.5 w 42 42 758 511 re S",
-    `q ${logoWidth.toFixed(3)} 0 0 ${logoHeight} ${headerX.toFixed(3)} 481 cm /Logo Do Q`,
-    text(headerText, headerX + logoWidth + headerGap, 501, headerSize, "0.035 0.137 0.239", "F3"),
-    centerText("CERTIFICATE OF COMPLETION", pageCenterX, 424, 28, "0.051 0.580 0.533", "F3"),
-    centerText("This is to certify that", pageCenterX, 374, 13, "0.388 0.439 0.514"),
-    ...nameLines.map((line, index) => centerText(line, pageCenterX, 333 - index * (nameSize + 5), nameSize, "0.035 0.137 0.239", "F2")),
-    centerText("has successfully completed the course", pageCenterX, nameLines.length > 1 ? 264 : 282, 13, "0.388 0.439 0.514"),
-    ...courseLines.map((line, index) => centerText(line, pageCenterX, (nameLines.length > 1 ? 228 : 244) - index * (courseSize + 5), courseSize, "0.035 0.137 0.239", "F3")),
-    centerText("at Samyak Computer Classes, Sion.", pageCenterX, samyakLineY, 12, "0.388 0.439 0.514"),
-    ...drawQr(input.verificationUrl, 82, 84, 82),
-    text("Scan to verify certificate", 74, 62, 10, "0.388 0.439 0.514"),
-    ...lines.map((line, index) => text(line, 190, 160 - index * 18, 10.5, "0.035 0.137 0.239")),
-    "q 39 0 0 50 677 122 cm /Sig Do Q",
-    "0.035 0.137 0.239 RG 1 w 644 118 106 0 l S",
-    centerText("Branch Director", 697, 96, 13, "0.035 0.137 0.239"),
-    centerText("A unit of Shree Services", pageCenterX, 72, 10.5, "0.388 0.439 0.514"),
-    centerText("info@samyaksion.com | www.samyaksion.com | +91 8422969307", pageCenterX, 54, 10.5, "0.388 0.439 0.514"),
+    `q ${pageWidth} 0 0 ${pageHeight} 0 0 cm /Template Do Q`,
+    ...nameLines.map((line, index) => centerText(line, pageCenterX, nameStartY - index * (nameSize + 5), nameSize, nameGold, "F2")),
+    ...courseLines.map((line, index) => centerText(line, pageCenterX, courseStartY - index * (courseSize + 5), courseSize, "0.047 0.067 0.090", "F4")),
+    ...drawQr(input.verificationUrl, 82, 94, 76),
+    centerText("Scan to verify certificate", 120, 78, 8.5, "0.047 0.067 0.090"),
+    ...lines.map((line, index) => text(line, 178, 142 - index * 13, 8.5, "0.047 0.067 0.090")),
+    "q 40 0 0 50 644 98 cm /Sig Do Q",
     "Q",
   ].join("\n");
   const pdf = buildPdf(pageWidth, pageHeight, content);
@@ -75,6 +61,10 @@ function centerText(value: string, centerX: number, y: number, size: number, rgb
   return text(value, centerX - approximateTextWidth(value, size, font) / 2, y, size, rgb, font);
 }
 
+function rgb([red, green, blue]: readonly [number, number, number]) {
+  return `${(red / 255).toFixed(3)} ${(green / 255).toFixed(3)} ${(blue / 255).toFixed(3)}`;
+}
+
 function drawQr(value: string, x: number, y: number, size: number) {
   const qr = qrcode(0, "M");
   qr.addData(value);
@@ -96,17 +86,18 @@ function drawQr(value: string, x: number, y: number, size: number) {
 function buildPdf(width: number, height: number, streamText: string) {
   const stream = encoder.encode(streamText);
   const signatureHex = bytesToHex(branchDirectorSignatureBytes());
-  const logoHex = bytesToHex(certificateLogoCompressedBytes());
+  const templateHex = bytesToHex(certificateTemplateSamyakCompletionV1CompressedBytes());
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R >> /XObject << /Sig 8 0 R /Logo 9 0 R >> >> /Contents 7 0 R >>`,
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R /F4 7 0 R >> /XObject << /Template 9 0 R /Sig 10 0 R >> >> /Contents 8 0 R >>`,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Italic >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold >>",
     `<< /Length ${stream.length} >>\nstream\n${streamText}\nendstream`,
+    `<< /Type /XObject /Subtype /Image /Width ${certificateTemplateSamyakCompletionV1.width} /Height ${certificateTemplateSamyakCompletionV1.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter [/ASCIIHexDecode /FlateDecode] /Length ${templateHex.length + 1} >>\nstream\n${templateHex}>\nendstream`,
     `<< /Type /XObject /Subtype /Image /Width ${branchDirectorSignature.width} /Height ${branchDirectorSignature.height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length ${signatureHex.length + 1} >>\nstream\n${signatureHex}>\nendstream`,
-    `<< /Type /XObject /Subtype /Image /Width ${certificateLogo.width} /Height ${certificateLogo.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter [/ASCIIHexDecode /FlateDecode] /Length ${logoHex.length + 1} >>\nstream\n${logoHex}>\nendstream`,
   ];
   const chunks: string[] = ["%PDF-1.4\n"];
   const offsets = [0];
@@ -167,7 +158,7 @@ function fitFontSize(value: string, maxWidth: number, preferred: number, minimum
 }
 
 function approximateTextWidth(value: string, size: number, font = "F1") {
-  const factor = font === "F3" ? 0.585 : 0.52;
+  const factor = font === "F3" || font === "F4" ? 0.585 : 0.52;
   return value.length * size * factor;
 }
 

@@ -11,17 +11,26 @@ describe("certificate PDF generation", () => {
     });
     const text = new TextDecoder().decode(result.bytes);
 
-    expect(text).toContain("CERTIFICATE OF COMPLETION");
-    expect(text).toContain("SAMYAK COMPUTER CLASSES");
+    expect(text).toContain("/Template Do");
+    expect(text).toContain("/Template 9 0 R");
+    expect(text).toContain("/Width 2000 /Height 1414");
+    expect(text).toContain("0.788 0.631 0.294 rg");
     expect(text).not.toContain("SAMYAK COMPUTER CLASSES, SION");
     expect(text).toContain("Asha Shah");
+    expect(text).toContain("FULL STACK COURSE - 6 MONTHS");
+    expect(text).toContain("Student ID: SYK-SION-2026-000123");
     expect(text).toContain("SYK-SION-CERT-2026-000001");
+    expect(text).toContain("Course Duration: 6 months");
+    expect(text).toContain("Issue Date: 14-08-2026");
     expect(text).not.toContain("Course Code");
     expect(text).not.toContain("SYK-WDD-001");
     expect(text).toContain("/Sig Do");
-    expect(text).toContain("Branch Director");
-    expect(text).toContain("info@samyaksion.com");
-    expect(text.match(/A unit of Shree Services/g)).toHaveLength(1);
+    expect(text).not.toContain("Branch Director");
+    expect(text).not.toContain("info@samyaksion.com");
+    expect(text).not.toContain("person_1");
+    expect(text).not.toContain("student_1");
+    expect(text).not.toContain("enrol_1");
+    expect(text).not.toContain("course_1");
     expect(text).not.toContain("Unknown");
     expect(text).not.toContain("Grade");
     expect(text).not.toContain("Aadhaar");
@@ -36,6 +45,26 @@ describe("certificate PDF generation", () => {
     });
 
     expect(new TextDecoder().decode(result.bytes)).toContain("Completion Date: 10-08-2026");
+  });
+
+  it("keeps stress-case overlays in the PNG-backed template model", async () => {
+    const result = await generateCertificatePdf({
+      certificate: sampleCertificate({
+        student_name_snapshot: "Ananya Venkataraman Subramaniam Iyer-Deshmukh",
+        course_name_snapshot: "Professional Full Stack Web Development, Cloud Automation, Analytics and AI Productivity Masterclass",
+        completion_date_snapshot: "2026-07-31",
+      }),
+      verificationUrl: "https://go.samyaksion.com/verify/SYK-STRESS123456789",
+    });
+    const text = new TextDecoder().decode(result.bytes);
+
+    expect(text).toContain("/Template Do");
+    expect(text).toContain("Ananya Venkataraman");
+    expect(text).toContain("Subramaniam Iyer-Deshmukh");
+    expect(text).toContain("Iyer-Deshmukh");
+    expect(text).toContain("Professional Full Stack Web Development");
+    expect(text).toContain("Completion Date: 31-07-2026");
+    expect(text).not.toContain("SYK-WDD-001");
   });
 });
 
