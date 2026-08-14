@@ -13,39 +13,41 @@ export type CertificatePdfInput = {
 export async function generateCertificatePdf(input: CertificatePdfInput) {
   const pageWidth = 842;
   const pageHeight = 595;
+  const pageCenterX = pageWidth / 2;
   const lines = certificateLines(input);
   const nameLines = wrapText(input.certificate.student_name_snapshot, 560, 34, 2);
   const nameSize = nameLines.length > 1 ? 26 : fitFontSize(input.certificate.student_name_snapshot, 560, 34, 22);
-  const courseLines = wrapText(input.certificate.course_name_snapshot, 560, 22, 3);
-  const courseSize = courseLines.length > 2 ? 14 : courseLines.length > 1 ? 17 : fitFontSize(input.certificate.course_name_snapshot, 560, 22, 15);
+  const courseLines = wrapText(input.certificate.course_name_snapshot, 560, 22, 3, "F3");
+  const courseSize = courseLines.length > 2 ? 14 : courseLines.length > 1 ? 17 : fitFontSize(input.certificate.course_name_snapshot, 560, 22, 15, "F3");
   const headerText = "SAMYAK COMPUTER CLASSES";
   const headerSize = 24;
-  const logoHeight = 52;
+  const logoHeight = 60;
   const logoWidth = logoHeight * (certificateLogo.width / certificateLogo.height);
   const headerGap = 12;
-  const headerWidth = logoWidth + headerGap + approximateTextWidth(headerText, headerSize);
-  const headerX = pageWidth / 2 - headerWidth / 2;
+  const headerWidth = logoWidth + headerGap + approximateTextWidth(headerText, headerSize, "F3");
+  const headerX = pageCenterX - headerWidth / 2;
+  const samyakLineY = courseLines.length > 1 ? 184 : 216;
   const content = [
     "q",
     "1 1 1 rg 0 0 842 595 re f",
     "0.035 0.137 0.239 RG 3 w 28 28 786 539 re S",
     "0.051 0.580 0.533 RG 1.5 w 42 42 758 511 re S",
-    `q ${logoWidth.toFixed(3)} 0 0 ${logoHeight} ${headerX.toFixed(3)} 485 cm /Logo Do Q`,
+    `q ${logoWidth.toFixed(3)} 0 0 ${logoHeight} ${headerX.toFixed(3)} 481 cm /Logo Do Q`,
     text(headerText, headerX + logoWidth + headerGap, 501, headerSize, "0.035 0.137 0.239", "F3"),
-    centerText("CERTIFICATE OF COMPLETION", pageWidth / 2, 424, 28, "0.051 0.580 0.533", "F3"),
-    centerText("This is to certify that", pageWidth / 2, 374, 13, "0.388 0.439 0.514"),
-    ...nameLines.map((line, index) => centerText(line, pageWidth / 2, 333 - index * (nameSize + 5), nameSize, "0.035 0.137 0.239", "F2")),
-    centerText("has successfully completed the course", pageWidth / 2, nameLines.length > 1 ? 264 : 282, 13, "0.388 0.439 0.514"),
-    ...courseLines.map((line, index) => centerText(line, pageWidth / 2, (nameLines.length > 1 ? 228 : 244) - index * (courseSize + 5), courseSize, "0.035 0.137 0.239", "F3")),
-    centerText("at Samyak Computer Classes, Sion.", pageWidth / 2, courseLines.length > 1 ? 174 : 206, 12, "0.388 0.439 0.514"),
+    centerText("CERTIFICATE OF COMPLETION", pageCenterX, 424, 28, "0.051 0.580 0.533", "F3"),
+    centerText("This is to certify that", pageCenterX, 374, 13, "0.388 0.439 0.514"),
+    ...nameLines.map((line, index) => centerText(line, pageCenterX, 333 - index * (nameSize + 5), nameSize, "0.035 0.137 0.239", "F2")),
+    centerText("has successfully completed the course", pageCenterX, nameLines.length > 1 ? 264 : 282, 13, "0.388 0.439 0.514"),
+    ...courseLines.map((line, index) => centerText(line, pageCenterX, (nameLines.length > 1 ? 228 : 244) - index * (courseSize + 5), courseSize, "0.035 0.137 0.239", "F3")),
+    centerText("at Samyak Computer Classes, Sion.", pageCenterX, samyakLineY, 12, "0.388 0.439 0.514"),
     ...drawQr(input.verificationUrl, 82, 84, 82),
     text("Scan to verify certificate", 74, 62, 10, "0.388 0.439 0.514"),
     ...lines.map((line, index) => text(line, 190, 160 - index * 18, 10.5, "0.035 0.137 0.239")),
-    "q 49 0 0 62 672 146 cm /Sig Do Q",
-    "0.035 0.137 0.239 RG 1 w 644 132 106 0 l S",
-    centerText("Branch Director", 697, 108, 13, "0.035 0.137 0.239"),
-    centerText("A unit of Shree Services", pageWidth / 2, 72, 10.5, "0.388 0.439 0.514"),
-    centerText("info@samyaksion.com | www.samyaksion.com | +91 8422969307", pageWidth / 2, 54, 10.5, "0.388 0.439 0.514"),
+    "q 39 0 0 50 677 122 cm /Sig Do Q",
+    "0.035 0.137 0.239 RG 1 w 644 118 106 0 l S",
+    centerText("Branch Director", 697, 96, 13, "0.035 0.137 0.239"),
+    centerText("A unit of Shree Services", pageCenterX, 72, 10.5, "0.388 0.439 0.514"),
+    centerText("info@samyaksion.com | www.samyaksion.com | +91 8422969307", pageCenterX, 54, 10.5, "0.388 0.439 0.514"),
     "Q",
   ].join("\n");
   const pdf = buildPdf(pageWidth, pageHeight, content);
@@ -70,7 +72,7 @@ function text(value: string, x: number, y: number, size: number, rgb: string, fo
 }
 
 function centerText(value: string, centerX: number, y: number, size: number, rgb: string, font = "F1") {
-  return text(value, centerX - approximateTextWidth(value, size) / 2, y, size, rgb, font);
+  return text(value, centerX - approximateTextWidth(value, size, font) / 2, y, size, rgb, font);
 }
 
 function drawQr(value: string, x: number, y: number, size: number) {
@@ -128,14 +130,14 @@ function escapePdf(value: string) {
   return value.replace(/[\\()]/g, (char) => `\\${char}`).slice(0, 220);
 }
 
-function wrapText(value: string, maxWidth: number, size: number, maxLines: number) {
+function wrapText(value: string, maxWidth: number, size: number, maxLines: number, font = "F1") {
   const words = value.trim().split(/\s+/).filter(Boolean);
   const lines: string[] = [];
   let current = "";
   for (let index = 0; index < words.length; index += 1) {
     const word = words[index];
     const next = current ? `${current} ${word}` : word;
-    if (approximateTextWidth(next, size) <= maxWidth || !current) {
+    if (approximateTextWidth(next, size, font) <= maxWidth || !current) {
       current = next;
     } else {
       lines.push(current);
@@ -147,25 +149,26 @@ function wrapText(value: string, maxWidth: number, size: number, maxLines: numbe
   if (!lines.length) return [value.slice(0, 80)];
   const consumed = lines.join(" ").length;
   if (consumed < value.trim().length && lines.length === maxLines) {
-    lines[maxLines - 1] = trimToWidth(lines[maxLines - 1], maxWidth, size);
+    lines[maxLines - 1] = trimToWidth(lines[maxLines - 1], maxWidth, size, font);
   }
   return lines;
 }
 
-function trimToWidth(value: string, maxWidth: number, size: number) {
+function trimToWidth(value: string, maxWidth: number, size: number, font = "F1") {
   let result = value;
-  while (result.length > 4 && approximateTextWidth(`${result}...`, size) > maxWidth) result = result.slice(0, -1);
+  while (result.length > 4 && approximateTextWidth(`${result}...`, size, font) > maxWidth) result = result.slice(0, -1);
   return `${result.trim()}...`;
 }
 
-function fitFontSize(value: string, maxWidth: number, preferred: number, minimum: number) {
+function fitFontSize(value: string, maxWidth: number, preferred: number, minimum: number, font = "F1") {
   let size = preferred;
-  while (size > minimum && approximateTextWidth(value, size) > maxWidth) size -= 1;
+  while (size > minimum && approximateTextWidth(value, size, font) > maxWidth) size -= 1;
   return size;
 }
 
-function approximateTextWidth(value: string, size: number) {
-  return value.length * size * 0.52;
+function approximateTextWidth(value: string, size: number, font = "F1") {
+  const factor = font === "F3" ? 0.585 : 0.52;
+  return value.length * size * factor;
 }
 
 function byteLength(value: string) {
