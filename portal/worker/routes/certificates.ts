@@ -70,8 +70,8 @@ export function registerCertificateRoutes(app: PortalHono) {
     const staff = await requireCertificateStaff(c);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Staff access is required." });
     const pdf = await getCertificatePdf(c, c.req.param("certificateId"));
-    if (!pdf) return jsonError(c, { status: 404, code: "certificate_not_found", message: "Certificate was not found." });
-    return pdfResponse(pdf.bytes, `samyak-certificate-${c.req.param("certificateId")}.pdf`);
+    if (!pdf.ok) return jsonError(c, { status: httpStatus(pdf.status), code: pdf.code, message: pdf.message });
+    return pdfResponse(pdf.bytes, pdf.filename);
   });
 
   app.get("/api/student/certificates", async (c) => {
@@ -84,8 +84,8 @@ export function registerCertificateRoutes(app: PortalHono) {
     const profile = await authenticatedStudentProfile(c);
     if (profile instanceof Response) return profile;
     const pdf = await getCertificatePdf(c, c.req.param("certificateId"), profile.personId);
-    if (!pdf) return jsonError(c, { status: 404, code: "certificate_not_found", message: "Certificate was not found." });
-    return pdfResponse(pdf.bytes, `samyak-certificate-${c.req.param("certificateId")}.pdf`);
+    if (!pdf.ok) return jsonError(c, { status: httpStatus(pdf.status), code: pdf.code, message: pdf.message });
+    return pdfResponse(pdf.bytes, pdf.filename);
   });
 
   app.get("/api/public/certificates/verify/:code", async (c) => {

@@ -36,6 +36,8 @@ function StaffCertificates({ isOwner }: { isOwner: boolean }) {
   const [isLoading, setIsLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingIssue, setPendingIssue] = useState<{ enrolment: EligibleCertificate; issueDate: string } | null>(null);
+  const [isIssuing, setIsIssuing] = useState(false);
   const limit = 25;
 
   useEffect(() => {
@@ -65,16 +67,26 @@ function StaffCertificates({ isOwner }: { isOwner: boolean }) {
     }
   }
 
-  async function issue(enrolment: EligibleCertificate) {
+  function prepareIssue(enrolment: EligibleCertificate) {
     setMessage(null);
     setError(null);
+    setPendingIssue({ enrolment, issueDate: new Date().toISOString().slice(0, 10) });
+  }
+
+  async function confirmIssue() {
+    if (!pendingIssue) return;
+    setMessage(null);
+    setError(null);
+    setIsIssuing(true);
     try {
-      const today = new Date().toISOString().slice(0, 10);
-      const response = await issueStaffCertificate(enrolment.enrolment_id, today);
-      setMessage(`${response.certificate.certificate_number} issued for ${enrolment.student_name}.`);
+      const response = await issueStaffCertificate(pendingIssue.enrolment.enrolment_id, pendingIssue.issueDate);
+      setMessage(`${response.certificate.certificate_number} issued for ${pendingIssue.enrolment.student_name}.`);
+      setPendingIssue(null);
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not issue certificate.");
+    } finally {
+      setIsIssuing(false);
     }
   }
 
@@ -119,6 +131,25 @@ function StaffCertificates({ isOwner }: { isOwner: boolean }) {
       </form>
       {message ? <div className="notice notice--success"><strong>{message}</strong></div> : null}
       {error ? <ErrorState title="Could not continue" message={error} /> : null}
+      {pendingIssue ? (
+        <section className="staff-card certificate-confirmation" aria-label="Confirm certificate issuance">
+          <div className="section-heading"><h2>Confirm issue</h2><span>Final record</span></div>
+          <dl>
+            <div><dt>Student</dt><dd>{pendingIssue.enrolment.student_name}</dd></div>
+            <div><dt>Student ID</dt><dd>{pendingIssue.enrolment.student_number}</dd></div>
+            <div><dt>Course</dt><dd>{pendingIssue.enrolment.course_name}</dd></div>
+            <div><dt>Completion</dt><dd>{pendingIssue.enrolment.actual_completion_date ? formatDate(pendingIssue.enrolment.actual_completion_date) : "Completed"}</dd></div>
+          </dl>
+          <label>
+            Issue date
+            <input type="date" value={pendingIssue.issueDate} onChange={(event) => setPendingIssue({ ...pendingIssue, issueDate: event.target.value })} />
+          </label>
+          <div className="certificate-actions">
+            <button type="button" onClick={() => void confirmIssue()} disabled={isIssuing || !pendingIssue.issueDate}>{isIssuing ? "Issuing..." : "Confirm Issue"}</button>
+            <button type="button" className="secondary-button" onClick={() => setPendingIssue(null)} disabled={isIssuing}>Cancel</button>
+          </div>
+        </section>
+      ) : null}
       {isLoading ? <LoadingState label="Loading certificates" /> : null}
       {!isLoading && tab === "eligible" ? (
         <section className="staff-card">
@@ -129,7 +160,7 @@ function StaffCertificates({ isOwner }: { isOwner: boolean }) {
                 <strong>{item.student_name}</strong>
                 <span>{item.student_number} · {item.course_name}</span>
                 <small>Joined {formatDate(item.joining_date)}{item.actual_completion_date ? ` · Completed ${formatDate(item.actual_completion_date)}` : ""}{item.duration_label ? ` · ${item.duration_label}` : ""}</small>
-                <button type="button" onClick={() => void issue(item)}>Issue Certificate</button>
+                <button type="button" onClick={() => prepareIssue(item)}>Issue Certificate</button>
               </article>
             ))}
             {!eligible.length ? <p className="staff-empty">No eligible enrolments found.</p> : null}

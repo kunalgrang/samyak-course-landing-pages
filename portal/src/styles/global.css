@@ -720,6 +720,12 @@ a:focus-visible {
   font-weight: 800;
 }
 
+.verify-panel footer {
+  color: var(--color-muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
 .loading-state {
   display: flex;
   align-items: center;

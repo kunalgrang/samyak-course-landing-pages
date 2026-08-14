@@ -37,6 +37,7 @@ export function VerifyCertificatePage({ code }: { code: string }) {
       <section className="verify-panel">
         <img src="/samyak-logo.webp" alt="Samyak Computer Classes" />
         <p>{verification.issuer}</p>
+        <p>A unit of Shree Services</p>
         <h1>{statusTitle(verification.status)}</h1>
         {verification.status === "not_found" ? (
           <p className="verify-muted">We could not verify this certificate code.</p>
@@ -50,15 +51,16 @@ export function VerifyCertificatePage({ code }: { code: string }) {
             {certificate.completion_date_snapshot ? <div><dt>Completion Date</dt><dd>{formatDate(String(certificate.completion_date_snapshot))}</dd></div> : null}
           </dl>
         )}
+        <footer>For verification support, contact info@samyaksion.com or +91 8422969307.</footer>
       </section>
     </main>
   );
 }
 
 function statusTitle(status: string) {
-  if (status === "valid") return "Certificate Valid";
-  if (status === "revoked") return "Certificate Revoked";
-  if (status === "superseded") return "Certificate Superseded";
+  if (status === "valid") return "VALID";
+  if (status === "revoked") return "REVOKED";
+  if (status === "superseded") return "SUPERSEDED";
   return "Could Not Verify";
 }
 

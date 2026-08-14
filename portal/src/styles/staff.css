@@ -364,6 +364,32 @@
   align-items: start;
 }
 
+.certificate-confirmation {
+  gap: 16px;
+}
+
+.certificate-confirmation dl {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.certificate-confirmation dl div {
+  display: grid;
+  gap: 4px;
+}
+
+.certificate-confirmation dt {
+  color: var(--color-muted);
+  font-weight: 800;
+}
+
+.certificate-confirmation dd {
+  margin: 0;
+  color: var(--color-navy);
+  font-weight: 800;
+}
+
 .certificate-actions {
   margin-top: 4px;
 }

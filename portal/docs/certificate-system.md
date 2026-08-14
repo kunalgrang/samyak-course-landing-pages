@@ -38,14 +38,23 @@ The supplied Branch Director signature image is stored at `portal/worker/assets/
 
 ## PDF And Storage
 
-D1 stores certificate metadata and immutable snapshots. The final production target is R2 for immutable PDF objects; no PDF blob/base64 is stored in D1. This branch includes a deterministic snapshot-based PDF generator and `pdf_sha256` storage. Because no `CERTIFICATE_PDFS` R2 binding exists yet, local downloads regenerate from the stored certificate snapshot and template version. Before production issuance, configure an R2 bucket binding and persist the generated PDF bytes at an immutable object key.
+D1 stores certificate metadata, immutable snapshots, the private `pdf_storage_key`, and `pdf_sha256`. PDF blobs/base64 are never stored in D1. Production issuance requires the private R2 binding `CERTIFICATE_PDFS`; if the binding is missing, issuance fails before any certificate row is inserted.
 
-Required Cloudflare configuration:
+Production PDF objects are stored in the private R2 bucket `samyak-certificates` with deterministic, non-PII keys:
 
-- R2 bucket for certificate PDFs.
-- Worker binding, proposed name: `CERTIFICATE_PDFS`.
-- `CERTIFICATE_VERIFICATION_ORIGIN`, proposed initial value: `https://go.samyaksion.com`.
-- Route coverage for `/verify/*` and `/api/public/certificates/verify/*` on the chosen public hostname.
+`certificates/org_samyak/branch_sion/2026/syk-sion-cert-2026-000001.pdf`
+
+The key uses organisation, branch, issue year, and certificate number only. Student names, phones, emails, internal Person IDs, and enrolment IDs are not included. Object uploads set `Content-Type: application/pdf`, attachment disposition metadata, and custom metadata for certificate id, number, and SHA-256.
+
+Issuance generates the certificate number, verification code, PDF bytes, SHA-256, and storage key first. It uploads the PDF to R2 before inserting the issued certificate row, so the database never exposes an issued certificate whose PDF upload already failed. If the R2 upload succeeds but the D1 insert fails, the Worker attempts to delete the private object before returning the error. A concurrent double-click or retry after a successful insert returns the existing issued certificate for the enrolment.
+
+Staff and student downloads are Worker-mediated through authenticated routes. The Worker reads the private R2 object and returns an attachment response; there is no public R2 bucket, public object URL, or public PDF download endpoint. Local/test execution can inject the memory storage adapter. Non-production environments without R2 may regenerate a PDF from the stored snapshot for developer convenience, but production does not use that fallback.
+
+Configured Cloudflare resources in `wrangler.jsonc`:
+
+- R2 bucket binding `CERTIFICATE_PDFS` -> `samyak-certificates`.
+- `CERTIFICATE_VERIFICATION_ORIGIN=https://go.samyaksion.com`.
+- Narrow route coverage for `/verify/*` and `/api/public/certificates/verify/*` on `go.samyaksion.com`.
 
 ## Public Privacy
 

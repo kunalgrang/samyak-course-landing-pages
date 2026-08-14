@@ -3,6 +3,12 @@ import { ORG_ID } from "./auth-store";
 import { createOpaqueId, randomBase64Url } from "./crypto";
 import type { StaffContext } from "./staff-auth";
 import { generateCertificatePdf } from "./certificate-pdf";
+import {
+  buildCertificatePdfKey,
+  certificatePdfFilename,
+  certificatePdfStorageFromEnv,
+  type CertificatePdfStorage,
+} from "./certificate-storage";
 
 export const CERTIFICATE_TEMPLATE_CODE = "SAMYAK_COMPLETION_V1";
 export const CERTIFICATE_VERIFICATION_ORIGIN = "https://go.samyaksion.com";
@@ -41,6 +47,10 @@ export type CertificateRecord = {
   created_at: string;
   updated_at: string;
 };
+
+export type CertificatePdfResult =
+  | { ok: true; bytes: Uint8Array; filename: string; sha256: string | null; storageKey: string | null }
+  | { ok: false; status: number; code: string; message: string };
 
 type EligibilityRow = {
   enrolment_id: string;
@@ -168,7 +178,7 @@ export async function listCertificates(c: AppContext, input: { q?: string; cours
   return { items: results.slice(0, input.limit), pagination: { limit: input.limit, offset: input.offset, hasMore: results.length > input.limit } };
 }
 
-export async function issueCertificate(c: AppContext, staff: StaffContext, enrolmentId: string, issueDate: string) {
+export async function issueCertificate(c: AppContext, staff: StaffContext, enrolmentId: string, issueDate: string, options: { storage?: CertificatePdfStorage | null } = {}) {
   const eligibility = await certificateEligibility(c, enrolmentId);
   if (eligibility.existingCertificate) return { ok: true as const, certificate: eligibility.existingCertificate, idempotent: true };
   if (!eligibility.eligible || !eligibility.enrolment) {
@@ -178,6 +188,10 @@ export async function issueCertificate(c: AppContext, staff: StaffContext, enrol
   const now = new Date().toISOString();
   const template = await activeTemplate(c);
   if (!template) return { ok: false as const, status: 500, code: "template_missing", message: "Certificate template is not configured.", reasons: ["template_missing"] };
+  const storage = options.storage ?? certificatePdfStorageFromEnv(c.env);
+  if (!storage && c.env.ENVIRONMENT === "production") {
+    return { ok: false as const, status: 500, code: "certificate_storage_unavailable", message: "Certificate PDF storage is not configured.", reasons: ["certificate_storage_unavailable"] };
+  }
   const certificateId = createOpaqueId("cert");
   const certificateNumber = await allocateCertificateNumber(c, row.branch_id, row.branch_code, issueDate);
   const verificationCode = await uniqueVerificationCode(c);
@@ -218,6 +232,20 @@ export async function issueCertificate(c: AppContext, staff: StaffContext, enrol
   };
   const pdf = await generateCertificatePdf({ certificate, verificationUrl });
   certificate.pdf_sha256 = pdf.sha256;
+  certificate.pdf_storage_key = buildCertificatePdfKey(certificate);
+  if (storage) {
+    try {
+      await storage.put({
+        key: certificate.pdf_storage_key,
+        bytes: pdf.bytes,
+        certificateId: certificate.id,
+        certificateNumber: certificate.certificate_number,
+        sha256: pdf.sha256,
+      });
+    } catch {
+      return { ok: false as const, status: 500, code: "certificate_pdf_storage_failed", message: "Certificate PDF could not be stored.", reasons: ["certificate_pdf_storage_failed"] };
+    }
+  }
   try {
     await c.env.DB.batch([
       c.env.DB.prepare(
@@ -240,7 +268,13 @@ export async function issueCertificate(c: AppContext, staff: StaffContext, enrol
     ]);
   } catch (error) {
     const existing = await activeCertificateForEnrolment(c, row.enrolment_id);
-    if (existing) return { ok: true as const, certificate: existing, idempotent: true };
+    if (existing) {
+      if (storage && certificate.pdf_storage_key && certificate.pdf_storage_key !== existing.pdf_storage_key) {
+        await storage.delete(certificate.pdf_storage_key).catch(() => undefined);
+      }
+      return { ok: true as const, certificate: existing, idempotent: true };
+    }
+    if (storage && certificate.pdf_storage_key) await storage.delete(certificate.pdf_storage_key).catch(() => undefined);
     throw error;
   }
   return { ok: true as const, certificate, idempotent: false };
@@ -278,11 +312,27 @@ export async function verifyCertificate(c: AppContext, code: string) {
   return { status, certificate };
 }
 
-export async function getCertificatePdf(c: AppContext, certificateId: string, personId?: string) {
+export async function getCertificatePdf(c: AppContext, certificateId: string, personId?: string, options: { storage?: CertificatePdfStorage | null } = {}): Promise<CertificatePdfResult> {
   const certificate = await getCertificateById(c, certificateId);
-  if (!certificate) return null;
-  if (personId && certificate.person_id !== personId) return null;
-  return generateCertificatePdf({ certificate, verificationUrl: buildVerificationUrl(c, certificate.verification_code) });
+  if (!certificate) return { ok: false, status: 404, code: "certificate_not_found", message: "Certificate was not found." };
+  if (personId && certificate.person_id !== personId) return { ok: false, status: 404, code: "certificate_not_found", message: "Certificate was not found." };
+  const storage = options.storage ?? certificatePdfStorageFromEnv(c.env);
+  if (storage && certificate.pdf_storage_key) {
+    const object = await storage.get(certificate.pdf_storage_key);
+    if (!object) return { ok: false, status: 503, code: "certificate_pdf_missing", message: "Certificate PDF is temporarily unavailable." };
+    return {
+      ok: true,
+      bytes: new Uint8Array(await object.arrayBuffer()),
+      filename: certificatePdfFilename(certificate),
+      sha256: certificate.pdf_sha256,
+      storageKey: certificate.pdf_storage_key,
+    };
+  }
+  if (c.env.ENVIRONMENT === "production") {
+    return { ok: false, status: 503, code: "certificate_storage_unavailable", message: "Certificate PDF storage is not configured." };
+  }
+  const pdf = await generateCertificatePdf({ certificate, verificationUrl: buildVerificationUrl(c, certificate.verification_code) });
+  return { ok: true, bytes: pdf.bytes, filename: certificatePdfFilename(certificate), sha256: pdf.sha256, storageKey: certificate.pdf_storage_key };
 }
 
 export async function getCertificateById(c: AppContext, certificateId: string) {
