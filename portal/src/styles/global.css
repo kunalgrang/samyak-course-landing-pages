@@ -691,6 +691,27 @@ a:focus-visible {
   color: var(--color-navy);
 }
 
+.verify-status {
+  width: fit-content;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--color-green-soft);
+  color: var(--color-teal-dark) !important;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.verify-status--revoked,
+.verify-status--not_found {
+  background: #fff7f6;
+  color: var(--color-danger) !important;
+}
+
+.verify-status--superseded {
+  background: #fff7ed;
+  color: #9a3412 !important;
+}
+
 .verify-panel p {
   margin: 0;
   color: var(--color-muted);

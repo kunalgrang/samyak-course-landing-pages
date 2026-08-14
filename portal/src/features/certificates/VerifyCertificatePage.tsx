@@ -38,7 +38,8 @@ export function VerifyCertificatePage({ code }: { code: string }) {
         <img src="/samyak-logo.webp" alt="Samyak Computer Classes" />
         <p>{verification.issuer}</p>
         <p>A unit of Shree Services</p>
-        <h1>{statusTitle(verification.status)}</h1>
+        <h1>{verification.status === "not_found" ? "Certificate Not Found" : "Certificate Verified"}</h1>
+        <p className={`verify-status verify-status--${verification.status}`}>{statusTitle(verification.status)}</p>
         {verification.status === "not_found" ? (
           <p className="verify-muted">We could not verify this certificate code.</p>
         ) : (
@@ -61,7 +62,7 @@ function statusTitle(status: string) {
   if (status === "valid") return "VALID";
   if (status === "revoked") return "REVOKED";
   if (status === "superseded") return "SUPERSEDED";
-  return "Could Not Verify";
+  return "NOT FOUND";
 }
 
 function formatDate(value: string) {

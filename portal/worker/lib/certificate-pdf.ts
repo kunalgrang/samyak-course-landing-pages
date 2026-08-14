@@ -1,3 +1,4 @@
+import qrcode from "qrcode-generator";
 import type { CertificateRecord } from "./certificate-service";
 import { branchDirectorSignature, branchDirectorSignatureBytes } from "./certificate-signature";
 
@@ -12,6 +13,10 @@ export async function generateCertificatePdf(input: CertificatePdfInput) {
   const pageWidth = 842;
   const pageHeight = 595;
   const lines = certificateLines(input);
+  const nameLines = wrapText(input.certificate.student_name_snapshot, 560, 34, 2);
+  const nameSize = nameLines.length > 1 ? 26 : fitFontSize(input.certificate.student_name_snapshot, 560, 34, 22);
+  const courseLines = wrapText(input.certificate.course_name_snapshot, 560, 22, 3);
+  const courseSize = courseLines.length > 1 ? 17 : fitFontSize(input.certificate.course_name_snapshot, 560, 22, 15);
   const content = [
     "q",
     "1 1 1 rg 0 0 842 595 re f",
@@ -19,18 +24,19 @@ export async function generateCertificatePdf(input: CertificatePdfInput) {
     "0.051 0.580 0.533 RG 1.5 w 42 42 758 511 re S",
     text("SAMYAK COMPUTER CLASSES, SION", 72, 505, 24, "0.035 0.137 0.239"),
     text("A unit of Shree Services", 72, 480, 12, "0.388 0.439 0.514"),
-    text("CERTIFICATE OF COMPLETION", 198, 420, 28, "0.051 0.580 0.533"),
-    text("This is to certify that", 330, 370, 13, "0.388 0.439 0.514"),
-    text(input.certificate.student_name_snapshot, 150, 325, 34, "0.035 0.137 0.239"),
-    text("has successfully completed the course", 282, 282, 13, "0.388 0.439 0.514"),
-    text(input.certificate.course_name_snapshot, 150, 244, 22, "0.035 0.137 0.239"),
-    text("at Samyak Computer Classes, Sion - A unit of Shree Services.", 215, 216, 12, "0.388 0.439 0.514"),
-    ...lines.map((line, index) => text(line, 82, 158 - index * 22, 11, "0.035 0.137 0.239")),
-    text("Scan to verify authenticity", 82, 58, 10, "0.388 0.439 0.514"),
+    centerText("CERTIFICATE OF COMPLETION", pageWidth / 2, 420, 28, "0.051 0.580 0.533"),
+    centerText("This is to certify that", pageWidth / 2, 370, 13, "0.388 0.439 0.514"),
+    ...nameLines.map((line, index) => centerText(line, pageWidth / 2, 330 - index * (nameSize + 5), nameSize, "0.035 0.137 0.239")),
+    centerText("has successfully completed the course", pageWidth / 2, nameLines.length > 1 ? 264 : 282, 13, "0.388 0.439 0.514"),
+    ...courseLines.map((line, index) => centerText(line, pageWidth / 2, (nameLines.length > 1 ? 228 : 244) - index * (courseSize + 5), courseSize, "0.035 0.137 0.239")),
+    centerText("at Samyak Computer Classes, Sion - A unit of Shree Services.", pageWidth / 2, courseLines.length > 1 ? 174 : 206, 12, "0.388 0.439 0.514"),
+    ...drawQr(input.verificationUrl, 82, 84, 82),
+    text("Scan to verify authenticity", 72, 62, 10, "0.388 0.439 0.514"),
+    ...lines.map((line, index) => text(line, 190, 160 - index * 18, 10.5, "0.035 0.137 0.239")),
     "q 82 0 0 104 656 130 cm /Sig Do Q",
     "0.035 0.137 0.239 RG 1 w 626 116 142 0 l S",
     text("Branch Director", 648, 92, 13, "0.035 0.137 0.239"),
-    text("info@samyaksion.com   www.samyaksion.com   +91 8422969307", 244, 48, 10, "0.388 0.439 0.514"),
+    text("info@samyaksion.com   www.samyaksion.com   +91 8422969307", 244, 52, 10, "0.388 0.439 0.514"),
     "Q",
   ].join("\n");
   const pdf = buildPdf(pageWidth, pageHeight, content);
@@ -47,13 +53,34 @@ function certificateLines(input: CertificatePdfInput) {
     `Course Code: ${cert.course_code_snapshot}`,
     `Issue Date: ${formatDate(cert.issue_date)}`,
     cert.completion_date_snapshot ? `Completion Date: ${formatDate(cert.completion_date_snapshot)}` : null,
-    `Verify: ${input.verificationUrl}`,
   ];
   return rows.filter((row): row is string => Boolean(row));
 }
 
 function text(value: string, x: number, y: number, size: number, rgb: string) {
   return `${rgb} rg BT /F1 ${size} Tf ${x} ${y} Td (${escapePdf(value)}) Tj ET`;
+}
+
+function centerText(value: string, centerX: number, y: number, size: number, rgb: string) {
+  return text(value, centerX - approximateTextWidth(value, size) / 2, y, size, rgb);
+}
+
+function drawQr(value: string, x: number, y: number, size: number) {
+  const qr = qrcode(0, "M");
+  qr.addData(value);
+  qr.make();
+  const modules = qr.getModuleCount();
+  const cell = size / modules;
+  const rects = ["1 1 1 rg", `${x - 6} ${y - 6} ${size + 12} ${size + 12} re f`, "0.035 0.137 0.239 rg"];
+  for (let row = 0; row < modules; row += 1) {
+    for (let col = 0; col < modules; col += 1) {
+      if (!qr.isDark(row, col)) continue;
+      const rectX = x + col * cell;
+      const rectY = y + (modules - row - 1) * cell;
+      rects.push(`${rectX.toFixed(3)} ${rectY.toFixed(3)} ${cell.toFixed(3)} ${cell.toFixed(3)} re f`);
+    }
+  }
+  return rects;
 }
 
 function buildPdf(width: number, height: number, streamText: string) {
@@ -87,6 +114,46 @@ async function sha256Hex(bytes: Uint8Array) {
 
 function escapePdf(value: string) {
   return value.replace(/[\\()]/g, (char) => `\\${char}`).slice(0, 220);
+}
+
+function wrapText(value: string, maxWidth: number, size: number, maxLines: number) {
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let current = "";
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    const next = current ? `${current} ${word}` : word;
+    if (approximateTextWidth(next, size) <= maxWidth || !current) {
+      current = next;
+    } else {
+      lines.push(current);
+      current = lines.length === maxLines - 1 ? words.slice(index).join(" ") : word;
+      if (lines.length === maxLines - 1) break;
+    }
+  }
+  if (current && lines.length < maxLines) lines.push(current);
+  if (!lines.length) return [value.slice(0, 80)];
+  const consumed = lines.join(" ").length;
+  if (consumed < value.trim().length && lines.length === maxLines) {
+    lines[maxLines - 1] = trimToWidth(lines[maxLines - 1], maxWidth, size);
+  }
+  return lines;
+}
+
+function trimToWidth(value: string, maxWidth: number, size: number) {
+  let result = value;
+  while (result.length > 4 && approximateTextWidth(`${result}...`, size) > maxWidth) result = result.slice(0, -1);
+  return `${result.trim()}...`;
+}
+
+function fitFontSize(value: string, maxWidth: number, preferred: number, minimum: number) {
+  let size = preferred;
+  while (size > minimum && approximateTextWidth(value, size) > maxWidth) size -= 1;
+  return size;
+}
+
+function approximateTextWidth(value: string, size: number) {
+  return value.length * size * 0.52;
 }
 
 function byteLength(value: string) {
