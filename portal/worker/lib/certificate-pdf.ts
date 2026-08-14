@@ -1,5 +1,6 @@
 import qrcode from "qrcode-generator";
 import type { CertificateRecord } from "./certificate-service";
+import { certificateLogo, certificateLogoCompressedBytes } from "./certificate-logo";
 import { branchDirectorSignature, branchDirectorSignatureBytes } from "./certificate-signature";
 
 const encoder = new TextEncoder();
@@ -19,17 +20,18 @@ export async function generateCertificatePdf(input: CertificatePdfInput) {
   const courseSize = courseLines.length > 2 ? 14 : courseLines.length > 1 ? 17 : fitFontSize(input.certificate.course_name_snapshot, 560, 22, 15);
   const headerText = "SAMYAK COMPUTER CLASSES";
   const headerSize = 24;
-  const logoSize = 36;
+  const logoHeight = 52;
+  const logoWidth = logoHeight * (certificateLogo.width / certificateLogo.height);
   const headerGap = 12;
-  const headerWidth = logoSize + headerGap + approximateTextWidth(headerText, headerSize);
+  const headerWidth = logoWidth + headerGap + approximateTextWidth(headerText, headerSize);
   const headerX = pageWidth / 2 - headerWidth / 2;
   const content = [
     "q",
     "1 1 1 rg 0 0 842 595 re f",
     "0.035 0.137 0.239 RG 3 w 28 28 786 539 re S",
     "0.051 0.580 0.533 RG 1.5 w 42 42 758 511 re S",
-    ...drawLogoMark(headerX, 492, logoSize),
-    text(headerText, headerX + logoSize + headerGap, 501, headerSize, "0.035 0.137 0.239", "F3"),
+    `q ${logoWidth.toFixed(3)} 0 0 ${logoHeight} ${headerX.toFixed(3)} 485 cm /Logo Do Q`,
+    text(headerText, headerX + logoWidth + headerGap, 501, headerSize, "0.035 0.137 0.239", "F3"),
     centerText("CERTIFICATE OF COMPLETION", pageWidth / 2, 424, 28, "0.051 0.580 0.533", "F3"),
     centerText("This is to certify that", pageWidth / 2, 374, 13, "0.388 0.439 0.514"),
     ...nameLines.map((line, index) => centerText(line, pageWidth / 2, 333 - index * (nameSize + 5), nameSize, "0.035 0.137 0.239", "F2")),
@@ -71,17 +73,6 @@ function centerText(value: string, centerX: number, y: number, size: number, rgb
   return text(value, centerX - approximateTextWidth(value, size) / 2, y, size, rgb, font);
 }
 
-function drawLogoMark(x: number, y: number, size: number) {
-  const inner = size - 6;
-  return [
-    "0.035 0.137 0.239 RG 1.2 w",
-    `${x} ${y} ${size} ${size} re S`,
-    "0.051 0.580 0.533 RG 1 w",
-    `${x + 4} ${y + 4} ${size - 8} ${size - 8} re S`,
-    text("S", x + 8, y + 7, inner, "0.035 0.137 0.239", "F3"),
-  ];
-}
-
 function drawQr(value: string, x: number, y: number, size: number) {
   const qr = qrcode(0, "M");
   qr.addData(value);
@@ -103,15 +94,17 @@ function drawQr(value: string, x: number, y: number, size: number) {
 function buildPdf(width: number, height: number, streamText: string) {
   const stream = encoder.encode(streamText);
   const signatureHex = bytesToHex(branchDirectorSignatureBytes());
+  const logoHex = bytesToHex(certificateLogoCompressedBytes());
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R >> /XObject << /Sig 8 0 R >> >> /Contents 7 0 R >>`,
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R >> /XObject << /Sig 8 0 R /Logo 9 0 R >> >> /Contents 7 0 R >>`,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Italic >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
     `<< /Length ${stream.length} >>\nstream\n${streamText}\nendstream`,
     `<< /Type /XObject /Subtype /Image /Width ${branchDirectorSignature.width} /Height ${branchDirectorSignature.height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length ${signatureHex.length + 1} >>\nstream\n${signatureHex}>\nendstream`,
+    `<< /Type /XObject /Subtype /Image /Width ${certificateLogo.width} /Height ${certificateLogo.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter [/ASCIIHexDecode /FlateDecode] /Length ${logoHex.length + 1} >>\nstream\n${logoHex}>\nendstream`,
   ];
   const chunks: string[] = ["%PDF-1.4\n"];
   const offsets = [0];
