@@ -32,7 +32,7 @@ export async function generateCertificatePdf(input: CertificatePdfInput) {
     ...courseLines.map((line, index) => centerText(line, pageCenterX, courseStartY - index * (courseSize + 5), courseSize, "0.047 0.067 0.090", "F4")),
     ...drawQr(input.verificationUrl, 82, 94, 76),
     centerText("Scan to verify certificate", 120, 78, 8.5, "0.047 0.067 0.090"),
-    ...lines.map((line, index) => text(line, 178, 142 - index * 13, 8.5, "0.047 0.067 0.090")),
+    ...lines.map((line, index) => text(line, 170, 142 - index * 13, 8.5, "0.047 0.067 0.090")),
     "q 40 0 0 50 644 98 cm /Sig Do Q",
     "Q",
   ].join("\n");
@@ -158,7 +158,7 @@ function fitFontSize(value: string, maxWidth: number, preferred: number, minimum
 }
 
 function approximateTextWidth(value: string, size: number, font = "F1") {
-  const factor = font === "F3" || font === "F4" ? 0.585 : 0.52;
+  const factor = font === "F3" ? 0.585 : font === "F4" ? 0.52 : font === "F2" ? 0.52 : 0.48;
   return value.length * size * factor;
 }
 
