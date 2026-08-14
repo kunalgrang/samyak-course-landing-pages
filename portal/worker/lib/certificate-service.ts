@@ -166,7 +166,7 @@ export async function listCertificates(c: AppContext, input: { q?: string; cours
     `select
        id, certificate_number, verification_code, person_id, student_id_snapshot, student_name_snapshot,
        course_id, course_name_snapshot, course_code_snapshot, issue_date, completion_date_snapshot,
-       status, pdf_storage_key, template_version_snapshot
+       status, template_version_snapshot
      from certificates
      where ${filters.join(" and ")}
      order by issue_date desc, created_at desc
@@ -299,17 +299,18 @@ export async function revokeCertificate(c: AppContext, staff: StaffContext, cert
 export async function verifyCertificate(c: AppContext, code: string) {
   if (!/^SYK-[A-Z0-9_-]{16,64}$/.test(code)) return { status: "not_found" as const, certificate: null };
   const certificate = await c.env.DB.prepare(
-    `select certificate_number, verification_code, student_name_snapshot, student_id_snapshot,
+    `select certificate_number, student_name_snapshot, student_id_snapshot,
             course_name_snapshot, issue_date, completion_date_snapshot, status
      from certificates
      where organisation_id = ? and verification_code = ?
      limit 1`,
   )
     .bind(ORG_ID, code)
-    .first<Record<string, unknown>>();
+    .first<{ status: string } & Record<string, unknown>>();
   if (!certificate) return { status: "not_found" as const, certificate: null };
   const status = certificate.status === "issued" ? "valid" : certificate.status === "revoked" ? "revoked" : "superseded";
-  return { status, certificate };
+  const { status: _certificateStatus, ...publicCertificate } = certificate;
+  return { status, certificate: publicCertificate };
 }
 
 export async function getCertificatePdf(c: AppContext, certificateId: string, personId?: string, options: { storage?: CertificatePdfStorage | null } = {}): Promise<CertificatePdfResult> {

@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/auth-store", () => ({
+  ORG_ID: "org_samyak",
   getSessionFromRequest: mocks.getSessionFromRequest,
   getAccountRoles: mocks.getAccountRoles,
   hasSessionCookie: vi.fn(() => false),
@@ -31,10 +32,6 @@ vi.mock("../lib/certificate-service", () => ({
   listEligibleCertificates: mocks.listEligibleCertificates,
   revokeCertificate: mocks.revokeCertificate,
   verifyCertificate: mocks.verifyCertificate,
-}));
-
-vi.mock("../lib/certificate-qr", () => ({
-  generateCertificateQrSvg: vi.fn(() => "<svg></svg>"),
 }));
 
 function routeApp() {
@@ -58,7 +55,13 @@ describe("certificate routes", () => {
     mocks.issueCertificate.mockResolvedValue({
       ok: true,
       idempotent: false,
-      certificate: { id: "cert_1", certificate_number: "SYK-SION-CERT-2026-000001", verification_code: "SYK-CODE" },
+      certificate: {
+        id: "cert_1",
+        certificate_number: "SYK-SION-CERT-2026-000001",
+        verification_code: "SYK-CODE",
+        pdf_storage_key: "certificates/org_samyak/branch_sion/2026/cert.pdf",
+        revocation_reason: "internal note",
+      },
     });
     mocks.revokeCertificate.mockResolvedValue({ ok: true });
   });
@@ -76,6 +79,7 @@ describe("certificate routes", () => {
 
     expect(list.status).toBe(200);
     expect(issue.status).toBe(201);
+    await expect(issue.json()).resolves.not.toMatchObject({ certificate: { pdf_storage_key: expect.any(String), revocation_reason: expect.any(String) } });
     expect(mocks.issueCertificate).toHaveBeenCalledTimes(1);
   });
 
@@ -118,6 +122,47 @@ describe("certificate routes", () => {
     expect(response.status).toBe(200);
     expect(JSON.stringify(body)).not.toContain("mobile");
     expect(JSON.stringify(body)).not.toContain("aadhaar");
+    expect(JSON.stringify(body)).not.toContain("verification_code");
     expect(JSON.stringify(body)).not.toContain("revocation_reason");
   });
+
+  it("does not expose public QR lookup by internal certificate id", async () => {
+    const app = routeApp();
+
+    const response = await app.request("/api/public/certificates/cert_1/qr.svg");
+
+    expect(response.status).toBe(404);
+  });
+
+  it("rate limits public verification by hashed client ip", async () => {
+    const app = routeApp();
+    const db = rateLimitDb(120);
+
+    const response = await app.request(
+      "/api/public/certificates/verify/SYK-7Q4M9PVK3X82AAAA",
+      { headers: { "CF-Connecting-IP": "203.0.113.10" } },
+      { DB: db, SESSION_PEPPER: "test-session-pepper" } as never,
+    );
+
+    expect(response.status).toBe(429);
+    expect(mocks.verifyCertificate).not.toHaveBeenCalled();
+    expect(db.inserted).toBe(1);
+  });
 });
+
+function rateLimitDb(count: number) {
+  return {
+    inserted: 0,
+    prepare(sql: string) {
+      return {
+        bind: (..._params: unknown[]) => ({
+          first: async () => ({ count }),
+          run: async () => {
+            this.inserted += sql.includes("insert into auth_events") ? 1 : 0;
+            return { success: true };
+          },
+        }),
+      };
+    },
+  };
+}

@@ -340,7 +340,6 @@ const certificateListItemSchema = z.object({
   issue_date: z.string(),
   completion_date_snapshot: z.string().nullable(),
   status: z.string(),
-  pdf_storage_key: z.string().nullable().optional(),
   template_version_snapshot: z.number().optional(),
 });
 

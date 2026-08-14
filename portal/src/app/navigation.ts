@@ -22,5 +22,5 @@ export const staffNavigation: NavigationItem[] = [
   { path: "/app/courses", label: "Course Master", shortLabel: "Courses" },
   { path: "/app/certificates", label: "Certificates", shortLabel: "Certs" },
   { path: "/app/discount-approvals", label: "Discount Approvals", shortLabel: "Approvals" },
-  ...studentNavigation,
+  ...studentNavigation.filter((item) => item.path !== "/app/certificates"),
 ];

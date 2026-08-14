@@ -1,12 +1,14 @@
 import { z } from "zod";
 import type { Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
+import { ORG_ID } from "../lib/auth-store";
+import { createOpaqueId, hmacHex } from "../lib/crypto";
+import { getClientIp } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { getSessionFromRequest, hasSessionCookie, clearSessionCookie, sessionView } from "../lib/auth-store";
 import { requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import {
   buildVerificationUrl,
-  getCertificateById,
   getCertificatePdf,
   issueCertificate,
   listCertificates,
@@ -14,7 +16,6 @@ import {
   revokeCertificate,
   verifyCertificate,
 } from "../lib/certificate-service";
-import { generateCertificateQrSvg } from "../lib/certificate-qr";
 
 type PortalHono = Hono<{
   Bindings: WorkerBindings;
@@ -23,6 +24,7 @@ type PortalHono = Hono<{
 
 const CERTIFICATE_STAFF_ROLES = ["owner", "system_admin", "admin", "counsellor", "admission_admin"] as const;
 const CERTIFICATE_OWNER_ROLES = ["owner"] as const;
+const PUBLIC_VERIFY_LIMIT = { count: 120, windowSeconds: 60 };
 
 const issueSchema = z.object({
   enrolmentId: z.string().min(1),
@@ -89,6 +91,8 @@ export function registerCertificateRoutes(app: PortalHono) {
   });
 
   app.get("/api/public/certificates/verify/:code", async (c) => {
+    const limited = await enforcePublicVerifyLimit(c);
+    if (limited) return limited;
     const result = await verifyCertificate(c, c.req.param("code"));
     return jsonPlain(c, {
       success: true,
@@ -100,16 +104,6 @@ export function registerCertificateRoutes(app: PortalHono) {
     });
   });
 
-  app.get("/api/public/certificates/:certificateId/qr.svg", async (c) => {
-    const certificate = await getCertificateById(c, c.req.param("certificateId"));
-    if (!certificate) return jsonError(c, { status: 404, code: "certificate_not_found", message: "Certificate was not found." });
-    return new Response(await generateCertificateQrSvg(buildVerificationUrl(c, certificate.verification_code)), {
-      headers: {
-        "Content-Type": "image/svg+xml; charset=utf-8",
-        "Cache-Control": "private, no-store",
-      },
-    });
-  });
 }
 
 async function requireCertificateStaff(c: Parameters<typeof requireStaffRoles>[0]): Promise<StaffContext | null> {
@@ -131,10 +125,11 @@ async function authenticatedStudentProfile(c: Parameters<typeof getSessionFromRe
   return { personId: view.activeProfile.personId };
 }
 
-function publicStaffCertificate(c: Parameters<typeof buildVerificationUrl>[0], certificate: Awaited<ReturnType<typeof getCertificateById>> & Record<string, unknown>) {
+function publicStaffCertificate(c: Parameters<typeof buildVerificationUrl>[0], certificate: Record<string, unknown>) {
   return {
     ...certificate,
     verification_url: buildVerificationUrl(c, String(certificate.verification_code)),
+    pdf_storage_key: undefined,
     revocation_reason: undefined,
   };
 }
@@ -176,4 +171,38 @@ function httpStatus(status: number) {
   if (status === 404) return 404;
   if (status === 409) return 409;
   return 500;
+}
+
+async function enforcePublicVerifyLimit(c: Parameters<typeof getSessionFromRequest>[0]) {
+  if (!c.env?.DB || !c.env.SESSION_PEPPER) return null;
+  const eventType = "public_certificate_verify_ip";
+  const keyHash = await hmacHex(c.env.SESSION_PEPPER, "public-certificate-ip", getClientIp(c));
+  const since = new Date(Date.now() - PUBLIC_VERIFY_LIMIT.windowSeconds * 1000).toISOString();
+  const count = await c.env.DB.prepare(
+    `select count(*) as count
+     from auth_events
+     where organisation_id = ?
+       and event_type = ?
+       and ip_hash = ?
+       and result_code <> 'RATE_LIMITED'
+       and created_at >= ?`,
+  )
+    .bind(ORG_ID, eventType, keyHash, since)
+    .first<{ count: number }>();
+  if (Number(count?.count || 0) >= PUBLIC_VERIFY_LIMIT.count) {
+    await recordPublicVerifyEvent(c, eventType, "RATE_LIMITED", keyHash);
+    return jsonError(c, { status: 429, code: "rate_limited", message: "Please wait before trying again." });
+  }
+  await recordPublicVerifyEvent(c, eventType, "ALLOWED", keyHash);
+  return null;
+}
+
+async function recordPublicVerifyEvent(c: Parameters<typeof getSessionFromRequest>[0], eventType: string, resultCode: string, keyHash: string) {
+  await c.env.DB.prepare(
+    `insert into auth_events
+      (id, organisation_id, login_account_id, event_type, result_code, mobile_hash, mobile_last_four, ip_hash, user_agent_hash, created_at)
+     values (?, ?, null, ?, ?, null, null, ?, ?, ?)`,
+  )
+    .bind(createOpaqueId("authevt"), ORG_ID, eventType, resultCode, keyHash, await hmacHex(c.env.SESSION_PEPPER, "public-certificate-ua", c.req.header("User-Agent") || ""), new Date().toISOString())
+    .run();
 }
