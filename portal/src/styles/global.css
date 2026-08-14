@@ -662,6 +662,64 @@ a:focus-visible {
   color: var(--color-danger);
 }
 
+.verify-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--color-bg);
+}
+
+.verify-panel {
+  width: min(100%, 620px);
+  display: grid;
+  gap: 18px;
+  padding: 28px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  background: #fff;
+  box-shadow: var(--shadow-soft);
+}
+
+.verify-panel img {
+  width: 84px;
+  height: auto;
+}
+
+.verify-panel h1 {
+  margin: 0;
+  color: var(--color-navy);
+}
+
+.verify-panel p {
+  margin: 0;
+  color: var(--color-muted);
+}
+
+.verify-panel dl {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.verify-panel dl div {
+  display: grid;
+  gap: 4px;
+  padding: 12px 0;
+  border-top: 1px solid var(--color-line);
+}
+
+.verify-panel dt {
+  color: var(--color-muted);
+  font-weight: 800;
+}
+
+.verify-panel dd {
+  margin: 0;
+  color: var(--color-navy);
+  font-weight: 800;
+}
+
 .loading-state {
   display: flex;
   align-items: center;

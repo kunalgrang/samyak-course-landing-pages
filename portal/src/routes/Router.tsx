@@ -6,6 +6,8 @@ import { useAuth } from "../features/auth/AuthContext";
 import { LoginPage } from "../features/auth/LoginPage";
 import { ProfilePage } from "../features/profile/ProfilePage";
 import { ReferralsPage } from "../features/referrals/ReferralsPage";
+import { CertificatesPage } from "../features/certificates/CertificatesPage";
+import { VerifyCertificatePage } from "../features/certificates/VerifyCertificatePage";
 import { EnquiriesPage } from "../features/staff/EnquiriesPage";
 import { AdmissionPage } from "../features/staff/AdmissionPage";
 import { CourseMasterPage } from "../features/staff/CourseMasterPage";
@@ -17,13 +19,14 @@ import { ShellHomePage } from "./ShellHomePage";
 import { AppShell } from "./AppShell";
 import type { AppRoute, RoutePath } from "./types";
 
-const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/courses", "/app/discount-approvals", "/app/referrals", "/app/rules", "/app/profile"]);
+const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/courses", "/app/discount-approvals", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
 const staffRoles = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
 const courseAdminRoles = new Set(["owner", "admin", "system_admin"]);
 const discountApproverRoles = new Set(["owner"]);
 
 function normalizePath(pathname: string): RoutePath {
   if (pathname === "/login") return "/login";
+  if (/^\/verify\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (appRoutes.has(pathname as RoutePath)) return pathname as RoutePath;
   if (/^\/app\/enquiries\/[^/]+\/admission$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/enquiries\/[^/]+$/.test(pathname)) return pathname as RoutePath;
@@ -104,6 +107,9 @@ export function Router() {
     );
   }
 
+  const verifyMatch = path.match(/^\/verify\/([^/]+)$/);
+  if (verifyMatch) return <VerifyCertificatePage code={verifyMatch[1]} />;
+
   if (path === "/login" || !isAuthenticated) {
     return <LoginPage sessionMessage={sessionMessage} onAuthenticated={() => navigate("/app", true)} />;
   }
@@ -114,6 +120,7 @@ export function Router() {
       {activeAppPath === "/app/enquiries" && isStaff ? <EnquiriesPage /> : null}
       {activeAppPath === "/app/courses" && isStaff ? <CourseMasterPage /> : null}
       {activeAppPath === "/app/discount-approvals" && isDiscountApprover ? <DiscountApprovalsPage /> : null}
+      {activeAppPath === "/app/certificates" ? <CertificatesPage /> : null}
       {enquiryDetailMatch && isStaff ? <EnquiryDetailPage enquiryId={enquiryDetailMatch[1]} /> : null}
       {enquiryAdmissionMatch && isStaff ? <AdmissionPage enquiryId={enquiryAdmissionMatch[1]} /> : null}
       {studentProfileMatch && isStaff ? <StudentProfilePage studentId={studentProfileMatch[1]} /> : null}

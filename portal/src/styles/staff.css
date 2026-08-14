@@ -323,6 +323,65 @@
   color: #92400e;
 }
 
+.status-pill--issued {
+  border: 1px solid rgba(13, 148, 136, 0.36);
+  background: #ecfdf5;
+  color: #0f766e;
+}
+
+.status-pill--revoked {
+  border: 1px solid rgba(180, 35, 24, 0.3);
+  background: #fff7f6;
+  color: #b42318;
+}
+
+.status-pill--superseded {
+  border: 1px solid rgba(99, 112, 131, 0.32);
+  background: #f8fafc;
+  color: #475569;
+}
+
+.certificate-tabs,
+.certificate-pagination,
+.certificate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.certificate-tabs button {
+  color: var(--color-navy);
+  background: #eaf3f3;
+}
+
+.certificate-tabs button[aria-pressed="true"] {
+  color: #fff;
+  background: var(--color-teal);
+}
+
+.certificate-row {
+  align-items: start;
+}
+
+.certificate-actions {
+  margin-top: 4px;
+}
+
+.danger-button {
+  background: #b42318;
+}
+
+.danger-button:hover {
+  background: #8a1f14;
+}
+
+.certificate-pagination {
+  justify-content: flex-end;
+  color: var(--color-muted);
+  font-weight: 800;
+}
+
 @media (min-width: 640px) {
   .staff-search-row {
     grid-template-columns: minmax(0, 1fr) auto;

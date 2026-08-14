@@ -327,6 +327,69 @@ const discountApprovalsSchema = z.object({
   approvals: z.array(z.record(z.string(), z.unknown())),
 });
 
+const certificateListItemSchema = z.object({
+  id: z.string(),
+  certificate_number: z.string(),
+  verification_code: z.string(),
+  person_id: z.string().optional(),
+  student_id_snapshot: z.string(),
+  student_name_snapshot: z.string(),
+  course_id: z.string().nullable().optional(),
+  course_name_snapshot: z.string(),
+  course_code_snapshot: z.string().nullable().optional(),
+  issue_date: z.string(),
+  completion_date_snapshot: z.string().nullable(),
+  status: z.string(),
+  pdf_storage_key: z.string().nullable().optional(),
+  template_version_snapshot: z.number().optional(),
+});
+
+const certificatePaginationSchema = z.object({
+  limit: z.number(),
+  offset: z.number(),
+  hasMore: z.boolean(),
+});
+
+const certificateListSchema = z.object({
+  items: z.array(certificateListItemSchema),
+  pagination: certificatePaginationSchema,
+});
+
+const eligibleCertificateSchema = z.object({
+  enrolment_id: z.string(),
+  student_name: z.string(),
+  student_number: z.string(),
+  course_id: z.string(),
+  course_name: z.string(),
+  course_code: z.string(),
+  duration_label: z.string().nullable(),
+  joining_date: z.string(),
+  actual_completion_date: z.string().nullable(),
+  status: z.string(),
+});
+
+const eligibleCertificateListSchema = z.object({
+  items: z.array(eligibleCertificateSchema),
+  pagination: certificatePaginationSchema,
+});
+
+const issueCertificateSchema = z.object({
+  success: z.literal(true),
+  idempotent: z.boolean(),
+  certificate: certificateListItemSchema.extend({
+    verification_url: z.string(),
+  }).passthrough(),
+});
+
+const verifyCertificateSchema = z.object({
+  success: z.literal(true),
+  verification: z.object({
+    status: z.string(),
+    issuer: z.string(),
+    certificate: z.record(z.string(), z.unknown()).nullable(),
+  }),
+});
+
 export type EnquiryOptions = z.infer<typeof enquiryOptionsSchema>;
 export type StudentSearchResult = z.infer<typeof studentSearchSchema>;
 export type CreateEnquiryResponse = z.infer<typeof createEnquiryResponseSchema>;
@@ -339,6 +402,10 @@ export type AdmissionConfiguration = z.infer<typeof admissionConfigurationSchema
 export type AdmissionOptionValue = AdmissionConfiguration["options"][number];
 export type PaymentPlanRule = AdmissionConfiguration["paymentPlanRules"][number];
 export type FieldErrors = Record<string, string[]>;
+export type CertificateListItem = z.infer<typeof certificateListItemSchema>;
+export type EligibleCertificate = z.infer<typeof eligibleCertificateSchema>;
+export type CertificateListResponse = z.infer<typeof certificateListSchema>;
+export type PublicCertificateVerification = z.infer<typeof verifyCertificateSchema>["verification"];
 
 export class ApiError extends Error {
   code?: string;
@@ -477,6 +544,38 @@ export async function decideDiscountApproval(approvalId: string, decision: "appr
   return postJson(`/api/staff/discount-approvals/${encodeURIComponent(approvalId)}/decision`, { decision }, z.object({ success: z.literal(true), approvalId: z.string(), status: z.string() }));
 }
 
+export type CertificateQuery = {
+  q?: string;
+  status?: string;
+  courseId?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export async function getEligibleCertificates(params: CertificateQuery = {}) {
+  return getJson(`/api/staff/certificates/eligible${queryString(params)}`, eligibleCertificateListSchema);
+}
+
+export async function getStaffCertificates(params: CertificateQuery = {}) {
+  return getJson(`/api/staff/certificates${queryString(params)}`, certificateListSchema);
+}
+
+export async function issueStaffCertificate(enrolmentId: string, issueDate: string) {
+  return postJson("/api/staff/certificates/issue", { enrolmentId, issueDate }, issueCertificateSchema);
+}
+
+export async function revokeStaffCertificate(certificateId: string, reason: string) {
+  return postJson(`/api/staff/certificates/${encodeURIComponent(certificateId)}/revoke`, { reason }, z.object({ success: z.literal(true) }));
+}
+
+export async function getStudentCertificates(params: CertificateQuery = {}) {
+  return getJson(`/api/student/certificates${queryString(params)}`, certificateListSchema);
+}
+
+export async function verifyPublicCertificate(code: string) {
+  return getJson(`/api/public/certificates/verify/${encodeURIComponent(code)}`, verifyCertificateSchema);
+}
+
 async function getJson<T extends z.ZodType>(url: string, schema: T): Promise<z.infer<T>> {
   const response = await fetch(url, {
     method: "GET",
@@ -537,4 +636,13 @@ function isFieldErrors(value: unknown): value is FieldErrors {
       typeof value === "object" &&
       Object.values(value as Record<string, unknown>).every((messages) => Array.isArray(messages) && messages.every((message) => typeof message === "string")),
   );
+}
+
+function queryString(params: CertificateQuery) {
+  const url = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") url.set(key, String(value));
+  }
+  const text = url.toString();
+  return text ? `?${text}` : "";
 }
