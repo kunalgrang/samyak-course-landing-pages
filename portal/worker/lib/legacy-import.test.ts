@@ -44,14 +44,15 @@ describe("legacy student import foundation", () => {
   });
 
   it("normalizes Indian mobiles without exposing contact values in reports", () => {
-    expect(normalizeIndianMobile("98765 43210")).toBe("+919876543210");
-    expect(normalizeIndianMobile("09876543210")).toBe("+919876543210");
+    expect(normalizeIndianMobile("98765 43210")).toBe("9876543210");
+    expect(normalizeIndianMobile("+91-98765-43210")).toBe("9876543210");
+    expect(normalizeIndianMobile("919876543210")).toBe("9876543210");
+    expect(normalizeIndianMobile("09876543210")).toBe("9876543210");
     expect(normalizeIndianMobile("12345")).toBeNull();
 
     const report = buildPrivacySafeReport(analyzeLegacyImportCsv(SAMPLE_CSV));
     const printed = JSON.stringify(report);
     expect(printed).not.toContain("9876543210");
-    expect(printed).not.toContain("+919876543210");
     expect(printed).toContain("******3210");
     expect(report.writeOperationsPerformed).toBe(false);
   });
@@ -81,8 +82,8 @@ Maybe Match,9123456789,SPOKEN ENGLISH,2024-03-01,COMPLETED
 `;
     const result = analyzeLegacyImportCsv(csv, {
       existingPeople: [
-        { personId: "person_existing", fullName: "Exact Match", mobileNormalized: "+919876543210" },
-        { personId: "person_review", fullName: "Different Name", mobileNormalized: "+919123456789" },
+        { personId: "person_existing", fullName: "Exact Match", mobileNormalized: "9876543210" },
+        { personId: "person_review", fullName: "Different Name", mobileNormalized: "9123456789" },
       ],
     });
 
@@ -275,7 +276,7 @@ Bad Row,9876543210,UNKNOWN COURSE,2024-01-01,IN PROGRESS
 
   it("reuses exact existing person, student, and referrer profile by contact hash and compatible name", async () => {
     const db = migratedSeededDb();
-    const mobile = "+919876543210";
+    const mobile = "9876543210";
     const mobileHash = await hmacHex("test-pepper", "mobile", mobile);
     db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values ('person_existing', 'org_samyak', 'branch_sion', 'Ajay Test', 'Ajay Test', 'active', ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
     db.prepare("insert into person_contacts (id, person_id, contact_type, normalized_value, last_four, is_primary, is_verified, created_at, updated_at) values ('contact_existing', 'person_existing', 'mobile', ?, '3210', 1, 1, ?, ?)").run(mobileHash, "2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
@@ -295,7 +296,7 @@ Bad Row,9876543210,UNKNOWN COURSE,2024-01-01,IN PROGRESS
 
   it("blocks ambiguous same-contact different-name matches before writes", async () => {
     const db = migratedSeededDb();
-    const mobileHash = await hmacHex("test-pepper", "mobile", "+919876543210");
+    const mobileHash = await hmacHex("test-pepper", "mobile", "9876543210");
     db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values ('person_existing', 'org_samyak', 'branch_sion', 'Different Name', 'Different Name', 'active', ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
     db.prepare("insert into person_contacts (id, person_id, contact_type, normalized_value, last_four, is_primary, is_verified, created_at, updated_at) values ('contact_existing', 'person_existing', 'mobile', ?, '3210', 1, 1, ?, ?)").run(mobileHash, "2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
 
@@ -322,6 +323,30 @@ Varsha,9876543211,CCC,2024-01-02,COMPLETED
     expect(sensitiveJson).not.toContain("9876543211");
     expect(sensitiveJson).not.toContain("+919876543211");
     db.close();
+  });
+
+  it("persists imported mobile lookups with the same canonical hash used by OTP login", async () => {
+    const db = migratedSeededDb();
+    await applyLegacyImportToDb(db, SAMPLE_CSV, applyOptions());
+
+    const equivalentInputs = ["9876543210", "+919876543210", "919876543210"];
+    for (const input of equivalentInputs) {
+      const canonical = normalizeIndianMobile(input);
+      expect(canonical).toBe("9876543210");
+      const loginHash = await hmacHex("test-pepper", "mobile", canonical!);
+      expect(count(db, `person_contacts where contact_type = 'mobile' and normalized_value = '${loginHash}'`)).toBe(1);
+    }
+
+    const sharedCsv = `STUDENT FULL NAME,PRIMARY MOBILE NUMBER,COURSE ENROLLMENT,ADMISSION DATE,COURSE STATUS
+Rachit Rajak,9876543211,CCC,2024-01-01,IN PROGRESS
+Varsha,9876543211,CCC,2024-01-02,COMPLETED
+`;
+    const sharedDb = migratedSeededDb();
+    await applyLegacyImportToDb(sharedDb, sharedCsv, applyOptions({ sourceFileName: "shared-login-compatible.csv" }));
+    const sharedHash = await hmacHex("test-pepper", "mobile", normalizeIndianMobile("+91 98765 43211")!);
+    expect(count(sharedDb, `person_contacts where contact_type = 'mobile' and normalized_value = '${sharedHash}'`)).toBe(2);
+    db.close();
+    sharedDb.close();
   });
 
   it("builds production apply SQL from the local apply path without excluded write targets or raw contacts", async () => {
@@ -372,7 +397,7 @@ Varsha,9876543211,CCC,2024-01-02,COMPLETED
 
   it("remote-preflights a production-shaped 0014 database without import tables or writes", async () => {
     const db = remoteProductionDbThrough0014();
-    const mobileHash = await hmacHex("test-pepper", "mobile", "+919876543210");
+    const mobileHash = await hmacHex("test-pepper", "mobile", "9876543210");
     seedExistingProductionPerson(db, { fullName: "Ajay Test", mobileHash, withStudent: true, withReferrerProfile: true, withStudentRole: true });
     db.prepare("insert into number_sequences (id, organisation_id, branch_id, sequence_key, next_sequence, created_at, updated_at) values ('seq_student', 'org_samyak', 'branch_sion', 'student', 2, ?, ?)").run("2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
     const client = sqliteRemoteClient(db);
@@ -414,7 +439,7 @@ Varsha,9876543211,CCC,2024-01-02,COMPLETED
     const possibleDb = remoteProductionDbThrough0014();
     seedExistingProductionPerson(possibleDb, {
       fullName: "Different Name",
-      mobileHash: await hmacHex("test-pepper", "mobile", "+919876543210"),
+      mobileHash: await hmacHex("test-pepper", "mobile", "9876543210"),
       withStudent: false,
       withReferrerProfile: false,
       withStudentRole: false,

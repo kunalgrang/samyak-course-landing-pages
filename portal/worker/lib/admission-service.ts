@@ -3,6 +3,7 @@ import type { AppContext } from "./http";
 import { ORG_ID, mobileHash } from "./auth-store";
 import { createOpaqueId, encryptText, hmacHex } from "./crypto";
 import { DISCOUNT_APPROVER_ROLES, type StaffContext } from "./staff-auth";
+import { normalizeIndianMobile } from "./mobile";
 
 const nameSchema = z.string().trim().min(2).max(140).regex(/^[^\d]+$/, "Name cannot contain numbers.");
 const optionalNameSchema = z.string().trim().max(140).regex(/^[^\d]*$/, "Name cannot contain numbers.").optional().or(z.literal(""));
@@ -1712,13 +1713,6 @@ function instalmentsFor(paymentPlanType: string | undefined, custom: number | nu
   if (paymentPlanType === "two_instalments") return 2;
   if (paymentPlanType === "three_instalments") return 3;
   return custom || 1;
-}
-
-function normalizeIndianMobile(value: string) {
-  const digits = value.replace(/\D/g, "");
-  if (/^[6-9]\d{9}$/.test(digits)) return `+91${digits}`;
-  if (/^91[6-9]\d{9}$/.test(digits)) return `+${digits}`;
-  return null;
 }
 
 function sanitizeAdmissionDraftPayload(payload: AdmissionPayload): AdmissionPayload {

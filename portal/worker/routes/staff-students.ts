@@ -4,6 +4,7 @@ import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { ORG_ID, getSessionFromRequest, mobileHash } from "../lib/auth-store";
 import { createOpaqueId, encryptText } from "../lib/crypto";
 import { jsonError, jsonPlain } from "../lib/json-response";
+import { normalizeIndianMobile as normalizeCanonicalIndianMobile } from "../lib/mobile";
 import { ADMISSION_STAFF_ROLES, requireStaffRoles } from "../lib/staff-auth";
 
 type PortalHono = Hono<{
@@ -257,10 +258,7 @@ async function requireStaff(c: Parameters<typeof getSessionFromRequest>[0]) {
 }
 
 export function normalizeIndianMobile(value: string) {
-  const digits = value.replace(/\D/g, "");
-  if (/^[6-9]\d{9}$/.test(digits)) return `+91${digits}`;
-  if (/^91[6-9]\d{9}$/.test(digits)) return `+${digits}`;
-  return null;
+  return normalizeCanonicalIndianMobile(value);
 }
 
 function buildEnquiryNumber(branchCode: string, nowIso: string) {
