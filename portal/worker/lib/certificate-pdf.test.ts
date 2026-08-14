@@ -12,12 +12,16 @@ describe("certificate PDF generation", () => {
     const text = new TextDecoder().decode(result.bytes);
 
     expect(text).toContain("CERTIFICATE OF COMPLETION");
+    expect(text).toContain("SAMYAK COMPUTER CLASSES");
+    expect(text).not.toContain("SAMYAK COMPUTER CLASSES, SION");
     expect(text).toContain("Asha Shah");
     expect(text).toContain("SYK-SION-CERT-2026-000001");
-    expect(text).toContain("SYK-WDD-001");
+    expect(text).not.toContain("Course Code");
+    expect(text).not.toContain("SYK-WDD-001");
     expect(text).toContain("/Sig Do");
     expect(text).toContain("Branch Director");
     expect(text).toContain("info@samyaksion.com");
+    expect(text.match(/A unit of Shree Services/g)).toHaveLength(1);
     expect(text).not.toContain("Unknown");
     expect(text).not.toContain("Grade");
     expect(text).not.toContain("Aadhaar");

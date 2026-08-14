@@ -16,27 +16,34 @@ export async function generateCertificatePdf(input: CertificatePdfInput) {
   const nameLines = wrapText(input.certificate.student_name_snapshot, 560, 34, 2);
   const nameSize = nameLines.length > 1 ? 26 : fitFontSize(input.certificate.student_name_snapshot, 560, 34, 22);
   const courseLines = wrapText(input.certificate.course_name_snapshot, 560, 22, 3);
-  const courseSize = courseLines.length > 1 ? 17 : fitFontSize(input.certificate.course_name_snapshot, 560, 22, 15);
+  const courseSize = courseLines.length > 2 ? 14 : courseLines.length > 1 ? 17 : fitFontSize(input.certificate.course_name_snapshot, 560, 22, 15);
+  const headerText = "SAMYAK COMPUTER CLASSES";
+  const headerSize = 24;
+  const logoSize = 36;
+  const headerGap = 12;
+  const headerWidth = logoSize + headerGap + approximateTextWidth(headerText, headerSize);
+  const headerX = pageWidth / 2 - headerWidth / 2;
   const content = [
     "q",
     "1 1 1 rg 0 0 842 595 re f",
     "0.035 0.137 0.239 RG 3 w 28 28 786 539 re S",
     "0.051 0.580 0.533 RG 1.5 w 42 42 758 511 re S",
-    text("SAMYAK COMPUTER CLASSES, SION", 72, 505, 24, "0.035 0.137 0.239"),
-    text("A unit of Shree Services", 72, 480, 12, "0.388 0.439 0.514"),
-    centerText("CERTIFICATE OF COMPLETION", pageWidth / 2, 420, 28, "0.051 0.580 0.533"),
-    centerText("This is to certify that", pageWidth / 2, 370, 13, "0.388 0.439 0.514"),
-    ...nameLines.map((line, index) => centerText(line, pageWidth / 2, 330 - index * (nameSize + 5), nameSize, "0.035 0.137 0.239")),
+    ...drawLogoMark(headerX, 492, logoSize),
+    text(headerText, headerX + logoSize + headerGap, 501, headerSize, "0.035 0.137 0.239", "F3"),
+    centerText("CERTIFICATE OF COMPLETION", pageWidth / 2, 424, 28, "0.051 0.580 0.533", "F3"),
+    centerText("This is to certify that", pageWidth / 2, 374, 13, "0.388 0.439 0.514"),
+    ...nameLines.map((line, index) => centerText(line, pageWidth / 2, 333 - index * (nameSize + 5), nameSize, "0.035 0.137 0.239", "F2")),
     centerText("has successfully completed the course", pageWidth / 2, nameLines.length > 1 ? 264 : 282, 13, "0.388 0.439 0.514"),
-    ...courseLines.map((line, index) => centerText(line, pageWidth / 2, (nameLines.length > 1 ? 228 : 244) - index * (courseSize + 5), courseSize, "0.035 0.137 0.239")),
-    centerText("at Samyak Computer Classes, Sion - A unit of Shree Services.", pageWidth / 2, courseLines.length > 1 ? 174 : 206, 12, "0.388 0.439 0.514"),
+    ...courseLines.map((line, index) => centerText(line, pageWidth / 2, (nameLines.length > 1 ? 228 : 244) - index * (courseSize + 5), courseSize, "0.035 0.137 0.239", "F3")),
+    centerText("at Samyak Computer Classes, Sion.", pageWidth / 2, courseLines.length > 1 ? 174 : 206, 12, "0.388 0.439 0.514"),
     ...drawQr(input.verificationUrl, 82, 84, 82),
-    text("Scan to verify authenticity", 72, 62, 10, "0.388 0.439 0.514"),
+    text("Scan to verify certificate", 74, 62, 10, "0.388 0.439 0.514"),
     ...lines.map((line, index) => text(line, 190, 160 - index * 18, 10.5, "0.035 0.137 0.239")),
-    "q 82 0 0 104 656 130 cm /Sig Do Q",
-    "0.035 0.137 0.239 RG 1 w 626 116 142 0 l S",
-    text("Branch Director", 648, 92, 13, "0.035 0.137 0.239"),
-    text("info@samyaksion.com   www.samyaksion.com   +91 8422969307", 244, 52, 10, "0.388 0.439 0.514"),
+    "q 49 0 0 62 672 146 cm /Sig Do Q",
+    "0.035 0.137 0.239 RG 1 w 644 132 106 0 l S",
+    centerText("Branch Director", 697, 108, 13, "0.035 0.137 0.239"),
+    centerText("A unit of Shree Services", pageWidth / 2, 72, 10.5, "0.388 0.439 0.514"),
+    centerText("info@samyaksion.com | www.samyaksion.com | +91 8422969307", pageWidth / 2, 54, 10.5, "0.388 0.439 0.514"),
     "Q",
   ].join("\n");
   const pdf = buildPdf(pageWidth, pageHeight, content);
@@ -50,19 +57,29 @@ function certificateLines(input: CertificatePdfInput) {
     `Student ID: ${cert.student_id_snapshot}`,
     `Certificate No: ${cert.certificate_number}`,
     cert.course_duration_label_snapshot ? `Course Duration: ${cert.course_duration_label_snapshot}` : null,
-    `Course Code: ${cert.course_code_snapshot}`,
     `Issue Date: ${formatDate(cert.issue_date)}`,
     cert.completion_date_snapshot ? `Completion Date: ${formatDate(cert.completion_date_snapshot)}` : null,
   ];
   return rows.filter((row): row is string => Boolean(row));
 }
 
-function text(value: string, x: number, y: number, size: number, rgb: string) {
-  return `${rgb} rg BT /F1 ${size} Tf ${x} ${y} Td (${escapePdf(value)}) Tj ET`;
+function text(value: string, x: number, y: number, size: number, rgb: string, font = "F1") {
+  return `${rgb} rg BT /${font} ${size} Tf ${x} ${y} Td (${escapePdf(value)}) Tj ET`;
 }
 
-function centerText(value: string, centerX: number, y: number, size: number, rgb: string) {
-  return text(value, centerX - approximateTextWidth(value, size) / 2, y, size, rgb);
+function centerText(value: string, centerX: number, y: number, size: number, rgb: string, font = "F1") {
+  return text(value, centerX - approximateTextWidth(value, size) / 2, y, size, rgb, font);
+}
+
+function drawLogoMark(x: number, y: number, size: number) {
+  const inner = size - 6;
+  return [
+    "0.035 0.137 0.239 RG 1.2 w",
+    `${x} ${y} ${size} ${size} re S`,
+    "0.051 0.580 0.533 RG 1 w",
+    `${x + 4} ${y + 4} ${size - 8} ${size - 8} re S`,
+    text("S", x + 8, y + 7, inner, "0.035 0.137 0.239", "F3"),
+  ];
 }
 
 function drawQr(value: string, x: number, y: number, size: number) {
@@ -89,8 +106,10 @@ function buildPdf(width: number, height: number, streamText: string) {
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /Font << /F1 4 0 R >> /XObject << /Sig 6 0 R >> >> /Contents 5 0 R >>`,
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R >> /XObject << /Sig 8 0 R >> >> /Contents 7 0 R >>`,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Italic >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
     `<< /Length ${stream.length} >>\nstream\n${streamText}\nendstream`,
     `<< /Type /XObject /Subtype /Image /Width ${branchDirectorSignature.width} /Height ${branchDirectorSignature.height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length ${signatureHex.length + 1} >>\nstream\n${signatureHex}>\nendstream`,
   ];
