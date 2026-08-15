@@ -1,36 +1,57 @@
 import type { AppContext } from "./http";
-import { createOpaqueId, decryptText, hmacHex } from "./crypto";
+import { createOpaqueId, decryptText, encryptText, hmacHex } from "./crypto";
 import { normalizeIndianMobile } from "./mobile";
 import { ORG_ID } from "./auth-store";
 import type { StaffContext } from "./staff-auth";
 
 export const IMPORTED_CONTACT_REPAIR_EXPECTED_EXAMINED = 56;
-export const IMPORTED_CONTACT_REPAIR_CONFIRMATION = "REPAIR_IMPORTED_CONTACT_LOOKUP_HASHES";
+export const IMPORTED_CONTACT_REPAIR_CONFIRMATION = "REGENERATE_IMPORTED_CONTACT_CRYPTOGRAPHY";
 
 export type ImportedContactRepairMode = "dry_run" | "apply";
+
+export type ImportedContactRecoveryEntry = {
+  legacyStudentRef: string;
+  mobile: string;
+};
 
 export type ImportedContactRepairResult = {
   mode: ImportedContactRepairMode;
   examined: number;
-  alreadyCompatible: number;
-  requiresCorrection: number;
-  decryptFailures: number;
-  invalidMobiles: number;
+  mapped: number;
+  readyForReplacement: number;
+  alreadyProductionCompatible: number;
+  invalidSourceMobiles: number;
+  missingMappings: number;
+  ambiguousMappings: number;
+  missingContacts: number;
   missingSecrets: number;
   unsafeCollisions: number;
+  sharedMobileContacts: number;
   changed: number;
   safeToApply: boolean;
 };
 
-type ImportedContactRow = {
-  contact_id: string;
+type ImportedContactMappingRow = {
+  legacy_student_ref: string;
   person_id: string;
-  normalized_value: string;
+  contact_id: string | null;
+  contact_type: string | null;
+  normalized_value: string | null;
   value_ciphertext: string | null;
+  encryption_version: string | null;
 };
 
-type RepairCandidate = ImportedContactRow & {
-  expectedHash: string;
+type PreparedRecovery = {
+  result: ImportedContactRepairResult;
+  replacements: Array<{
+    legacyStudentRef: string;
+    canonicalMobile: string;
+    personId: string;
+    contactId: string;
+    expectedHash: string;
+    ciphertext: string;
+    alreadyCompatible: boolean;
+  }>;
 };
 
 type D1RunResult = {
@@ -43,72 +64,25 @@ type D1RunResult = {
 export async function runTemporaryImportedContactNormalizationRepair(
   c: AppContext,
   mode: ImportedContactRepairMode,
+  entries: ImportedContactRecoveryEntry[],
   staff?: StaffContext,
 ): Promise<ImportedContactRepairResult> {
-  const rows = await importedMobileContactRows(c);
-  const compatible = new Set<string>();
-  const corrections: RepairCandidate[] = [];
-  const counts = {
-    decryptFailures: 0,
-    invalidMobiles: 0,
-    missingSecrets: 0,
-    unsafeCollisions: 0,
-  };
-
-  for (const row of rows) {
-    if (!row.value_ciphertext) {
-      counts.missingSecrets += 1;
-      continue;
-    }
-
-    const plaintext = await decryptText(c.env.SESSION_PEPPER, `contact:${row.contact_id}`, row.value_ciphertext).catch(() => null);
-    if (!plaintext) {
-      counts.decryptFailures += 1;
-      continue;
-    }
-
-    const canonicalMobile = normalizeIndianMobile(plaintext);
-    if (!canonicalMobile) {
-      counts.invalidMobiles += 1;
-      continue;
-    }
-
-    const expectedHash = await hmacHex(c.env.SESSION_PEPPER, "mobile", canonicalMobile);
-    if (expectedHash === row.normalized_value) {
-      compatible.add(row.contact_id);
-      continue;
-    }
-
-    if (await wouldCollideWithinSamePerson(c, row.person_id, row.contact_id, expectedHash)) {
-      counts.unsafeCollisions += 1;
-      continue;
-    }
-
-    corrections.push({ ...row, expectedHash });
-  }
-
-  const result: ImportedContactRepairResult = {
-    mode,
-    examined: rows.length,
-    alreadyCompatible: compatible.size,
-    requiresCorrection: corrections.length,
-    decryptFailures: counts.decryptFailures,
-    invalidMobiles: counts.invalidMobiles,
-    missingSecrets: counts.missingSecrets,
-    unsafeCollisions: counts.unsafeCollisions,
-    changed: 0,
-    safeToApply: isSafeToApply(rows.length, counts),
-  };
-
+  const prepared = await prepareRecovery(c, mode, entries);
+  const result = prepared.result;
   if (mode === "dry_run") return result;
-  if (!result.safeToApply || result.examined !== IMPORTED_CONTACT_REPAIR_EXPECTED_EXAMINED) return result;
+  if (!isImportedContactRepairSafeForApply(result)) return result;
 
+  const corrections = prepared.replacements.filter((replacement) => !replacement.alreadyCompatible);
   if (corrections.length > 0) {
     const now = new Date().toISOString();
-    const statements = corrections.map((row) =>
-      c.env.DB.prepare("update person_contacts set normalized_value = ?, updated_at = ? where id = ? and person_id = ? and contact_type = 'mobile'")
-        .bind(row.expectedHash, now, row.contact_id, row.person_id),
-    );
+    const statements = corrections.flatMap((row) => [
+      c.env.DB.prepare(
+        "update person_contacts set normalized_value = ?, updated_at = ? where id = ? and person_id = ? and contact_type = 'mobile'",
+      ).bind(row.expectedHash, now, row.contactId, row.personId),
+      c.env.DB.prepare(
+        "update person_contact_secrets set value_ciphertext = ?, updated_at = ? where contact_id = ? and encryption_version = 'v1'",
+      ).bind(row.ciphertext, now, row.contactId),
+    ]);
     const updateResults = await c.env.DB.batch(statements);
     result.changed = updateResults.reduce((sum, updateResult) => sum + changed(updateResult as D1RunResult), 0);
   }
@@ -120,36 +94,154 @@ export async function runTemporaryImportedContactNormalizationRepair(
 export function isImportedContactRepairSafeForApply(result: ImportedContactRepairResult) {
   return (
     result.examined === IMPORTED_CONTACT_REPAIR_EXPECTED_EXAMINED &&
-    result.decryptFailures === 0 &&
-    result.invalidMobiles === 0 &&
+    result.mapped === IMPORTED_CONTACT_REPAIR_EXPECTED_EXAMINED &&
+    result.invalidSourceMobiles === 0 &&
+    result.missingMappings === 0 &&
+    result.ambiguousMappings === 0 &&
+    result.missingContacts === 0 &&
     result.missingSecrets === 0 &&
-    result.unsafeCollisions === 0
+    result.unsafeCollisions === 0 &&
+    result.safeToApply
   );
 }
 
-async function importedMobileContactRows(c: AppContext) {
+async function prepareRecovery(c: AppContext, mode: ImportedContactRepairMode, entries: ImportedContactRecoveryEntry[]): Promise<PreparedRecovery> {
+  const canonicalEntries = canonicalizeEntries(entries);
+  const mappings = await importedContactMappings(c);
+  const mappingCounts = countBy(mappings, (row) => row.legacy_student_ref);
+  const payloadCounts = countBy(canonicalEntries.valid, (entry) => entry.legacyStudentRef);
+  const replacements: PreparedRecovery["replacements"] = [];
+  const counts = {
+    missingMappings: 0,
+    ambiguousMappings: 0,
+    missingContacts: 0,
+    missingSecrets: 0,
+    unsafeCollisions: 0,
+    alreadyProductionCompatible: 0,
+    readyForReplacement: 0,
+  };
+
+  for (const entry of canonicalEntries.valid) {
+    const matches = mappings.filter((row) => row.legacy_student_ref === entry.legacyStudentRef);
+    if (payloadCounts.get(entry.legacyStudentRef)! > 1) {
+      counts.ambiguousMappings += 1;
+      continue;
+    }
+    if (matches.length === 0) {
+      counts.missingMappings += 1;
+      continue;
+    }
+    if (matches.length !== 1 || mappingCounts.get(entry.legacyStudentRef)! !== 1) {
+      counts.ambiguousMappings += 1;
+      continue;
+    }
+
+    const row = matches[0];
+    if (!row.contact_id || row.contact_type !== "mobile") {
+      counts.missingContacts += 1;
+      continue;
+    }
+    if (!row.value_ciphertext || row.encryption_version !== "v1") {
+      counts.missingSecrets += 1;
+      continue;
+    }
+
+    const expectedHash = await hmacHex(c.env.SESSION_PEPPER, "mobile", entry.canonicalMobile);
+    if (await wouldCollideWithinSamePerson(c, row.person_id, row.contact_id, expectedHash)) {
+      counts.unsafeCollisions += 1;
+      continue;
+    }
+
+    const currentPlaintext = await decryptText(c.env.SESSION_PEPPER, `contact:${row.contact_id}`, row.value_ciphertext).catch(() => null);
+    const currentCanonical = currentPlaintext ? normalizeIndianMobile(currentPlaintext) : null;
+    const alreadyCompatible = currentCanonical === entry.canonicalMobile && row.normalized_value === expectedHash;
+    if (alreadyCompatible) counts.alreadyProductionCompatible += 1;
+    else counts.readyForReplacement += 1;
+    const ciphertext = alreadyCompatible ? "" : await encryptText(c.env.SESSION_PEPPER, `contact:${row.contact_id}`, entry.canonicalMobile);
+
+    replacements.push({
+      legacyStudentRef: entry.legacyStudentRef,
+      canonicalMobile: entry.canonicalMobile,
+      personId: row.person_id,
+      contactId: row.contact_id,
+      expectedHash,
+      ciphertext,
+      alreadyCompatible,
+    });
+  }
+
+  const mapped = replacements.length;
+  const sharedMobileContacts = countSharedMobileContacts(canonicalEntries.valid);
+  const result: ImportedContactRepairResult = {
+    mode,
+    examined: canonicalEntries.valid.length,
+    mapped,
+    readyForReplacement: counts.readyForReplacement,
+    alreadyProductionCompatible: counts.alreadyProductionCompatible,
+    invalidSourceMobiles: canonicalEntries.invalid,
+    missingMappings: counts.missingMappings,
+    ambiguousMappings: counts.ambiguousMappings,
+    missingContacts: counts.missingContacts,
+    missingSecrets: counts.missingSecrets,
+    unsafeCollisions: counts.unsafeCollisions,
+    sharedMobileContacts,
+    changed: 0,
+    safeToApply:
+      canonicalEntries.valid.length === IMPORTED_CONTACT_REPAIR_EXPECTED_EXAMINED &&
+      mapped === IMPORTED_CONTACT_REPAIR_EXPECTED_EXAMINED &&
+      counts.readyForReplacement + counts.alreadyProductionCompatible === IMPORTED_CONTACT_REPAIR_EXPECTED_EXAMINED &&
+      canonicalEntries.invalid === 0 &&
+      counts.missingMappings === 0 &&
+      counts.ambiguousMappings === 0 &&
+      counts.missingContacts === 0 &&
+      counts.missingSecrets === 0 &&
+      counts.unsafeCollisions === 0,
+  };
+  return { result, replacements };
+}
+
+function canonicalizeEntries(entries: ImportedContactRecoveryEntry[]) {
+  const valid: Array<{ legacyStudentRef: string; canonicalMobile: string }> = [];
+  let invalid = 0;
+  for (const entry of entries) {
+    const legacyStudentRef = String(entry.legacyStudentRef || "").trim();
+    const canonicalMobile = normalizeIndianMobile(entry.mobile);
+    if (!legacyStudentRef || !canonicalMobile) {
+      invalid += 1;
+      continue;
+    }
+    valid.push({ legacyStudentRef, canonicalMobile });
+  }
+  return { valid, invalid };
+}
+
+async function importedContactMappings(c: AppContext) {
   const rows = await c.env.DB.prepare(
-    `select distinct
+    `select
+       legacy_import_entity_mappings.source_entity_ref as legacy_student_ref,
+       legacy_import_entity_mappings.target_entity_id as person_id,
        person_contacts.id as contact_id,
-       person_contacts.person_id,
+       person_contacts.contact_type,
        person_contacts.normalized_value,
-       person_contact_secrets.value_ciphertext
+       person_contact_secrets.value_ciphertext,
+       person_contact_secrets.encryption_version
      from legacy_import_entity_mappings
      join legacy_import_batches on legacy_import_batches.id = legacy_import_entity_mappings.batch_id
        and legacy_import_batches.organisation_id = legacy_import_entity_mappings.organisation_id
        and legacy_import_batches.source_system = legacy_import_entity_mappings.source_system
        and legacy_import_batches.status = 'applied'
-     join person_contacts on person_contacts.person_id = legacy_import_entity_mappings.target_entity_id
+     left join person_contacts on person_contacts.person_id = legacy_import_entity_mappings.target_entity_id
        and person_contacts.contact_type = 'mobile'
+       and person_contacts.is_primary = 1
      left join person_contact_secrets on person_contact_secrets.contact_id = person_contacts.id
      where legacy_import_entity_mappings.organisation_id = ?
        and legacy_import_entity_mappings.source_system = 'legacy_student_workbook'
        and legacy_import_entity_mappings.source_entity_type = 'person'
        and legacy_import_entity_mappings.target_entity_type = 'person'
-     order by person_contacts.id`,
+     order by legacy_import_entity_mappings.source_entity_ref, person_contacts.id`,
   )
     .bind(ORG_ID)
-    .all<ImportedContactRow>();
+    .all<ImportedContactMappingRow>();
   return rows.results || [];
 }
 
@@ -168,22 +260,25 @@ async function wouldCollideWithinSamePerson(c: AppContext, personId: string, con
   return Boolean(row);
 }
 
-function isSafeToApply(
-  examined: number,
-  counts: Pick<ImportedContactRepairResult, "decryptFailures" | "invalidMobiles" | "missingSecrets" | "unsafeCollisions">,
-) {
-  return examined === IMPORTED_CONTACT_REPAIR_EXPECTED_EXAMINED &&
-    counts.decryptFailures === 0 &&
-    counts.invalidMobiles === 0 &&
-    counts.missingSecrets === 0 &&
-    counts.unsafeCollisions === 0;
+function countBy<T>(values: T[], key: (value: T) => string) {
+  const counts = new Map<string, number>();
+  for (const value of values) counts.set(key(value), (counts.get(key(value)) || 0) + 1);
+  return counts;
+}
+
+function countSharedMobileContacts(entries: Array<{ canonicalMobile: string }>) {
+  let shared = 0;
+  for (const count of countBy(entries, (entry) => entry.canonicalMobile).values()) {
+    if (count > 1) shared += count;
+  }
+  return shared;
 }
 
 async function auditApply(c: AppContext, staff: StaffContext, result: ImportedContactRepairResult) {
   await c.env.DB.prepare(
     `insert into audit_logs
        (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
-     values (?, ?, null, ?, ?, 'temporary_imported_contact_normalization_repair', 'maintenance', ?, ?, ?)`,
+     values (?, ?, null, ?, ?, 'temporary_imported_contact_crypto_regeneration', 'maintenance', ?, ?, ?)`,
   )
     .bind(
       createOpaqueId("audit"),
@@ -192,16 +287,20 @@ async function auditApply(c: AppContext, staff: StaffContext, result: ImportedCo
       staff.activePersonId,
       "imported-contact-normalization",
       JSON.stringify({
-        operation: "temporary_imported_contact_normalization_repair",
+        operation: "temporary_imported_contact_crypto_regeneration",
         mode: result.mode,
         examined: result.examined,
+        mapped: result.mapped,
         changed: result.changed,
-        alreadyCompatible: result.alreadyCompatible,
-        requiresCorrection: result.requiresCorrection,
-        decryptFailures: result.decryptFailures,
-        invalidMobiles: result.invalidMobiles,
+        readyForReplacement: result.readyForReplacement,
+        alreadyProductionCompatible: result.alreadyProductionCompatible,
+        invalidSourceMobiles: result.invalidSourceMobiles,
+        missingMappings: result.missingMappings,
+        ambiguousMappings: result.ambiguousMappings,
+        missingContacts: result.missingContacts,
         missingSecrets: result.missingSecrets,
         unsafeCollisions: result.unsafeCollisions,
+        sharedMobileContacts: result.sharedMobileContacts,
       }),
       new Date().toISOString(),
     )
