@@ -11,6 +11,7 @@ import { registerStaffStudentRoutes } from "./routes/staff-students";
 import { registerStaffAdmissionRoutes } from "./routes/staff-admissions";
 import { registerStudentRoutes } from "./routes/student";
 import { registerPublicReferralRoutes } from "./routes/public-referrals";
+import { registerTemporaryMaintenanceRoutes } from "./routes/temporary-maintenance";
 import { AuthConfigurationError } from "./lib/auth-store";
 import { jsonError } from "./lib/json-response";
 
@@ -30,6 +31,7 @@ registerStudentRoutes(app);
 registerPublicReferralRoutes(app);
 registerStaffStudentRoutes(app);
 registerStaffAdmissionRoutes(app);
+registerTemporaryMaintenanceRoutes(app);
 
 app.notFound((c) =>
   jsonError(c, {
