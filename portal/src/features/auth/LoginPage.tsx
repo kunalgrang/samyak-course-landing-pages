@@ -61,6 +61,7 @@ export function LoginPage({ sessionMessage, onAuthenticated }: LoginPageProps) {
 
   useEffect(() => {
     if (!config?.turnstileSiteKey || !widgetContainerRef.current) return;
+    if (step !== "mobile") return;
     if (turnstileReady && window.turnstile && !widgetIdRef.current) {
       widgetIdRef.current = window.turnstile.render(widgetContainerRef.current, {
         sitekey: config.turnstileSiteKey,
@@ -70,7 +71,13 @@ export function LoginPage({ sessionMessage, onAuthenticated }: LoginPageProps) {
         "error-callback": () => setTurnstileToken(""),
       });
     }
-  }, [config?.turnstileSiteKey, turnstileReady]);
+    return () => {
+      if (widgetIdRef.current && window.turnstile) {
+        window.turnstile.remove(widgetIdRef.current);
+      }
+      widgetIdRef.current = undefined;
+    };
+  }, [config?.turnstileSiteKey, turnstileReady, step]);
 
   useEffect(() => {
     if (cooldown <= 0) return;
