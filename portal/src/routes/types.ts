@@ -6,6 +6,7 @@ export type AppRoute =
   | `/app/students/${string}`
   | "/app/courses"
   | "/app/discount-approvals"
+  | "/app/certificates"
   | "/app/referrals"
   | "/app/rules"
   | "/app/profile";

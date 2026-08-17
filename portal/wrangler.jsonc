@@ -7,17 +7,32 @@
     {
       "pattern": "go.samyaksion.com/api/public/referrals/*",
       "zone_name": "samyaksion.com"
+    },
+    {
+      "pattern": "go.samyaksion.com/api/public/certificates/verify/*",
+      "zone_name": "samyaksion.com"
+    },
+    {
+      "pattern": "go.samyaksion.com/verify/*",
+      "zone_name": "samyaksion.com"
     }
   ],
   "assets": {
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": ["/api/*", "/verify/*"]
   },
   "vars": {
     "ENVIRONMENT": "production",
+    "CERTIFICATE_VERIFICATION_ORIGIN": "https://go.samyaksion.com",
     "REFERRAL_PUBLIC_ALLOWED_ORIGINS": "https://go.samyaksion.com,https://refer.samyaksion.com,https://samyaksion.com,https://www.samyaksion.com",
     "TURNSTILE_SITE_KEY": "0x4AAAAAAD_9LJVUBqi8lIkK"
   },
+  "r2_buckets": [
+    {
+      "binding": "CERTIFICATE_PDFS",
+      "bucket_name": "samyak-certificates"
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",

@@ -9,6 +9,8 @@ export type WorkerBindings = {
   MSG91_SENDER_ID?: string;
   SESSION_PEPPER: string;
   REFERRAL_TOKEN_PEPPER?: string;
+  CERTIFICATE_VERIFICATION_ORIGIN?: string;
+  CERTIFICATE_PDFS?: R2Bucket;
   DEV_OTP?: string;
 };
 
