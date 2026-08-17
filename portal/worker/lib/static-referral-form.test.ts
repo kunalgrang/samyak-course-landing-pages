@@ -23,6 +23,13 @@ describe("static referral form cutover", () => {
     expect(wranglerConfig).not.toMatch(/\*\.pages\.dev/);
   });
 
+  it("runs public certificate verification through the Worker before assets", () => {
+    const wranglerConfig = readFileSync(join(process.cwd(), "wrangler.jsonc"), "utf8");
+
+    expect(wranglerConfig).toContain('"pattern": "go.samyaksion.com/verify/*"');
+    expect(wranglerConfig).toMatch(/"run_worker_first": \["\/api\/\*", "\/verify\/\*"\]/);
+  });
+
   it("submits actual course IDs with a bounded idempotency key and grouped categories", () => {
     const script = readFileSync(join(repoRoot, "assets/js/referral-form.js"), "utf8");
     expect(script).toContain("course.id");
