@@ -53,7 +53,7 @@ class SqliteD1 {
 
 describe("temporary imported contact crypto regeneration", () => {
   it("validates a 56-person source payload and marks bad production crypto ready for replacement", async () => {
-    const fixture = await repairFixture({ badCrypto: true, sharedMobile: true });
+    const fixture = await repairFixture({ badCrypto: true, sharedMobile: true, multiRowPerson: true });
 
     const result = await runTemporaryImportedContactNormalizationRepair(context(fixture.db), "dry_run", fixture.entries);
 
@@ -109,6 +109,28 @@ describe("temporary imported contact crypto regeneration", () => {
     await expectBlocked({ missingSecretFor: 1 }, { missingSecrets: 1 });
     await expectBlocked({ invalidMobileFor: 1 }, { invalidSourceMobiles: 1 });
     await expectBlocked({ unsafeCollisionFor: 1 }, { unsafeCollisions: 1 });
+  });
+
+  it("rejects wrong source-row identifiers without fuzzy, ref, or mobile fallback", async () => {
+    const fixture = await repairFixture({ badCrypto: true });
+    fixture.entries[0] = { ...fixture.entries[0], sourceRowNumbers: [999] };
+
+    const result = await runTemporaryImportedContactNormalizationRepair(context(fixture.db), "dry_run", fixture.entries);
+
+    expect(result).toMatchObject({ mapped: 55, missingMappings: 1, safeToApply: false, changed: 0 });
+    expect(fixture.db.writes).toHaveLength(0);
+  });
+
+  it("rejects source rows that are not from an applied import target", async () => {
+    const fixture = await repairFixture({ badCrypto: true });
+    fixture.sqlite.prepare("insert into legacy_import_batches (id, organisation_id, source_system, status) values ('batch_draft', 'org_samyak', 'legacy_student_workbook', 'draft')");
+    fixture.sqlite.prepare("insert into legacy_import_rows (id, batch_id, source_row_number, legacy_student_ref) values ('row_draft', 'batch_draft', 999, 'LEG-STU-DRAFT000000')");
+    fixture.sqlite.prepare("insert into legacy_import_entity_mappings (id, organisation_id, source_system, source_entity_type, source_entity_ref, target_entity_type, target_entity_id, batch_id) values ('map_draft', 'org_samyak', 'legacy_student_workbook', 'person', 'LEG-STU-DRAFT000000', 'person', 'person_001', 'batch_draft')");
+    fixture.entries[0] = { ...fixture.entries[0], sourceRowNumbers: [999] };
+
+    const result = await runTemporaryImportedContactNormalizationRepair(context(fixture.db), "dry_run", fixture.entries);
+
+    expect(result).toMatchObject({ mapped: 55, missingMappings: 1, safeToApply: false });
   });
 
   it("rejects authenticated non-owner staff and allows owner dry-run", async () => {
@@ -225,6 +247,7 @@ async function expectBlocked(options: FixtureOptions, expected: Partial<Awaited<
 type FixtureOptions = {
   badCrypto?: boolean;
   sharedMobile?: boolean;
+  multiRowPerson?: boolean;
   missingMappingFor?: number;
   duplicateMappingFor?: number;
   missingContactFor?: number;
@@ -241,10 +264,12 @@ async function repairFixture(options: FixtureOptions = {}) {
   for (let index = 1; index <= 56; index += 1) {
     const legacyStudentRef = ref(index);
     const mobile = options.sharedMobile && index === 2 ? mobileFor(1) : mobileFor(index);
-    entries.push({ legacyStudentRef, mobile: options.invalidMobileFor === index ? "12345" : mobile });
+    const sourceRowNumbers = options.multiRowPerson && index === 1 ? [2, 61] : [index + 1];
+    entries.push({ sourceRowNumbers, mobile: options.invalidMobileFor === index ? "12345" : mobile });
     await seedImportedContact(sqlite, {
       index,
       legacyStudentRef,
+      sourceRowNumbers,
       mobile,
       badCrypto: options.badCrypto,
       missingMapping: options.missingMappingFor === index,
@@ -260,6 +285,7 @@ async function repairFixture(options: FixtureOptions = {}) {
 function createSchema(db: DatabaseSync) {
   db.exec(`
     create table legacy_import_batches (id text primary key, organisation_id text, source_system text, status text);
+    create table legacy_import_rows (id text primary key, batch_id text, source_row_number integer, legacy_student_ref text);
     create table legacy_import_entity_mappings (id text primary key, organisation_id text, source_system text, source_entity_type text, source_entity_ref text, target_entity_type text, target_entity_id text, batch_id text);
     create table people (id text primary key, organisation_id text, full_name text, public_name text, status text, created_at text, updated_at text);
     create table person_contacts (id text primary key, person_id text, contact_type text, normalized_value text, last_four text, is_primary integer, is_verified integer, created_at text, updated_at text);
@@ -280,6 +306,7 @@ function createSchema(db: DatabaseSync) {
 async function seedImportedContact(db: DatabaseSync, input: {
   index: number;
   legacyStudentRef: string;
+  sourceRowNumbers: number[];
   mobile: string;
   badCrypto?: boolean;
   missingMapping?: boolean;
@@ -292,6 +319,9 @@ async function seedImportedContact(db: DatabaseSync, input: {
   const contactId = `contact_${String(input.index).padStart(3, "0")}`;
   const staleHash = await hmacHex("local-pepper", "mobile", `+91${input.mobile}`);
   db.prepare("insert into people (id, organisation_id, full_name, public_name, status, created_at, updated_at) values (?, 'org_samyak', 'Imported Student', 'Imported', 'active', ?, ?)").run(personId, now(), now());
+  for (const sourceRowNumber of input.sourceRowNumbers) {
+    db.prepare("insert into legacy_import_rows (id, batch_id, source_row_number, legacy_student_ref) values (?, 'batch_imported', ?, ?)").run(`row_${input.index}_${sourceRowNumber}`, sourceRowNumber, input.legacyStudentRef);
+  }
   if (!input.missingMapping) {
     db.prepare("insert into legacy_import_entity_mappings (id, organisation_id, source_system, source_entity_type, source_entity_ref, target_entity_type, target_entity_id, batch_id) values (?, 'org_samyak', 'legacy_student_workbook', 'person', ?, 'person', ?, 'batch_imported')").run(`map_${input.index}`, input.legacyStudentRef, personId);
   }

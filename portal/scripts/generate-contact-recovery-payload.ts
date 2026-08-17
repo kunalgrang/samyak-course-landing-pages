@@ -6,7 +6,7 @@ import { analyzeLegacyImportPlan } from "../worker/lib/legacy-import.ts";
 const DEFAULT_OUTPUT = "./.wrangler/tmp/imported-contact-recovery-payload.json";
 
 type RecoveryEntry = {
-  legacyStudentRef: string;
+  sourceRowNumbers: number[];
   mobile: string;
 };
 
@@ -30,8 +30,14 @@ for (const row of validRows) {
   if (existing && existing.mobile !== row.normalizedMobile) {
     throw new Error("Source shape changed: one legacy person has multiple mobiles.");
   }
-  byPerson.set(row.legacyStudentRef, { legacyStudentRef: row.legacyStudentRef, mobile: row.normalizedMobile! });
+  if (existing) {
+    existing.sourceRowNumbers.push(row.sourceRowNumber);
+  } else {
+    byPerson.set(row.legacyStudentRef, { sourceRowNumbers: [row.sourceRowNumber], mobile: row.normalizedMobile! });
+  }
 }
+
+for (const entry of byPerson.values()) entry.sourceRowNumbers.sort((left, right) => left - right);
 
 const mobileCounts = new Map<string, number>();
 for (const entry of byPerson.values()) mobileCounts.set(entry.mobile, (mobileCounts.get(entry.mobile) || 0) + 1);
@@ -60,7 +66,7 @@ if (
 
 const payload = {
   mode: "dry_run",
-  entries: [...byPerson.values()].sort((left, right) => left.legacyStudentRef.localeCompare(right.legacyStudentRef)),
+  entries: [...byPerson.values()].sort((left, right) => left.sourceRowNumbers[0] - right.sourceRowNumbers[0]),
 };
 
 mkdirSync(dirname(outputPath), { recursive: true });

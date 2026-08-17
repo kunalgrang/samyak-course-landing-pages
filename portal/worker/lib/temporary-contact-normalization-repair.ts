@@ -10,7 +10,7 @@ export const IMPORTED_CONTACT_REPAIR_CONFIRMATION = "REGENERATE_IMPORTED_CONTACT
 export type ImportedContactRepairMode = "dry_run" | "apply";
 
 export type ImportedContactRecoveryEntry = {
-  legacyStudentRef: string;
+  sourceRowNumbers: number[];
   mobile: string;
 };
 
@@ -32,6 +32,7 @@ export type ImportedContactRepairResult = {
 };
 
 type ImportedContactMappingRow = {
+  source_row_number: number;
   legacy_student_ref: string;
   person_id: string;
   contact_id: string | null;
@@ -44,7 +45,7 @@ type ImportedContactMappingRow = {
 type PreparedRecovery = {
   result: ImportedContactRepairResult;
   replacements: Array<{
-    legacyStudentRef: string;
+    sourceRowNumbers: number[];
     canonicalMobile: string;
     personId: string;
     contactId: string;
@@ -108,8 +109,7 @@ export function isImportedContactRepairSafeForApply(result: ImportedContactRepai
 async function prepareRecovery(c: AppContext, mode: ImportedContactRepairMode, entries: ImportedContactRecoveryEntry[]): Promise<PreparedRecovery> {
   const canonicalEntries = canonicalizeEntries(entries);
   const mappings = await importedContactMappings(c);
-  const mappingCounts = countBy(mappings, (row) => row.legacy_student_ref);
-  const payloadCounts = countBy(canonicalEntries.valid, (entry) => entry.legacyStudentRef);
+  const payloadSourceRowCounts = countBy(canonicalEntries.valid.flatMap((entry) => entry.sourceRowNumbers), String);
   const replacements: PreparedRecovery["replacements"] = [];
   const counts = {
     missingMappings: 0,
@@ -122,8 +122,8 @@ async function prepareRecovery(c: AppContext, mode: ImportedContactRepairMode, e
   };
 
   for (const entry of canonicalEntries.valid) {
-    const matches = mappings.filter((row) => row.legacy_student_ref === entry.legacyStudentRef);
-    if (payloadCounts.get(entry.legacyStudentRef)! > 1) {
+    const matches = mappings.filter((row) => entry.sourceRowNumbers.includes(row.source_row_number));
+    if (entry.sourceRowNumbers.some((sourceRowNumber) => payloadSourceRowCounts.get(String(sourceRowNumber))! > 1)) {
       counts.ambiguousMappings += 1;
       continue;
     }
@@ -131,7 +131,15 @@ async function prepareRecovery(c: AppContext, mode: ImportedContactRepairMode, e
       counts.missingMappings += 1;
       continue;
     }
-    if (matches.length !== 1 || mappingCounts.get(entry.legacyStudentRef)! !== 1) {
+    const matchedSourceRows = new Set(matches.map((row) => row.source_row_number));
+    if (matchedSourceRows.size !== entry.sourceRowNumbers.length) {
+      counts.missingMappings += 1;
+      continue;
+    }
+    const legacyStudentRefs = new Set(matches.map((row) => row.legacy_student_ref));
+    const personIds = new Set(matches.map((row) => row.person_id));
+    const contactIds = new Set(matches.map((row) => row.contact_id));
+    if (legacyStudentRefs.size !== 1 || personIds.size !== 1 || contactIds.size !== 1 || matches.length !== entry.sourceRowNumbers.length) {
       counts.ambiguousMappings += 1;
       continue;
     }
@@ -160,7 +168,7 @@ async function prepareRecovery(c: AppContext, mode: ImportedContactRepairMode, e
     const ciphertext = alreadyCompatible ? "" : await encryptText(c.env.SESSION_PEPPER, `contact:${row.contact_id}`, entry.canonicalMobile);
 
     replacements.push({
-      legacyStudentRef: entry.legacyStudentRef,
+      sourceRowNumbers: entry.sourceRowNumbers,
       canonicalMobile: entry.canonicalMobile,
       personId: row.person_id,
       contactId: row.contact_id,
@@ -201,16 +209,16 @@ async function prepareRecovery(c: AppContext, mode: ImportedContactRepairMode, e
 }
 
 function canonicalizeEntries(entries: ImportedContactRecoveryEntry[]) {
-  const valid: Array<{ legacyStudentRef: string; canonicalMobile: string }> = [];
+  const valid: Array<{ sourceRowNumbers: number[]; canonicalMobile: string }> = [];
   let invalid = 0;
   for (const entry of entries) {
-    const legacyStudentRef = String(entry.legacyStudentRef || "").trim();
+    const sourceRowNumbers = [...new Set(entry.sourceRowNumbers || [])].sort((left, right) => left - right);
     const canonicalMobile = normalizeIndianMobile(entry.mobile);
-    if (!legacyStudentRef || !canonicalMobile) {
+    if (sourceRowNumbers.length === 0 || !canonicalMobile) {
       invalid += 1;
       continue;
     }
-    valid.push({ legacyStudentRef, canonicalMobile });
+    valid.push({ sourceRowNumbers, canonicalMobile });
   }
   return { valid, invalid };
 }
@@ -218,27 +226,30 @@ function canonicalizeEntries(entries: ImportedContactRecoveryEntry[]) {
 async function importedContactMappings(c: AppContext) {
   const rows = await c.env.DB.prepare(
     `select
-       legacy_import_entity_mappings.source_entity_ref as legacy_student_ref,
+       legacy_import_rows.source_row_number,
+       legacy_import_rows.legacy_student_ref,
        legacy_import_entity_mappings.target_entity_id as person_id,
        person_contacts.id as contact_id,
        person_contacts.contact_type,
        person_contacts.normalized_value,
        person_contact_secrets.value_ciphertext,
        person_contact_secrets.encryption_version
-     from legacy_import_entity_mappings
-     join legacy_import_batches on legacy_import_batches.id = legacy_import_entity_mappings.batch_id
-       and legacy_import_batches.organisation_id = legacy_import_entity_mappings.organisation_id
-       and legacy_import_batches.source_system = legacy_import_entity_mappings.source_system
+     from legacy_import_rows
+     join legacy_import_batches on legacy_import_batches.id = legacy_import_rows.batch_id
        and legacy_import_batches.status = 'applied'
+     join legacy_import_entity_mappings on legacy_import_entity_mappings.batch_id = legacy_import_rows.batch_id
+       and legacy_import_entity_mappings.organisation_id = legacy_import_batches.organisation_id
+       and legacy_import_entity_mappings.source_system = legacy_import_batches.source_system
+       and legacy_import_entity_mappings.source_entity_ref = legacy_import_rows.legacy_student_ref
+       and legacy_import_entity_mappings.source_entity_type = 'person'
+       and legacy_import_entity_mappings.target_entity_type = 'person'
      left join person_contacts on person_contacts.person_id = legacy_import_entity_mappings.target_entity_id
        and person_contacts.contact_type = 'mobile'
        and person_contacts.is_primary = 1
      left join person_contact_secrets on person_contact_secrets.contact_id = person_contacts.id
-     where legacy_import_entity_mappings.organisation_id = ?
-       and legacy_import_entity_mappings.source_system = 'legacy_student_workbook'
-       and legacy_import_entity_mappings.source_entity_type = 'person'
-       and legacy_import_entity_mappings.target_entity_type = 'person'
-     order by legacy_import_entity_mappings.source_entity_ref, person_contacts.id`,
+     where legacy_import_batches.organisation_id = ?
+       and legacy_import_batches.source_system = 'legacy_student_workbook'
+     order by legacy_import_rows.source_row_number, person_contacts.id`,
   )
     .bind(ORG_ID)
     .all<ImportedContactMappingRow>();
