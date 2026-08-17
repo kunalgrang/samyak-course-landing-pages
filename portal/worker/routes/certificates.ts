@@ -248,7 +248,7 @@ function certificateVerifyHtmlResponse(result: Awaited<ReturnType<typeof verifyC
     status: 200,
     headers: {
       "Content-Type": "text/html; charset=UTF-8",
-      "Cache-Control": "no-store",
+      "Cache-Control": "no-store, no-transform",
       "X-Robots-Tag": "noindex, nofollow",
       "Referrer-Policy": "no-referrer",
       "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",

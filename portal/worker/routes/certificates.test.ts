@@ -248,7 +248,7 @@ describe("certificate routes", () => {
     const html = await response.text();
 
     expect(response.headers.get("Content-Type")).toContain("text/html; charset=UTF-8");
-    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Cache-Control")).toBe("no-store, no-transform");
     expect(response.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
     expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
     expect(response.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
