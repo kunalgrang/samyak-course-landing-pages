@@ -126,6 +126,136 @@ describe("certificate routes", () => {
     expect(JSON.stringify(body)).not.toContain("revocation_reason");
   });
 
+  it("returns a self-contained valid public verification HTML page", async () => {
+    const app = routeApp();
+    mocks.verifyCertificate.mockResolvedValue({
+      status: "valid",
+      certificate: {
+        certificate_number: "SYK-SION-CERT-2026-000001",
+        student_name_snapshot: "Shahid Khan",
+        student_id_snapshot: "SYK-SION-000002",
+        course_name_snapshot: "ADOBE PHOTOSHOP",
+        issue_date: "2026-08-17",
+        completion_date_snapshot: null,
+      },
+    });
+
+    const response = await app.request("/verify/SYK-7Q4M9PVK3X82AAAA");
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/html; charset=UTF-8");
+    expect(html).toContain("Certificate Verified");
+    expect(html).toContain("VALID");
+    expect(html).toContain("Shahid Khan");
+    expect(html).toContain("SYK-SION-000002");
+    expect(html).toContain("ADOBE PHOTOSHOP");
+    expect(html).toContain("SYK-SION-CERT-2026-000001");
+    expect(html).toContain("17 Aug 2026");
+    expect(html).not.toContain("Completion Date");
+    expect(html).not.toContain("SYK-7Q4M9PVK3X82AAAA");
+    expect(html).not.toContain("<script");
+  });
+
+  it.each([
+    ["revoked", "REVOKED"],
+    ["superseded", "SUPERSEDED"],
+  ])("renders %s public verification state", async (status, label) => {
+    const app = routeApp();
+    mocks.verifyCertificate.mockResolvedValue({
+      status,
+      certificate: {
+        certificate_number: "SYK-SION-CERT-2026-000001",
+        student_name_snapshot: "Asha Shah",
+        student_id_snapshot: "SYK-SION-000123",
+        course_name_snapshot: "Full Stack",
+        issue_date: "2026-08-17",
+        completion_date_snapshot: "2026-08-10",
+      },
+    });
+
+    const response = await app.request("/verify/SYK-7Q4M9PVK3X82AAAA");
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain(label);
+    expect(html).toContain("Completion Date");
+  });
+
+  it.each(["SYK-UNKNOWNUNKNOWN1", "bad-code"])("renders generic not-found HTML for %s", async (code) => {
+    const app = routeApp();
+    mocks.verifyCertificate.mockResolvedValue({ status: "not_found", certificate: null });
+
+    const response = await app.request(`/verify/${code}`);
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("Certificate Not Found");
+    expect(html).toContain("NOT FOUND");
+    expect(html).not.toContain("database");
+    expect(html).not.toContain(code);
+  });
+
+  it("escapes certificate snapshot values and only renders approved public fields", async () => {
+    const app = routeApp();
+    mocks.verifyCertificate.mockResolvedValue({
+      status: "valid",
+      certificate: {
+        certificate_number: "SYK-SION-CERT-2026-000001",
+        student_name_snapshot: "Asha <script>alert(1)</script> & Shah",
+        student_id_snapshot: "SYK-SION-000123",
+        course_name_snapshot: "Design <b>Pro</b>",
+        issue_date: "2026-08-17",
+        completion_date_snapshot: null,
+        verification_code: "SYK-SECRETSECRET12",
+        person_id: "person_secret",
+        student_id: "student_secret",
+        enrolment_id: "enrol_secret",
+        course_id: "course_secret",
+        pdf_storage_key: "certificates/org/branch/file.pdf",
+        pdf_sha256: "sha_secret",
+        mobile: "9876543210",
+        email: "student@example.com",
+        aadhaar: "123412341234",
+        fee: "FEE_SECRET",
+      },
+    });
+
+    const response = await app.request("/verify/SYK-7Q4M9PVK3X82AAAA");
+    const html = await response.text();
+
+    expect(html).toContain("Asha &lt;script&gt;alert(1)&lt;/script&gt; &amp; Shah");
+    expect(html).toContain("Design &lt;b&gt;Pro&lt;/b&gt;");
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).not.toContain("SYK-SECRETSECRET12");
+    expect(html).not.toContain("person_secret");
+    expect(html).not.toContain("student_secret");
+    expect(html).not.toContain("enrol_secret");
+    expect(html).not.toContain("course_secret");
+    expect(html).not.toContain("certificates/org/branch/file.pdf");
+    expect(html).not.toContain("sha_secret");
+    expect(html).not.toContain("9876543210");
+    expect(html).not.toContain("student@example.com");
+    expect(html).not.toContain("123412341234");
+    expect(html).not.toContain("FEE_SECRET");
+  });
+
+  it("sets noindex and self-contained security headers on the public verification page", async () => {
+    const app = routeApp();
+    mocks.verifyCertificate.mockResolvedValue({ status: "not_found", certificate: null });
+
+    const response = await app.request("/verify/SYK-7Q4M9PVK3X82AAAA");
+    const html = await response.text();
+
+    expect(response.headers.get("Content-Type")).toContain("text/html; charset=UTF-8");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
+    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(response.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
+    expect(response.headers.get("Content-Security-Policy")).not.toContain("script-src");
+    expect(html).toContain('<meta name="robots" content="noindex,nofollow">');
+  });
+
   it("does not expose public QR lookup by internal certificate id", async () => {
     const app = routeApp();
 

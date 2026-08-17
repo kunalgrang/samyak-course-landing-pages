@@ -104,6 +104,11 @@ export function registerCertificateRoutes(app: PortalHono) {
     });
   });
 
+  app.get("/verify/:code", async (c) => {
+    const result = await verifyCertificate(c, c.req.param("code"));
+    return certificateVerifyHtmlResponse(result);
+  });
+
 }
 
 async function requireCertificateStaff(c: Parameters<typeof requireStaffRoles>[0]): Promise<StaffContext | null> {
@@ -162,6 +167,121 @@ function pdfResponse(bytes: Uint8Array, filename: string) {
       "Cache-Control": "private, no-store",
     },
   });
+}
+
+function certificateVerifyHtmlResponse(result: Awaited<ReturnType<typeof verifyCertificate>>) {
+  const status = result.status;
+  const certificate = result.certificate || {};
+  const isFound = status !== "not_found" && result.certificate;
+  const title = isFound ? "Certificate Verification" : "Certificate Not Found";
+  const statusLabel = statusTitle(status);
+  const statusClass = status === "valid" ? "valid" : status === "revoked" ? "revoked" : status === "superseded" ? "superseded" : "not-found";
+  const rows = isFound
+    ? [
+        ["Student", certificate.student_name_snapshot],
+        ["Student ID", certificate.student_id_snapshot],
+        ["Course", certificate.course_name_snapshot],
+        ["Certificate No.", certificate.certificate_number],
+        ["Issue Date", formatPublicDate(certificate.issue_date)],
+        ...(certificate.completion_date_snapshot ? [["Completion Date", formatPublicDate(certificate.completion_date_snapshot)] as const] : []),
+      ]
+    : [];
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>${escapeHtml(title)} | Samyak Computer Classes</title>
+  <style>
+    :root { color-scheme: light; --ink: #15212f; --muted: #5d6875; --line: #d7dee8; --gold: #b78b2a; --green: #147a43; --red: #a83232; --amber: #946200; --bg: #f6f8fb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; font-family: Arial, Helvetica, sans-serif; background: var(--bg); color: var(--ink); }
+    main { width: min(100%, 760px); margin: 0 auto; padding: 28px 16px; }
+    .panel { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 28px; box-shadow: 0 14px 40px rgba(21, 33, 47, 0.08); }
+    .brand { text-align: center; border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 22px; }
+    .brand strong { display: block; font-size: 19px; letter-spacing: 0; }
+    .brand span { display: block; color: var(--muted); margin-top: 5px; font-size: 14px; }
+    h1 { margin: 0 0 14px; text-align: center; font-size: 26px; line-height: 1.2; }
+    .status { margin: 0 auto 22px; width: fit-content; max-width: 100%; border-radius: 999px; padding: 10px 16px; font-weight: 700; letter-spacing: 0; }
+    .status.valid { color: var(--green); background: #eaf7ef; }
+    .status.revoked { color: var(--red); background: #fdecec; }
+    .status.superseded { color: var(--amber); background: #fff6df; }
+    .status.not-found { color: var(--muted); background: #eef2f6; }
+    dl { margin: 0; border-top: 1px solid var(--line); }
+    .row { display: grid; grid-template-columns: minmax(112px, 190px) 1fr; gap: 16px; border-bottom: 1px solid var(--line); padding: 14px 0; }
+    dt { color: var(--muted); font-size: 14px; }
+    dd { margin: 0; font-weight: 700; overflow-wrap: anywhere; }
+    .message { color: var(--muted); text-align: center; line-height: 1.55; margin: 0 0 20px; }
+    footer { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); text-align: center; font-size: 14px; line-height: 1.6; }
+    footer strong { color: var(--ink); }
+    @media (max-width: 480px) {
+      main { padding: 16px 12px; }
+      .panel { padding: 22px 18px; }
+      h1 { font-size: 23px; }
+      .row { grid-template-columns: 1fr; gap: 5px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="panel" aria-labelledby="verify-title">
+      <div class="brand">
+        <strong>SAMYAK COMPUTER CLASSES</strong>
+        <span>Certificate Verification</span>
+      </div>
+      <h1 id="verify-title">${isFound ? "Certificate Verified" : "Certificate Not Found"}</h1>
+      <p class="status ${statusClass}">${escapeHtml(statusLabel)}</p>
+      ${isFound ? `<dl>${rows.map(([label, value]) => `<div class="row"><dt>${escapeHtml(String(label))}</dt><dd>${escapeHtml(String(value || ""))}</dd></div>`).join("")}</dl>` : `<p class="message">We could not verify this certificate. Please check the QR code or contact Samyak Computer Classes for support.</p>`}
+      <footer>
+        <strong>Samyak Computer Classes</strong><br>
+        Sion West, Mumbai<br>
+        A Unit of Shree Services<br>
+        info@samyaksion.com<br>
+        +91 8422969307
+      </footer>
+    </section>
+  </main>
+</body>
+</html>`;
+  return new Response(html, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/html; charset=UTF-8",
+      "Cache-Control": "no-store",
+      "X-Robots-Tag": "noindex, nofollow",
+      "Referrer-Policy": "no-referrer",
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+    },
+  });
+}
+
+function statusTitle(status: string) {
+  if (status === "valid") return "VALID";
+  if (status === "revoked") return "REVOKED";
+  if (status === "superseded") return "SUPERSEDED";
+  return "NOT FOUND";
+}
+
+function formatPublicDate(value: unknown) {
+  if (!value || typeof value !== "string") return "";
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!match) return value;
+  const date = new Date(`${match[1]}-${match[2]}-${match[3]}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" })
+    : value;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function httpStatus(status: number) {

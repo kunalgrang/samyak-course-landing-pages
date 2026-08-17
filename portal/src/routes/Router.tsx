@@ -7,7 +7,6 @@ import { LoginPage } from "../features/auth/LoginPage";
 import { ProfilePage } from "../features/profile/ProfilePage";
 import { ReferralsPage } from "../features/referrals/ReferralsPage";
 import { CertificatesPage } from "../features/certificates/CertificatesPage";
-import { VerifyCertificatePage } from "../features/certificates/VerifyCertificatePage";
 import { EnquiriesPage } from "../features/staff/EnquiriesPage";
 import { AdmissionPage } from "../features/staff/AdmissionPage";
 import { CourseMasterPage } from "../features/staff/CourseMasterPage";
@@ -26,7 +25,6 @@ const discountApproverRoles = new Set(["owner"]);
 
 function normalizePath(pathname: string): RoutePath {
   if (pathname === "/login") return "/login";
-  if (/^\/verify\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (appRoutes.has(pathname as RoutePath)) return pathname as RoutePath;
   if (/^\/app\/enquiries\/[^/]+\/admission$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/enquiries\/[^/]+$/.test(pathname)) return pathname as RoutePath;
@@ -106,9 +104,6 @@ export function Router() {
       </main>
     );
   }
-
-  const verifyMatch = path.match(/^\/verify\/([^/]+)$/);
-  if (verifyMatch) return <VerifyCertificatePage code={verifyMatch[1]} />;
 
   if (path === "/login" || !isAuthenticated) {
     return <LoginPage sessionMessage={sessionMessage} onAuthenticated={() => navigate("/app", true)} />;

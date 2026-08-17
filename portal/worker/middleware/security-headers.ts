@@ -13,6 +13,6 @@ export const securityHeadersMiddleware: MiddlewareHandler = async (c, next) => {
   await next();
 
   for (const [header, value] of Object.entries(securityHeaders)) {
-    c.header(header, value);
+    if (!c.res.headers.has(header)) c.header(header, value);
   }
 };

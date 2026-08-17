@@ -11,4 +11,4 @@ export type AppRoute =
   | "/app/rules"
   | "/app/profile";
 
-export type RoutePath = "/login" | `/verify/${string}` | AppRoute;
+export type RoutePath = "/login" | AppRoute;
