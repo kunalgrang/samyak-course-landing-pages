@@ -3,9 +3,9 @@ import { normalizeIndianMobile } from "./staff-students";
 
 describe("normalizeIndianMobile", () => {
   it("normalizes valid Indian mobile formats", () => {
-    expect(normalizeIndianMobile("98765 43210")).toBe("+919876543210");
-    expect(normalizeIndianMobile("+91-98765-43210")).toBe("+919876543210");
-    expect(normalizeIndianMobile("919876543210")).toBe("+919876543210");
+    expect(normalizeIndianMobile("98765 43210")).toBe("9876543210");
+    expect(normalizeIndianMobile("+91-98765-43210")).toBe("9876543210");
+    expect(normalizeIndianMobile("919876543210")).toBe("9876543210");
   });
 
   it("rejects invalid or landline-like values", () => {

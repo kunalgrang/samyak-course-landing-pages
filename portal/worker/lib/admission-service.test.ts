@@ -780,7 +780,7 @@ describe("confirmAdmission service integration", () => {
     expect(contacts.map((contact) => contact.is_primary)).toEqual([1, 0]);
     expect(JSON.stringify(contacts)).not.toContain("9876543211");
     const alternate = contacts.find((contact) => contact.is_primary === 0)!;
-    await expect(decryptText("test-pepper", `contact:${alternate.id}`, alternate.value_ciphertext)).resolves.toBe("+919876543211");
+    await expect(decryptText("test-pepper", `contact:${alternate.id}`, alternate.value_ciphertext)).resolves.toBe("9876543211");
     expect(row(db, "select payload_json from admission_drafts where enquiry_id = 'enq_first'")?.payload_json).not.toContain("9876543211");
     db.close();
   });

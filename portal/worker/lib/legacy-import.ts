@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { maskMobile, normalizeIndianMobile as normalizeCanonicalIndianMobile } from "./mobile.ts";
 
 export const REQUIRED_LEGACY_HEADERS = [
   "STUDENT FULL NAME",
@@ -231,12 +232,7 @@ export function normalizePersonName(value: string): string | null {
   return normalized.toUpperCase();
 }
 
-export function normalizeIndianMobile(value: string): string | null {
-  const digits = value.replace(/\D/g, "");
-  const tenDigits = digits.length === 12 && digits.startsWith("91") ? digits.slice(2) : digits.length === 11 && digits.startsWith("0") ? digits.slice(1) : digits;
-  if (!/^[6-9]\d{9}$/.test(tenDigits)) return null;
-  return `+91${tenDigits}`;
-}
+export const normalizeIndianMobile = normalizeCanonicalIndianMobile;
 
 export function mapLegacyStatus(value: string): { studentStatus: "active" | "on_hold" | "alumni"; enrolmentStatus: "active" | "on_hold" | "completed"; classification: "CURRENT" | "ALUMNI"; domainStatus: "ONGOING" | "ON_HOLD" | "COMPLETED" } | null {
   const normalized = normalizeHeader(value);
@@ -463,10 +459,6 @@ function validIsoDate(iso: string) {
 
 function earliestDate(rows: InternalLegacyImportRow[]) {
   return rows.map((row) => row.admissionDate || "9999-12-31").sort()[0];
-}
-
-function maskMobile(normalizedMobile: string) {
-  return `******${normalizedMobile.slice(-4)}`;
 }
 
 export function sha256(value: string) {

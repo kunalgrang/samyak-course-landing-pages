@@ -756,11 +756,12 @@ function studentRouteApp() {
 async function seedSession(db: DatabaseSync, loginAccountId: string, activePersonId: string) {
   const token = "test-session-token";
   const tokenHash = await hmacHex(SESSION_PEPPER, "session", token);
+  const lastSeenAt = new Date().toISOString();
   db.prepare(
     `insert into user_sessions
       (id, login_account_id, active_person_id, token_hash, created_at, expires_at, last_seen_at, revoked_at, ip_hash, user_agent_hash)
      values ('sess_student', ?, ?, ?, ?, '2999-01-01T00:00:00.000Z', ?, null, 'ip_hash', 'ua_hash')`,
-  ).run(loginAccountId, activePersonId, tokenHash, NOW, NOW);
+  ).run(loginAccountId, activePersonId, tokenHash, NOW, lastSeenAt);
   return `__Host-samyak_session=${token}`;
 }
 
