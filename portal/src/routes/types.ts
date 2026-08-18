@@ -4,6 +4,8 @@ export type AppRoute =
   | `/app/enquiries/${string}`
   | `/app/enquiries/${string}/admission`
   | `/app/students/${string}`
+  | "/app/referral-operations"
+  | `/app/referral-operations/${string}`
   | "/app/courses"
   | "/app/discount-approvals"
   | "/app/certificates"

@@ -1,11 +1,14 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { appNavigation } from "../../app/navigation";
-import type { ReferralDashboard, SessionResponse, StudentHome } from "../../lib/api";
+import { staffNavigation, studentNavigation } from "../../app/navigation";
+import { AppShell } from "../../routes/AppShell";
+import type { ReferralDashboard, SessionResponse, StaffReferralList, StudentHome } from "../../lib/api";
 import { ProfileContent } from "../profile/ProfilePage";
 import { OverviewContent } from "../../routes/ShellHomePage";
 import { RulesPage } from "../../routes/RulesPage";
 import { ReferralsContent } from "./ReferralsPage";
+import { ContactCell, ReferralOperationsContent } from "../staff/ReferralOperationsPage";
 import {
   buildWhatsAppShareUrl,
   copyReferralLink,
@@ -122,6 +125,41 @@ const studentHome: StudentHome = {
   },
 };
 
+const staffReferralList: StaffReferralList = {
+  success: true,
+  summary: { totalReferrals: 1, admitted: 1, paymentDataUnavailable: 1, expired: 0 },
+  pagination: { limit: 20, offset: 0, total: 1, hasMore: false },
+  filters: {},
+  referrals: [
+    {
+      referralId: "referral_01",
+      shortReference: "ERRAL_01",
+      branchName: "Sion",
+      submittedAt: "2026-08-06T10:00:00.000Z",
+      validUntil: "2026-11-04T10:00:00.000Z",
+      validityState: "valid_admission",
+      lastActivityAt: "2026-08-07T10:00:00.000Z",
+      referrerName: "Asha S.",
+      referrerType: "student",
+      prospectPublicName: "Future L.",
+      prospectContact: {
+        mobile: "9876543210",
+        mobileDisplay: "+91 98765 43210",
+        whatsappUrl: "https://wa.me/919876543210?text=Hi%2C%20this%20is%20Samyak%20Computer%20Classes%2C%20Sion.",
+        callUrl: "tel:+919876543210",
+      },
+      courseInterested: "Full Stack",
+      referralStatus: "converted",
+      linkedEnquiry: { id: "enq_1", enquiryNumber: "ENQ-SION-2026-0001", status: "converted" },
+      linkedEnrolment: { id: "enrol_1", enrolmentNumber: "ENR-SION-2026-0001", studentNumber: "SYK-SION-000001", status: "active", courseName: "Full Stack", admissionDate: "2026-08-07T10:00:00.000Z", joiningDate: "2026-08-08T10:00:00.000Z" },
+      admissionStatus: "done",
+      qualificationState: "admitted_payment_data_unavailable",
+      rewardStatus: "Payment data unavailable",
+      reward: null,
+    },
+  ],
+};
+
 describe("student referral portal UI", () => {
   it("formats Indian currency with rupee symbol and Indian grouping", () => {
     expect(formatIndianCurrency(1500)).toBe("\u20B91,500");
@@ -200,6 +238,79 @@ describe("student referral portal UI", () => {
 
   it("uses student-facing navigation labels", () => {
     expect(appNavigation.map((item) => item.label)).toEqual(["Overview", "My Referrals", "Rewards & Benefits", "My Profile"]);
+  });
+
+  it("keeps staff mobile navigation in a drawer instead of the bottom tab row", () => {
+    const staffShell = renderToStaticMarkup(
+      <AppShell activePath="/app/referral-operations" navigation={staffNavigation} onNavigate={() => undefined} onSignOut={() => undefined}>
+        <ReferralOperationsContent data={staffReferralList} onNavigate={() => undefined} onPage={() => undefined} />
+      </AppShell>,
+    );
+    expect(staffShell).toContain("aria-label=\"Open navigation\"");
+    expect(staffShell).toContain("mobile-drawer");
+    expect(staffShell).not.toContain("bottom-nav");
+
+    const studentShell = renderToStaticMarkup(
+      <AppShell activePath="/app" navigation={studentNavigation} onNavigate={() => undefined} onSignOut={() => undefined}>
+        <OverviewContent home={studentHome} />
+      </AppShell>,
+    );
+    expect(studentShell).toContain("bottom-nav");
+    expect(studentShell).not.toContain("mobile-drawer");
+  });
+
+  it("adds staff referral operations navigation and renders a compact operations queue", () => {
+    expect(staffNavigation.map((item) => item.label)).toContain("Referral Operations");
+    const html = renderToStaticMarkup(<ReferralOperationsContent data={staffReferralList} onNavigate={() => undefined} onPage={() => undefined} />);
+    expect(html).toContain("Referral queue");
+    expect(html).toContain("Payment Qualification");
+    expect(html).toContain("Reward Status");
+    expect(html).toContain("ENQ-SION-2026-0001");
+    expect(html).toContain("Done");
+    expect(html).toContain("Admitted Payment Data Unavailable");
+    expect(html).toContain("Valid admission");
+    expect(html).toContain("+91 98765 43210");
+    expect(html).toContain("WhatsApp prospect");
+    expect(html).toContain("Call prospect");
+    expect(html).toContain("https://wa.me/919876543210");
+    expect(html).toContain("tel:+919876543210");
+    expect(html).not.toContain("mobile_hash");
+    expect(html).not.toContain("Status Transition");
+    expect(html).not.toContain("Admission Done");
+    expect(html).not.toContain("No response");
+    expect(html).not.toContain("Callback");
+  });
+
+  it("renders staff referral missing-contact state without active actions", () => {
+    const html = renderToStaticMarkup(
+      <ReferralOperationsContent
+        data={{
+          ...staffReferralList,
+          referrals: [
+            {
+              ...staffReferralList.referrals[0],
+              prospectContact: { mobile: null, mobileDisplay: null, whatsappUrl: null, callUrl: null },
+            },
+          ],
+        }}
+        onNavigate={() => undefined}
+        onPage={() => undefined}
+      />,
+    );
+    expect(html).toContain("Contact unavailable");
+    expect(html).not.toContain("WhatsApp prospect");
+    expect(html).not.toContain("Call prospect");
+  });
+
+  it("renders referral detail contact actions and missing-contact copy", () => {
+    const html = renderToStaticMarkup(<ContactCell contact={staffReferralList.referrals[0].prospectContact} />);
+    expect(html).toContain("+91 98765 43210");
+    expect(html).toContain("WhatsApp prospect");
+    expect(html).toContain("Call prospect");
+
+    const missing = renderToStaticMarkup(<ContactCell contact={{ mobile: null, mobileDisplay: null, whatsappUrl: null, callUrl: null }} />);
+    expect(missing).toContain("Contact number unavailable");
+    expect(missing).not.toContain("href=");
   });
 
   it("renders referral share actions", () => {

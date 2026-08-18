@@ -327,6 +327,107 @@ const discountApprovalsSchema = z.object({
   approvals: z.array(z.record(z.string(), z.unknown())),
 });
 
+const staffReferralProspectContactSchema = z.object({
+  mobile: z.string().nullable(),
+  mobileDisplay: z.string().nullable(),
+  whatsappUrl: z.string().nullable(),
+  callUrl: z.string().nullable(),
+});
+
+const staffReferralListItemSchema = z.object({
+  referralId: z.string(),
+  shortReference: z.string(),
+  branchName: z.string(),
+  submittedAt: z.string(),
+  validUntil: z.string(),
+  validityState: z.string(),
+  lastActivityAt: z.string(),
+  referrerName: z.string(),
+  referrerType: z.string(),
+  prospectPublicName: z.string(),
+  prospectContact: staffReferralProspectContactSchema,
+  courseInterested: z.string(),
+  referralStatus: z.string(),
+  linkedEnquiry: z.object({ id: z.string(), enquiryNumber: z.string(), status: z.string() }).nullable(),
+  linkedEnrolment: z.object({
+    id: z.string(),
+    enrolmentNumber: z.string(),
+    studentNumber: z.string(),
+    status: z.string(),
+    courseName: z.string(),
+    admissionDate: z.string(),
+    joiningDate: z.string(),
+  }).nullable(),
+  admissionStatus: z.string(),
+  qualificationState: z.string(),
+  rewardStatus: z.string(),
+  reward: z.object({ slabId: z.string(), cashRewardPaise: z.number(), courseCreditPaise: z.number() }).nullable(),
+});
+
+const staffReferralListSchema = z.object({
+  success: z.literal(true),
+  summary: z.object({
+    totalReferrals: z.number(),
+    admitted: z.number(),
+    paymentDataUnavailable: z.number(),
+    expired: z.number(),
+  }),
+  pagination: z.object({
+    limit: z.number(),
+    offset: z.number(),
+    total: z.number(),
+    hasMore: z.boolean(),
+  }),
+  filters: z.record(z.string(), z.unknown()),
+  referrals: z.array(staffReferralListItemSchema),
+});
+
+const staffReferralDetailSchema = z.object({
+  success: z.literal(true),
+  referral: staffReferralListItemSchema.extend({
+    programmeName: z.string(),
+    validityDays: z.number(),
+    referrer: z.object({
+      externalReferrerId: z.string(),
+      publicName: z.string(),
+      type: z.string(),
+    }),
+    matchedPerson: z.object({ personId: z.string(), publicName: z.string() }).nullable(),
+    fee: z.object({
+      feeAgreementId: z.string(),
+      finalAgreedFeePaise: z.number(),
+      minimumQualifyingPaymentPaise: z.number(),
+      paymentPlanType: z.string(),
+      receivedAmountPaise: z.null(),
+      receivedAmountAvailable: z.literal(false),
+    }).nullable(),
+    rewardSlabs: z.array(z.object({
+      id: z.string(),
+      minFinalFeePaise: z.number(),
+      maxFinalFeePaise: z.number().nullable(),
+      cashRewardPaise: z.number(),
+      courseCreditPaise: z.number(),
+      sortOrder: z.number(),
+    })),
+    timeline: z.array(z.object({
+      id: z.string(),
+      fromStatus: z.string().nullable(),
+      toStatus: z.string(),
+      eventType: z.string(),
+      actorPublicName: z.string().nullable(),
+      internalNote: z.string().nullable(),
+      createdAt: z.string(),
+    })),
+  }),
+});
+
+const staffReferralStatusResponseSchema = z.object({
+  success: z.literal(true),
+  referralId: z.string(),
+  status: z.string(),
+  idempotent: z.boolean(),
+});
+
 const certificateListItemSchema = z.object({
   id: z.string(),
   certificate_number: z.string(),
@@ -405,6 +506,9 @@ export type CertificateListItem = z.infer<typeof certificateListItemSchema>;
 export type EligibleCertificate = z.infer<typeof eligibleCertificateSchema>;
 export type CertificateListResponse = z.infer<typeof certificateListSchema>;
 export type PublicCertificateVerification = z.infer<typeof verifyCertificateSchema>["verification"];
+export type StaffReferralList = z.infer<typeof staffReferralListSchema>;
+export type StaffReferralListItem = z.infer<typeof staffReferralListItemSchema>;
+export type StaffReferralDetail = z.infer<typeof staffReferralDetailSchema>["referral"];
 
 export class ApiError extends Error {
   code?: string;
@@ -543,6 +647,32 @@ export async function decideDiscountApproval(approvalId: string, decision: "appr
   return postJson(`/api/staff/discount-approvals/${encodeURIComponent(approvalId)}/decision`, { decision }, z.object({ success: z.literal(true), approvalId: z.string(), status: z.string() }));
 }
 
+export type StaffReferralQuery = {
+  q?: string;
+  status?: string;
+  rewardStatus?: string;
+  referrerType?: string;
+  courseId?: string;
+  fromDate?: string;
+  toDate?: string;
+  admission?: string;
+  validity?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export async function getStaffReferrals(params: StaffReferralQuery = {}) {
+  return getJson(`/api/staff/referrals${queryString(params)}`, staffReferralListSchema);
+}
+
+export async function getStaffReferralDetail(referralId: string) {
+  return getJson(`/api/staff/referrals/${encodeURIComponent(referralId)}`, staffReferralDetailSchema).then((response) => response.referral);
+}
+
+export async function updateStaffReferralStatus(referralId: string, status: string, note?: string) {
+  return postJson(`/api/staff/referrals/${encodeURIComponent(referralId)}/status`, { status, note: note || undefined }, staffReferralStatusResponseSchema);
+}
+
 export type CertificateQuery = {
   q?: string;
   status?: string;
@@ -637,7 +767,7 @@ function isFieldErrors(value: unknown): value is FieldErrors {
   );
 }
 
-function queryString(params: CertificateQuery) {
+function queryString(params: CertificateQuery | StaffReferralQuery) {
   const url = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== "") url.set(key, String(value));
