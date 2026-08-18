@@ -538,7 +538,7 @@ describe("native referral services", () => {
     const app = staffReferralRouteApp();
     const workerEnv = { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER };
     const firstPage = await app.request("https://portal.samyaksion.com/api/staff/referrals?limit=2&offset=0", { headers: { Cookie: sessionCookie } }, workerEnv);
-    const filtered = await app.request("https://portal.samyaksion.com/api/staff/referrals?status=converted&rewardStatus=qualified_pending_approval", { headers: { Cookie: sessionCookie } }, workerEnv);
+    const filtered = await app.request("https://portal.samyaksion.com/api/staff/referrals?status=converted&rewardStatus=payment_data_unavailable", { headers: { Cookie: sessionCookie } }, workerEnv);
     fixture.sqlite.prepare("delete from login_account_roles where login_account_id = 'acct_student'").run();
     const denied = await app.request("https://portal.samyaksion.com/api/staff/referrals", { headers: { Cookie: sessionCookie } }, workerEnv);
 
@@ -551,10 +551,50 @@ describe("native referral services", () => {
     expect(JSON.stringify(body)).not.toContain("referral_other_org");
 
     expect(filtered.status).toBe(200);
-    const filteredBody = await filtered.json() as { referrals: Array<{ referralStatus: string; qualificationState: string }> };
+    const filteredBody = await filtered.json() as { referrals: Array<{ referralStatus: string; qualificationState: string; reward: unknown }> };
     expect(filteredBody.referrals.length).toBeGreaterThan(0);
-    expect(filteredBody.referrals.every((item) => item.referralStatus === "converted" && item.qualificationState === "qualified_pending_approval")).toBe(true);
+    expect(filteredBody.referrals.every((item) => item.referralStatus === "converted" && item.qualificationState === "admitted_payment_data_unavailable" && item.reward === null)).toBe(true);
     expect(denied.status).toBe(403);
+    fixture.close();
+  });
+
+  it("keeps admitted referral validity separate from missing payment qualification", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
+    seedDashboardReferral(fixture.sqlite, 0, "converted");
+    seedDashboardReferral(fixture.sqlite, 1, "converted");
+    seedRewardSnapshot(fixture.sqlite, 0);
+    seedAdmittedOperationReferral(fixture.sqlite, 0, {
+      submittedAt: "2025-01-01T10:00:00.000Z",
+      validUntil: "2025-04-01T10:00:00.000Z",
+      admissionDate: "2025-03-12T10:00:00.000Z",
+    });
+    seedAdmittedOperationReferral(fixture.sqlite, 1, {
+      submittedAt: "2025-01-01T10:00:00.000Z",
+      validUntil: "2025-04-01T10:00:00.000Z",
+      admissionDate: "2025-04-02T10:00:00.000Z",
+    });
+    seedStaffRole(fixture.sqlite, "acct_student", "owner");
+    const sessionCookie = await seedSession(fixture.sqlite, "acct_student", "person_student");
+    const app = staffReferralRouteApp();
+    const workerEnv = { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER };
+
+    const validAdmission = await app.request("https://portal.samyaksion.com/api/staff/referrals/referral_00", { headers: { Cookie: sessionCookie } }, workerEnv);
+    const lateAdmission = await app.request("https://portal.samyaksion.com/api/staff/referrals/referral_01", { headers: { Cookie: sessionCookie } }, workerEnv);
+
+    expect(validAdmission.status).toBe(200);
+    expect(lateAdmission.status).toBe(200);
+    const validBody = await validAdmission.json() as { referral: { validityState: string; qualificationState: string; rewardStatus: string; fee: { receivedAmountPaise: null; receivedAmountAvailable: boolean } | null; reward: unknown } };
+    const lateBody = await lateAdmission.json() as { referral: { validityState: string; qualificationState: string } };
+    expect(validBody.referral.validityState).toBe("valid_admission");
+    expect(validBody.referral.qualificationState).toBe("admitted_payment_data_unavailable");
+    expect(validBody.referral.rewardStatus).toBe("Payment data unavailable");
+    expect(validBody.referral.fee).toMatchObject({ receivedAmountPaise: null, receivedAmountAvailable: false });
+    expect(validBody.referral.reward).toBeNull();
+    expect(JSON.stringify(validBody)).not.toContain("qualified_pending_approval");
+    expect(lateBody.referral.validityState).toBe("admission_after_expiry");
+    expect(lateBody.referral.qualificationState).toBe("expired");
     fixture.close();
   });
 
@@ -595,6 +635,18 @@ describe("native referral services", () => {
       workerEnv,
     );
     expect(invalid.status).toBe(409);
+    const computedState = await app.request(
+      "https://portal.samyaksion.com/api/staff/referrals/referral_00/status",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify({ status: "qualified_pending_approval" }) },
+      workerEnv,
+    );
+    const ownerPayoutBypass = await app.request(
+      "https://portal.samyaksion.com/api/staff/referrals/referral_00/status",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify({ status: "fulfilled" }) },
+      workerEnv,
+    );
+    expect(computedState.status).toBe(400);
+    expect(ownerPayoutBypass.status).toBe(400);
     fixture.close();
   });
 
@@ -997,6 +1049,33 @@ function seedRewardSnapshot(db: DatabaseSync, index: number) {
      values (?, ?, ?, ?, 'rrs_samyak_skill_circle_v1', null,
        900000, 50, 450000, 10000, 5000, 1, '{}', ?)`,
   ).run(`reward_${suffix}`, `referral_${suffix}`, `enrolment_${suffix}`, `fee_${suffix}`, NOW);
+}
+
+function seedAdmittedOperationReferral(db: DatabaseSync, index: number, dates: { submittedAt: string; validUntil: string; admissionDate: string }) {
+  const suffix = String(index).padStart(2, "0");
+  db.prepare("update referrals set submitted_at = ?, valid_until = ?, updated_at = ? where id = ?")
+    .run(dates.submittedAt, dates.validUntil, dates.submittedAt, `referral_${suffix}`);
+  if (!row(db, "select id from people where id = ?", `person_reward_${suffix}`)) {
+    db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values (?, 'org_samyak', 'branch_sion', ?, ?, 'active', ?, ?)")
+      .run(`person_reward_${suffix}`, `Reward Student ${suffix}`, `Reward Student ${suffix}`, dates.admissionDate, dates.admissionDate);
+    db.prepare("insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at) values (?, 'org_samyak', ?, 'branch_sion', ?, ?, ?, 'active', 'active', ?, ?)")
+      .run(`student_reward_${suffix}`, `person_reward_${suffix}`, `STU-REWARD-${suffix}`, 2000 + index, dates.admissionDate, dates.admissionDate, dates.admissionDate);
+  }
+  db.prepare(
+    `insert or ignore into enrolments
+      (id, student_id, branch_id, course_id, enquiry_id, enrolment_number, training_mode,
+       admission_date, joining_date, status, nsdc_preference, referrer_profile_id, referral_id, created_at, updated_at)
+     values (?, ?, 'branch_sion', 'course_fsd', null, ?, 'classroom',
+       ?, ?, 'active', 'decide_later', 'refprof_student', ?, ?, ?)`,
+  ).run(`enrolment_${suffix}`, `student_reward_${suffix}`, `ENR-${suffix}`, dates.admissionDate, dates.admissionDate, `referral_${suffix}`, dates.admissionDate, dates.admissionDate);
+  db.prepare("update enrolments set admission_date = ?, joining_date = ?, updated_at = ? where id = ?")
+    .run(dates.admissionDate, dates.admissionDate, dates.admissionDate, `enrolment_${suffix}`);
+  db.prepare(
+    `insert or ignore into fee_agreements
+      (id, enrolment_id, standard_fee_paise, final_agreed_fee_paise, discount_paise, gst_rate_basis_points,
+       payment_plan_type, number_of_instalments, initial_payment_expected_paise, status, created_at, updated_at)
+     values (?, ?, 1000000, 900000, 100000, 0, 'single', 1, 900000, 'active', ?, ?)`,
+  ).run(`fee_${suffix}`, `enrolment_${suffix}`, dates.admissionDate, dates.admissionDate);
 }
 
 async function mobileLookupHash(value: string) {

@@ -5,7 +5,7 @@ import { ORG_ID } from "../lib/auth-store";
 import { createOpaqueId } from "../lib/crypto";
 import { requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
-import { ADMISSION_STAFF_ROLES, DISCOUNT_APPROVER_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
+import { ADMISSION_STAFF_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import {
   REFERRAL_STATUSES,
   assertReferralStatusTransition,
@@ -49,6 +49,7 @@ type ReferralListRow = {
   enrolment_id: string | null;
   enrolment_number: string | null;
   enrolment_status: string | null;
+  enrolment_admission_date: string | null;
   final_agreed_fee_paise: number | null;
   minimum_fee_percentage: number | null;
   reward_snapshot_id: string | null;
@@ -281,6 +282,7 @@ function listSelectSql(extraColumns = "") {
        enrolments.id as enrolment_id,
        enrolments.enrolment_number,
        enrolments.status as enrolment_status,
+       enrolments.admission_date as enrolment_admission_date,
        fee_agreements.final_agreed_fee_paise,
        referral_programmes.minimum_fee_percentage,
        referral_reward_snapshots.id as reward_snapshot_id,
@@ -337,12 +339,13 @@ function push(clauses: string[], params: Array<string | number>, clause: string,
 }
 
 function pushRewardFilter(clauses: string[], params: Array<string | number>, rewardStatus: string, now: string) {
-  if (rewardStatus === "qualified_pending_approval") clauses.push("referral_reward_snapshots.id is not null");
-  if (rewardStatus === "pending") clauses.push("referral_reward_snapshots.id is null");
+  if (rewardStatus === "payment_data_unavailable") clauses.push("enrolments.id is not null and enrolments.admission_date <= referrals.valid_until");
+  if (rewardStatus === "pending") clauses.push("enrolments.id is null and referrals.valid_until >= ?");
   if (rewardStatus === "expired") {
-    clauses.push("referrals.valid_until < ? and referral_reward_snapshots.id is null");
+    clauses.push("((enrolments.id is null and referrals.valid_until < ?) or (enrolments.id is not null and enrolments.admission_date > referrals.valid_until))");
     params.push(now);
   }
+  if (rewardStatus === "pending") params.push(now);
 }
 
 type BranchScope = {
@@ -385,7 +388,7 @@ function listFilters(c: PortalContext) {
   return {
     q: clean(url.searchParams.get("q")),
     status: enumParam(url.searchParams.get("status"), REFERRAL_STATUSES),
-    rewardStatus: enumParam(url.searchParams.get("rewardStatus"), ["pending", "qualified_pending_approval", "expired"] as const),
+    rewardStatus: enumParam(url.searchParams.get("rewardStatus"), ["pending", "payment_data_unavailable", "expired"] as const),
     referrerType: enumParam(url.searchParams.get("referrerType"), ["student", "alumni"] as const),
     courseId: clean(url.searchParams.get("courseId")),
     fromDate: dateParam(url.searchParams.get("fromDate")),
@@ -411,7 +414,7 @@ function toListItem(row: ReferralListRow) {
     branchName: row.branch_name || "",
     submittedAt: row.submitted_at,
     validUntil: row.valid_until,
-    validityState: Date.parse(row.valid_until) >= Date.now() ? "active" : "expired",
+    validityState: validityState(row),
     lastActivityAt: row.updated_at,
     referrerName: row.referrer_public_name || row.referrer_name || "",
     referrerType: row.referrer_type || "",
@@ -423,30 +426,31 @@ function toListItem(row: ReferralListRow) {
     admissionStatus: row.enrolment_id ? row.enrolment_status || "admitted" : "not_admitted",
     qualificationState: qualification,
     rewardStatus: rewardStatus(row, qualification),
-    reward: row.reward_snapshot_id
-      ? {
-          slabId: row.slab_id || "",
-          cashRewardPaise: Number(row.cash_reward_paise || 0),
-          courseCreditPaise: Number(row.course_credit_paise || 0),
-        }
-      : null,
+    reward: null,
   };
 }
 
 function qualificationState(row: ReferralListRow) {
-  const expired = Date.parse(row.valid_until) < Date.now();
-  if (row.reward_snapshot_id) return "qualified_pending_approval";
-  if (expired && !row.enrolment_id) return "expired";
+  const validity = validityState(row);
+  if (validity === "admission_after_expiry" || validity === "expired") return "expired";
   if (!row.enrolment_id) return "not_admitted";
-  if (!row.final_agreed_fee_paise) return "admitted_not_qualified";
-  return "fee_threshold_pending";
+  return "admitted_payment_data_unavailable";
 }
 
 function rewardStatus(row: ReferralListRow, qualification: string) {
-  if (row.reward_snapshot_id) return "Calculated";
+  if (qualification === "admitted_payment_data_unavailable") return "Payment data unavailable";
   if (qualification === "expired") return "Expired";
-  if (qualification === "fee_threshold_pending") return "Payment evidence unavailable";
   return "Pending";
+}
+
+function validityState(row: ReferralListRow) {
+  if (row.enrolment_id) {
+    const admissionTime = Date.parse(row.enrolment_admission_date || "");
+    const validUntilTime = Date.parse(row.valid_until);
+    if (!Number.isNaN(admissionTime) && !Number.isNaN(validUntilTime) && admissionTime <= validUntilTime) return "valid_admission";
+    return "admission_after_expiry";
+  }
+  return Date.parse(row.valid_until) >= Date.now() ? "active" : "expired";
 }
 
 function summarize(rows: ReferralListRow[]) {
@@ -454,18 +458,18 @@ function summarize(rows: ReferralListRow[]) {
     (summary, row) => {
       summary.totalReferrals += 1;
       if (row.enrolment_id) summary.admitted += 1;
-      if (row.reward_snapshot_id) summary.qualified += 1;
-      if (Date.parse(row.valid_until) < Date.now()) summary.expired += 1;
+      if (qualificationState(row) === "admitted_payment_data_unavailable") summary.paymentDataUnavailable += 1;
+      if (qualificationState(row) === "expired") summary.expired += 1;
       return summary;
     },
-    { totalReferrals: 0, admitted: 0, qualified: 0, expired: 0 },
+    { totalReferrals: 0, admitted: 0, paymentDataUnavailable: 0, expired: 0 },
   );
 }
 
 function emptyListPayload(pagination: ReturnType<typeof listPagination>) {
   return {
     success: true,
-    summary: { totalReferrals: 0, admitted: 0, qualified: 0, expired: 0 },
+    summary: { totalReferrals: 0, admitted: 0, paymentDataUnavailable: 0, expired: 0 },
     pagination: { ...pagination, total: 0, hasMore: false },
     filters: {},
     referrals: [],

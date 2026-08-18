@@ -57,7 +57,7 @@ export function ReferralOperationsPage({ onNavigate }: { onNavigate: (path: Rout
           <select value={draft.rewardStatus} onChange={(event) => setDraft({ ...draft, rewardStatus: event.target.value })}>
             <option value="">All reward states</option>
             <option value="pending">Pending</option>
-            <option value="qualified_pending_approval">Qualified</option>
+            <option value="payment_data_unavailable">Payment data unavailable</option>
             <option value="expired">Expired</option>
           </select>
         </label>
@@ -115,7 +115,7 @@ export function ReferralOperationsContent({
       <section className="metric-grid" aria-label="Referral operations summary">
         <Metric label="Loaded referrals" value={data.summary.totalReferrals} />
         <Metric label="Admitted" value={data.summary.admitted} />
-        <Metric label="Qualified" value={data.summary.qualified} />
+        <Metric label="Payment data unavailable" value={data.summary.paymentDataUnavailable} />
         <Metric label="Expired" value={data.summary.expired} />
       </section>
 
@@ -145,7 +145,7 @@ export function ReferralOperationsContent({
                 <StatusChip value={referral.referralStatus} />
                 <span><strong>{label(referral.admissionStatus)}</strong><small>{referral.linkedEnquiry?.enquiryNumber || "No enquiry"}</small></span>
                 <span><strong>{label(referral.qualificationState)}</strong><small>{referral.rewardStatus}</small></span>
-                <span><strong>{formatDate(referral.lastActivityAt)}</strong><small>{referral.validityState === "expired" ? "Expired" : `Expires ${formatDate(referral.validUntil)}`}</small></span>
+                <span><strong>{formatDate(referral.lastActivityAt)}</strong><small>{validityLabel(referral.validityState, referral.validUntil)}</small></span>
               </button>
             ))}
           </div>
@@ -199,7 +199,7 @@ export function ReferralOperationsDetailPage({ referralId, onNavigate, isOwner }
         <DetailField label="Status" value={label(detail.referralStatus)} />
         <DetailField label="Qualification" value={label(detail.qualificationState)} />
         <DetailField label="Submitted" value={formatDateTime(detail.submittedAt)} />
-        <DetailField label="Validity" value={`${detail.validityState === "expired" ? "Expired" : "Active"} until ${formatDate(detail.validUntil)}`} />
+        <DetailField label="Validity" value={validityLabel(detail.validityState, detail.validUntil)} />
       </section>
 
       <section className="detail-grid">
@@ -364,6 +364,13 @@ function label(value: string) {
     .filter(Boolean)
     .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function validityLabel(state: string, validUntil: string) {
+  if (state === "valid_admission") return "Valid admission";
+  if (state === "admission_after_expiry") return "Admission after expiry";
+  if (state === "expired") return "Expired";
+  return `Expires ${formatDate(validUntil)}`;
 }
 
 function formatDate(value: string) {

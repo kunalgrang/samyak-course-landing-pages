@@ -353,7 +353,7 @@ const staffReferralListSchema = z.object({
   summary: z.object({
     totalReferrals: z.number(),
     admitted: z.number(),
-    qualified: z.number(),
+    paymentDataUnavailable: z.number(),
     expired: z.number(),
   }),
   pagination: z.object({
