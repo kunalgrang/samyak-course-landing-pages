@@ -656,20 +656,24 @@ describe("native referral services", () => {
 
     expect(validAdmission.status).toBe(200);
     expect(lateAdmission.status).toBe(200);
-    const validBody = await validAdmission.json() as { referral: { validityState: string; qualificationState: string; rewardStatus: string; fee: { receivedAmountPaise: null; receivedAmountAvailable: boolean } | null; reward: unknown } };
-    const lateBody = await lateAdmission.json() as { referral: { validityState: string; qualificationState: string } };
+    const validBody = await validAdmission.json() as { referral: { validityState: string; admissionStatus: string; qualificationState: string; rewardStatus: string; fee: { finalAgreedFeePaise: number; receivedAmountPaise: null; receivedAmountAvailable: boolean } | null; reward: unknown; linkedEnrolment: { studentNumber: string; enrolmentNumber: string; admissionDate: string; joiningDate: string } | null } };
+    const lateBody = await lateAdmission.json() as { referral: { validityState: string; admissionStatus: string; qualificationState: string } };
     expect(validBody.referral.validityState).toBe("valid_admission");
+    expect(validBody.referral.admissionStatus).toBe("done");
     expect(validBody.referral.qualificationState).toBe("admitted_payment_data_unavailable");
     expect(validBody.referral.rewardStatus).toBe("Payment data unavailable");
-    expect(validBody.referral.fee).toMatchObject({ receivedAmountPaise: null, receivedAmountAvailable: false });
+    expect(validBody.referral.linkedEnrolment).toMatchObject({ studentNumber: "STU-REWARD-00", enrolmentNumber: "ENR-00", admissionDate: "2025-03-12T10:00:00.000Z", joiningDate: "2025-03-12T10:00:00.000Z" });
+    expect(validBody.referral.fee).toMatchObject({ finalAgreedFeePaise: 900000, receivedAmountPaise: null, receivedAmountAvailable: false });
     expect(validBody.referral.reward).toBeNull();
+    expect(JSON.stringify(validBody)).not.toContain('"receivedAmountPaise":0');
     expect(JSON.stringify(validBody)).not.toContain("qualified_pending_approval");
     expect(lateBody.referral.validityState).toBe("admission_after_expiry");
+    expect(lateBody.referral.admissionStatus).toBe("outside_validity");
     expect(lateBody.referral.qualificationState).toBe("expired");
     fixture.close();
   });
 
-  it("lets owner inherit referral operations detail and records audited status transitions", async () => {
+  it("lets owner inherit referral operations detail and only allows administrative closure status transitions", async () => {
     const fixture = testFixture();
     seedReferrer(fixture.sqlite);
     seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
@@ -686,17 +690,26 @@ describe("native referral services", () => {
     expect(detailBody.referral.rewardSlabs.length).toBe(4);
     expect(detailBody.referral.linkedEnquiry).toBeNull();
 
-    const updated = await app.request(
+    const crmLikeTransition = await app.request(
       "https://portal.samyaksion.com/api/staff/referrals/referral_00/status",
       { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify({ status: "active", note: "Counselling started" }) },
       workerEnv,
     );
+    expect(crmLikeTransition.status).toBe(400);
+    expect(row(fixture.sqlite, "select status from referrals where id = 'referral_00'")).toMatchObject({ status: "accepted" });
+
+    const updated = await app.request(
+      "https://portal.samyaksion.com/api/staff/referrals/referral_00/status",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify({ status: "closed", note: "Administrative closure" }) },
+      workerEnv,
+    );
     expect(updated.status).toBe(200);
-    expect(row(fixture.sqlite, "select status from referrals where id = 'referral_00'")).toMatchObject({ status: "active" });
-    expect(row(fixture.sqlite, "select from_status, to_status, internal_note from referral_status_events where referral_id = 'referral_00' order by created_at desc limit 1")).toMatchObject({
+    expect(row(fixture.sqlite, "select status from referrals where id = 'referral_00'")).toMatchObject({ status: "closed" });
+    expect(row(fixture.sqlite, "select from_status, to_status, event_type, internal_note from referral_status_events where referral_id = 'referral_00' order by created_at desc limit 1")).toMatchObject({
       from_status: "accepted",
-      to_status: "active",
-      internal_note: "Counselling started",
+      to_status: "closed",
+      event_type: "staff_admin_closure",
+      internal_note: "Administrative closure",
     });
     expect(count(fixture.sqlite, "audit_logs where action = 'referral_status_updated'")).toBe(1);
 
@@ -705,7 +718,12 @@ describe("native referral services", () => {
       { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify({ status: "submitted" }) },
       workerEnv,
     );
-    expect(invalid.status).toBe(409);
+    expect(invalid.status).toBe(400);
+    const manualConverted = await app.request(
+      "https://portal.samyaksion.com/api/staff/referrals/referral_00/status",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify({ status: "converted" }) },
+      workerEnv,
+    );
     const computedState = await app.request(
       "https://portal.samyaksion.com/api/staff/referrals/referral_00/status",
       { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify({ status: "qualified_pending_approval" }) },
@@ -716,6 +734,7 @@ describe("native referral services", () => {
       { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify({ status: "fulfilled" }) },
       workerEnv,
     );
+    expect(manualConverted.status).toBe(400);
     expect(computedState.status).toBe(400);
     expect(ownerPayoutBypass.status).toBe(400);
     fixture.close();

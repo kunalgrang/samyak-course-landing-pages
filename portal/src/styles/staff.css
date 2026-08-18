@@ -444,7 +444,7 @@
 
 .referral-ops-row {
   display: grid;
-  grid-template-columns: minmax(92px, 0.7fr) minmax(128px, 0.9fr) minmax(140px, 1fr) minmax(150px, 1fr) minmax(96px, 0.7fr) minmax(120px, 0.8fr) minmax(140px, 0.9fr) minmax(120px, 0.8fr);
+  grid-template-columns: minmax(88px, 0.7fr) minmax(118px, 0.85fr) minmax(118px, 0.9fr) minmax(142px, 0.95fr) minmax(118px, 0.9fr) minmax(116px, 0.85fr) minmax(118px, 0.9fr) minmax(118px, 0.9fr) minmax(140px, 1fr) minmax(118px, 0.85fr);
   gap: 12px;
   align-items: center;
 }
@@ -552,6 +552,11 @@
   color: var(--color-muted);
   font-size: 0.82rem;
   font-weight: 800;
+}
+
+.referral-inline-action {
+  justify-self: start;
+  margin-top: 10px;
 }
 
 .referral-detail-hero {

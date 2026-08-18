@@ -150,8 +150,8 @@ const staffReferralList: StaffReferralList = {
       courseInterested: "Full Stack",
       referralStatus: "converted",
       linkedEnquiry: { id: "enq_1", enquiryNumber: "ENQ-SION-2026-0001", status: "converted" },
-      linkedEnrolment: { id: "enrol_1", enrolmentNumber: "ENR-SION-2026-0001", status: "active" },
-      admissionStatus: "active",
+      linkedEnrolment: { id: "enrol_1", enrolmentNumber: "ENR-SION-2026-0001", studentNumber: "SYK-SION-000001", status: "active", courseName: "Full Stack", admissionDate: "2026-08-07T10:00:00.000Z", joiningDate: "2026-08-08T10:00:00.000Z" },
+      admissionStatus: "done",
       qualificationState: "admitted_payment_data_unavailable",
       rewardStatus: "Payment data unavailable",
       reward: null,
@@ -243,7 +243,10 @@ describe("student referral portal UI", () => {
     expect(staffNavigation.map((item) => item.label)).toContain("Referral Operations");
     const html = renderToStaticMarkup(<ReferralOperationsContent data={staffReferralList} onNavigate={() => undefined} onPage={() => undefined} />);
     expect(html).toContain("Referral queue");
+    expect(html).toContain("Payment Qualification");
+    expect(html).toContain("Reward Status");
     expect(html).toContain("ENQ-SION-2026-0001");
+    expect(html).toContain("Done");
     expect(html).toContain("Admitted Payment Data Unavailable");
     expect(html).toContain("Valid admission");
     expect(html).toContain("+91 98765 43210");
@@ -252,6 +255,10 @@ describe("student referral portal UI", () => {
     expect(html).toContain("https://wa.me/919876543210");
     expect(html).toContain("tel:+919876543210");
     expect(html).not.toContain("mobile_hash");
+    expect(html).not.toContain("Status Transition");
+    expect(html).not.toContain("Admission Done");
+    expect(html).not.toContain("No response");
+    expect(html).not.toContain("Callback");
   });
 
   it("renders staff referral missing-contact state without active actions", () => {

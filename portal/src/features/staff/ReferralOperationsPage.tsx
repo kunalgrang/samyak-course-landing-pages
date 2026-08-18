@@ -5,7 +5,6 @@ import { LoadingState } from "../../components/LoadingState";
 import {
   getStaffReferralDetail,
   getStaffReferrals,
-  updateStaffReferralStatus,
   type StaffReferralDetail,
   type StaffReferralList,
   type StaffReferralListItem,
@@ -16,7 +15,6 @@ import { formatIndianCurrency } from "../referrals/referralUtils";
 
 const PAGE_SIZE = 20;
 const referralStatusOptions = ["submitted", "accepted", "rejected", "active", "converted", "expired", "cancelled", "closed"];
-const transitionOptions = ["accepted", "active", "converted", "expired", "cancelled", "closed", "rejected"];
 
 export function ReferralOperationsPage({ onNavigate }: { onNavigate: (path: RoutePath) => void }) {
   const [query, setQuery] = useState<StaffReferralQuery>({ limit: PAGE_SIZE, offset: 0 });
@@ -46,7 +44,7 @@ export function ReferralOperationsPage({ onNavigate }: { onNavigate: (path: Rout
           <input value={draft.q} onChange={(event) => setDraft({ ...draft, q: event.target.value })} placeholder="Reference, prospect, referrer, enquiry" />
         </label>
         <label>
-          Referral status
+          Referral admin state
           <select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}>
             <option value="">All statuses</option>
             {referralStatusOptions.map((status) => <option key={status} value={status}>{label(status)}</option>)}
@@ -129,14 +127,16 @@ export function ReferralOperationsContent({
         ) : (
           <div className="referral-ops-table" role="table" aria-label="Referral operations queue">
             <div className="referral-ops-row referral-ops-row--head" role="row">
-              <span>Reference</span>
+              <span>Submitted</span>
               <span>Referrer</span>
               <span>Prospect</span>
               <span>Mobile</span>
-              <span>Status</span>
+              <span>Course</span>
+              <span>Enquiry</span>
               <span>Admission</span>
-              <span>Reward</span>
-              <span>Last activity</span>
+              <span>Validity</span>
+              <span>Payment Qualification</span>
+              <span>Reward Status</span>
             </div>
             {data.referrals.map((referral) => (
               <div className="referral-ops-row referral-ops-row--item" role="row" key={referral.referralId}>
@@ -147,12 +147,14 @@ export function ReferralOperationsContent({
                   </button>
                 </span>
                 <span><strong>{referral.referrerName}</strong><small>{label(referral.referrerType) || "Referrer"}</small></span>
-                <span><strong>{referral.prospectPublicName}</strong><small>{referral.courseInterested || "Course pending"}</small></span>
+                <span><strong>{referral.prospectPublicName}</strong><small>{label(referral.referralStatus) || "Referral"}</small></span>
                 <ContactCell contact={referral.prospectContact} compact />
-                <StatusChip value={referral.referralStatus} />
-                <span><strong>{label(referral.admissionStatus)}</strong><small>{referral.linkedEnquiry?.enquiryNumber || "No enquiry"}</small></span>
+                <span><strong>{referral.courseInterested || "Course pending"}</strong><small>Referral interest</small></span>
+                <span><strong>{referral.linkedEnquiry?.status ? label(referral.linkedEnquiry.status) : "Not linked"}</strong><small>{referral.linkedEnquiry?.enquiryNumber || "No enquiry"}</small></span>
+                <span><strong>{admissionLabel(referral.admissionStatus)}</strong><small>{referral.linkedEnrolment?.enrolmentNumber || "No enrolment"}</small></span>
+                <span><strong>{validityLabel(referral.validityState, referral.validUntil)}</strong><small>90-day admission rule</small></span>
                 <span><strong>{label(referral.qualificationState)}</strong><small>{referral.rewardStatus}</small></span>
-                <span><strong>{formatDate(referral.lastActivityAt)}</strong><small>{validityLabel(referral.validityState, referral.validUntil)}</small></span>
+                <span><strong>{referral.rewardStatus}</strong><small>Rewards deferred</small></span>
               </div>
             ))}
           </div>
@@ -168,28 +170,7 @@ export function ReferralOperationsContent({
 }
 
 export function ReferralOperationsDetailPage({ referralId, onNavigate, isOwner }: { referralId: string; onNavigate: (path: RoutePath) => void; isOwner: boolean }) {
-  const { detail, error, refresh } = useStaffReferralDetail(referralId);
-  const [status, setStatus] = useState("");
-  const [note, setNote] = useState("");
-  const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function saveStatus() {
-    if (!status) return;
-    setBusy(true);
-    setMessage("");
-    try {
-      const result = await updateStaffReferralStatus(referralId, status, note);
-      setMessage(result.idempotent ? "Referral was already in that status." : "Referral status updated.");
-      setStatus("");
-      setNote("");
-      refresh();
-    } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : "Could not update referral status.");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const { detail, error } = useStaffReferralDetail(referralId);
 
   if (error) return <ErrorState title="Could not load referral" message="This referral may be outside your staff scope." />;
   if (!detail) return <LoadingState label="Loading referral detail" />;
@@ -203,47 +184,55 @@ export function ReferralOperationsDetailPage({ referralId, onNavigate, isOwner }
       </header>
 
       <section className="staff-card referral-detail-hero">
-        <DetailField label="Status" value={label(detail.referralStatus)} />
-        <DetailField label="Qualification" value={label(detail.qualificationState)} />
+        <DetailField label="Referral admin state" value={label(detail.referralStatus)} />
+        <DetailField label="Payment qualification" value={label(detail.qualificationState)} />
         <DetailField label="Submitted" value={formatDateTime(detail.submittedAt)} />
         <DetailField label="Validity" value={validityLabel(detail.validityState, detail.validUntil)} />
       </section>
 
       <section className="detail-grid">
         <article className="staff-card">
-          <h2>Referrer</h2>
+          <h2>Referral</h2>
+          <DetailField label="Referrer" value={detail.referrer.publicName || detail.referrerName} />
           <DetailField label="Public name" value={detail.referrer.publicName || detail.referrerName} />
           <DetailField label="Type" value={label(detail.referrer.type)} />
-          <DetailField label="External ID" value={detail.referrer.externalReferrerId || "Not available"} />
+          <DetailField label="Course" value={detail.courseInterested || "Course pending"} />
+          <DetailField label="Submitted" value={formatDateTime(detail.submittedAt)} />
         </article>
         <article className="staff-card">
           <h2>Prospect Contact</h2>
           <ContactCell contact={detail.prospectContact} />
         </article>
         <article className="staff-card">
-          <h2>Referral Links</h2>
+          <h2>Enquiry</h2>
           <DetailField label="Enquiry" value={detail.linkedEnquiry ? detail.linkedEnquiry.enquiryNumber : "Not linked"} />
-          <DetailField label="Admission" value={detail.linkedEnrolment ? detail.linkedEnrolment.enrolmentNumber : "Not admitted"} />
-          <DetailField label="Matched person" value={detail.matchedPerson?.publicName || "Not matched"} />
+          <DetailField label="Current status" value={detail.linkedEnquiry ? label(detail.linkedEnquiry.status) : "Not linked"} />
+          {detail.linkedEnquiry ? <button type="button" className="secondary-button referral-inline-action" onClick={() => onNavigate(`/app/enquiries/${detail.linkedEnquiry!.id}`)}>Open Enquiry</button> : <p className="staff-empty">Enquiry workflow lives in the Enquiry module.</p>}
         </article>
         <article className="staff-card">
-          <h2>Reward Readiness</h2>
-          <DetailField label="Reward status" value={detail.rewardStatus} />
-          <DetailField label="Cash reward" value={detail.reward ? paise(detail.reward.cashRewardPaise) : "Pending"} />
-          <DetailField label="Course credit" value={detail.reward ? paise(detail.reward.courseCreditPaise) : "Pending"} />
+          <h2>Admission</h2>
+          <DetailField label="Admission" value={admissionLabel(detail.admissionStatus)} />
+          <DetailField label="Student ID" value={detail.linkedEnrolment?.studentNumber || "Not admitted"} />
+          <DetailField label="Enrolment" value={detail.linkedEnrolment?.enrolmentNumber || "Not admitted"} />
+          <DetailField label="Course" value={detail.linkedEnrolment?.courseName || "Not admitted"} />
+          <DetailField label="Admission date" value={detail.linkedEnrolment?.admissionDate ? formatDate(detail.linkedEnrolment.admissionDate) : "Not admitted"} />
+          <DetailField label="Joining date" value={detail.linkedEnrolment?.joiningDate ? formatDate(detail.linkedEnrolment.joiningDate) : "Not admitted"} />
+          <DetailField label="Within validity" value={detail.validityState === "valid_admission" ? "Yes" : detail.validityState === "admission_after_expiry" ? "No" : "No admission"} />
         </article>
       </section>
 
       <section className="staff-card">
         <div className="section-heading">
-          <h2>Fee Qualification</h2>
-          <span>Server authoritative</span>
+          <h2>Payment Qualification</h2>
+          <span>Receipts system pending</span>
         </div>
         {detail.fee ? (
           <div className="detail-grid referral-fee-grid">
             <DetailField label="Final agreed fee" value={paise(detail.fee.finalAgreedFeePaise)} />
-            <DetailField label="50% qualifying threshold" value={paise(detail.fee.minimumQualifyingPaymentPaise)} />
-            <DetailField label="Received amount" value="Payment receipts not modelled yet" />
+            <DetailField label="Reward threshold" value="50%" />
+            <DetailField label="Required amount" value={paise(detail.fee.minimumQualifyingPaymentPaise)} />
+            <DetailField label="Amount received" value="Unavailable" />
+            <DetailField label="Qualification" value={label(detail.qualificationState)} />
           </div>
         ) : (
           <p className="staff-empty">No active fee agreement is linked through an admitted enrolment.</p>
@@ -252,25 +241,16 @@ export function ReferralOperationsDetailPage({ referralId, onNavigate, isOwner }
 
       <section className="staff-card">
         <div className="section-heading">
-          <h2>Status Transition</h2>
-          <span>{isOwner ? "Owner access active" : "Staff access"}</span>
+          <h2>Reward</h2>
+          <span>{isOwner ? "Owner access active" : "Read-only readiness"}</span>
         </div>
-        <div className="action-row referral-status-action">
-          <label>
-            Next status
-            <select value={status} onChange={(event) => setStatus(event.target.value)}>
-              <option value="">Select status</option>
-              {transitionOptions.map((option) => <option key={option} value={option}>{label(option)}</option>)}
-            </select>
-          </label>
-          <label>
-            Internal note
-            <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Optional operational note" />
-          </label>
-          <button type="button" disabled={!status || busy} onClick={() => void saveStatus()}>{busy ? "Saving" : "Update"}</button>
+        <div className="detail-grid referral-fee-grid">
+          <DetailField label="Current status" value={detail.rewardStatus} />
+          <DetailField label="Cash reward if qualified" value={rewardOption(detail.rewardSlabs, "cash")} />
+          <DetailField label="Course credit if qualified" value={rewardOption(detail.rewardSlabs, "credit")} />
+          <DetailField label="Approval / payout" value="Deferred" />
         </div>
-        {message ? <p className="staff-empty" aria-live="polite">{message}</p> : null}
-        {isOwner ? <p className="staff-empty">Reward approval and payout actions are not enabled because no audited reward approval/fulfilment schema exists yet.</p> : null}
+        <p className="staff-empty">Reward approval and payout actions are not enabled because receipts and audited reward fulfilment are future modules.</p>
       </section>
 
       <section className="staff-card">
@@ -326,7 +306,6 @@ function useStaffReferralList(query: StaffReferralQuery) {
 function useStaffReferralDetail(referralId: string) {
   const [detail, setDetail] = useState<StaffReferralDetail | null>(null);
   const [error, setError] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -342,9 +321,9 @@ function useStaffReferralDetail(referralId: string) {
     return () => {
       active = false;
     };
-  }, [referralId, refreshKey]);
+  }, [referralId]);
 
-  return { detail, error, refresh: () => setRefreshKey((value) => value + 1) };
+  return { detail, error };
 }
 
 export function ContactCell({ contact, compact = false }: { contact: StaffReferralListItem["prospectContact"]; compact?: boolean }) {
@@ -384,16 +363,18 @@ function DetailField({ label: fieldLabel, value }: { label: string; value: strin
   );
 }
 
-function StatusChip({ value }: { value: StaffReferralListItem["referralStatus"] }) {
-  return <span className={`status-pill status-pill--${value === "converted" ? "issued" : value === "expired" || value === "cancelled" || value === "rejected" ? "revoked" : "warning"}`}>{label(value)}</span>;
-}
-
 function label(value: string) {
   return value
     .split("_")
     .filter(Boolean)
     .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function admissionLabel(value: string) {
+  if (value === "done") return "Done";
+  if (value === "outside_validity") return "Admission outside referral validity";
+  return "Not done";
 }
 
 function validityLabel(state: string, validUntil: string) {
@@ -415,4 +396,12 @@ function formatDateTime(value: string) {
 
 function paise(value: number) {
   return formatIndianCurrency(Math.round(value / 100));
+}
+
+function rewardOption(slabs: StaffReferralDetail["rewardSlabs"], type: "cash" | "credit") {
+  const values = slabs.map((slab) => type === "cash" ? slab.cashRewardPaise : slab.courseCreditPaise).filter((value) => value > 0);
+  if (values.length === 0) return "Configured after qualification";
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  return min === max ? paise(min) : `${paise(min)}-${paise(max)}`;
 }

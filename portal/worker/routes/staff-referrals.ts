@@ -8,8 +8,6 @@ import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
 import { ADMISSION_STAFF_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import {
-  REFERRAL_STATUSES,
-  assertReferralStatusTransition,
   calculateMinimumQualifyingPaymentPaise,
   type ReferralStatus,
 } from "../lib/referral-domain";
@@ -25,9 +23,10 @@ type PortalContext = Context<{
 }>;
 
 const MAX_STATUS_BODY_BYTES = 2048;
+const ADMIN_REFERRAL_STATUSES = ["rejected", "cancelled", "closed"] as const;
 
 const statusSchema = z.object({
-  status: z.enum(REFERRAL_STATUSES),
+  status: z.enum(ADMIN_REFERRAL_STATUSES),
   note: z.string().trim().max(500).optional(),
 });
 
@@ -54,8 +53,11 @@ type ReferralListRow = {
   enquiry_status: string | null;
   enrolment_id: string | null;
   enrolment_number: string | null;
+  student_number: string | null;
   enrolment_status: string | null;
   enrolment_admission_date: string | null;
+  enrolment_joining_date: string | null;
+  enrolment_course_name: string | null;
   final_agreed_fee_paise: number | null;
   minimum_fee_percentage: number | null;
   reward_snapshot_id: string | null;
@@ -134,27 +136,21 @@ export function registerStaffReferralRoutes(app: PortalHono) {
       return jsonError(c, { status: 413, code: "request_too_large", message: "Please shorten the status note." });
     }
     const parsed = statusSchema.safeParse(safeJson(bodyText));
-    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_status", message: "Select a valid referral status." });
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_status", message: "Only administrative rejection, cancellation or closure can be recorded here." });
 
     const existing = await scopedReferral(c, staff, c.req.param("referralId"));
     if (!existing) return jsonError(c, { status: 404, code: "referral_not_found", message: "Referral was not found." });
     if (existing.status === parsed.data.status) return jsonPlain(c, { success: true, referralId: existing.id, status: existing.status, idempotent: true });
 
-    try {
-      assertReferralStatusTransition(existing.status, parsed.data.status);
-    } catch {
-      return jsonError(c, { status: 409, code: "invalid_transition", message: "This referral cannot move to that status." });
-    }
-
     const now = new Date().toISOString();
     await c.env.DB.batch([
-      c.env.DB.prepare("update referrals set status = ?, updated_at = ?, closed_at = case when ? in ('closed', 'cancelled', 'rejected') then coalesce(closed_at, ?) else closed_at end, expired_at = case when ? = 'expired' then coalesce(expired_at, ?) else expired_at end where id = ? and organisation_id = ?")
-        .bind(parsed.data.status, now, parsed.data.status, now, parsed.data.status, now, existing.id, ORG_ID),
+      c.env.DB.prepare("update referrals set status = ?, updated_at = ?, closed_at = coalesce(closed_at, ?) where id = ? and organisation_id = ?")
+        .bind(parsed.data.status, now, now, existing.id, ORG_ID),
       c.env.DB.prepare(
         `insert into referral_status_events
           (id, referral_id, from_status, to_status, event_type, actor_login_account_id, actor_person_id,
            system_actor, reason_code, public_note, internal_note, metadata_json, created_at)
-         values (?, ?, ?, ?, 'staff_status_transition', ?, ?, null, null, null, ?, ?, ?)`,
+         values (?, ?, ?, ?, 'staff_admin_closure', ?, ?, null, null, null, ?, ?, ?)`,
       )
         .bind(createOpaqueId("revt"), existing.id, existing.status, parsed.data.status, staff.loginAccountId, staff.activePersonId, parsed.data.note || null, JSON.stringify({ source: "referral_operations_dashboard" }), now),
       c.env.DB.prepare(
@@ -312,8 +308,11 @@ function listSelectSql(extraColumns = "") {
        enquiries.status as enquiry_status,
        enrolments.id as enrolment_id,
        enrolments.enrolment_number,
+       students.student_number,
        enrolments.status as enrolment_status,
        enrolments.admission_date as enrolment_admission_date,
+       enrolments.joining_date as enrolment_joining_date,
+       enrolment_courses.name as enrolment_course_name,
        fee_agreements.final_agreed_fee_paise,
        referral_programmes.minimum_fee_percentage,
        referral_reward_snapshots.id as reward_snapshot_id,
@@ -336,6 +335,9 @@ function listFromSql() {
      left join enquiries on enquiries.id = referrals.enquiry_id
      left join people matched_people on matched_people.id = referrals.prospect_person_id
      left join enrolments on enrolments.referral_id = referrals.id
+       or (referrals.enquiry_id is not null and enrolments.enquiry_id = referrals.enquiry_id)
+     left join students on students.id = enrolments.student_id
+     left join courses enrolment_courses on enrolment_courses.id = enrolments.course_id
      left join fee_agreements on fee_agreements.enrolment_id = enrolments.id and fee_agreements.status = 'active'
      left join referral_reward_snapshots on referral_reward_snapshots.referral_id = referrals.id`;
 }
@@ -418,7 +420,7 @@ function listFilters(c: PortalContext) {
   const url = new URL(c.req.url);
   return {
     q: clean(url.searchParams.get("q")),
-    status: enumParam(url.searchParams.get("status"), REFERRAL_STATUSES),
+    status: enumParam(url.searchParams.get("status"), ["submitted", "accepted", "rejected", "active", "converted", "expired", "cancelled", "closed"] as const),
     rewardStatus: enumParam(url.searchParams.get("rewardStatus"), ["pending", "payment_data_unavailable", "expired"] as const),
     referrerType: enumParam(url.searchParams.get("referrerType"), ["student", "alumni"] as const),
     courseId: clean(url.searchParams.get("courseId")),
@@ -454,8 +456,8 @@ async function toListItem(c: PortalContext, row: ReferralListRow) {
     courseInterested: row.course_name || "",
     referralStatus: row.status,
     linkedEnquiry: row.enquiry_id ? { id: row.enquiry_id, enquiryNumber: row.enquiry_number || "", status: row.enquiry_status || "" } : null,
-    linkedEnrolment: row.enrolment_id ? { id: row.enrolment_id, enrolmentNumber: row.enrolment_number || "", status: row.enrolment_status || "" } : null,
-    admissionStatus: row.enrolment_id ? row.enrolment_status || "admitted" : "not_admitted",
+    linkedEnrolment: row.enrolment_id ? { id: row.enrolment_id, enrolmentNumber: row.enrolment_number || "", studentNumber: row.student_number || "", status: row.enrolment_status || "", courseName: row.enrolment_course_name || row.course_name || "", admissionDate: row.enrolment_admission_date || "", joiningDate: row.enrolment_joining_date || "" } : null,
+    admissionStatus: admissionStatus(row),
     qualificationState: qualification,
     rewardStatus: rewardStatus(row, qualification),
     reward: null,
@@ -502,6 +504,11 @@ function qualificationState(row: ReferralListRow) {
   if (validity === "admission_after_expiry" || validity === "expired") return "expired";
   if (!row.enrolment_id) return "not_admitted";
   return "admitted_payment_data_unavailable";
+}
+
+function admissionStatus(row: ReferralListRow) {
+  if (!row.enrolment_id) return "not_done";
+  return validityState(row) === "admission_after_expiry" ? "outside_validity" : "done";
 }
 
 function rewardStatus(row: ReferralListRow, qualification: string) {
