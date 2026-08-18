@@ -6,6 +6,7 @@ import { useAuth } from "../features/auth/AuthContext";
 import { LoginPage } from "../features/auth/LoginPage";
 import { ProfilePage } from "../features/profile/ProfilePage";
 import { ReferralsPage } from "../features/referrals/ReferralsPage";
+import { ReferralOperationsDetailPage, ReferralOperationsPage } from "../features/staff/ReferralOperationsPage";
 import { CertificatesPage } from "../features/certificates/CertificatesPage";
 import { EnquiriesPage } from "../features/staff/EnquiriesPage";
 import { AdmissionPage } from "../features/staff/AdmissionPage";
@@ -18,7 +19,7 @@ import { ShellHomePage } from "./ShellHomePage";
 import { AppShell } from "./AppShell";
 import type { AppRoute, RoutePath } from "./types";
 
-const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/courses", "/app/discount-approvals", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
+const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/referral-operations", "/app/courses", "/app/discount-approvals", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
 const staffRoles = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
 const courseAdminRoles = new Set(["owner", "admin", "system_admin"]);
 const discountApproverRoles = new Set(["owner"]);
@@ -28,6 +29,7 @@ function normalizePath(pathname: string): RoutePath {
   if (appRoutes.has(pathname as RoutePath)) return pathname as RoutePath;
   if (/^\/app\/enquiries\/[^/]+\/admission$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/enquiries\/[^/]+$/.test(pathname)) return pathname as RoutePath;
+  if (/^\/app\/referral-operations\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/students\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   return "/login";
 }
@@ -55,7 +57,7 @@ export function Router() {
   }, [hasSessionError, isAuthenticated, isLoading, path]);
 
   useEffect(() => {
-    if (!isLoading && isAuthenticated && (path === "/app/enquiries" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/enquiries/") || path.startsWith("/app/students/")) && !isStaff) {
+    if (!isLoading && isAuthenticated && (path === "/app/enquiries" || path === "/app/referral-operations" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/enquiries/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/students/")) && !isStaff) {
       navigate("/app", true);
     }
     if (!isLoading && isAuthenticated && path === "/app/courses" && !isCourseAdmin) {
@@ -72,6 +74,7 @@ export function Router() {
   );
   const enquiryAdmissionMatch = activeAppPath.match(/^\/app\/enquiries\/([^/]+)\/admission$/);
   const enquiryDetailMatch = activeAppPath.match(/^\/app\/enquiries\/([^/]+)$/);
+  const referralOperationsMatch = activeAppPath.match(/^\/app\/referral-operations\/([^/]+)$/);
   const studentProfileMatch = activeAppPath.match(/^\/app\/students\/([^/]+)$/);
 
   function navigate(nextPath: RoutePath, replace = false) {
@@ -113,11 +116,13 @@ export function Router() {
     <AppShell activePath={activeAppPath} navigation={navigation} onNavigate={navigate} onSignOut={handleSignOut}>
       {activeAppPath === "/app" ? <ShellHomePage /> : null}
       {activeAppPath === "/app/enquiries" && isStaff ? <EnquiriesPage /> : null}
+      {activeAppPath === "/app/referral-operations" && isStaff ? <ReferralOperationsPage onNavigate={navigate} /> : null}
       {activeAppPath === "/app/courses" && isStaff ? <CourseMasterPage /> : null}
       {activeAppPath === "/app/discount-approvals" && isDiscountApprover ? <DiscountApprovalsPage /> : null}
       {activeAppPath === "/app/certificates" ? <CertificatesPage /> : null}
       {enquiryDetailMatch && isStaff ? <EnquiryDetailPage enquiryId={enquiryDetailMatch[1]} /> : null}
       {enquiryAdmissionMatch && isStaff ? <AdmissionPage enquiryId={enquiryAdmissionMatch[1]} /> : null}
+      {referralOperationsMatch && isStaff ? <ReferralOperationsDetailPage referralId={referralOperationsMatch[1]} onNavigate={navigate} isOwner={isDiscountApprover} /> : null}
       {studentProfileMatch && isStaff ? <StudentProfilePage studentId={studentProfileMatch[1]} /> : null}
       {activeAppPath === "/app/referrals" ? <ReferralsPage /> : null}
       {activeAppPath === "/app/rules" ? <RulesPage /> : null}

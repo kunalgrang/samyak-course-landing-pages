@@ -1,11 +1,13 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { appNavigation } from "../../app/navigation";
-import type { ReferralDashboard, SessionResponse, StudentHome } from "../../lib/api";
+import { staffNavigation } from "../../app/navigation";
+import type { ReferralDashboard, SessionResponse, StaffReferralList, StudentHome } from "../../lib/api";
 import { ProfileContent } from "../profile/ProfilePage";
 import { OverviewContent } from "../../routes/ShellHomePage";
 import { RulesPage } from "../../routes/RulesPage";
 import { ReferralsContent } from "./ReferralsPage";
+import { ReferralOperationsContent } from "../staff/ReferralOperationsPage";
 import {
   buildWhatsAppShareUrl,
   copyReferralLink,
@@ -122,6 +124,35 @@ const studentHome: StudentHome = {
   },
 };
 
+const staffReferralList: StaffReferralList = {
+  success: true,
+  summary: { totalReferrals: 1, admitted: 1, qualified: 1, expired: 0 },
+  pagination: { limit: 20, offset: 0, total: 1, hasMore: false },
+  filters: {},
+  referrals: [
+    {
+      referralId: "referral_01",
+      shortReference: "ERRAL_01",
+      branchName: "Sion",
+      submittedAt: "2026-08-06T10:00:00.000Z",
+      validUntil: "2026-11-04T10:00:00.000Z",
+      validityState: "active",
+      lastActivityAt: "2026-08-07T10:00:00.000Z",
+      referrerName: "Asha S.",
+      referrerType: "student",
+      prospectPublicName: "Future L.",
+      courseInterested: "Full Stack",
+      referralStatus: "converted",
+      linkedEnquiry: { id: "enq_1", enquiryNumber: "ENQ-SION-2026-0001", status: "converted" },
+      linkedEnrolment: { id: "enrol_1", enrolmentNumber: "ENR-SION-2026-0001", status: "active" },
+      admissionStatus: "active",
+      qualificationState: "qualified_pending_approval",
+      rewardStatus: "Calculated",
+      reward: { slabId: "slab_1", cashRewardPaise: 50000, courseCreditPaise: 75000 },
+    },
+  ],
+};
+
 describe("student referral portal UI", () => {
   it("formats Indian currency with rupee symbol and Indian grouping", () => {
     expect(formatIndianCurrency(1500)).toBe("\u20B91,500");
@@ -200,6 +231,15 @@ describe("student referral portal UI", () => {
 
   it("uses student-facing navigation labels", () => {
     expect(appNavigation.map((item) => item.label)).toEqual(["Overview", "My Referrals", "Rewards & Benefits", "My Profile"]);
+  });
+
+  it("adds staff referral operations navigation and renders a compact operations queue", () => {
+    expect(staffNavigation.map((item) => item.label)).toContain("Referral Operations");
+    const html = renderToStaticMarkup(<ReferralOperationsContent data={staffReferralList} onNavigate={() => undefined} onPage={() => undefined} />);
+    expect(html).toContain("Referral queue");
+    expect(html).toContain("ENQ-SION-2026-0001");
+    expect(html).toContain("Qualified Pending Approval");
+    expect(html).not.toContain("9876543210");
   });
 
   it("renders referral share actions", () => {

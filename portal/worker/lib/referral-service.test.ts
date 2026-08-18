@@ -12,6 +12,7 @@ import type { ReferralDb } from "./referral-repository";
 import { groupEligibleCourses, registerPublicReferralRoutes } from "../routes/public-referrals";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { registerStudentRoutes } from "../routes/student";
+import { registerStaffReferralRoutes } from "../routes/staff-referrals";
 
 const NOW = "2026-08-06T10:00:00.000Z";
 const SESSION_PEPPER = "session-pepper-for-referral-tests";
@@ -512,6 +513,91 @@ describe("native referral services", () => {
     fixture.close();
   });
 
+  it("serves staff referral operations with RBAC, pagination, filters, and no prospect contact leakage", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
+    seedStaffRole(fixture.sqlite, "acct_student", "counsellor", "branch_sion");
+    const sessionCookie = await seedSession(fixture.sqlite, "acct_student", "person_student");
+
+    for (let index = 0; index < 5; index += 1) {
+      seedDashboardReferral(fixture.sqlite, index, index % 2 === 0 ? "converted" : "accepted");
+      if (index % 2 === 0) seedRewardSnapshot(fixture.sqlite, index);
+    }
+    const other = "2026-08-12T10:00:00.000Z";
+    fixture.sqlite.prepare(
+      `insert into referrals
+        (id, organisation_id, branch_id, referral_programme_id, referral_link_id, referrer_profile_id,
+         prospect_person_id, enquiry_id, course_interest_id, source, status, submitted_at, valid_until,
+         attributed_at, prospect_mobile_hash, prospect_mobile_last_four, prospect_name, created_at, updated_at)
+       values ('referral_other_org', 'org_other', 'branch_other', 'rprog_samyak_skill_circle', null, 'refprof_student',
+         null, null, 'course_fsd', 'personal_link', 'accepted', ?, '2026-12-31T10:00:00.000Z',
+         ?, 'other_hash', '9999', 'Other Prospect', ?, ?)`,
+    ).run(other, other, other, other);
+
+    const app = staffReferralRouteApp();
+    const workerEnv = { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER };
+    const firstPage = await app.request("https://portal.samyaksion.com/api/staff/referrals?limit=2&offset=0", { headers: { Cookie: sessionCookie } }, workerEnv);
+    const filtered = await app.request("https://portal.samyaksion.com/api/staff/referrals?status=converted&rewardStatus=qualified_pending_approval", { headers: { Cookie: sessionCookie } }, workerEnv);
+    fixture.sqlite.prepare("delete from login_account_roles where login_account_id = 'acct_student'").run();
+    const denied = await app.request("https://portal.samyaksion.com/api/staff/referrals", { headers: { Cookie: sessionCookie } }, workerEnv);
+
+    expect(firstPage.status).toBe(200);
+    const body = await firstPage.json() as { pagination: { total: number; hasMore: boolean }; referrals: Array<Record<string, unknown>> };
+    expect(body.pagination).toMatchObject({ total: 5, hasMore: true });
+    expect(body.referrals).toHaveLength(2);
+    expect(JSON.stringify(body)).not.toContain("9876543210");
+    expect(JSON.stringify(body)).not.toContain("learner@example.com");
+    expect(JSON.stringify(body)).not.toContain("referral_other_org");
+
+    expect(filtered.status).toBe(200);
+    const filteredBody = await filtered.json() as { referrals: Array<{ referralStatus: string; qualificationState: string }> };
+    expect(filteredBody.referrals.length).toBeGreaterThan(0);
+    expect(filteredBody.referrals.every((item) => item.referralStatus === "converted" && item.qualificationState === "qualified_pending_approval")).toBe(true);
+    expect(denied.status).toBe(403);
+    fixture.close();
+  });
+
+  it("lets owner inherit referral operations detail and records audited status transitions", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
+    seedDashboardReferral(fixture.sqlite, 0, "accepted");
+    seedStaffRole(fixture.sqlite, "acct_student", "owner");
+    const sessionCookie = await seedSession(fixture.sqlite, "acct_student", "person_student");
+    const app = staffReferralRouteApp();
+    const workerEnv = { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER };
+
+    const detail = await app.request("https://portal.samyaksion.com/api/staff/referrals/referral_00", { headers: { Cookie: sessionCookie } }, workerEnv);
+    expect(detail.status).toBe(200);
+    const detailBody = await detail.json() as { referral: { qualificationState: string; rewardSlabs: unknown[]; linkedEnquiry: unknown } };
+    expect(detailBody.referral.qualificationState).toBe("not_admitted");
+    expect(detailBody.referral.rewardSlabs.length).toBe(4);
+    expect(detailBody.referral.linkedEnquiry).toBeNull();
+
+    const updated = await app.request(
+      "https://portal.samyaksion.com/api/staff/referrals/referral_00/status",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify({ status: "active", note: "Counselling started" }) },
+      workerEnv,
+    );
+    expect(updated.status).toBe(200);
+    expect(row(fixture.sqlite, "select status from referrals where id = 'referral_00'")).toMatchObject({ status: "active" });
+    expect(row(fixture.sqlite, "select from_status, to_status, internal_note from referral_status_events where referral_id = 'referral_00' order by created_at desc limit 1")).toMatchObject({
+      from_status: "accepted",
+      to_status: "active",
+      internal_note: "Counselling started",
+    });
+    expect(count(fixture.sqlite, "audit_logs where action = 'referral_status_updated'")).toBe(1);
+
+    const invalid = await app.request(
+      "https://portal.samyaksion.com/api/staff/referrals/referral_00/status",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify({ status: "submitted" }) },
+      workerEnv,
+    );
+    expect(invalid.status).toBe(409);
+    fixture.close();
+  });
+
   it("serves authenticated referral-link generation, metadata-only reload, rotation, CSRF, and replay limits", async () => {
     const fixture = testFixture();
     seedReferrer(fixture.sqlite);
@@ -753,6 +839,12 @@ function studentRouteApp() {
   return app;
 }
 
+function staffReferralRouteApp() {
+  const app = new Hono<{ Bindings: WorkerBindings; Variables: WorkerVariables }>();
+  registerStaffReferralRoutes(app);
+  return app;
+}
+
 async function seedSession(db: DatabaseSync, loginAccountId: string, activePersonId: string) {
   const token = "test-session-token";
   const tokenHash = await hmacHex(SESSION_PEPPER, "session", token);
@@ -804,6 +896,14 @@ function seedReferrer(db: DatabaseSync, options: { suffix?: string; organisation
     db.prepare("insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at) values (?, ?, ?, 1, 1, ?)")
       .run(`acct_${suffix}`, `person_${suffix}`, options.loginAccessType || "self", NOW);
   }
+}
+
+function seedStaffRole(db: DatabaseSync, loginAccountId = "acct_student", role = "counsellor", branchId: string | null = null) {
+  const roleId = `role_${role}`;
+  db.prepare("insert or ignore into roles (id, organisation_id, code, name, created_at) values (?, 'org_samyak', ?, ?, ?)")
+    .run(roleId, role, title(role), NOW);
+  db.prepare("insert into login_account_roles (login_account_id, role_id, branch_id, created_at) values (?, ?, ?, ?)")
+    .run(loginAccountId, roleId, branchId, NOW);
 }
 
 function seedCourse(db: DatabaseSync, id: string, code: string, name: string, status: string, categoryId: string | null = null, organisationId = "org_samyak") {

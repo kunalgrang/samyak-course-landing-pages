@@ -9,6 +9,7 @@ import { registerConfigRoutes } from "./routes/config";
 import { registerHealthRoutes } from "./routes/health";
 import { registerStaffStudentRoutes } from "./routes/staff-students";
 import { registerStaffAdmissionRoutes } from "./routes/staff-admissions";
+import { registerStaffReferralRoutes } from "./routes/staff-referrals";
 import { registerStudentRoutes } from "./routes/student";
 import { registerPublicReferralRoutes } from "./routes/public-referrals";
 import { registerCertificateRoutes } from "./routes/certificates";
@@ -31,6 +32,7 @@ registerStudentRoutes(app);
 registerPublicReferralRoutes(app);
 registerStaffStudentRoutes(app);
 registerStaffAdmissionRoutes(app);
+registerStaffReferralRoutes(app);
 registerCertificateRoutes(app);
 
 app.notFound((c) =>
