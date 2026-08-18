@@ -3,6 +3,9 @@
 }
 
 .staff-card {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: var(--staff-card-padding);
   border: 1px solid var(--color-line);
   border-radius: var(--radius);
@@ -408,8 +411,15 @@
   font-weight: 800;
 }
 
+.referral-ops-page {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .referral-ops-filters {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 168px), 1fr));
+  align-items: end;
   gap: 12px;
 }
 
@@ -425,6 +435,7 @@
 .referral-ops-filters select {
   min-height: 44px;
   width: 100%;
+  min-width: 0;
   border: 1px solid var(--color-line);
   border-radius: var(--radius);
   padding: 0 12px;
@@ -434,18 +445,26 @@
 
 .referral-ops-table-card {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 14px;
 }
 
 .referral-ops-table {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
   gap: 8px;
 }
 
 .referral-ops-row {
   display: grid;
-  grid-template-columns: minmax(88px, 0.7fr) minmax(118px, 0.85fr) minmax(118px, 0.9fr) minmax(142px, 0.95fr) minmax(118px, 0.9fr) minmax(116px, 0.85fr) minmax(118px, 0.9fr) minmax(118px, 0.9fr) minmax(140px, 1fr) minmax(118px, 0.85fr);
-  gap: 12px;
+  grid-template-columns: minmax(68px, 0.72fr) minmax(82px, 0.86fr) minmax(84px, 0.9fr) minmax(94px, 0.95fr) minmax(78px, 0.9fr) minmax(80px, 0.85fr) minmax(82px, 0.92fr) minmax(78px, 0.86fr) minmax(98px, 1fr) minmax(80px, 0.88fr);
+  width: 100%;
+  min-width: 896px;
+  max-width: 100%;
+  gap: 8px;
   align-items: center;
 }
 
@@ -459,6 +478,8 @@
 
 .referral-ops-row--item {
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   min-height: 68px;
   border: 1px solid var(--color-line);
   padding: 12px;
@@ -514,11 +535,13 @@
 
 .referral-contact {
   display: grid;
+  min-width: 0;
   gap: 8px;
 }
 
 .referral-contact-actions {
   display: flex;
+  min-width: 0;
   flex-wrap: wrap;
   gap: 8px;
 }
@@ -601,11 +624,6 @@
     grid-template-columns: minmax(220px, 1fr) auto auto auto;
   }
 
-  .referral-ops-filters {
-    grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
-    align-items: end;
-  }
-
   .referral-detail-hero,
   .referral-fee-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -616,27 +634,60 @@
   }
 }
 
-@media (max-width: 759px) {
+@media (max-width: 899px) {
   .staff-enquiries-page {
     --staff-card-padding: 16px;
   }
 
-  .bottom-nav {
-    overflow-x: auto;
+  .certificate-pagination {
+    justify-content: flex-start;
   }
 
-  .bottom-nav button {
-    min-width: 76px;
+  .referral-ops-filters {
+    grid-template-columns: 1fr;
   }
 
   .referral-ops-row,
   .referral-ops-row--item {
     grid-template-columns: 1fr;
+    min-width: 0;
+    gap: 0;
   }
 
   .referral-ops-row--head {
     display: none;
   }
+
+  .referral-ops-row--item {
+    gap: 12px;
+    padding: 14px;
+  }
+
+  .referral-ops-row--item > span {
+    display: grid;
+    grid-template-columns: minmax(92px, 0.42fr) minmax(0, 1fr);
+    gap: 8px;
+    align-items: start;
+  }
+
+  .referral-ops-row--item > span::before {
+    color: var(--color-muted);
+    font-size: 0.72rem;
+    font-weight: 900;
+    line-height: 1.35;
+    text-transform: uppercase;
+  }
+
+  .referral-ops-row--item > span:nth-child(1)::before { content: "Submitted"; }
+  .referral-ops-row--item > span:nth-child(2)::before { content: "Referrer"; }
+  .referral-ops-row--item > span:nth-child(3)::before { content: "Prospect"; }
+  .referral-ops-row--item > span:nth-child(4)::before { content: "Contact"; }
+  .referral-ops-row--item > span:nth-child(5)::before { content: "Course"; }
+  .referral-ops-row--item > span:nth-child(6)::before { content: "Enquiry"; }
+  .referral-ops-row--item > span:nth-child(7)::before { content: "Admission"; }
+  .referral-ops-row--item > span:nth-child(8)::before { content: "Validity"; }
+  .referral-ops-row--item > span:nth-child(9)::before { content: "Payment"; }
+  .referral-ops-row--item > span:nth-child(10)::before { content: "Reward"; }
 
   .referral-status-action {
     grid-template-columns: 1fr;
@@ -651,8 +702,16 @@
   }
 
   .contact-action {
+    flex: 1 1 96px;
     min-width: 44px;
     min-height: 44px;
     padding: 0 12px;
+  }
+}
+
+@media (max-width: 430px) {
+  .referral-ops-row--item > span {
+    grid-template-columns: 1fr;
+    gap: 5px;
   }
 }

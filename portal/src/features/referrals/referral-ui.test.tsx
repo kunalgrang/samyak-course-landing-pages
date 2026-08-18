@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { appNavigation } from "../../app/navigation";
-import { staffNavigation } from "../../app/navigation";
+import { staffNavigation, studentNavigation } from "../../app/navigation";
+import { AppShell } from "../../routes/AppShell";
 import type { ReferralDashboard, SessionResponse, StaffReferralList, StudentHome } from "../../lib/api";
 import { ProfileContent } from "../profile/ProfilePage";
 import { OverviewContent } from "../../routes/ShellHomePage";
@@ -237,6 +238,25 @@ describe("student referral portal UI", () => {
 
   it("uses student-facing navigation labels", () => {
     expect(appNavigation.map((item) => item.label)).toEqual(["Overview", "My Referrals", "Rewards & Benefits", "My Profile"]);
+  });
+
+  it("keeps staff mobile navigation in a drawer instead of the bottom tab row", () => {
+    const staffShell = renderToStaticMarkup(
+      <AppShell activePath="/app/referral-operations" navigation={staffNavigation} onNavigate={() => undefined} onSignOut={() => undefined}>
+        <ReferralOperationsContent data={staffReferralList} onNavigate={() => undefined} onPage={() => undefined} />
+      </AppShell>,
+    );
+    expect(staffShell).toContain("aria-label=\"Open navigation\"");
+    expect(staffShell).toContain("mobile-drawer");
+    expect(staffShell).not.toContain("bottom-nav");
+
+    const studentShell = renderToStaticMarkup(
+      <AppShell activePath="/app" navigation={studentNavigation} onNavigate={() => undefined} onSignOut={() => undefined}>
+        <OverviewContent home={studentHome} />
+      </AppShell>,
+    );
+    expect(studentShell).toContain("bottom-nav");
+    expect(studentShell).not.toContain("mobile-drawer");
   });
 
   it("adds staff referral operations navigation and renders a compact operations queue", () => {
