@@ -2,9 +2,10 @@ import { z } from "zod";
 import type { Context, Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { ORG_ID } from "../lib/auth-store";
-import { createOpaqueId } from "../lib/crypto";
+import { createOpaqueId, decryptText } from "../lib/crypto";
 import { requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
+import { normalizeIndianMobile } from "../lib/mobile";
 import { ADMISSION_STAFF_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import {
   REFERRAL_STATUSES,
@@ -32,6 +33,7 @@ const statusSchema = z.object({
 
 type ReferralListRow = {
   referral_id: string;
+  referral_link_id: string | null;
   branch_id: string;
   branch_name: string | null;
   submitted_at: string;
@@ -39,6 +41,10 @@ type ReferralListRow = {
   status: ReferralStatus;
   updated_at: string;
   prospect_name: string;
+  prospect_mobile_hash: string | null;
+  prospect_mobile_ciphertext: string | null;
+  prospect_contact_id: string | null;
+  prospect_contact_ciphertext: string | null;
   referrer_name: string | null;
   referrer_public_name: string | null;
   referrer_type: string | null;
@@ -104,7 +110,7 @@ export function registerStaffReferralRoutes(app: PortalHono) {
         hasMore: (rows.results || []).length > pagination.limit,
       },
       filters,
-      referrals: pageRows.map(toListItem),
+      referrals: await Promise.all(pageRows.map((row) => toListItem(c, row))),
     });
   });
 
@@ -213,7 +219,7 @@ async function referralDetail(c: PortalContext, staff: StaffContext, referralId:
   return {
     success: true,
     referral: {
-      ...toListItem(row),
+      ...(await toListItem(c, row)),
       programmeName: row.referral_programme_name,
       validityDays: Number(row.validity_days || 0),
       referrer: {
@@ -265,6 +271,7 @@ async function scopedReferral(c: PortalContext, staff: StaffContext, referralId:
 function listSelectSql(extraColumns = "") {
   return `select
        referrals.id as referral_id,
+       referrals.referral_link_id,
        referrals.branch_id,
        branches.name as branch_name,
        referrals.submitted_at,
@@ -272,6 +279,30 @@ function listSelectSql(extraColumns = "") {
        referrals.status,
        referrals.updated_at,
        referrals.prospect_name,
+       referrals.prospect_mobile_hash,
+       referrals.prospect_mobile_ciphertext,
+       (
+         select person_contacts.id
+         from person_contacts
+         left join person_contact_details on person_contact_details.contact_id = person_contacts.id
+         join person_contact_secrets on person_contact_secrets.contact_id = person_contacts.id
+         where person_contacts.person_id = referrals.prospect_person_id
+           and person_contacts.contact_type = 'mobile'
+           and coalesce(person_contact_details.status, 'active') = 'active'
+         order by person_contacts.is_primary desc, person_contacts.created_at desc
+         limit 1
+       ) as prospect_contact_id,
+       (
+         select person_contact_secrets.value_ciphertext
+         from person_contacts
+         left join person_contact_details on person_contact_details.contact_id = person_contacts.id
+         join person_contact_secrets on person_contact_secrets.contact_id = person_contacts.id
+         where person_contacts.person_id = referrals.prospect_person_id
+           and person_contacts.contact_type = 'mobile'
+           and coalesce(person_contact_details.status, 'active') = 'active'
+         order by person_contacts.is_primary desc, person_contacts.created_at desc
+         limit 1
+       ) as prospect_contact_ciphertext,
        referrer_people.full_name as referrer_name,
        referrer_people.public_name as referrer_public_name,
        referrer_roles.code as referrer_type,
@@ -406,7 +437,7 @@ function listPagination(c: PortalContext) {
   };
 }
 
-function toListItem(row: ReferralListRow) {
+async function toListItem(c: PortalContext, row: ReferralListRow) {
   const qualification = qualificationState(row);
   return {
     referralId: row.referral_id,
@@ -419,6 +450,7 @@ function toListItem(row: ReferralListRow) {
     referrerName: row.referrer_public_name || row.referrer_name || "",
     referrerType: row.referrer_type || "",
     prospectPublicName: publicProspectName(row.prospect_name),
+    prospectContact: await prospectContact(c, row),
     courseInterested: row.course_name || "",
     referralStatus: row.status,
     linkedEnquiry: row.enquiry_id ? { id: row.enquiry_id, enquiryNumber: row.enquiry_number || "", status: row.enquiry_status || "" } : null,
@@ -428,6 +460,41 @@ function toListItem(row: ReferralListRow) {
     rewardStatus: rewardStatus(row, qualification),
     reward: null,
   };
+}
+
+async function prospectContact(c: PortalContext, row: ReferralListRow) {
+  const mobile = await prospectCanonicalMobile(c, row);
+  if (!mobile) return emptyProspectContact();
+  const coursePhrase = row.course_name ? `${row.course_name} course` : "course";
+  const draft = `Hi, this is Samyak Computer Classes, Sion. You had shown interest in our ${coursePhrase} through a referral. I'm following up to help you with course details, batch timings and admission information.`;
+  return {
+    mobile,
+    mobileDisplay: formatIndianMobileDisplay(mobile),
+    whatsappUrl: `https://wa.me/91${mobile}?text=${encodeURIComponent(draft)}`,
+    callUrl: `tel:+91${mobile}`,
+  };
+}
+
+async function prospectCanonicalMobile(c: PortalContext, row: ReferralListRow) {
+  const contactMobile = await decryptProspectPersonContact(c, row);
+  if (contactMobile) return contactMobile;
+  if (!row.referral_link_id || !row.prospect_mobile_hash || !row.prospect_mobile_ciphertext) return null;
+  const submittedMobile = await decryptText(c.env.SESSION_PEPPER, `referral-mobile:${row.referral_link_id}:${row.prospect_mobile_hash}`, row.prospect_mobile_ciphertext).catch(() => null);
+  return submittedMobile ? normalizeIndianMobile(submittedMobile) : null;
+}
+
+async function decryptProspectPersonContact(c: PortalContext, row: ReferralListRow) {
+  if (!row.prospect_contact_id || !row.prospect_contact_ciphertext) return null;
+  const value = await decryptText(c.env.SESSION_PEPPER, `contact:${row.prospect_contact_id}`, row.prospect_contact_ciphertext).catch(() => null);
+  return value ? normalizeIndianMobile(value) : null;
+}
+
+function emptyProspectContact() {
+  return { mobile: null, mobileDisplay: null, whatsappUrl: null, callUrl: null };
+}
+
+function formatIndianMobileDisplay(mobile: string) {
+  return `+91 ${mobile.slice(0, 5)} ${mobile.slice(5)}`;
 }
 
 function qualificationState(row: ReferralListRow) {

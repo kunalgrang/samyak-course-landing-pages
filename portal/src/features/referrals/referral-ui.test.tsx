@@ -7,7 +7,7 @@ import { ProfileContent } from "../profile/ProfilePage";
 import { OverviewContent } from "../../routes/ShellHomePage";
 import { RulesPage } from "../../routes/RulesPage";
 import { ReferralsContent } from "./ReferralsPage";
-import { ReferralOperationsContent } from "../staff/ReferralOperationsPage";
+import { ContactCell, ReferralOperationsContent } from "../staff/ReferralOperationsPage";
 import {
   buildWhatsAppShareUrl,
   copyReferralLink,
@@ -141,6 +141,12 @@ const staffReferralList: StaffReferralList = {
       referrerName: "Asha S.",
       referrerType: "student",
       prospectPublicName: "Future L.",
+      prospectContact: {
+        mobile: "9876543210",
+        mobileDisplay: "+91 98765 43210",
+        whatsappUrl: "https://wa.me/919876543210?text=Hi%2C%20this%20is%20Samyak%20Computer%20Classes%2C%20Sion.",
+        callUrl: "tel:+919876543210",
+      },
       courseInterested: "Full Stack",
       referralStatus: "converted",
       linkedEnquiry: { id: "enq_1", enquiryNumber: "ENQ-SION-2026-0001", status: "converted" },
@@ -240,7 +246,44 @@ describe("student referral portal UI", () => {
     expect(html).toContain("ENQ-SION-2026-0001");
     expect(html).toContain("Admitted Payment Data Unavailable");
     expect(html).toContain("Valid admission");
-    expect(html).not.toContain("9876543210");
+    expect(html).toContain("+91 98765 43210");
+    expect(html).toContain("WhatsApp prospect");
+    expect(html).toContain("Call prospect");
+    expect(html).toContain("https://wa.me/919876543210");
+    expect(html).toContain("tel:+919876543210");
+    expect(html).not.toContain("mobile_hash");
+  });
+
+  it("renders staff referral missing-contact state without active actions", () => {
+    const html = renderToStaticMarkup(
+      <ReferralOperationsContent
+        data={{
+          ...staffReferralList,
+          referrals: [
+            {
+              ...staffReferralList.referrals[0],
+              prospectContact: { mobile: null, mobileDisplay: null, whatsappUrl: null, callUrl: null },
+            },
+          ],
+        }}
+        onNavigate={() => undefined}
+        onPage={() => undefined}
+      />,
+    );
+    expect(html).toContain("Contact unavailable");
+    expect(html).not.toContain("WhatsApp prospect");
+    expect(html).not.toContain("Call prospect");
+  });
+
+  it("renders referral detail contact actions and missing-contact copy", () => {
+    const html = renderToStaticMarkup(<ContactCell contact={staffReferralList.referrals[0].prospectContact} />);
+    expect(html).toContain("+91 98765 43210");
+    expect(html).toContain("WhatsApp prospect");
+    expect(html).toContain("Call prospect");
+
+    const missing = renderToStaticMarkup(<ContactCell contact={{ mobile: null, mobileDisplay: null, whatsappUrl: null, callUrl: null }} />);
+    expect(missing).toContain("Contact number unavailable");
+    expect(missing).not.toContain("href=");
   });
 
   it("renders referral share actions", () => {

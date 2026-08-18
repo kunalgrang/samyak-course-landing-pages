@@ -444,7 +444,7 @@
 
 .referral-ops-row {
   display: grid;
-  grid-template-columns: minmax(96px, 0.8fr) minmax(140px, 1fr) minmax(150px, 1.1fr) minmax(106px, 0.8fr) minmax(130px, 0.9fr) minmax(150px, 1fr) minmax(130px, 0.9fr);
+  grid-template-columns: minmax(92px, 0.7fr) minmax(128px, 0.9fr) minmax(140px, 1fr) minmax(150px, 1fr) minmax(96px, 0.7fr) minmax(120px, 0.8fr) minmax(140px, 0.9fr) minmax(120px, 0.8fr);
   gap: 12px;
   align-items: center;
 }
@@ -457,7 +457,7 @@
   text-transform: uppercase;
 }
 
-.referral-ops-row--button {
+.referral-ops-row--item {
   width: 100%;
   min-height: 68px;
   border: 1px solid var(--color-line);
@@ -467,7 +467,7 @@
   text-align: left;
 }
 
-.referral-ops-row--button:hover {
+.referral-ops-row--item:hover {
   border-color: rgba(13, 148, 136, 0.36);
   background: #f8fdfc;
 }
@@ -476,6 +476,24 @@
   display: grid;
   min-width: 0;
   gap: 4px;
+}
+
+.referral-open-button {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.referral-open-button:focus-visible,
+.contact-action:focus-visible {
+  outline: 3px solid rgba(13, 148, 136, 0.25);
+  outline-offset: 2px;
 }
 
 .referral-ops-row strong,
@@ -492,6 +510,48 @@
   font-size: 0.78rem;
   font-weight: 800;
   line-height: 1.35;
+}
+
+.referral-contact {
+  display: grid;
+  gap: 8px;
+}
+
+.referral-contact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.referral-ops-row .referral-contact-actions {
+  display: flex;
+}
+
+.contact-action {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 0 10px;
+  color: var(--color-navy);
+  background: #fff;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.contact-action--whatsapp {
+  border-color: rgba(13, 148, 136, 0.36);
+  color: #0f766e;
+  background: #ecfdf5;
+}
+
+.referral-contact-unavailable {
+  color: var(--color-muted);
+  font-size: 0.82rem;
+  font-weight: 800;
 }
 
 .referral-detail-hero {
@@ -565,7 +625,7 @@
   }
 
   .referral-ops-row,
-  .referral-ops-row--button {
+  .referral-ops-row--item {
     grid-template-columns: 1fr;
   }
 
@@ -575,5 +635,19 @@
 
   .referral-status-action {
     grid-template-columns: 1fr;
+  }
+
+  .referral-contact--compact .referral-contact-number {
+    display: none;
+  }
+
+  .referral-contact-actions {
+    gap: 10px;
+  }
+
+  .contact-action {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 12px;
   }
 }

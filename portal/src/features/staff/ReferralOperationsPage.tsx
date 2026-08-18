@@ -132,21 +132,28 @@ export function ReferralOperationsContent({
               <span>Reference</span>
               <span>Referrer</span>
               <span>Prospect</span>
+              <span>Mobile</span>
               <span>Status</span>
               <span>Admission</span>
               <span>Reward</span>
               <span>Last activity</span>
             </div>
             {data.referrals.map((referral) => (
-              <button type="button" className="referral-ops-row referral-ops-row--button" key={referral.referralId} onClick={() => onNavigate(`/app/referral-operations/${referral.referralId}`)}>
-                <span><strong>{referral.shortReference}</strong><small>{formatDate(referral.submittedAt)}</small></span>
+              <div className="referral-ops-row referral-ops-row--item" role="row" key={referral.referralId}>
+                <span>
+                  <button type="button" className="referral-open-button" onClick={() => onNavigate(`/app/referral-operations/${referral.referralId}`)}>
+                    <strong>{referral.shortReference}</strong>
+                    <small>{formatDate(referral.submittedAt)}</small>
+                  </button>
+                </span>
                 <span><strong>{referral.referrerName}</strong><small>{label(referral.referrerType) || "Referrer"}</small></span>
                 <span><strong>{referral.prospectPublicName}</strong><small>{referral.courseInterested || "Course pending"}</small></span>
+                <ContactCell contact={referral.prospectContact} compact />
                 <StatusChip value={referral.referralStatus} />
                 <span><strong>{label(referral.admissionStatus)}</strong><small>{referral.linkedEnquiry?.enquiryNumber || "No enquiry"}</small></span>
                 <span><strong>{label(referral.qualificationState)}</strong><small>{referral.rewardStatus}</small></span>
                 <span><strong>{formatDate(referral.lastActivityAt)}</strong><small>{validityLabel(referral.validityState, referral.validUntil)}</small></span>
-              </button>
+              </div>
             ))}
           </div>
         )}
@@ -208,6 +215,10 @@ export function ReferralOperationsDetailPage({ referralId, onNavigate, isOwner }
           <DetailField label="Public name" value={detail.referrer.publicName || detail.referrerName} />
           <DetailField label="Type" value={label(detail.referrer.type)} />
           <DetailField label="External ID" value={detail.referrer.externalReferrerId || "Not available"} />
+        </article>
+        <article className="staff-card">
+          <h2>Prospect Contact</h2>
+          <ContactCell contact={detail.prospectContact} />
         </article>
         <article className="staff-card">
           <h2>Referral Links</h2>
@@ -334,6 +345,25 @@ function useStaffReferralDetail(referralId: string) {
   }, [referralId, refreshKey]);
 
   return { detail, error, refresh: () => setRefreshKey((value) => value + 1) };
+}
+
+export function ContactCell({ contact, compact = false }: { contact: StaffReferralListItem["prospectContact"]; compact?: boolean }) {
+  if (!contact.mobile || !contact.mobileDisplay) {
+    return compact ? <span className="referral-contact-unavailable">Contact unavailable</span> : <p className="staff-empty referral-contact-unavailable">Contact number unavailable</p>;
+  }
+  return (
+    <span className={`referral-contact ${compact ? "referral-contact--compact" : ""}`}>
+      <strong className="referral-contact-number">{contact.mobileDisplay}</strong>
+      <span className="referral-contact-actions">
+        {contact.whatsappUrl ? (
+          <a className="contact-action contact-action--whatsapp" href={contact.whatsappUrl} target="_blank" rel="noopener noreferrer" aria-label="WhatsApp prospect">
+            WhatsApp
+          </a>
+        ) : null}
+        {contact.callUrl ? <a className="contact-action" href={contact.callUrl} aria-label="Call prospect">Call</a> : null}
+      </span>
+    </span>
+  );
 }
 
 function Metric({ label, value }: { label: string; value: number | string }) {

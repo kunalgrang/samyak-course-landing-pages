@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
-import { hmacHex } from "./crypto";
+import { encryptText, hmacHex } from "./crypto";
 import { normalizeIndianMobile } from "./mobile";
 import { issueReferralLink, listEligibleReferralCourses, normalizeSubmittedReferralName, resolveReferralLink, rotateReferralLink, submitReferralAndCreateEnquiry, type ReferralServiceEnv } from "./referral-service";
 import { hashReferralToken } from "./referral-token";
@@ -513,7 +513,7 @@ describe("native referral services", () => {
     fixture.close();
   });
 
-  it("serves staff referral operations with RBAC, pagination, filters, and no prospect contact leakage", async () => {
+  it("serves staff referral operations with RBAC, pagination, filters, and authorized prospect contact actions", async () => {
     const fixture = testFixture();
     seedReferrer(fixture.sqlite);
     seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
@@ -524,6 +524,7 @@ describe("native referral services", () => {
       seedDashboardReferral(fixture.sqlite, index, index % 2 === 0 ? "converted" : "accepted");
       if (index % 2 === 0) seedRewardSnapshot(fixture.sqlite, index);
     }
+    await attachSubmittedMobile(fixture.sqlite, "referral_04", "9876543210");
     const other = "2026-08-12T10:00:00.000Z";
     fixture.sqlite.prepare(
       `insert into referrals
@@ -546,8 +547,22 @@ describe("native referral services", () => {
     const body = await firstPage.json() as { pagination: { total: number; hasMore: boolean }; referrals: Array<Record<string, unknown>> };
     expect(body.pagination).toMatchObject({ total: 5, hasMore: true });
     expect(body.referrals).toHaveLength(2);
-    expect(JSON.stringify(body)).not.toContain("9876543210");
+    expect(body.referrals[0]).toMatchObject({
+      referralId: "referral_04",
+      prospectContact: {
+        mobile: "9876543210",
+        mobileDisplay: "+91 98765 43210",
+        callUrl: "tel:+919876543210",
+      },
+    });
+    expect(String((body.referrals[0].prospectContact as { whatsappUrl: string }).whatsappUrl)).toContain("https://wa.me/919876543210?text=");
+    const decodedDraft = decodeURIComponent(String((body.referrals[0].prospectContact as { whatsappUrl: string }).whatsappUrl));
+    expect(decodedDraft).toContain("Full Stack course through a referral");
+    expect(decodedDraft).not.toContain("referral_04");
+    expect(decodedDraft).not.toContain("Student Referrer");
     expect(JSON.stringify(body)).not.toContain("learner@example.com");
+    expect(JSON.stringify(body)).not.toContain("mobile_hash_04");
+    expect(JSON.stringify(body)).not.toContain("ciphertext");
     expect(JSON.stringify(body)).not.toContain("referral_other_org");
 
     expect(filtered.status).toBe(200);
@@ -555,6 +570,62 @@ describe("native referral services", () => {
     expect(filteredBody.referrals.length).toBeGreaterThan(0);
     expect(filteredBody.referrals.every((item) => item.referralStatus === "converted" && item.qualificationState === "admitted_payment_data_unavailable" && item.reward === null)).toBe(true);
     expect(denied.status).toBe(403);
+    fixture.close();
+  });
+
+  it("returns owner-authorized detail contact from linked Person mobile before referral submission fallback", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
+    seedDashboardReferral(fixture.sqlite, 0, "accepted");
+    await attachSubmittedMobile(fixture.sqlite, "referral_00", "9876543210");
+    await attachLinkedProspectContact(fixture.sqlite, "referral_00", "9876501111");
+    seedStaffRole(fixture.sqlite, "acct_student", "owner");
+    const sessionCookie = await seedSession(fixture.sqlite, "acct_student", "person_student");
+    const app = staffReferralRouteApp();
+    const workerEnv = { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER };
+
+    const detail = await app.request("https://portal.samyaksion.com/api/staff/referrals/referral_00", { headers: { Cookie: sessionCookie } }, workerEnv);
+    expect(detail.status).toBe(200);
+    const body = await detail.json() as { referral: { prospectContact: { mobile: string; mobileDisplay: string; whatsappUrl: string; callUrl: string } } };
+    expect(body.referral.prospectContact).toMatchObject({
+      mobile: "9876501111",
+      mobileDisplay: "+91 98765 01111",
+      callUrl: "tel:+919876501111",
+    });
+    expect(body.referral.prospectContact.whatsappUrl).toContain("https://wa.me/919876501111?text=");
+    expect(JSON.stringify(body)).not.toContain("9876543210");
+    expect(JSON.stringify(body)).not.toContain("contact_prospect");
+    fixture.close();
+  });
+
+  it("handles missing staff referral contact and keeps public/referrer surfaces private", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
+    seedDashboardReferral(fixture.sqlite, 0, "accepted");
+    seedStaffRole(fixture.sqlite, "acct_student", "counsellor", "branch_sion");
+    const sessionCookie = await seedSession(fixture.sqlite, "acct_student", "person_student");
+    const staffApp = staffReferralRouteApp();
+    const publicApp = publicReferralApp();
+    const studentApp = studentRouteApp();
+    const workerEnv = { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER };
+
+    const list = await staffApp.request("https://portal.samyaksion.com/api/staff/referrals", { headers: { Cookie: sessionCookie } }, workerEnv);
+    const listBody = await list.json() as { referrals: Array<{ prospectContact: Record<string, string | null> }> };
+    expect(listBody.referrals[0].prospectContact).toEqual({ mobile: null, mobileDisplay: null, whatsappUrl: null, callUrl: null });
+
+    const issued = await issueReferralLink(fixture.env, { organisationId: "org_samyak", referralProgrammeId: "rprog_samyak_skill_circle", referrerProfileId: "refprof_student", loginAccountId: "acct_student", personId: "person_student", now: NOW });
+    const resolved = await publicApp.request(`https://go.samyaksion.com/api/public/referrals/resolve/${issued.rawToken}`, { headers: { Origin: "https://go.samyaksion.com" } }, workerEnv);
+    const submitted = await publicApp.request("https://go.samyaksion.com/api/public/referrals/submit", {
+      method: "POST",
+      headers: { Origin: "https://go.samyaksion.com", "Content-Type": "application/json", "Idempotency-Key": "public-privacy" },
+      body: JSON.stringify({ token: issued.rawToken, name: "Future Learner", mobile: "9876543210", courseId: "course_fsd", consent: true }),
+    }, workerEnv);
+    const referrerDashboard = await studentApp.request("https://portal.samyaksion.com/api/student/referrals", { headers: { Cookie: sessionCookie } }, workerEnv);
+    expect(JSON.stringify(await resolved.json())).not.toContain("9876543210");
+    expect(JSON.stringify(await submitted.json())).not.toContain("9876543210");
+    expect(JSON.stringify(await referrerDashboard.json())).not.toContain("9876543210");
     fixture.close();
   });
 
@@ -1020,6 +1091,38 @@ function seedDashboardReferral(db: DatabaseSync, index: number, status: string) 
        null, null, 'course_fsd', 'personal_link', ?, ?, '2026-12-31T10:00:00.000Z',
        ?, ?, ?, ?, ?, ?)`,
   ).run(`referral_${suffix}`, status, submittedAt, submittedAt, `mobile_hash_${suffix}`, suffix, `Prospect ${suffix}`, submittedAt, submittedAt);
+}
+
+async function attachSubmittedMobile(db: DatabaseSync, referralId: string, mobile: string) {
+  const mobileHash = await mobileLookupHash(mobile);
+  const linkId = `link_${referralId}`;
+  const ciphertext = await encryptText(SESSION_PEPPER, `referral-mobile:${linkId}:${mobileHash}`, mobile);
+  db.prepare(
+    `insert into referral_links
+      (id, organisation_id, referral_programme_id, referrer_profile_id, token_hash, token_last_four, link_version, status, activated_at, created_at, updated_at)
+     values (?, 'org_samyak', 'rprog_samyak_skill_circle', 'refprof_student', ?, 'hash', 1, 'active', ?, ?, ?)`,
+  ).run(linkId, `token_hash_${referralId}`, NOW, NOW, NOW);
+  db.prepare(
+    `update referrals
+     set referral_link_id = ?, prospect_mobile_hash = ?, prospect_mobile_last_four = ?, prospect_mobile_ciphertext = ?
+     where id = ?`,
+  ).run(linkId, mobileHash, mobile.slice(-4), ciphertext, referralId);
+}
+
+async function attachLinkedProspectContact(db: DatabaseSync, referralId: string, mobile: string) {
+  const mobileHash = await mobileLookupHash(mobile);
+  const personId = `person_${referralId}_prospect`;
+  const contactId = `contact_${referralId}_prospect`;
+  const ciphertext = await encryptText(SESSION_PEPPER, `contact:${contactId}`, mobile);
+  db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values (?, 'org_samyak', 'branch_sion', 'Linked Prospect', 'Linked Prospect', 'active', ?, ?)")
+    .run(personId, NOW, NOW);
+  db.prepare("insert into person_contacts (id, person_id, contact_type, normalized_value, last_four, is_primary, is_verified, created_at, updated_at) values (?, ?, 'mobile', ?, ?, 1, 1, ?, ?)")
+    .run(contactId, personId, mobileHash, mobile.slice(-4), NOW, NOW);
+  db.prepare("insert into person_contact_details (contact_id, belongs_to, is_whatsapp, status, created_at, updated_at) values (?, 'student', 1, 'active', ?, ?)")
+    .run(contactId, NOW, NOW);
+  db.prepare("insert into person_contact_secrets (contact_id, value_ciphertext, encryption_version, created_at, updated_at) values (?, ?, 'v1', ?, ?)")
+    .run(contactId, ciphertext, NOW, NOW);
+  db.prepare("update referrals set prospect_person_id = ? where id = ?").run(personId, referralId);
 }
 
 function seedRewardSnapshot(db: DatabaseSync, index: number) {

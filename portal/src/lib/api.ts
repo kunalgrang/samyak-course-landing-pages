@@ -327,6 +327,13 @@ const discountApprovalsSchema = z.object({
   approvals: z.array(z.record(z.string(), z.unknown())),
 });
 
+const staffReferralProspectContactSchema = z.object({
+  mobile: z.string().nullable(),
+  mobileDisplay: z.string().nullable(),
+  whatsappUrl: z.string().nullable(),
+  callUrl: z.string().nullable(),
+});
+
 const staffReferralListItemSchema = z.object({
   referralId: z.string(),
   shortReference: z.string(),
@@ -338,6 +345,7 @@ const staffReferralListItemSchema = z.object({
   referrerName: z.string(),
   referrerType: z.string(),
   prospectPublicName: z.string(),
+  prospectContact: staffReferralProspectContactSchema,
   courseInterested: z.string(),
   referralStatus: z.string(),
   linkedEnquiry: z.object({ id: z.string(), enquiryNumber: z.string(), status: z.string() }).nullable(),
