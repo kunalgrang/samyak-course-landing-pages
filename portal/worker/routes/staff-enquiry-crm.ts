@@ -3,6 +3,7 @@ import type { Context, Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { ORG_ID } from "../lib/auth-store";
 import { decryptText } from "../lib/crypto";
+import { isResponse, readJsonBody, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { ADMISSION_STAFF_ROLES, requireStaffRoles } from "../lib/staff-auth";
 import {
@@ -37,7 +38,6 @@ type PortalContext = Context<{
 
 const queueSchema = z.enum(["hot_urgent", "hot", "warm", "cold", "today", "overdue", "new", "upcoming", "considering", "deferred", "admission_ready", "unassigned", "all"]).default("all");
 const CRM_LIMIT_MAX = 50;
-const CRM_PREFETCH_LIMIT = 250;
 const IST_TIME_ZONE = "Asia/Kolkata";
 
 export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
@@ -49,9 +49,8 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
 
     const filters = listFilters(c, staff.loginAccountId);
     const pagination = listPagination(c);
-    const { rows, totalCandidates } = await crmRows(c, scope, filters);
+    const rows = await crmRows(c, scope, filters);
     const eventsByEnquiry = await fetchEventsForEnquiries(c, rows.map((row) => row.id));
-    const contactsByEnquiry = await contactsForRows(c, rows);
     const now = new Date().toISOString();
     const enriched = [];
     for (const row of rows) {
@@ -59,29 +58,37 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
       const temperature = calculateLeadTemperature(row, events, now);
       if (!matchesTemperatureFilter(filters, temperature.leadTemperature)) continue;
       if (!matchesQueue(row, temperature.leadTemperature, filters.queue, events, now)) continue;
-      enriched.push(toCrmListItem(row, temperature, events.length, contactsByEnquiry.get(row.id) || emptyContact()));
+      enriched.push({ row, temperature, eventCount: events.length });
     }
-    enriched.sort(comparePriority(now));
+    enriched.sort((left, right) => comparePriority(now)(
+      toCrmListItem(left.row, left.temperature, left.eventCount, emptyContact()),
+      toCrmListItem(right.row, right.temperature, right.eventCount, emptyContact()),
+    ));
     const page = enriched.slice(pagination.offset, pagination.offset + pagination.limit);
-    return jsonPlain(c, crmListPayload(page, enriched.length || totalCandidates, pagination, filters));
+    const contactsByEnquiry = await contactsForRows(c, page.map((item) => item.row));
+    return jsonPlain(c, crmListPayload(page.map((item) => toCrmListItem(item.row, item.temperature, item.eventCount, contactsByEnquiry.get(item.row.id) || emptyContact())), enriched.length, pagination, filters));
   });
 
   app.post("/api/staff/enquiries/:enquiryId/follow-ups", async (c) => {
+    const sameOriginError = requireSameOrigin(c);
+    if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
-    const parsed = followUpInputSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_follow_up", message: parsed.error.issues[0]?.message || "Please check follow-up details." });
-    const result = await recordFollowUp(c, staff, c.req.param("enquiryId"), parsed.data);
+    const body = await readJsonBody(c, followUpInputSchema);
+    if (isResponse(body)) return body;
+    const result = await recordFollowUp(c, staff, c.req.param("enquiryId"), body);
     if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message });
     return jsonPlain(c, { success: true, ...result }, { status: 201 });
   });
 
   app.patch("/api/staff/enquiries/:enquiryId/assignment", async (c) => {
+    const sameOriginError = requireSameOrigin(c);
+    if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
-    const parsed = assignmentInputSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_assignment", message: "Select a valid assignee." });
-    const result = await assignEnquiry(c, staff, c.req.param("enquiryId"), parsed.data.counsellorLoginAccountId);
+    const body = await readJsonBody(c, assignmentInputSchema);
+    if (isResponse(body)) return body;
+    const result = await assignEnquiry(c, staff, c.req.param("enquiryId"), body.counsellorLoginAccountId);
     if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message });
     return jsonPlain(c, { success: true, ...result });
   });
@@ -134,15 +141,11 @@ async function crmRows(c: Parameters<typeof branchScope>[0], scope: Awaited<Retu
      order by
        case when enquiries.next_follow_up_at is null then 1 else 0 end,
        enquiries.next_follow_up_at asc,
-       enquiries.created_at asc
-     limit ?`,
+       enquiries.created_at asc`,
   )
-    .bind(...where.params, CRM_PREFETCH_LIMIT)
-    .all<EnquiryCrmRow>();
-  const total = await c.env.DB.prepare(`select count(distinct enquiries.id) as count ${enquirySelectSql().slice(enquirySelectSql().indexOf("from enquiries"))} ${where.sql}`)
     .bind(...where.params)
-    .first<{ count: number }>();
-  return { rows: rows.results || [], totalCandidates: Number(total?.count || 0) };
+    .all<EnquiryCrmRow>();
+  return rows.results || [];
 }
 
 function applyQueueSqlFilters(queue: string, clauses: string[]) {

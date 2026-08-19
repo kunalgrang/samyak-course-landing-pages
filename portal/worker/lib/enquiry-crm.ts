@@ -67,6 +67,15 @@ const HOT_OUTCOMES = new Set<string>([
 const URGENT_SOURCE_VALUES = new Set(["referral", "student referral", "alumni referral", "walk-in"]);
 const SYSTEM_ADMIN_ROLES = new Set(["owner", "admin", "system_admin"]);
 const IST_TIME_ZONE = "Asia/Kolkata";
+const COLD_MIN_ATTEMPTS = 10;
+const COLD_MIN_ELAPSED_DAYS = 14;
+const HOT_URGENT_SOURCE_WINDOW_DAYS = 1;
+const HOT_SOURCE_WINDOW_DAYS = 7;
+const HOT_OUTCOME_WINDOW_DAYS = 7;
+const DEMO_COMPLETED_URGENT_WINDOW_DAYS = 7;
+const DEMO_COMPLETED_HOT_WINDOW_DAYS = 30;
+const NEAR_JOINING_WINDOW_DAYS = 7;
+const ADMISSION_READY_OUTCOMES = new Set<string>(["fee_discussed", "batch_discussed", "visit_scheduled", "demo_completed"]);
 
 export const followUpInputSchema = z.object({
   channel: z.enum(FOLLOW_UP_CHANNELS),
@@ -211,14 +220,24 @@ export function validatePipelineUpdate(input: {
   nextFollowUpAt?: string | null;
   preferredJoiningDate?: string | null;
   closedReason?: LostReason | null;
+  nowIso?: string;
 }) {
+  const nowIso = input.nowIso || new Date().toISOString();
   if (input.nextStage === "converted") return "Converted is admission-derived and cannot be set from follow-up.";
   if (input.currentStage === "converted") return "Converted enquiries cannot be edited.";
   if (TERMINAL_STAGE_SET.has(input.currentStage)) return "Terminal enquiries cannot be edited.";
+  if (input.nextFollowUpAt && !isValidDateTime(input.nextFollowUpAt)) return "Next follow-up date/time is invalid.";
+  if (input.nextFollowUpAt && Date.parse(input.nextFollowUpAt) <= Date.parse(nowIso)) return "Next follow-up must be in the future.";
+  if (input.preferredJoiningDate && !isValidDateOnly(input.preferredJoiningDate)) return "Expected joining date is invalid.";
+  if (input.preferredJoiningDate && !hasFutureDate(input.preferredJoiningDate, nowIso)) return "Expected joining date cannot be in the past.";
   if (input.nextStage === "deferred" && (!input.preferredJoiningDate || !input.nextFollowUpAt)) {
     return "Deferred enquiries require expected joining and next follow-up dates.";
   }
   if (input.nextStage === "lost" && !input.closedReason) return "Lost enquiries require a closed reason.";
+  if (["not_interested", "joined_elsewhere"].includes(input.outcome || "") && input.nextStage !== "lost") return "This outcome must close the enquiry as Lost.";
+  if (input.outcome === "invalid_contact" && input.nextStage !== "invalid") return "Invalid contact must use the Invalid pipeline stage.";
+  if (input.outcome === "deferred_joining" && input.nextStage !== "deferred") return "Deferred joining must use the Deferred pipeline stage.";
+  if (input.nextStage === "admission_ready" && !ADMISSION_READY_OUTCOMES.has(input.outcome || "")) return "Admission-ready requires a high-intent follow-up outcome.";
   if (["invalid", "duplicate"].includes(input.nextStage) && input.closedReason) return "Invalid and duplicate are distinct terminal states and do not use lost reasons.";
   if (input.nextStage === "new" && input.currentStage !== "new") return "Only untouched enquiries may remain New.";
   return null;
@@ -246,24 +265,24 @@ export function calculateLeadTemperature(enquiry: Pick<EnquiryCrmRow, "pipeline_
     return { leadTemperature: "warm", leadTemperatureReason: `Deferred joining planned for ${formatMonth(enquiry.preferred_joining_date)}` };
   }
 
-  const recentDemo = firstRecentOutcome(orderedEvents, "demo_completed", now, 7);
+  const recentDemo = firstRecentOutcome(orderedEvents, "demo_completed", now, DEMO_COMPLETED_URGENT_WINDOW_DAYS);
   if (recentDemo) return { leadTemperature: "hot_urgent", leadTemperatureReason: `Demo completed ${relativeDays(recentDemo.occurred_at, nowIso)}` };
 
-  if (joiningWithinDays(enquiry.preferred_joining_date, nowIso, 7)) {
-    return { leadTemperature: "hot_urgent", leadTemperatureReason: "Expected joining is within 7 days" };
+  if (joiningWithinDays(enquiry.preferred_joining_date, nowIso, NEAR_JOINING_WINDOW_DAYS)) {
+    return { leadTemperature: "hot_urgent", leadTemperatureReason: `Expected joining is within ${NEAR_JOINING_WINDOW_DAYS} days` };
   }
 
-  if (isUrgentSource(enquiry.source) && daysBetween(enquiry.created_at, nowIso) <= 1 && !cold.count) {
+  if (isUrgentSource(enquiry.source) && daysBetween(enquiry.created_at, nowIso) <= HOT_URGENT_SOURCE_WINDOW_DAYS && !cold.count) {
     return { leadTemperature: "hot_urgent", leadTemperatureReason: `${sourceLabel(enquiry.source)} enquiry received ${relativeDays(enquiry.created_at, nowIso)}` };
   }
 
-  const recentHot = orderedEvents.find((event) => HOT_OUTCOMES.has(event.outcome) && daysBetween(event.occurred_at, nowIso) <= 7);
+  const recentHot = orderedEvents.find((event) => HOT_OUTCOMES.has(event.outcome) && daysBetween(event.occurred_at, nowIso) <= HOT_OUTCOME_WINDOW_DAYS);
   if (recentHot) return { leadTemperature: "hot", leadTemperatureReason: `${outcomeLabel(recentHot.outcome)} ${relativeDays(recentHot.occurred_at, nowIso)}` };
 
-  const staleDemo = firstRecentOutcome(orderedEvents, "demo_completed", now, 30);
+  const staleDemo = firstRecentOutcome(orderedEvents, "demo_completed", now, DEMO_COMPLETED_HOT_WINDOW_DAYS);
   if (staleDemo) return { leadTemperature: "hot", leadTemperatureReason: `Demo completed ${relativeDays(staleDemo.occurred_at, nowIso)}` };
 
-  if (isUrgentSource(enquiry.source) && daysBetween(enquiry.created_at, nowIso) <= 7 && cold.count < 3) {
+  if (isUrgentSource(enquiry.source) && daysBetween(enquiry.created_at, nowIso) <= HOT_SOURCE_WINDOW_DAYS && cold.count < 3) {
     return { leadTemperature: "hot", leadTemperatureReason: `${sourceLabel(enquiry.source)} enquiry still recent` };
   }
 
@@ -282,7 +301,7 @@ export function coldStreak(events: FollowUpEventRecord[], nowIso = new Date().to
   }
   const oldest = streak.at(-1);
   const elapsedDays = oldest ? Math.floor(daysBetween(oldest.occurred_at, nowIso)) : 0;
-  return { count: streak.length, elapsedDays, isCold: streak.length >= 10 && elapsedDays >= 14 };
+  return { count: streak.length, elapsedDays, isCold: streak.length >= COLD_MIN_ATTEMPTS && elapsedDays >= COLD_MIN_ELAPSED_DAYS };
 }
 
 export async function contactForEnquiry(c: AppContext, enquiry: EnquiryCrmRow) {
@@ -344,11 +363,19 @@ export async function assignEnquiry(c: AppContext, staff: StaffContext, enquiryI
     if (!target) return { ok: false as const, status: 400, code: "invalid_assignee", message: "Select an active staff member for this branch." };
   }
   const now = new Date().toISOString();
-  await c.env.DB.batch([
-    c.env.DB.prepare("update enquiries set counsellor_login_account_id = ?, assigned_at = ?, updated_at = ? where id = ? and organisation_id = ?")
-      .bind(assigneeId, assigneeId ? now : null, now, enquiry.id, ORG_ID),
-    auditStatement(c, staff, enquiry.branch_id, "enquiry_assigned", "enquiry", enquiry.id, { from: enquiry.counsellor_login_account_id, to: assigneeId }),
-  ]);
+  if (selfClaim) {
+    const result = await c.env.DB.prepare("update enquiries set counsellor_login_account_id = ?, assigned_at = ?, updated_at = ? where id = ? and organisation_id = ? and counsellor_login_account_id is null")
+      .bind(assigneeId, now, now, enquiry.id, ORG_ID)
+      .run();
+    if (!changed(result)) return { ok: false as const, status: 409, code: "assignment_taken", message: "This enquiry has already been claimed." };
+    await auditStatement(c, staff, enquiry.branch_id, "enquiry_assigned", "enquiry", enquiry.id, { from: null, to: assigneeId }).run();
+  } else {
+    await c.env.DB.batch([
+      c.env.DB.prepare("update enquiries set counsellor_login_account_id = ?, assigned_at = ?, updated_at = ? where id = ? and organisation_id = ?")
+        .bind(assigneeId, assigneeId ? now : null, now, enquiry.id, ORG_ID),
+      auditStatement(c, staff, enquiry.branch_id, "enquiry_assigned", "enquiry", enquiry.id, { from: enquiry.counsellor_login_account_id, to: assigneeId }),
+    ]);
+  }
   return { ok: true as const, enquiryId: enquiry.id, assignedTo: assigneeId };
 }
 
@@ -568,6 +595,16 @@ function hasFutureDateTime(dateValue: string | null, nowIso: string) {
   return Date.parse(dateValue) >= Date.parse(nowIso);
 }
 
+function isValidDateTime(value: string) {
+  return Number.isFinite(Date.parse(value));
+}
+
+function isValidDateOnly(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && value === date.toISOString().slice(0, 10);
+}
+
 function localDateKey(iso: string) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: IST_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso));
 }
@@ -584,4 +621,8 @@ function outcomeLabel(outcome: FollowUpOutcome) {
 
 function formatIndianMobileDisplay(mobile: string) {
   return mobile.length === 10 ? `${mobile.slice(0, 5)} ${mobile.slice(5)}` : mobile;
+}
+
+function changed(result: { meta?: { changes?: number; rows_written?: number } }) {
+  return Number(result.meta?.changes ?? result.meta?.rows_written ?? 0) > 0;
 }

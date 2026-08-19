@@ -48,6 +48,7 @@ const emptyFormFields: FormState = {
 };
 
 const queueOptions = [
+  ["my", "My enquiries"],
   ["hot_urgent", "Hot Urgent"],
   ["hot", "Hot"],
   ["warm", "Warm"],
@@ -60,7 +61,7 @@ const queueOptions = [
   ["deferred", "Deferred"],
   ["admission_ready", "Admission Ready"],
   ["unassigned", "Unassigned"],
-  ["all", "All"],
+  ["all", "All branch"],
 ] as const;
 
 const followUpOutcomes = [
@@ -95,6 +96,7 @@ export function EnquiriesPage() {
   const [crmTotal, setCrmTotal] = useState(0);
   const [isLoadingCrm, setIsLoadingCrm] = useState(true);
   const [activeLogId, setActiveLogId] = useState<string | null>(null);
+  const [loggingFollowUpId, setLoggingFollowUpId] = useState<string | null>(null);
   const [logForm, setLogForm] = useState(initialLogForm());
   const [mobile, setMobile] = useState("");
   const [searchResult, setSearchResult] = useState<StudentSearchResult | null>(null);
@@ -152,7 +154,12 @@ export function EnquiriesPage() {
   async function loadCrmQueue(search = crmSearch) {
     setIsLoadingCrm(true);
     try {
-      const data = await getCrmEnquiries({ queue: crmQueue, search: search || undefined, limit: 30 });
+      const data = await getCrmEnquiries({
+        queue: crmQueue === "my" ? "all" : crmQueue,
+        assignedTo: crmQueue === "my" ? "me" : undefined,
+        search: search || undefined,
+        limit: 30,
+      });
       setCrmItems(data.items);
       setCrmTotal(data.pagination.total);
       setError(null);
@@ -170,13 +177,15 @@ export function EnquiriesPage() {
 
   async function handleLogFollowUp(event: FormEvent, enquiry: CrmEnquiryItem) {
     event.preventDefault();
+    if (loggingFollowUpId) return;
+    setLoggingFollowUpId(enquiry.enquiry.id);
     try {
       await recordEnquiryFollowUp(enquiry.enquiry.id, {
         channel: logForm.channel,
         outcome: logForm.outcome,
         note: logForm.note || null,
         pipelineStage: logForm.pipelineStage,
-        nextFollowUpAt: logForm.nextFollowUpAt || null,
+        nextFollowUpAt: toIsoDateTime(logForm.nextFollowUpAt),
         expectedJoiningDate: logForm.expectedJoiningDate || null,
         closedReason: logForm.closedReason || null,
       });
@@ -185,6 +194,8 @@ export function EnquiriesPage() {
       await loadCrmQueue();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not log follow-up.");
+    } finally {
+      setLoggingFollowUpId(null);
     }
   }
 
@@ -282,7 +293,9 @@ export function EnquiriesPage() {
                     <label>Expected joining<input type="date" value={logForm.expectedJoiningDate} onChange={(event) => setLogForm((current) => ({ ...current, expectedJoiningDate: event.target.value }))} /></label>
                     <label>Lost reason<select value={logForm.closedReason} onChange={(event) => setLogForm((current) => ({ ...current, closedReason: event.target.value }))}><option value="">Only for lost</option><option value="not_interested">Not interested</option><option value="joined_elsewhere">Joined elsewhere</option><option value="fee_budget_issue">Fee/budget issue</option><option value="batch_timing_issue">Batch timing issue</option><option value="location_travel_issue">Location/travel issue</option><option value="course_not_suitable">Course not suitable</option><option value="no_response">No response</option><option value="postponed_indefinitely">Postponed indefinitely</option><option value="other">Other</option></select></label>
                     <label className="crm-log-note">Note<input value={logForm.note} onChange={(event) => setLogForm((current) => ({ ...current, note: event.target.value }))} placeholder="Internal note" /></label>
-                    <div className="staff-form-actions"><button type="submit">Save follow-up</button></div>
+                    <div className="staff-form-actions">
+                      <button type="submit" disabled={loggingFollowUpId === item.enquiry.id}>{loggingFollowUpId === item.enquiry.id ? "Saving..." : "Save follow-up"}</button>
+                    </div>
                   </form>
                 ) : null}
               </article>
@@ -579,4 +592,10 @@ function formatDateTime(value: string | null) {
   if (!value) return "Not scheduled";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function toIsoDateTime(value: string) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toISOString();
 }

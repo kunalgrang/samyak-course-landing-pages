@@ -30,6 +30,8 @@ WHERE `pipeline_stage` = 'new';
 UPDATE `enquiries`
 SET `closed_reason` = CASE
   WHEN `status` = 'not_interested' THEN 'not_interested'
+  WHEN `status` = 'lost' AND `lost_reason` in ('not_interested', 'joined_elsewhere', 'fee_budget_issue', 'batch_timing_issue', 'location_travel_issue', 'course_not_suitable', 'no_response', 'postponed_indefinitely', 'other') THEN `lost_reason`
+  WHEN `status` = 'lost' THEN 'no_response'
   ELSE `closed_reason`
 END
 WHERE `closed_reason` IS NULL;
