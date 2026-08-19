@@ -306,6 +306,40 @@ export function coldStreak(events: FollowUpEventRecord[], nowIso = new Date().to
 
 export async function contactForEnquiry(c: AppContext, enquiry: EnquiryCrmRow) {
   const mobile = enquiry.person_id ? await personPrimaryMobile(c, enquiry.person_id) : await referralProspectMobile(c, enquiry);
+  return crmContactFromMobile(enquiry, mobile);
+}
+
+export async function contactsForEnquiries(c: AppContext, enquiries: EnquiryCrmRow[]) {
+  const contacts = new Map<string, ReturnType<typeof emptyCrmContact>>();
+  const personIds = [...new Set(enquiries.map((enquiry) => enquiry.person_id).filter((value): value is string => Boolean(value)))];
+  const personContacts = personIds.length
+    ? await c.env.DB.prepare(
+        `select person_contacts.person_id, person_contacts.id, person_contact_secrets.value_ciphertext
+         from person_contacts
+         left join person_contact_details on person_contact_details.contact_id = person_contacts.id
+         left join person_contact_secrets on person_contact_secrets.contact_id = person_contacts.id
+         where person_contacts.person_id in (${personIds.map(() => "?").join(",")})
+           and person_contacts.contact_type = 'mobile'
+           and coalesce(person_contact_details.status, 'active') = 'active'
+         order by person_contacts.person_id, person_contacts.is_primary desc, person_contacts.created_at desc`,
+      )
+        .bind(...personIds)
+        .all<{ person_id: string; id: string; value_ciphertext: string | null }>()
+    : { results: [] };
+  const mobileByPerson = new Map<string, string>();
+  for (const contact of personContacts.results || []) {
+    if (mobileByPerson.has(contact.person_id) || !contact.value_ciphertext) continue;
+    const mobile = await decryptText(c.env.SESSION_PEPPER, `contact:${contact.id}`, contact.value_ciphertext).catch(() => null);
+    if (mobile) mobileByPerson.set(contact.person_id, mobile);
+  }
+  for (const enquiry of enquiries) {
+    const mobile = enquiry.person_id ? mobileByPerson.get(enquiry.person_id) || null : await referralProspectMobile(c, enquiry);
+    contacts.set(enquiry.id, crmContactFromMobile(enquiry, mobile));
+  }
+  return contacts;
+}
+
+function crmContactFromMobile(enquiry: EnquiryCrmRow, mobile: string | null) {
   if (!mobile) return { mobile: null, mobileDisplay: null, whatsappUrl: null, callUrl: null };
   const coursePhrase = enquiry.course_name || enquiry.course_interest_text || "course";
   const text = `Hi, this is Samyak Computer Classes, Sion. I'm following up on your ${coursePhrase} enquiry.`;
@@ -542,6 +576,10 @@ async function referralProspectMobile(c: AppContext, enquiry: EnquiryCrmRow) {
   return decryptText(c.env.SESSION_PEPPER, `referral-mobile:${enquiry.referral_link_id}:${enquiry.prospect_mobile_hash}`, enquiry.prospect_mobile_ciphertext).catch(() => null);
 }
 
+function emptyCrmContact() {
+  return { mobile: null as string | null, mobileDisplay: null as string | null, whatsappUrl: null as string | null, callUrl: null as string | null };
+}
+
 function auditStatement(c: AppContext, staff: StaffContext, branchId: string | null, action: string, entityType: string, entityId: string, metadata: Record<string, unknown>) {
   return c.env.DB.prepare(
     `insert into audit_logs
@@ -620,7 +658,7 @@ function outcomeLabel(outcome: FollowUpOutcome) {
 }
 
 function formatIndianMobileDisplay(mobile: string) {
-  return mobile.length === 10 ? `${mobile.slice(0, 5)} ${mobile.slice(5)}` : mobile;
+  return mobile.length === 10 ? `+91 ${mobile.slice(0, 5)} ${mobile.slice(5)}` : mobile;
 }
 
 function changed(result: { meta?: { changes?: number; rows_written?: number } }) {

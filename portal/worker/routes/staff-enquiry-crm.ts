@@ -2,7 +2,6 @@ import { z } from "zod";
 import type { Context, Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { ORG_ID } from "../lib/auth-store";
-import { decryptText } from "../lib/crypto";
 import { isResponse, readJsonBody, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { ADMISSION_STAFF_ROLES, requireStaffRoles } from "../lib/staff-auth";
@@ -14,6 +13,7 @@ import {
   branchScope,
   calculateLeadTemperature,
   contactForEnquiry,
+  contactsForEnquiries,
   enquirySelectSql,
   fetchEventsForEnquiries,
   followUpInputSchema,
@@ -65,7 +65,7 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
       toCrmListItem(right.row, right.temperature, right.eventCount, emptyContact()),
     ));
     const page = enriched.slice(pagination.offset, pagination.offset + pagination.limit);
-    const contactsByEnquiry = await contactsForRows(c, page.map((item) => item.row));
+    const contactsByEnquiry = await contactsForEnquiries(c, page.map((item) => item.row));
     return jsonPlain(c, crmListPayload(page.map((item) => toCrmListItem(item.row, item.temperature, item.eventCount, contactsByEnquiry.get(item.row.id) || emptyContact())), enriched.length, pagination, filters));
   });
 
@@ -169,9 +169,9 @@ function toCrmListItem(row: EnquiryCrmRow, temperature: { leadTemperature: LeadT
     },
     prospect: {
       displayName: row.full_name || "Prospect not recorded",
-      personId: row.person_id,
     },
     contact,
+    prospectContact: contact,
     course: {
       id: row.course_interest_id,
       name: row.course_name || row.course_interest_text || "Course not recorded",
@@ -213,53 +213,6 @@ function matchesQueue(row: EnquiryCrmRow, temperature: LeadTemperature | null, q
   if (queue === "upcoming") return isActiveStage(row.pipeline_stage) && Boolean(row.next_follow_up_at) && Date.parse(row.next_follow_up_at!) > Date.parse(nowIso) && !isToday(row.next_follow_up_at, nowIso);
   if (queue === "new") return row.pipeline_stage === "new" && events.length === 0;
   return true;
-}
-
-async function contactsForRows(c: PortalContext, rows: EnquiryCrmRow[]) {
-  const contacts = new Map<string, ReturnType<typeof emptyContact>>();
-  const personIds = [...new Set(rows.map((row) => row.person_id).filter((value): value is string => Boolean(value)))];
-  const personContacts = personIds.length
-    ? await c.env.DB.prepare(
-        `select person_contacts.person_id, person_contacts.id, person_contact_secrets.value_ciphertext
-         from person_contacts
-         left join person_contact_details on person_contact_details.contact_id = person_contacts.id
-         left join person_contact_secrets on person_contact_secrets.contact_id = person_contacts.id
-         where person_contacts.person_id in (${personIds.map(() => "?").join(",")})
-           and person_contacts.contact_type = 'mobile'
-           and coalesce(person_contact_details.status, 'active') = 'active'
-         order by person_contacts.person_id, person_contacts.is_primary desc, person_contacts.created_at desc`,
-      )
-        .bind(...personIds)
-        .all<{ person_id: string; id: string; value_ciphertext: string | null }>()
-    : { results: [] };
-  const mobileByPerson = new Map<string, string>();
-  for (const contact of personContacts.results || []) {
-    if (mobileByPerson.has(contact.person_id) || !contact.value_ciphertext) continue;
-    const mobile = await decryptText(c.env.SESSION_PEPPER, `contact:${contact.id}`, contact.value_ciphertext).catch(() => null);
-    if (mobile) mobileByPerson.set(contact.person_id, mobile);
-  }
-  for (const row of rows) {
-    const mobile = row.person_id ? mobileByPerson.get(row.person_id) || null : await referralMobileFromRow(c, row);
-    contacts.set(row.id, contactActions(row, mobile));
-  }
-  return contacts;
-}
-
-async function referralMobileFromRow(c: PortalContext, row: EnquiryCrmRow) {
-  if (!row.referral_link_id || !row.prospect_mobile_hash || !row.prospect_mobile_ciphertext) return null;
-  return decryptText(c.env.SESSION_PEPPER, `referral-mobile:${row.referral_link_id}:${row.prospect_mobile_hash}`, row.prospect_mobile_ciphertext).catch(() => null);
-}
-
-function contactActions(row: EnquiryCrmRow, mobile: string | null) {
-  if (!mobile) return emptyContact();
-  const coursePhrase = row.course_name || row.course_interest_text || "course";
-  const text = `Hi, this is Samyak Computer Classes, Sion. I'm following up on your ${coursePhrase} enquiry.`;
-  return {
-    mobile,
-    mobileDisplay: mobile.length === 10 ? `${mobile.slice(0, 5)} ${mobile.slice(5)}` : mobile,
-    whatsappUrl: `https://wa.me/91${mobile}?text=${encodeURIComponent(text)}`,
-    callUrl: `tel:+91${mobile}`,
-  };
 }
 
 function emptyContact() {

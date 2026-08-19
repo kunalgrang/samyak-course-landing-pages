@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, RefObject } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
+import { NotificationToast, nextNotification, type AppNotification } from "../../components/NotificationToast";
 import {
   createEnquiry,
   getEnquiryOptions,
@@ -87,6 +88,7 @@ const followUpOutcomes = [
 ] as const;
 
 const pipelineStages = ["new", "contacting", "engaged", "considering", "deferred", "admission_ready", "lost", "invalid", "duplicate"] as const;
+const terminalPipelineStages = new Set(["lost", "invalid", "duplicate"]);
 
 export function EnquiriesPage() {
   const [options, setOptions] = useState<EnquiryOptions | null>(null);
@@ -106,6 +108,7 @@ export function EnquiriesPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [notification, setNotification] = useState<AppNotification | null>(null);
   const mobileInputRef = useRef<HTMLInputElement | null>(null);
   const isSubmittingRef = useRef(false);
 
@@ -178,25 +181,36 @@ export function EnquiriesPage() {
   async function handleLogFollowUp(event: FormEvent, enquiry: CrmEnquiryItem) {
     event.preventDefault();
     if (loggingFollowUpId) return;
+    const sanitized = sanitizeLogForm(logForm);
+    if (sanitized.pipelineStage === "lost" && !sanitized.closedReason) {
+      showNotification("error", "Lost reason is required.");
+      setLogForm(sanitized);
+      return;
+    }
     setLoggingFollowUpId(enquiry.enquiry.id);
     try {
       await recordEnquiryFollowUp(enquiry.enquiry.id, {
-        channel: logForm.channel,
-        outcome: logForm.outcome,
-        note: logForm.note || null,
-        pipelineStage: logForm.pipelineStage,
-        nextFollowUpAt: toIsoDateTime(logForm.nextFollowUpAt),
-        expectedJoiningDate: logForm.expectedJoiningDate || null,
-        closedReason: logForm.closedReason || null,
+        channel: sanitized.channel,
+        outcome: sanitized.outcome,
+        note: sanitized.note || null,
+        pipelineStage: sanitized.pipelineStage,
+        nextFollowUpAt: toIsoDateTime(sanitized.nextFollowUpAt),
+        expectedJoiningDate: sanitized.expectedJoiningDate || null,
+        closedReason: sanitized.pipelineStage === "lost" ? sanitized.closedReason || null : null,
       });
       setActiveLogId(null);
       setLogForm(initialLogForm());
       await loadCrmQueue();
+      showNotification("success", sanitized.nextFollowUpAt ? `Follow-up saved. Next follow-up scheduled for ${formatDateTime(toIsoDateTime(sanitized.nextFollowUpAt))}.` : "Follow-up saved.");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not log follow-up.");
+      showNotification("error", "Could not save follow-up. Please try again.");
     } finally {
       setLoggingFollowUpId(null);
     }
+  }
+
+  function showNotification(kind: "success" | "error", message: string) {
+    setNotification((current) => nextNotification(kind, message, current));
   }
 
   async function handleCreate(event: FormEvent) {
@@ -238,6 +252,7 @@ export function EnquiriesPage() {
 
   return (
     <div className="content-stack staff-enquiries-page">
+      <NotificationToast notification={notification} onDismiss={() => setNotification(null)} />
       <header className="page-header">
         <h1>Enquiry Follow-up CRM</h1>
         <p>Prioritise active enquiries, log contact outcomes and keep admission-ready leads moving.</p>
@@ -274,6 +289,7 @@ export function EnquiriesPage() {
                   <small>{formatLabel(item.pipelineStage)} · {item.source}{item.referral ? " · Referral" : ""}</small>
                 </div>
                 <div className="crm-card-meta">
+                  <CrmContactLine contact={item.contact} />
                   <DetailLine label="Next" value={formatDateTime(item.nextFollowUpAt)} />
                   <DetailLine label="Expected" value={item.expectedJoiningDate || "Not set"} />
                   <DetailLine label="Assigned" value={item.assignedCounsellorLoginAccountId || "Unassigned"} />
@@ -288,10 +304,10 @@ export function EnquiriesPage() {
                   <form className="staff-form crm-log-form" onSubmit={(event) => void handleLogFollowUp(event, item)}>
                     <label>Channel<select value={logForm.channel} onChange={(event) => setLogForm((current) => ({ ...current, channel: event.target.value }))}><option value="call">Call</option><option value="whatsapp">WhatsApp</option><option value="in_person">In person</option><option value="email">Email</option><option value="other">Other</option></select></label>
                     <label>Outcome<select value={logForm.outcome} onChange={(event) => setLogForm((current) => ({ ...current, outcome: event.target.value }))}>{followUpOutcomes.map((outcome) => <option key={outcome} value={outcome}>{formatLabel(outcome)}</option>)}</select></label>
-                    <label>Pipeline<select value={logForm.pipelineStage} onChange={(event) => setLogForm((current) => ({ ...current, pipelineStage: event.target.value }))}>{pipelineStages.map((stage) => <option key={stage} value={stage}>{formatLabel(stage)}</option>)}</select></label>
-                    <label>Next follow-up<input type="datetime-local" value={logForm.nextFollowUpAt} onChange={(event) => setLogForm((current) => ({ ...current, nextFollowUpAt: event.target.value }))} /></label>
+                    <label>Pipeline<select value={logForm.pipelineStage} onChange={(event) => setLogForm((current) => sanitizeLogForm({ ...current, pipelineStage: event.target.value }))}>{pipelineStages.map((stage) => <option key={stage} value={stage}>{formatLabel(stage)}</option>)}</select></label>
+                    {isTerminalPipelineStage(logForm.pipelineStage) ? <p className="crm-terminal-note">No active next follow-up for terminal stages.</p> : <label>Next follow-up<input type="datetime-local" value={logForm.nextFollowUpAt} onChange={(event) => setLogForm((current) => ({ ...current, nextFollowUpAt: event.target.value }))} /></label>}
                     <label>Expected joining<input type="date" value={logForm.expectedJoiningDate} onChange={(event) => setLogForm((current) => ({ ...current, expectedJoiningDate: event.target.value }))} /></label>
-                    <label>Lost reason<select value={logForm.closedReason} onChange={(event) => setLogForm((current) => ({ ...current, closedReason: event.target.value }))}><option value="">Only for lost</option><option value="not_interested">Not interested</option><option value="joined_elsewhere">Joined elsewhere</option><option value="fee_budget_issue">Fee/budget issue</option><option value="batch_timing_issue">Batch timing issue</option><option value="location_travel_issue">Location/travel issue</option><option value="course_not_suitable">Course not suitable</option><option value="no_response">No response</option><option value="postponed_indefinitely">Postponed indefinitely</option><option value="other">Other</option></select></label>
+                    {logForm.pipelineStage === "lost" ? <label>Lost reason<select required value={logForm.closedReason} onChange={(event) => setLogForm((current) => ({ ...current, closedReason: event.target.value }))}><option value="">Select lost reason</option><option value="not_interested">Not interested</option><option value="joined_elsewhere">Joined elsewhere</option><option value="fee_budget_issue">Fee/budget issue</option><option value="batch_timing_issue">Batch timing issue</option><option value="location_travel_issue">Location/travel issue</option><option value="course_not_suitable">Course not suitable</option><option value="no_response">No response</option><option value="postponed_indefinitely">Postponed indefinitely</option><option value="other">Other</option></select></label> : null}
                     <label className="crm-log-note">Note<input value={logForm.note} onChange={(event) => setLogForm((current) => ({ ...current, note: event.target.value }))} placeholder="Internal note" /></label>
                     <div className="staff-form-actions">
                       <button type="submit" disabled={loggingFollowUpId === item.enquiry.id}>{loggingFollowUpId === item.enquiry.id ? "Saving..." : "Save follow-up"}</button>
@@ -486,6 +502,21 @@ function initialLogForm() {
   };
 }
 
+type LogFormState = ReturnType<typeof initialLogForm>;
+
+export function sanitizeLogForm(form: LogFormState): LogFormState {
+  const terminal = isTerminalPipelineStage(form.pipelineStage);
+  return {
+    ...form,
+    nextFollowUpAt: terminal ? "" : form.nextFollowUpAt,
+    closedReason: form.pipelineStage === "lost" ? form.closedReason : "",
+  };
+}
+
+export function isTerminalPipelineStage(stage: string) {
+  return terminalPipelineStages.has(stage);
+}
+
 export function EnquirySuccessNotice({ message }: { message: string }) {
   return (
     <div className="notice notice--success" role="status" aria-live="polite">
@@ -581,6 +612,10 @@ function temperatureLabel(value: string | null) {
 
 function DetailLine({ label, value }: { label: string; value: string }) {
   return <span><small>{label}</small><strong>{value}</strong></span>;
+}
+
+export function CrmContactLine({ contact }: { contact: CrmEnquiryItem["contact"] }) {
+  return <DetailLine label="Mobile" value={contact.mobileDisplay || "Contact number unavailable"} />;
 }
 
 function formatDate(value: string) {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
+import { NotificationToast, nextNotification, type AppNotification } from "../../components/NotificationToast";
 import { assignEnquiry, getCrmEnquiryDetail, getEnquiryDetail, updateEnquiryStatus, type CrmEnquiryDetail, type EnquiryDetail } from "../../lib/api";
 
 export function EnquiryDetailPage({ enquiryId }: { enquiryId: string }) {
@@ -10,6 +11,9 @@ export function EnquiryDetailPage({ enquiryId }: { enquiryId: string }) {
   const [assignee, setAssignee] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSavingAssignee, setIsSavingAssignee] = useState(false);
+  const [isSavingStatus, setIsSavingStatus] = useState(false);
+  const [notification, setNotification] = useState<AppNotification | null>(null);
 
   useEffect(() => {
     void Promise.all([getEnquiryDetail(enquiryId), getCrmEnquiryDetail(enquiryId)])
@@ -24,25 +28,41 @@ export function EnquiryDetailPage({ enquiryId }: { enquiryId: string }) {
   }, [enquiryId]);
 
   async function saveStatus() {
+    if (isSavingStatus) return;
+    setIsSavingStatus(true);
     try {
       await updateEnquiryStatus(enquiryId, status);
       const [nextDetail, nextCrm] = await Promise.all([getEnquiryDetail(enquiryId), getCrmEnquiryDetail(enquiryId)]);
       setDetail(nextDetail);
       setCrmDetail(nextCrm);
       setError(null);
+      showNotification("success", "Enquiry updated.");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not update enquiry.");
+      showNotification("error", "Could not update enquiry. Please try again.");
+    } finally {
+      setIsSavingStatus(false);
     }
   }
 
   async function saveAssignee() {
+    if (isSavingAssignee) return;
+    setIsSavingAssignee(true);
     try {
       await assignEnquiry(enquiryId, assignee || null);
-      setCrmDetail(await getCrmEnquiryDetail(enquiryId));
+      const nextCrm = await getCrmEnquiryDetail(enquiryId);
+      setCrmDetail(nextCrm);
+      setAssignee(nextCrm.crm.assignedCounsellorLoginAccountId || "");
       setError(null);
+      showNotification("success", assignee ? `Assigned to ${assigneeLabel(nextCrm, assignee)}.` : "Assignment updated.");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not update assignment.");
+      showNotification("error", "Could not update assignment. Please try again.");
+    } finally {
+      setIsSavingAssignee(false);
     }
+  }
+
+  function showNotification(kind: "success" | "error", message: string) {
+    setNotification((current) => nextNotification(kind, message, current));
   }
 
   if (isLoading) return <LoadingState label="Loading enquiry" />;
@@ -52,6 +72,7 @@ export function EnquiryDetailPage({ enquiryId }: { enquiryId: string }) {
 
   return (
     <div className="content-stack staff-enquiries-page">
+      <NotificationToast notification={notification} onDismiss={() => setNotification(null)} />
       <header className="page-header">
         <h1>{String(enquiry.enquiry_number)}</h1>
         <p>{String(enquiry.full_name || "Person not recorded")} · {detail.mobileDisplay || "Mobile protected"}</p>
@@ -76,21 +97,21 @@ export function EnquiryDetailPage({ enquiryId }: { enquiryId: string }) {
             <Detail label="Pipeline" value={formatLabel(crmDetail.crm.pipelineStage)} />
             <Detail label="Lead temperature" value={temperatureLabel(crmDetail.crm.leadTemperature)} />
             <Detail label="Why" value={crmDetail.crm.leadTemperatureReason} />
+            <Detail label="Mobile" value={crmDetail.crm.contact.mobileDisplay || "Contact number unavailable"} />
             <Detail label="Next follow-up" value={formatDateTime(crmDetail.crm.nextFollowUpAt)} />
             <Detail label="Expected joining" value={crmDetail.crm.expectedJoiningDate || "Not recorded"} />
             <Detail label="Last contacted" value={formatDateTime(crmDetail.crm.lastContactedAt)} />
           </div>
+          <StaffCrmContactPanel contact={crmDetail.crm.contact} />
           <div className="action-row crm-detail-actions">
             <label>
               Assigned counsellor
-              <select value={assignee} disabled={converted} onChange={(event) => setAssignee(event.target.value)}>
+              <select value={assignee} disabled={converted || isSavingAssignee} onChange={(event) => setAssignee(event.target.value)}>
                 <option value="">Unassigned</option>
                 {crmDetail.assignees.map((staff) => <option key={staff.id} value={staff.id}>{staff.label}</option>)}
               </select>
             </label>
-            <button type="button" disabled={converted} onClick={() => void saveAssignee()}>Save assignment</button>
-            {crmDetail.crm.contact.whatsappUrl ? <a className="contact-action contact-action--whatsapp" href={crmDetail.crm.contact.whatsappUrl} target="_blank" rel="noopener noreferrer">WhatsApp</a> : null}
-            {crmDetail.crm.contact.callUrl ? <a className="contact-action" href={crmDetail.crm.contact.callUrl}>Call</a> : null}
+            <button type="button" disabled={converted || isSavingAssignee} onClick={() => void saveAssignee()}>{isSavingAssignee ? "Saving..." : "Save assignment"}</button>
             {crmDetail.crm.referral ? <a className="button-link" href={`/app/referral-operations/${crmDetail.crm.referral.id}`}>Open referral</a> : null}
           </div>
         </section>
@@ -107,7 +128,7 @@ export function EnquiryDetailPage({ enquiryId }: { enquiryId: string }) {
               ))}
             </select>
           </label>
-          <button type="button" disabled={converted} onClick={() => void saveStatus()}>Save status</button>
+          <button type="button" disabled={converted || isSavingStatus} onClick={() => void saveStatus()}>{isSavingStatus ? "Saving..." : "Save status"}</button>
           {converted && enquiry.student_id ? <a className="button-link" href={`/app/students/${String(enquiry.student_id)}`}>Open student profile</a> : null}
           {!converted ? <a className="button-link" href={`/app/enquiries/${enquiryId}/admission`}>{detail.activeDraft ? "Continue admission draft" : "Start admission"}</a> : null}
         </div>
@@ -142,6 +163,23 @@ export function EnquiryDetailPage({ enquiryId }: { enquiryId: string }) {
 
 function Detail({ label, value }: { label: string; value: string }) {
   return <div><small>{label}</small><strong>{value}</strong></div>;
+}
+
+export function StaffCrmContactPanel({ contact }: { contact: CrmEnquiryDetail["crm"]["contact"] }) {
+  return (
+    <div className="crm-contact-panel">
+      <strong>Prospect Contact</strong>
+      <span>Mobile: {contact.mobileDisplay || "Contact number unavailable"}</span>
+      <div className="crm-actions">
+        {contact.whatsappUrl ? <a className="contact-action contact-action--whatsapp" href={contact.whatsappUrl} target="_blank" rel="noopener noreferrer">WhatsApp</a> : null}
+        {contact.callUrl ? <a className="contact-action" href={contact.callUrl}>Call</a> : null}
+      </div>
+    </div>
+  );
+}
+
+function assigneeLabel(crmDetail: CrmEnquiryDetail, assigneeId: string) {
+  return crmDetail.assignees.find((staff) => staff.id === assigneeId)?.label || "selected staff";
 }
 
 function formatLabel(value: string) {
