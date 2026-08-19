@@ -2,7 +2,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AppContext } from "./http";
 import type { StaffContext } from "./staff-auth";
 import type { WorkerBindings } from "../bindings";
@@ -302,6 +302,33 @@ describe("admission configuration defaults migration", () => {
   });
 });
 
+describe("admission first receipt migration", () => {
+  it("replays fresh through 0019 with receipt and instalment constraints", () => {
+    const db = new SqliteD1();
+    applyMigrations(db);
+
+    expect(row(db, "select name from sqlite_master where type = 'table' and name = 'receipts'")).toMatchObject({ name: "receipts" });
+    expect(row(db, "select name from sqlite_master where type = 'table' and name = 'fee_agreement_instalments'")).toMatchObject({ name: "fee_agreement_instalments" });
+    expect(row(db, "select name from sqlite_master where type = 'index' and name = 'receipts_one_preconfirm_token_per_draft'")).toMatchObject({ name: "receipts_one_preconfirm_token_per_draft" });
+    expect(() => db.database.exec("insert into fee_agreement_instalments (id, fee_agreement_id, instalment_number, amount_paise, created_at) values ('fi_bad', 'missing', 1, 0, '2026-08-01T00:00:00.000Z')")).toThrow();
+    db.close();
+  });
+
+  it("replays upgrade from 0018 to 0019 without destructive existing-data changes", () => {
+    const db = new SqliteD1();
+    applyMigrations(db, "0018_enquiry_follow_up_crm.sql");
+    seedOrganisation(db, "org_samyak");
+    const before = count(db, "organisations where id = 'org_samyak'");
+
+    applyMigrationFile(db, "0019_admission_first_receipts.sql");
+
+    expect(count(db, "organisations where id = 'org_samyak'")).toBe(before);
+    expect(row(db, "select name from sqlite_master where type = 'table' and name = 'receipts'")).toMatchObject({ name: "receipts" });
+    expect(row(db, "select name from sqlite_master where type = 'index' and name = 'receipts_idempotency_unique'")).toMatchObject({ name: "receipts_idempotency_unique" });
+    db.close();
+  });
+});
+
 describe("confirmAdmission service integration", () => {
   it("creates the first admission and persists all primary records", async () => {
     const db = testDb();
@@ -392,7 +419,67 @@ describe("confirmAdmission service integration", () => {
       idempotencyKey: "token_overpay",
     });
     expect(overpay).toMatchObject({ ok: false, status: 400, code: "receipt_exceeds_final_fee" });
+
+    const zero = await recordAdmissionReceipt(c, staff, "enq_second", {
+      admissionDraftId: secondDraft.draftId,
+      amountPaise: 0,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "cash",
+      idempotencyKey: "token_zero",
+    } as never);
+    expect(zero).toMatchObject({ ok: false, status: 400, code: "invalid_receipt_amount" });
     db.close();
+  });
+
+  it("returns the same receipt when an idempotent retry omitted receivedAt", async () => {
+    const db = testDb();
+    const c = context(db);
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+
+    const first = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      paymentMode: "cash",
+      idempotencyKey: "token_without_date",
+    });
+    const retry = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      paymentMode: "cash",
+      idempotencyKey: "token_without_date",
+    });
+
+    expect(first.ok).toBe(true);
+    expect(retry.ok).toBe(true);
+    if (!first.ok || !retry.ok) throw new Error("idempotent receipt failed");
+    expect(retry.receipt.id).toBe(first.receipt.id);
+    expect(count(db, "receipts")).toBe(1);
+    db.close();
+  });
+
+  it("uses the branch timezone for the receipt number year", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2027-01-01T00:30:00.000Z"));
+    const db = testDb();
+    try {
+      const c = context(db);
+      const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+
+      const receipt = await recordAdmissionReceipt(c, staff, "enq_first", {
+        admissionDraftId: draft.draftId,
+        amountPaise: 50000,
+        receivedAt: "2026-12-31T20:00:00.000Z",
+        paymentMode: "cash",
+        idempotencyKey: "token_ist_rollover",
+      });
+
+      expect(receipt.ok).toBe(true);
+      if (!receipt.ok) throw new Error(receipt.message);
+      expect(receipt.receipt.receiptNumber).toContain("RCP-SION-2027-");
+    } finally {
+      db.close();
+      vi.useRealTimers();
+    }
   });
 
   it("applies mode/reference, backdate and role rules to receipt recording", async () => {
@@ -417,6 +504,55 @@ describe("confirmAdmission service integration", () => {
       idempotencyKey: "token_telecaller",
     });
     expect(forbidden).toMatchObject({ ok: false, status: 403, code: "forbidden" });
+    db.close();
+  });
+
+  it("denies receipt recording when the staff grant belongs to another branch", async () => {
+    const db = testDb();
+    const c = context(db);
+    seedBranch(db, "branch_wadala", "WAD");
+    db.database.exec("update login_account_roles set branch_id = 'branch_wadala' where login_account_id = 'acct_staff'");
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+
+    const result = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      paymentMode: "cash",
+      idempotencyKey: "token_wrong_branch",
+    });
+
+    expect(result).toMatchObject({ ok: false, status: 403, code: "forbidden" });
+    expect(count(db, "receipts")).toBe(0);
+    db.close();
+  });
+
+  it("allows counsellor current-day receipts and blocks arbitrary backdates in Asia/Kolkata", async () => {
+    const db = testDb();
+    const c = context(db);
+    const counsellor = { ...staffForRole("counsellor", "acct_staff"), activePersonId: "person_staff" };
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 36 * 60 * 60 * 1000);
+
+    const sameDay = await recordAdmissionReceipt(c, counsellor, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      receivedAt: now.toISOString(),
+      paymentMode: "cash",
+      idempotencyKey: "token_same_day_counsellor",
+    });
+    expect(sameDay.ok).toBe(true);
+
+    seedEnquiry(db, { id: "enq_backdate", personId: "person_asha", number: "ENQ-SION-2026-004" });
+    const backdateDraft = await createAdmissionDraft(c, "enq_backdate", validPayload(), { recordReceipt: false });
+    const backdate = await recordAdmissionReceipt(c, counsellor, "enq_backdate", {
+      admissionDraftId: backdateDraft.draftId,
+      amountPaise: 50000,
+      receivedAt: yesterday.toISOString(),
+      paymentMode: "cash",
+      idempotencyKey: "token_yesterday_counsellor",
+    });
+    expect(backdate).toMatchObject({ ok: false, status: 403, code: "receipt_backdate_forbidden" });
     db.close();
   });
 
@@ -1067,6 +1203,8 @@ function seedBase(db: SqliteD1) {
     values ('org_samyak', 'Samyak', 'samyak', 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
     insert into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at)
     values ('branch_sion', 'org_samyak', 'Sion', 'SION', 'Asia/Kolkata', 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+    insert into roles (id, organisation_id, code, name, created_at)
+    values ('role_admission_admin', 'org_samyak', 'admission_admin', 'Admission Admin', '2026-07-21T00:00:00.000Z');
     insert into people (id, organisation_id, home_branch_id, full_name, public_name, date_of_birth, status, created_at, updated_at)
     values
       ('person_staff', 'org_samyak', 'branch_sion', 'Staff User', 'Staff', null, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
@@ -1078,6 +1216,8 @@ function seedBase(db: SqliteD1) {
       ('acct_owner', 'org_samyak', 'owner_mobile_hash', 'owner_mobile_hash', '1111', 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
     insert into login_account_roles (login_account_id, role_id, branch_id, created_at)
     select 'acct_owner', roles.id, null, '2026-07-21T00:00:00.000Z' from roles where roles.organisation_id = 'org_samyak' and roles.code = 'owner';
+    insert into login_account_roles (login_account_id, role_id, branch_id, created_at)
+    select 'acct_staff', roles.id, 'branch_sion', '2026-07-21T00:00:00.000Z' from roles where roles.organisation_id = 'org_samyak' and roles.code = 'admission_admin';
     insert into courses (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
     values ('course_full_stack', 'org_samyak', 'FSD', 'Full Stack Development', '6 months', 6, 5000000, 4000000, 1, 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
   `);

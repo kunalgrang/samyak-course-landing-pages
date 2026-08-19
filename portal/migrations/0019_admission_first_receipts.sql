@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS `fee_agreement_instalments` (
   `created_at` text NOT NULL,
   FOREIGN KEY (`fee_agreement_id`) REFERENCES `fee_agreements`(`id`),
   CONSTRAINT `fee_agreement_instalments_number_check` CHECK(`instalment_number` >= 1),
-  CONSTRAINT `fee_agreement_instalments_amount_check` CHECK(`amount_paise` >= 0)
+  CONSTRAINT `fee_agreement_instalments_amount_check` CHECK(`amount_paise` > 0)
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS `fee_agreement_instalments_unique` ON `fee_agreement_instalments` (`fee_agreement_id`, `instalment_number`);

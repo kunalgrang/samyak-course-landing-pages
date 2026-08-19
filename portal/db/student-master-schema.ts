@@ -504,7 +504,7 @@ export const feeAgreementInstalments = sqliteTable(
     uniqueIndex("fee_agreement_instalments_unique").on(table.feeAgreementId, table.instalmentNumber),
     index("fee_agreement_instalments_order_idx").on(table.feeAgreementId, table.instalmentNumber),
     check("fee_agreement_instalments_number_check", sql`${table.instalmentNumber} >= 1`),
-    check("fee_agreement_instalments_amount_check", sql`${table.amountPaise} >= 0`),
+    check("fee_agreement_instalments_amount_check", sql`${table.amountPaise} > 0`),
   ],
 );
 

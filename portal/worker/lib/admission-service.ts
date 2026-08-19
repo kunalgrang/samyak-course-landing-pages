@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { AppContext } from "./http";
 import { ORG_ID, mobileHash } from "./auth-store";
 import { createOpaqueId, encryptText, hmacHex } from "./crypto";
-import { DISCOUNT_APPROVER_ROLES, type StaffContext } from "./staff-auth";
+import { DISCOUNT_APPROVER_ROLES, canBackdateReceipts, canRecordReceipts, type StaffContext } from "./staff-auth";
 import { normalizeIndianMobile } from "./mobile";
 
 const nameSchema = z.string().trim().min(2).max(140).regex(/^[^\d]+$/, "Name cannot contain numbers.");
@@ -471,6 +471,9 @@ export async function recordAdmissionReceipt(c: AppContext, staff: StaffContext,
   }
   const enquiry = await getAdmissionEnquiry(c, enquiryId);
   if (!enquiry) return { ok: false as const, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
+  if (!(await hasReceiptCapabilityForBranch(c, staff, enquiry.branch_id, false))) {
+    return { ok: false as const, status: 403, code: "forbidden", message: "This role cannot record receipts for this branch." };
+  }
   if (!enquiry.person_id) return { ok: false as const, status: 400, code: "person_required", message: "Link or create the student Person before recording a receipt." };
   const draft = await getAdmissionDraft(c, enquiryId);
   if (!draft || draft.id !== input.admissionDraftId || draft.status !== "draft") {
@@ -492,17 +495,11 @@ export async function recordAdmissionReceipt(c: AppContext, staff: StaffContext,
   if (input.amountPaise > finalAgreedFeePaise) {
     return { ok: false as const, status: 400, code: "receipt_exceeds_final_fee", message: "Receipt amount cannot exceed the final agreed fee.", fieldErrors: { amountPaise: ["Receipt amount cannot exceed the final agreed fee."] } };
   }
-  const paymentValidation = validateReceiptPaymentFields(input, staff);
+  const paymentValidation = await validateReceiptPaymentFields(c, input, staff, enquiry.branch_id);
   if (!paymentValidation.ok) return paymentValidation;
-  const fingerprint = await receiptPayloadFingerprint(c, enquiry, draft, input);
-  const existingByKey = await c.env.DB.prepare(
-    `select id, receipt_number, amount_paise, received_at, payment_mode, payment_reference, notes, status, payload_fingerprint
-     from receipts
-     where organisation_id = ? and created_by_login_account_id = ? and idempotency_key = ?
-     limit 1`,
-  )
-    .bind(ORG_ID, staff.loginAccountId, input.idempotencyKey)
-    .first<ReceiptRecord>();
+  const existingByKey = await receiptByIdempotencyKey(c, staff, input.idempotencyKey);
+  const receivedAt = input.receivedAt ? normalizedReceivedAt(input.receivedAt) : existingByKey?.received_at || normalizedReceivedAt(input.receivedAt);
+  const fingerprint = await receiptPayloadFingerprint(c, enquiry, draft, input, receivedAt);
   if (existingByKey) {
     if (existingByKey.payload_fingerprint !== fingerprint) {
       return { ok: false as const, status: 409, code: "idempotency_conflict", message: "This idempotency key was already used for a different receipt payload." };
@@ -514,10 +511,9 @@ export async function recordAdmissionReceipt(c: AppContext, staff: StaffContext,
   }
 
   const now = new Date().toISOString();
-  const receivedAt = normalizedReceivedAt(input.receivedAt);
-  const receiptYear = new Date(receivedAt).getUTCFullYear();
-  const sequence = await allocateSequence(c, ORG_ID, enquiry.branch_id, `receipt:${receiptYear}`);
   const branch = await getBranch(c, enquiry.branch_id);
+  const receiptYear = receiptYearFor(receivedAt, branch?.timezone || "Asia/Kolkata");
+  const sequence = await allocateSequence(c, ORG_ID, enquiry.branch_id, `receipt:${receiptYear}`);
   const receiptNumber = `RCP-${String(branch?.code || "BR").toUpperCase()}-${receiptYear}-${formatSequence(sequence)}`;
   const receiptId = createOpaqueId("receipt");
   try {
@@ -550,6 +546,14 @@ export async function recordAdmissionReceipt(c: AppContext, staff: StaffContext,
       )
       .run();
   } catch {
+    const idempotent = await receiptByIdempotencyKey(c, staff, input.idempotencyKey);
+    if (idempotent) {
+      const idempotentFingerprint = input.receivedAt ? fingerprint : await receiptPayloadFingerprint(c, enquiry, draft, input, idempotent.received_at);
+      if (idempotent.payload_fingerprint !== idempotentFingerprint) {
+        return { ok: false as const, status: 409, code: "idempotency_conflict", message: "This idempotency key was already used for a different receipt payload." };
+      }
+      return { ok: true as const, receipt: publicReceipt(idempotent), financialSummary: await financialSummaryForDraft(c, draft, payload) };
+    }
     const existing = await receiptsForDraft(c, draft.id);
     if (existing.length) return { ok: false as const, status: 409, code: "first_receipt_already_recorded", message: "The admission token receipt is already recorded." };
     return { ok: false as const, status: 409, code: "receipt_not_recorded", message: "Receipt could not be recorded. Please retry." };
@@ -687,9 +691,9 @@ async function getEnrolmentByEnquiry(c: AppContext, enquiryId: string) {
 }
 
 async function getBranch(c: AppContext, branchId: string) {
-  return c.env.DB.prepare("select id, code, name from branches where id = ? and organisation_id = ? and status = 'active'")
+  return c.env.DB.prepare("select id, code, name, timezone from branches where id = ? and organisation_id = ? and status = 'active'")
     .bind(branchId, ORG_ID)
-    .first<{ id: string; code: string; name: string }>();
+    .first<{ id: string; code: string; name: string; timezone: string | null }>();
 }
 
 async function getActiveCourse(c: AppContext, courseId: string) {
@@ -1300,6 +1304,9 @@ async function tokenReceiptForConfirmation(c: AppContext, draft: DraftRecord, pa
   if (!schedule.length || schedule.reduce((total, instalment) => total + instalment.amountPaise, 0) !== finalAgreedFeePaise) {
     return { ok: false as const, status: 400, code: "invalid_instalment_schedule", message: "Payment plan instalments must equal the final agreed fee." };
   }
+  if (!instalmentScheduleIsValid(schedule)) {
+    return { ok: false as const, status: 400, code: "invalid_instalment_schedule", message: "Payment plan instalments must be positive and sequential." };
+  }
   if (Number(receipts[0].amount_paise) > finalAgreedFeePaise) {
     return { ok: false as const, status: 400, code: "receipt_exceeds_final_fee", message: "Receipt amount cannot exceed the final agreed fee." };
   }
@@ -1367,8 +1374,9 @@ function publicReceipt(receipt: ReceiptRecord) {
 function buildInstalmentSchedule(payload: AdmissionPayload): Instalment[] {
   const fee = payload.fee || {};
   const finalFee = Number(fee.finalAgreedFeePaise || 0);
-  if (!Number.isInteger(finalFee) || finalFee < 0) return [];
+  if (!Number.isInteger(finalFee) || finalFee <= 0) return [];
   const count = instalmentsFor(String(fee.paymentPlanType || "full"), Number(fee.numberOfInstalments || 0));
+  if (count > finalFee) return [];
   if (count <= 1) return [{ instalmentNumber: 1, amountPaise: finalFee, dueDate: null }];
   const requestedFirst = Number(fee.initialPaymentExpectedPaise || 0);
   const first = requestedFirst > 0 && requestedFirst <= finalFee ? requestedFirst : Math.ceil(finalFee / count);
@@ -1383,6 +1391,10 @@ function buildInstalmentSchedule(payload: AdmissionPayload): Instalment[] {
     instalments.push({ instalmentNumber: index, amountPaise: baseTail + extra, dueDate: null });
   }
   return instalments;
+}
+
+function instalmentScheduleIsValid(instalments: Instalment[]) {
+  return instalments.length > 0 && instalments.every((instalment, index) => instalment.instalmentNumber === index + 1 && Number.isInteger(instalment.amountPaise) && instalment.amountPaise > 0);
 }
 
 function scheduleFromSnapshot(snapshot: ConfirmationSnapshot | null): Instalment[] {
@@ -1416,6 +1428,17 @@ async function receiptsForDraft(c: AppContext, draftId: string) {
   return receipts.results || [];
 }
 
+async function receiptByIdempotencyKey(c: AppContext, staff: StaffContext, idempotencyKey: string) {
+  return c.env.DB.prepare(
+    `select id, receipt_number, amount_paise, received_at, payment_mode, payment_reference, notes, status, payload_fingerprint
+     from receipts
+     where organisation_id = ? and created_by_login_account_id = ? and idempotency_key = ?
+     limit 1`,
+  )
+    .bind(ORG_ID, staff.loginAccountId, idempotencyKey)
+    .first<ReceiptRecord>();
+}
+
 async function preConfirmationReceiptCount(c: AppContext, draftId: string) {
   const row = await c.env.DB.prepare("select count(*) as count from receipts where admission_draft_id = ? and status = 'recorded' and enrolment_id is null")
     .bind(draftId)
@@ -1423,7 +1446,7 @@ async function preConfirmationReceiptCount(c: AppContext, draftId: string) {
   return Number(row?.count || 0);
 }
 
-function validateReceiptPaymentFields(input: z.infer<typeof recordAdmissionReceiptSchema>, staff: StaffContext): AdmissionFailure | { ok: true } {
+async function validateReceiptPaymentFields(c: AppContext, input: z.infer<typeof recordAdmissionReceiptSchema>, staff: StaffContext, branchId: string): Promise<AdmissionFailure | { ok: true }> {
   const reference = input.paymentReference?.trim() || "";
   const notes = input.notes?.trim() || "";
   if (["upi", "card", "bank_transfer", "cheque"].includes(input.paymentMode) && !reference) {
@@ -1439,7 +1462,7 @@ function validateReceiptPaymentFields(input: z.infer<typeof recordAdmissionRecei
   if (Date.parse(receivedAt) > Date.now()) {
     return { ok: false, status: 400, code: "future_receipt_date", message: "Receipt date cannot be in the future.", fieldErrors: { receivedAt: ["Receipt date cannot be in the future."] } };
   }
-  if (!canBackdateReceipt(staff, receivedAt)) {
+  if (!(await canBackdateReceipt(c, staff, branchId, receivedAt))) {
     return { ok: false, status: 403, code: "receipt_backdate_forbidden", message: "This role can record only current-day receipts." };
   }
   return { ok: true };
@@ -1452,19 +1475,44 @@ function normalizedReceivedAt(value: string | undefined) {
   return parsed.toISOString();
 }
 
-function canRecordAdmissionReceipt(staff: StaffContext) {
-  return staff.roles.some((role) => ["owner", "system_admin", "admin", "admission_admin", "counsellor"].includes(role));
+function receiptYearFor(receivedAt: string, timeZone: string) {
+  const year = new Intl.DateTimeFormat("en", { timeZone, year: "numeric" }).format(new Date(receivedAt));
+  return Number(year);
 }
 
-function canBackdateReceipt(staff: StaffContext, receivedAt: string) {
-  if (staff.roles.some((role) => ["owner", "system_admin", "admin", "admission_admin"].includes(role))) return true;
+function canRecordAdmissionReceipt(staff: StaffContext) {
+  return canRecordReceipts(staff);
+}
+
+async function canBackdateReceipt(c: AppContext, staff: StaffContext, branchId: string, receivedAt: string) {
+  if (await hasReceiptCapabilityForBranch(c, staff, branchId, true)) return true;
   const received = new Date(receivedAt);
   const now = new Date();
   const kolkataDay = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" });
   return kolkataDay.format(received) === kolkataDay.format(now);
 }
 
-async function receiptPayloadFingerprint(c: AppContext, enquiry: EnquiryRecord, draft: DraftRecord, input: z.infer<typeof recordAdmissionReceiptSchema>) {
+async function hasReceiptCapabilityForBranch(c: AppContext, staff: StaffContext, branchId: string, backdate: boolean) {
+  const roleAllowedInSession = backdate ? canBackdateReceipts(staff) : canRecordReceipts(staff);
+  if (!roleAllowedInSession) return false;
+  const roleCodes = backdate ? ["owner", "system_admin", "admin", "admission_admin"] : ["owner", "system_admin", "admin", "admission_admin", "counsellor"];
+  const placeholders = roleCodes.map(() => "?").join(", ");
+  const row = await c.env.DB.prepare(
+    `select 1 as ok
+     from login_account_roles
+     join roles on roles.id = login_account_roles.role_id
+     where login_account_roles.login_account_id = ?
+       and roles.organisation_id = ?
+       and roles.code in (${placeholders})
+       and (login_account_roles.branch_id is null or login_account_roles.branch_id = ?)
+     limit 1`,
+  )
+    .bind(staff.loginAccountId, ORG_ID, ...roleCodes, branchId)
+    .first<{ ok: number }>();
+  return Boolean(row);
+}
+
+async function receiptPayloadFingerprint(c: AppContext, enquiry: EnquiryRecord, draft: DraftRecord, input: z.infer<typeof recordAdmissionReceiptSchema>, receivedAt: string) {
   return hmacHex(
     c.env.SESSION_PEPPER,
     "admission-receipt",
@@ -1472,7 +1520,7 @@ async function receiptPayloadFingerprint(c: AppContext, enquiry: EnquiryRecord, 
       enquiryId: enquiry.id,
       draftId: draft.id,
       amountPaise: input.amountPaise,
-      receivedAt: normalizedReceivedAt(input.receivedAt),
+      receivedAt,
       paymentMode: input.paymentMode,
       paymentReference: input.paymentReference?.trim() || "",
       notes: input.notes?.trim() || "",
