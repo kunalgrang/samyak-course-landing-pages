@@ -9,9 +9,11 @@ import {
   getAdmissionConfiguration,
   getEnquiryDetail,
   getActiveCourses,
+  linkAdmissionEnquiryPerson,
   recordAdmissionReceipt,
   requestDiscountApproval,
   saveAdmissionDraft,
+  searchStudentByMobile,
   type AdmissionConfiguration,
   type AdmissionConfirmation,
   type AdmissionFinancialSummary,
@@ -19,6 +21,8 @@ import {
   type FieldErrors,
   type PaymentPlanRule,
   type StaffCourse,
+  type StudentSearchPerson,
+  type StudentSearchResult,
 } from "../../lib/api";
 
 export type AdmissionPayload = {
@@ -93,6 +97,12 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const [receiptInput, setReceiptInput] = useState(() => defaultReceiptInput());
   const [isRecordingReceipt, setIsRecordingReceipt] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
+  const [studentSearchMobile, setStudentSearchMobile] = useState("");
+  const [studentSearchResult, setStudentSearchResult] = useState<StudentSearchResult | null>(null);
+  const [selectedPersonId, setSelectedPersonId] = useState("");
+  const [isSearchingPerson, setIsSearchingPerson] = useState(false);
+  const [isLinkingPerson, setIsLinkingPerson] = useState(false);
+  const [personLinkIdempotencyKey, setPersonLinkIdempotencyKey] = useState(() => randomPersonLinkKey());
   const confirmPendingRef = useRef(false);
   const errorSummaryRef = useRef<HTMLDivElement>(null);
   const focusSummaryRequestedRef = useRef(false);
@@ -114,6 +124,9 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       setFinancialSummary(draftData.financialSummary || null);
       setCurrentStep(draftData.draft?.currentStep || "identity");
       setIsLocked(Boolean(draftData.draft?.confirmationLockedAt));
+      setStudentSearchMobile(draftData.draft ? studentSearchMobile : detailData.personLinkCandidate?.mobile || "");
+      setStudentSearchResult(null);
+      setSelectedPersonId("");
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not load admission.");
@@ -136,6 +149,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const configurationReady = isAdmissionConfigurationReady(configuration);
   const tokenReceipt = financialSummary?.tokenReceipt || null;
   const commercialLocked = Boolean(tokenReceipt) || isLocked;
+  const needsPersonLink = !detail?.enquiry.person_id;
 
   useEffect(() => {
     if (!focusSummaryRequestedRef.current) return;
@@ -274,6 +288,49 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
     }
   }
 
+  async function handleSearchPerson() {
+    setIsSearchingPerson(true);
+    setError(null);
+    try {
+      const result = await searchStudentByMobile(studentSearchMobile || String(detail?.personLinkCandidate?.mobile || ""));
+      setStudentSearchResult(result);
+      setSelectedPersonId("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not search student records.");
+    } finally {
+      setIsSearchingPerson(false);
+    }
+  }
+
+  async function handleLinkExistingPerson() {
+    if (!selectedPersonId) {
+      setError("Select a student record to link.");
+      return;
+    }
+    await linkPerson(async () => linkAdmissionEnquiryPerson(enquiryId, { mode: "existing", personId: selectedPersonId }));
+  }
+
+  async function handleCreateLinkedPerson() {
+    await linkPerson(async () => linkAdmissionEnquiryPerson(enquiryId, { mode: "create", idempotencyKey: personLinkIdempotencyKey }));
+  }
+
+  async function linkPerson(action: () => Promise<unknown>) {
+    setIsLinkingPerson(true);
+    setError(null);
+    try {
+      await action();
+      setSaved("Student linked successfully.");
+      setStudentSearchResult(null);
+      setSelectedPersonId("");
+      setPersonLinkIdempotencyKey(randomPersonLinkKey());
+      await loadAdmissionData();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not link student record.");
+    } finally {
+      setIsLinkingPerson(false);
+    }
+  }
+
   function errorFor(path: string) {
     return fieldErrors[path]?.[0] || "";
   }
@@ -317,7 +374,21 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       {isLocked ? <AdmissionRecoveryNotice isConfirming={isConfirming} onRetry={() => void handleConfirm()} /> : null}
       {!configurationReady ? <AdmissionConfigurationMissing onRetry={() => void loadAdmissionData()} /> : null}
 
-      {configurationReady ? <AdmissionLockedFieldset isLocked={isLocked}>
+      {needsPersonLink ? (
+        <AdmissionPersonLinkPanel
+          detail={detail}
+          mobile={studentSearchMobile}
+          searchResult={studentSearchResult}
+          selectedPersonId={selectedPersonId}
+          isSearching={isSearchingPerson}
+          isLinking={isLinkingPerson}
+          onMobileChange={setStudentSearchMobile}
+          onSearch={() => void handleSearchPerson()}
+          onSelectPerson={setSelectedPersonId}
+          onLinkExisting={() => void handleLinkExistingPerson()}
+          onCreateNew={() => void handleCreateLinkedPerson()}
+        />
+      ) : configurationReady ? <AdmissionLockedFieldset isLocked={isLocked}>
       <AdmissionSection title="A · Official identity">
         <label>Full name as per Aadhaar<RequiredMark /><input {...controlProps("identity.officialFullName")} value={String(payload.identity.officialFullName)} onChange={(e) => setSection("identity", "officialFullName", e.target.value)} /><FieldMessage id={admissionFieldErrorId("identity.officialFullName")} message={errorFor("identity.officialFullName")} /></label>
         <label>First name<input value={String(payload.identity.firstName)} onChange={(e) => setSection("identity", "firstName", e.target.value)} /></label>
@@ -566,6 +637,10 @@ function randomIdempotencyKey() {
   return `receipt_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
 }
 
+function randomPersonLinkKey() {
+  return `person_link_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+}
+
 function formatDateTimeLocal(date: Date) {
   const offsetMs = date.getTimezoneOffset() * 60_000;
   return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
@@ -765,6 +840,73 @@ export function AdmissionConfigurationMissing({ onRetry }: { onRetry: () => void
       <span>Save only when the draft does not depend on missing dropdown values. Confirmation is blocked until configuration is available.</span>
       <button type="button" onClick={onRetry}>Retry</button>
     </div>
+  );
+}
+
+export function AdmissionPersonLinkPanel({
+  detail,
+  mobile,
+  searchResult,
+  selectedPersonId,
+  isSearching,
+  isLinking,
+  onMobileChange,
+  onSearch,
+  onSelectPerson,
+  onLinkExisting,
+  onCreateNew,
+}: {
+  detail: EnquiryDetail;
+  mobile: string;
+  searchResult: StudentSearchResult | null;
+  selectedPersonId: string;
+  isSearching: boolean;
+  isLinking: boolean;
+  onMobileChange: (value: string) => void;
+  onSearch: () => void;
+  onSelectPerson: (personId: string) => void;
+  onLinkExisting: () => void;
+  onCreateNew: () => void;
+}) {
+  const candidate = detail.personLinkCandidate;
+  return (
+    <section className="staff-card admission-person-link-card" aria-labelledby="admission-person-link-title">
+      <div className="section-heading">
+        <h2 id="admission-person-link-title">Student record not linked</h2>
+        <p>This enquiry must be linked to a student record before admission can continue.</p>
+      </div>
+      <div className="detail-grid">
+        <Review label="Enquiry" value={String(detail.enquiry.enquiry_number || candidate?.enquiryNumber || "Current enquiry")} />
+        <Review label="Prospect" value={String(candidate?.displayName || detail.enquiry.full_name || "Referral prospect")} />
+        <Review label="Prospect mobile" value={candidate?.mobileDisplay || detail.mobileDisplay || "Contact unavailable"} />
+      </div>
+      <div className="admission-person-link-actions">
+        <label>
+          Search existing by mobile
+          <input value={mobile} onChange={(event) => onMobileChange(event.target.value)} placeholder="10-digit mobile" />
+        </label>
+        <button type="button" className="secondary-button" disabled={isSearching || isLinking} onClick={onSearch}>{isSearching ? "Searching..." : "Find Existing Student"}</button>
+        <button type="button" disabled={isLinking} onClick={onCreateNew}>{isLinking ? "Linking..." : "Create New Student"}</button>
+      </div>
+      {searchResult ? (
+        <div className="admission-person-results" role="list" aria-label="Existing student matches">
+          {searchResult.possiblePeople.length ? searchResult.possiblePeople.map((person) => (
+            <label key={person.person_id} className="match-card" role="listitem">
+              <input type="radio" name="admission-person" checked={selectedPersonId === person.person_id} onChange={() => onSelectPerson(person.person_id)} />
+              <span>
+                <strong>{person.full_name}</strong>
+                <small>{person.student_number || "No Student ID"} · {person.student_status || "Person record"} · mobile ending {person.mobile_last_four || searchResult.mobileLastFour}</small>
+              </span>
+            </label>
+          )) : <p className="staff-empty">No existing student record was found for this mobile.</p>}
+          {searchResult.possiblePeople.length ? (
+            <div className="staff-form-actions">
+              <button type="button" disabled={!selectedPersonId || isLinking} onClick={onLinkExisting}>{isLinking ? "Linking..." : "Link this student"}</button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
   );
 }
 

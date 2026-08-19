@@ -303,12 +303,26 @@ const admissionReceiptResponseSchema = z.object({
   financialSummary: receiptSummarySchema,
 });
 
+const admissionPersonLinkResponseSchema = z.object({
+  success: z.literal(true),
+  enquiryId: z.string(),
+  personId: z.string(),
+  mode: z.union([z.literal("existing"), z.literal("create")]),
+  alreadyLinked: z.boolean().optional(),
+});
+
 const enquiryDetailSchema = z.object({
   enquiry: z.record(z.string(), z.unknown()),
   primaryMobile: z.string().nullable(),
   alternateMobile: z.string().nullable().optional(),
   mobileDisplay: z.string().nullable(),
   alternateMobileDisplay: z.string().nullable().optional(),
+  personLinkCandidate: z.object({
+    displayName: z.string(),
+    mobile: z.string().nullable(),
+    mobileDisplay: z.string().nullable(),
+    enquiryNumber: z.string(),
+  }).nullable().optional(),
   previousEnrolments: z.array(z.record(z.string(), z.unknown())),
   activeDraft: z.object({ id: z.string(), status: z.string(), currentStep: z.string() }).nullable(),
 });
@@ -602,6 +616,7 @@ export type AdmissionConfirmation = z.infer<typeof admissionConfirmationSchema>;
 export type AdmissionFinancialSummary = z.infer<typeof receiptSummarySchema>;
 export type AdmissionReceipt = NonNullable<AdmissionFinancialSummary["tokenReceipt"]>;
 export type StaffStudentProfile = z.infer<typeof studentProfileSchema>;
+export type StudentSearchPerson = StudentSearchResult["possiblePeople"][number];
 export type AdmissionConfiguration = z.infer<typeof admissionConfigurationSchema>;
 export type AdmissionOptionValue = AdmissionConfiguration["options"][number];
 export type PaymentPlanRule = AdmissionConfiguration["paymentPlanRules"][number];
@@ -777,6 +792,10 @@ export async function confirmAdmission(enquiryId: string) {
 
 export async function recordAdmissionReceipt(enquiryId: string, input: Record<string, unknown>) {
   return postJson(`/api/staff/admissions/${encodeURIComponent(enquiryId)}/receipts`, input, admissionReceiptResponseSchema);
+}
+
+export async function linkAdmissionEnquiryPerson(enquiryId: string, input: { mode: "existing"; personId: string } | { mode: "create"; idempotencyKey: string }) {
+  return postJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/person-link`, input, admissionPersonLinkResponseSchema);
 }
 
 export async function getStaffStudentProfile(studentId: string) {

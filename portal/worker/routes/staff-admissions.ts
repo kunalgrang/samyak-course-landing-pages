@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
-import { ORG_ID } from "../lib/auth-store";
+import { ORG_ID, mobileHash } from "../lib/auth-store";
 import {
   confirmAdmission,
   decideDiscountApproval,
@@ -17,14 +17,17 @@ import {
   saveAdmissionDraftSchema,
 } from "../lib/admission-service";
 import { ADMISSION_STAFF_ROLES, COURSE_ADMIN_ROLES, DISCOUNT_APPROVER_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
-import { createOpaqueId, decryptText } from "../lib/crypto";
+import { createOpaqueId, decryptText, hmacHex } from "../lib/crypto";
 import { mapStatusToPipelineStage } from "../lib/enquiry-crm";
 import { jsonError, jsonPlain } from "../lib/json-response";
+import { normalizeIndianMobile } from "../lib/mobile";
+import { addMobileIfMissing } from "../lib/person-contact";
 
 type PortalHono = Hono<{
   Bindings: WorkerBindings;
   Variables: WorkerVariables;
 }>;
+type PortalContext = Parameters<typeof getAdmissionDraft>[0];
 
 const baseCourseSchema = z.object({
   code: z.string().trim().min(2).max(30).regex(/^[A-Za-z0-9_-]+$/),
@@ -45,6 +48,11 @@ const courseSchema = baseCourseSchema.refine((course) => course.lowestAcceptable
 const coursePatchSchema = baseCourseSchema.partial();
 
 const discountDecisionSchema = z.object({ decision: z.enum(["approved", "rejected"]) });
+const personLinkSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("existing"), personId: z.string().trim().min(1) }),
+  z.object({ mode: z.literal("create"), idempotencyKey: z.string().trim().min(8).max(160) }),
+]);
+type AdmissionPersonLinkInput = z.infer<typeof personLinkSchema>;
 
 const enquiryStatusSchema = z.object({
   status: z.enum([
@@ -180,6 +188,16 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     return jsonPlain(c, detail);
   });
 
+  app.post("/api/staff/enquiries/:enquiryId/person-link", async (c) => {
+    const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
+    if (!staff) return forbidden(c);
+    const parsed = personLinkSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_person_link", message: "Select an existing student or create a new student record." });
+    const result = await linkAdmissionEnquiryPerson(c, staff, c.req.param("enquiryId"), parsed.data);
+    if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message });
+    return jsonPlain(c, { success: true, enquiryId: result.enquiryId, personId: result.personId, mode: result.mode, alreadyLinked: result.alreadyLinked });
+  });
+
   app.patch("/api/staff/enquiries/:enquiryId", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
@@ -305,16 +323,184 @@ async function getEnquiryDetail(c: Parameters<typeof getAdmissionDraft>[0], enqu
         .all()
     : { results: [] };
   const mobiles = enquiry.person_id ? await fullMobileContacts(c, String(enquiry.person_id)) : { primaryMobile: null, alternateMobile: null };
+  const personLinkCandidate = enquiry.person_id ? null : await admissionPersonLinkCandidate(c, enquiryId);
   const draft = await getAdmissionDraft(c, enquiryId);
   return {
-    enquiry,
+    enquiry: safeAdmissionEnquiry(enquiry),
     primaryMobile: mobiles.primaryMobile,
     alternateMobile: mobiles.alternateMobile,
     mobileDisplay: mobiles.primaryMobile ? maskMobile(mobiles.primaryMobile) : null,
     alternateMobileDisplay: mobiles.alternateMobile ? maskMobile(mobiles.alternateMobile) : null,
+    personLinkCandidate,
     previousEnrolments: enrolments.results || [],
     activeDraft: draft ? { id: draft.id, status: draft.status, currentStep: draft.current_step } : null,
   };
+}
+
+function safeAdmissionEnquiry(enquiry: Record<string, unknown>) {
+  const { mobile_used: _mobileUsed, campaign_data_json: _campaignDataJson, ...safe } = enquiry;
+  return safe;
+}
+
+async function linkAdmissionEnquiryPerson(c: PortalContext, staff: StaffContext, enquiryId: string, input: AdmissionPersonLinkInput) {
+  const enquiry = await c.env.DB.prepare(
+    `select id, organisation_id, branch_id, person_id, enquiry_number
+     from enquiries
+     where id = ? and organisation_id = ?`,
+  )
+    .bind(enquiryId, ORG_ID)
+    .first<{ id: string; organisation_id: string; branch_id: string; person_id: string | null; enquiry_number: string }>();
+  if (!enquiry) return { ok: false as const, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
+  if (!(await hasAdmissionAccessForBranch(c, staff, enquiry.branch_id))) {
+    return { ok: false as const, status: 403, code: "forbidden", message: "This role cannot link students for this branch." };
+  }
+
+  if (input.mode === "existing") return linkExistingAdmissionPerson(c, staff, enquiry, input.personId);
+  return createAndLinkAdmissionPerson(c, staff, enquiry, input.idempotencyKey);
+}
+
+async function linkExistingAdmissionPerson(c: PortalContext, staff: StaffContext, enquiry: { id: string; branch_id: string; person_id: string | null; enquiry_number: string }, personId: string) {
+  const person = await c.env.DB.prepare("select id from people where id = ? and organisation_id = ? and status != 'archived'")
+    .bind(personId, ORG_ID)
+    .first<{ id: string }>();
+  if (!person) return { ok: false as const, status: 404, code: "person_not_found", message: "The selected student record was not found." };
+  if (enquiry.person_id) {
+    if (enquiry.person_id === personId) return { ok: true as const, enquiryId: enquiry.id, personId, mode: "existing" as const, alreadyLinked: true };
+    return { ok: false as const, status: 409, code: "person_already_linked", message: "This enquiry is already linked to another student record." };
+  }
+
+  const now = new Date().toISOString();
+  const result = await c.env.DB.prepare("update enquiries set person_id = ?, updated_at = ? where id = ? and organisation_id = ? and person_id is null")
+    .bind(personId, now, enquiry.id, ORG_ID)
+    .run();
+  if (!changed(result)) return personLinkConflict(c, enquiry.id);
+  await c.env.DB.prepare("update referrals set prospect_person_id = coalesce(prospect_person_id, ?), updated_at = ? where organisation_id = ? and enquiry_id = ?")
+    .bind(personId, now, ORG_ID, enquiry.id)
+    .run();
+  await auditPersonLink(c, staff, enquiry.branch_id, "admission_enquiry_person_linked", enquiry.id, { enquiryNumber: enquiry.enquiry_number, personId, linkMode: "existing" });
+  return { ok: true as const, enquiryId: enquiry.id, personId, mode: "existing" as const, alreadyLinked: false };
+}
+
+async function createAndLinkAdmissionPerson(c: PortalContext, staff: StaffContext, enquiry: { id: string; branch_id: string; person_id: string | null; enquiry_number: string }, idempotencyKey: string) {
+  if (enquiry.person_id) return { ok: true as const, enquiryId: enquiry.id, personId: enquiry.person_id, mode: "create" as const, alreadyLinked: true };
+  const candidate = await admissionPersonLinkCandidate(c, enquiry.id);
+  if (!candidate?.mobile) {
+    return { ok: false as const, status: 400, code: "prospect_contact_required", message: "Referral prospect contact is unavailable. Link an existing student record instead." };
+  }
+
+  const now = new Date().toISOString();
+  const idHash = await hmacHex(c.env.SESSION_PEPPER, "admission-person-create", `${enquiry.id}:${idempotencyKey}`);
+  const personId = `person_${idHash.slice(0, 32)}`;
+  const lookupHash = await mobileHash(c, candidate.mobile);
+  let insertedPerson = false;
+  try {
+    await c.env.DB.prepare(
+      `insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at)
+       values (?, ?, ?, ?, ?, 'active', ?, ?)`,
+    )
+      .bind(personId, ORG_ID, enquiry.branch_id, candidate.displayName, candidate.displayName, now, now)
+      .run();
+    insertedPerson = true;
+  } catch {
+    const linked = await c.env.DB.prepare("select person_id from enquiries where id = ? and organisation_id = ?")
+      .bind(enquiry.id, ORG_ID)
+      .first<{ person_id: string | null }>();
+    if (linked?.person_id === personId) return { ok: true as const, enquiryId: enquiry.id, personId, mode: "create" as const, alreadyLinked: true };
+  }
+
+  await addMobileIfMissing(c, personId, candidate.mobile, lookupHash, now, true);
+  const result = await c.env.DB.prepare("update enquiries set person_id = ?, updated_at = ? where id = ? and organisation_id = ? and person_id is null")
+    .bind(personId, now, enquiry.id, ORG_ID)
+    .run();
+  if (!changed(result)) {
+    if (insertedPerson) await cleanupUnlinkedCreatedPerson(c, personId);
+    return personLinkConflict(c, enquiry.id);
+  }
+  await c.env.DB.prepare("update referrals set prospect_person_id = coalesce(prospect_person_id, ?), updated_at = ? where organisation_id = ? and enquiry_id = ?")
+    .bind(personId, now, ORG_ID, enquiry.id)
+    .run();
+  await auditPersonLink(c, staff, enquiry.branch_id, "admission_enquiry_person_created_and_linked", enquiry.id, { enquiryNumber: enquiry.enquiry_number, personId, linkMode: "create" });
+  return { ok: true as const, enquiryId: enquiry.id, personId, mode: "create" as const, alreadyLinked: false };
+}
+
+async function personLinkConflict(c: PortalContext, enquiryId: string) {
+  const linked = await c.env.DB.prepare("select person_id from enquiries where id = ? and organisation_id = ?")
+    .bind(enquiryId, ORG_ID)
+    .first<{ person_id: string | null }>();
+  if (linked?.person_id) {
+    return { ok: false as const, status: 409, code: "person_already_linked", message: "This enquiry was already linked to a student record. Refresh admission to continue." };
+  }
+  return { ok: false as const, status: 409, code: "person_link_conflict", message: "Student link could not be saved. Refresh and retry." };
+}
+
+async function admissionPersonLinkCandidate(c: PortalContext, enquiryId: string) {
+  const referral = await c.env.DB.prepare(
+    `select referrals.prospect_name, referrals.referral_link_id, referrals.prospect_mobile_hash, referrals.prospect_mobile_ciphertext,
+            enquiries.enquiry_number
+     from referrals
+     join enquiries on enquiries.id = referrals.enquiry_id
+     where referrals.organisation_id = ? and referrals.enquiry_id = ?
+     limit 1`,
+  )
+    .bind(ORG_ID, enquiryId)
+    .first<{ prospect_name: string; referral_link_id: string | null; prospect_mobile_hash: string | null; prospect_mobile_ciphertext: string | null; enquiry_number: string }>();
+  if (!referral) return null;
+  const mobile = await referralProspectMobile(c, referral);
+  return {
+    displayName: referral.prospect_name || "Referral prospect",
+    mobile,
+    mobileDisplay: mobile ? formatIndianMobileDisplay(mobile) : null,
+    enquiryNumber: referral.enquiry_number,
+  };
+}
+
+async function referralProspectMobile(c: PortalContext, referral: { referral_link_id: string | null; prospect_mobile_hash: string | null; prospect_mobile_ciphertext: string | null }) {
+  if (!referral.referral_link_id || !referral.prospect_mobile_hash || !referral.prospect_mobile_ciphertext) return null;
+  const value = await decryptText(c.env.SESSION_PEPPER, `referral-mobile:${referral.referral_link_id}:${referral.prospect_mobile_hash}`, referral.prospect_mobile_ciphertext).catch(() => null);
+  return value ? normalizeIndianMobile(value) : null;
+}
+
+async function cleanupUnlinkedCreatedPerson(c: PortalContext, personId: string) {
+  const contacts = await c.env.DB.prepare("select id from person_contacts where person_id = ?").bind(personId).all<{ id: string }>();
+  for (const contact of contacts.results || []) {
+    await c.env.DB.batch([
+      c.env.DB.prepare("delete from person_contact_secrets where contact_id = ?").bind(contact.id),
+      c.env.DB.prepare("delete from person_contact_details where contact_id = ?").bind(contact.id),
+      c.env.DB.prepare("delete from person_contacts where id = ?").bind(contact.id),
+    ]);
+  }
+  await c.env.DB.prepare("delete from people where id = ? and not exists (select 1 from enquiries where enquiries.person_id = people.id)").bind(personId).run();
+}
+
+async function hasAdmissionAccessForBranch(c: PortalContext, staff: StaffContext, branchId: string) {
+  if (!staff.roles.some((role) => ADMISSION_STAFF_ROLES.includes(role as (typeof ADMISSION_STAFF_ROLES)[number]))) return false;
+  const row = await c.env.DB.prepare(
+    `select 1 as ok
+     from login_account_roles
+     join roles on roles.id = login_account_roles.role_id
+     where login_account_roles.login_account_id = ?
+       and roles.organisation_id = ?
+       and roles.code in ('owner', 'system_admin', 'admin', 'admission_admin', 'counsellor')
+       and (login_account_roles.branch_id is null or login_account_roles.branch_id = ?)
+     limit 1`,
+  )
+    .bind(staff.loginAccountId, ORG_ID, branchId)
+    .first<{ ok: number }>();
+  return Boolean(row);
+}
+
+async function auditPersonLink(c: PortalContext, staff: StaffContext, branchId: string, action: string, enquiryId: string, metadata: Record<string, unknown>) {
+  await c.env.DB.prepare(
+    `insert into audit_logs
+       (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
+     values (?, ?, ?, ?, ?, ?, 'enquiry', ?, ?, ?)`,
+  )
+    .bind(createOpaqueId("audit"), ORG_ID, branchId, staff.loginAccountId, staff.activePersonId, action, enquiryId, JSON.stringify(metadata), new Date().toISOString())
+    .run();
+}
+
+function formatIndianMobileDisplay(mobile: string) {
+  return `+91 ${mobile.slice(0, 5)} ${mobile.slice(5)}`;
 }
 
 async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], studentId: string) {
