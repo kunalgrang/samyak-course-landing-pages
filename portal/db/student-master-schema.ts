@@ -279,8 +279,12 @@ export const enquiries = sqliteTable(
     preferredTiming: text("preferred_timing"),
     preferredJoiningDate: text("preferred_joining_date"),
     status: text("status").notNull().default("new"),
+    pipelineStage: text("pipeline_stage").notNull().default("new"),
     nextFollowUpAt: text("next_follow_up_at"),
+    assignedAt: text("assigned_at"),
+    lastContactedAt: text("last_contacted_at"),
     lostReason: text("lost_reason"),
+    closedReason: text("closed_reason"),
     convertedEnrolmentId: text("converted_enrolment_id"),
     convertedAt: text("converted_at"),
     ...timestamps,
@@ -290,10 +294,21 @@ export const enquiries = sqliteTable(
     index("enquiries_mobile_used_idx").on(table.mobileUsed),
     index("enquiries_person_id_idx").on(table.personId),
     index("enquiries_branch_status_idx").on(table.branchId, table.status),
+    index("enquiries_branch_pipeline_followup_idx").on(table.branchId, table.pipelineStage, table.nextFollowUpAt),
+    index("enquiries_branch_counsellor_pipeline_followup_idx").on(table.branchId, table.counsellorLoginAccountId, table.pipelineStage, table.nextFollowUpAt),
+    index("enquiries_branch_created_idx").on(table.branchId, table.createdAt),
     index("enquiries_next_follow_up_idx").on(table.nextFollowUpAt),
     check(
       "enquiries_status_check",
       sql`${table.status} in ('new', 'attempted_contact', 'contacted', 'follow_up', 'counselling_completed', 'demo_scheduled', 'interested', 'admission_pending', 'converted', 'not_interested', 'lost', 'duplicate', 'invalid')`,
+    ),
+    check(
+      "enquiries_pipeline_stage_check",
+      sql`${table.pipelineStage} in ('new', 'contacting', 'engaged', 'considering', 'deferred', 'admission_ready', 'converted', 'lost', 'invalid', 'duplicate')`,
+    ),
+    check(
+      "enquiries_closed_reason_check",
+      sql`${table.closedReason} is null or ${table.closedReason} in ('not_interested', 'joined_elsewhere', 'fee_budget_issue', 'batch_timing_issue', 'location_travel_issue', 'course_not_suitable', 'no_response', 'postponed_indefinitely', 'other')`,
     ),
   ],
 );
@@ -315,6 +330,43 @@ export const enquiryFollowups = sqliteTable(
   (table) => [
     index("enquiry_followups_enquiry_id_idx").on(table.enquiryId),
     index("enquiry_followups_next_follow_up_idx").on(table.nextFollowUpAt),
+  ],
+);
+
+export const enquiryFollowUpEvents = sqliteTable(
+  "enquiry_follow_up_events",
+  {
+    id: text("id").primaryKey(),
+    enquiryId: text("enquiry_id")
+      .notNull()
+      .references(() => enquiries.id),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branches.id),
+    actorLoginAccountId: text("actor_login_account_id").notNull(),
+    channel: text("channel").notNull(),
+    outcome: text("outcome").notNull(),
+    note: text("note"),
+    occurredAt: text("occurred_at").notNull(),
+    nextFollowUpAtSnapshot: text("next_follow_up_at_snapshot"),
+    pipelineStageSnapshot: text("pipeline_stage_snapshot").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("enquiry_follow_up_events_enquiry_created_idx").on(table.enquiryId, table.createdAt),
+    index("enquiry_follow_up_events_branch_created_idx").on(table.branchId, table.createdAt),
+    check("enquiry_follow_up_events_channel_check", sql`${table.channel} in ('call', 'whatsapp', 'in_person', 'email', 'other')`),
+    check(
+      "enquiry_follow_up_events_outcome_check",
+      sql`${table.outcome} in ('call_connected', 'call_no_answer', 'call_busy', 'whatsapp_sent', 'whatsapp_replied', 'whatsapp_no_response', 'callback_requested', 'course_details_shared', 'fee_discussed', 'batch_discussed', 'visit_scheduled', 'demo_scheduled', 'demo_completed', 'thinking', 'deferred_joining', 'not_interested', 'joined_elsewhere', 'invalid_contact', 'other')`,
+    ),
+    check(
+      "enquiry_follow_up_events_pipeline_stage_check",
+      sql`${table.pipelineStageSnapshot} in ('new', 'contacting', 'engaged', 'considering', 'deferred', 'admission_ready', 'converted', 'lost', 'invalid', 'duplicate')`,
+    ),
   ],
 );
 

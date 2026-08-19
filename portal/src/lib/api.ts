@@ -286,6 +286,76 @@ const enquiryDetailSchema = z.object({
   activeDraft: z.object({ id: z.string(), status: z.string(), currentStep: z.string() }).nullable(),
 });
 
+const crmContactSchema = z.object({
+  mobile: z.string().nullable(),
+  mobileDisplay: z.string().nullable(),
+  whatsappUrl: z.string().nullable(),
+  callUrl: z.string().nullable(),
+});
+
+const crmItemSchema = z.object({
+  enquiry: z.object({
+    id: z.string(),
+    enquiryNumber: z.string(),
+    status: z.string(),
+    pipelineStage: z.string(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  }),
+  prospect: z.object({ displayName: z.string(), personId: z.string().nullable() }),
+  contact: crmContactSchema,
+  course: z.object({ id: z.string().nullable(), name: z.string() }),
+  source: z.string(),
+  sourceDetail: z.string().nullable(),
+  referral: z.object({ id: z.string(), status: z.string().nullable(), referrerName: z.string().nullable() }).nullable(),
+  pipelineStage: z.string(),
+  leadTemperature: z.union([z.literal("hot_urgent"), z.literal("hot"), z.literal("warm"), z.literal("cold")]).nullable(),
+  leadTemperatureReason: z.string(),
+  assignedCounsellorLoginAccountId: z.string().nullable(),
+  assignedAt: z.string().nullable(),
+  lastContactedAt: z.string().nullable(),
+  nextFollowUpAt: z.string().nullable(),
+  expectedJoiningDate: z.string().nullable(),
+  branch: z.object({ id: z.string(), name: z.string().nullable(), code: z.string().nullable() }),
+  admission: z.object({
+    convertedEnrolmentId: z.string().nullable(),
+    convertedAt: z.string().nullable(),
+    enrolmentId: z.string().nullable(),
+    enrolmentNumber: z.string().nullable(),
+    enrolmentStatus: z.string().nullable(),
+    studentId: z.string().nullable(),
+    studentNumber: z.string().nullable(),
+  }),
+  closedReason: z.string().nullable(),
+  followUpEventCount: z.number(),
+});
+
+const crmListSchema = z.object({
+  success: z.literal(true),
+  filters: z.record(z.string(), z.unknown()),
+  pagination: z.object({ limit: z.number(), offset: z.number(), total: z.number(), hasMore: z.boolean() }),
+  queues: z.array(z.string()),
+  items: z.array(crmItemSchema),
+});
+
+const crmDetailSchema = z.object({
+  success: z.literal(true),
+  crm: crmItemSchema,
+  timeline: z.array(
+    z.object({
+      id: z.string(),
+      channel: z.string(),
+      outcome: z.string(),
+      note: z.string().nullable(),
+      occurredAt: z.string(),
+      nextFollowUpAtSnapshot: z.string().nullable(),
+      pipelineStageSnapshot: z.string(),
+      actorLoginAccountId: z.string(),
+    }),
+  ),
+  assignees: z.array(z.object({ id: z.string(), label: z.string() })),
+});
+
 const studentProfileSchema = z.object({
   student: z.record(z.string(), z.unknown()),
   primaryMobile: z.string().nullable(),
@@ -495,6 +565,9 @@ export type StudentSearchResult = z.infer<typeof studentSearchSchema>;
 export type CreateEnquiryResponse = z.infer<typeof createEnquiryResponseSchema>;
 export type StaffCourse = z.infer<typeof courseSchema>;
 export type EnquiryDetail = z.infer<typeof enquiryDetailSchema>;
+export type CrmEnquiryItem = z.infer<typeof crmItemSchema>;
+export type CrmEnquiryList = z.infer<typeof crmListSchema>;
+export type CrmEnquiryDetail = z.infer<typeof crmDetailSchema>;
 export type AdmissionDraft = z.infer<typeof admissionDraftSchema>["draft"];
 export type AdmissionConfirmation = z.infer<typeof admissionConfirmationSchema>;
 export type StaffStudentProfile = z.infer<typeof studentProfileSchema>;
@@ -613,6 +686,46 @@ export async function updateCourse(courseId: string, input: Record<string, unkno
 
 export async function getEnquiryDetail(enquiryId: string) {
   return getJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}`, enquiryDetailSchema);
+}
+
+export type CrmEnquiryQuery = {
+  queue?: string;
+  stage?: string;
+  leadTemperature?: string;
+  source?: string;
+  courseId?: string;
+  assignedTo?: string;
+  fromDate?: string;
+  toDate?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export async function getCrmEnquiries(params: CrmEnquiryQuery = {}) {
+  return getJson(`/api/staff/enquiries/crm${queryString(params)}`, crmListSchema);
+}
+
+export async function getCrmEnquiryDetail(enquiryId: string) {
+  return getJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/crm`, crmDetailSchema);
+}
+
+export async function recordEnquiryFollowUp(enquiryId: string, input: Record<string, unknown>) {
+  return postJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/follow-ups`, input, z.object({
+    success: z.literal(true),
+    enquiryId: z.string(),
+    eventId: z.string(),
+    leadTemperature: z.string().nullable(),
+    leadTemperatureReason: z.string(),
+  }));
+}
+
+export async function assignEnquiry(enquiryId: string, counsellorLoginAccountId: string | null) {
+  return patchJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/assignment`, { counsellorLoginAccountId }, z.object({
+    success: z.literal(true),
+    enquiryId: z.string(),
+    assignedTo: z.string().nullable(),
+  }));
 }
 
 export async function updateEnquiryStatus(enquiryId: string, status: string) {
@@ -767,7 +880,7 @@ function isFieldErrors(value: unknown): value is FieldErrors {
   );
 }
 
-function queryString(params: CertificateQuery | StaffReferralQuery) {
+function queryString(params: Record<string, string | number | undefined>) {
   const url = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== "") url.set(key, String(value));

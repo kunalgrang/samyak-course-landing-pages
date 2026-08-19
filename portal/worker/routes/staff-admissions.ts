@@ -15,6 +15,7 @@ import {
 } from "../lib/admission-service";
 import { ADMISSION_STAFF_ROLES, COURSE_ADMIN_ROLES, DISCOUNT_APPROVER_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import { createOpaqueId, decryptText } from "../lib/crypto";
+import { mapStatusToPipelineStage } from "../lib/enquiry-crm";
 import { jsonError, jsonPlain } from "../lib/json-response";
 
 type PortalHono = Hono<{
@@ -181,10 +182,11 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     if (!staff) return forbidden(c);
     const parsed = enquiryStatusSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_status", message: "Select a valid enquiry status." });
+    const pipelineStage = mapStatusToPipelineStage(parsed.data.status);
     const result = await c.env.DB.prepare(
-      "update enquiries set status = ?, updated_at = ? where id = ? and organisation_id = ? and status != 'converted'",
+      "update enquiries set status = ?, pipeline_stage = ?, next_follow_up_at = case when ? in ('lost', 'invalid', 'duplicate') then null else next_follow_up_at end, updated_at = ? where id = ? and organisation_id = ? and status != 'converted'",
     )
-      .bind(parsed.data.status, new Date().toISOString(), c.req.param("enquiryId"), ORG_ID)
+      .bind(parsed.data.status, pipelineStage, pipelineStage, new Date().toISOString(), c.req.param("enquiryId"), ORG_ID)
       .run();
     if (!changed(result)) return jsonError(c, { status: 409, code: "status_not_updated", message: "Converted enquiries cannot be edited." });
     await audit(c, staff, "enquiry_status_updated", "enquiry", c.req.param("enquiryId"), { status: parsed.data.status });

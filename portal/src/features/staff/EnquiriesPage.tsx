@@ -5,9 +5,12 @@ import { LoadingState } from "../../components/LoadingState";
 import {
   createEnquiry,
   getEnquiryOptions,
+  getCrmEnquiries,
+  recordEnquiryFollowUp,
   searchStudentByMobile,
   type CreateEnquiryInput,
   type CreateEnquiryResponse,
+  type CrmEnquiryItem,
   type EnquiryOptions,
   type StudentSearchResult,
 } from "../../lib/api";
@@ -44,8 +47,55 @@ const emptyFormFields: FormState = {
   existingPersonId: "",
 };
 
+const queueOptions = [
+  ["hot_urgent", "Hot Urgent"],
+  ["hot", "Hot"],
+  ["warm", "Warm"],
+  ["cold", "Cold"],
+  ["today", "Today"],
+  ["overdue", "Overdue"],
+  ["new", "New"],
+  ["upcoming", "Upcoming"],
+  ["considering", "Considering"],
+  ["deferred", "Deferred"],
+  ["admission_ready", "Admission Ready"],
+  ["unassigned", "Unassigned"],
+  ["all", "All"],
+] as const;
+
+const followUpOutcomes = [
+  "call_connected",
+  "call_no_answer",
+  "call_busy",
+  "whatsapp_sent",
+  "whatsapp_replied",
+  "whatsapp_no_response",
+  "callback_requested",
+  "course_details_shared",
+  "fee_discussed",
+  "batch_discussed",
+  "visit_scheduled",
+  "demo_scheduled",
+  "demo_completed",
+  "thinking",
+  "deferred_joining",
+  "not_interested",
+  "joined_elsewhere",
+  "invalid_contact",
+  "other",
+] as const;
+
+const pipelineStages = ["new", "contacting", "engaged", "considering", "deferred", "admission_ready", "lost", "invalid", "duplicate"] as const;
+
 export function EnquiriesPage() {
   const [options, setOptions] = useState<EnquiryOptions | null>(null);
+  const [crmItems, setCrmItems] = useState<CrmEnquiryItem[]>([]);
+  const [crmQueue, setCrmQueue] = useState("hot_urgent");
+  const [crmSearch, setCrmSearch] = useState("");
+  const [crmTotal, setCrmTotal] = useState(0);
+  const [isLoadingCrm, setIsLoadingCrm] = useState(true);
+  const [activeLogId, setActiveLogId] = useState<string | null>(null);
+  const [logForm, setLogForm] = useState(initialLogForm());
   const [mobile, setMobile] = useState("");
   const [searchResult, setSearchResult] = useState<StudentSearchResult | null>(null);
   const [form, setForm] = useState<FormState>(initialEnquiryForm());
@@ -67,6 +117,10 @@ export function EnquiriesPage() {
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Could not load enquiry options."))
       .finally(() => setIsLoadingOptions(false));
   }, []);
+
+  useEffect(() => {
+    void loadCrmQueue();
+  }, [crmQueue]);
 
   const selectedPerson = useMemo(
     () => searchResult?.possiblePeople.find((person) => person.person_id === form.existingPersonId) || null,
@@ -92,6 +146,45 @@ export function EnquiriesPage() {
       setError(reason instanceof Error ? reason.message : "Could not search this mobile number.");
     } finally {
       setIsSearching(false);
+    }
+  }
+
+  async function loadCrmQueue(search = crmSearch) {
+    setIsLoadingCrm(true);
+    try {
+      const data = await getCrmEnquiries({ queue: crmQueue, search: search || undefined, limit: 30 });
+      setCrmItems(data.items);
+      setCrmTotal(data.pagination.total);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not load CRM queue.");
+    } finally {
+      setIsLoadingCrm(false);
+    }
+  }
+
+  async function handleCrmSearch(event: FormEvent) {
+    event.preventDefault();
+    await loadCrmQueue(crmSearch);
+  }
+
+  async function handleLogFollowUp(event: FormEvent, enquiry: CrmEnquiryItem) {
+    event.preventDefault();
+    try {
+      await recordEnquiryFollowUp(enquiry.enquiry.id, {
+        channel: logForm.channel,
+        outcome: logForm.outcome,
+        note: logForm.note || null,
+        pipelineStage: logForm.pipelineStage,
+        nextFollowUpAt: logForm.nextFollowUpAt || null,
+        expectedJoiningDate: logForm.expectedJoiningDate || null,
+        closedReason: logForm.closedReason || null,
+      });
+      setActiveLogId(null);
+      setLogForm(initialLogForm());
+      await loadCrmQueue();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not log follow-up.");
     }
   }
 
@@ -135,7 +228,72 @@ export function EnquiriesPage() {
   return (
     <div className="content-stack staff-enquiries-page">
       <header className="page-header">
-        <h1>Student & Enquiry Search</h1>
+        <h1>Enquiry Follow-up CRM</h1>
+        <p>Prioritise active enquiries, log contact outcomes and keep admission-ready leads moving.</p>
+      </header>
+
+      <section className="staff-card crm-queue-card">
+        <div className="section-heading">
+          <h2>Work queue</h2>
+          <span>{crmTotal}</span>
+        </div>
+        <form className="crm-toolbar" onSubmit={handleCrmSearch}>
+          <label>
+            Queue
+            <select value={crmQueue} onChange={(event) => setCrmQueue(event.target.value)}>
+              {queueOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          <label>
+            Search
+            <input value={crmSearch} onChange={(event) => setCrmSearch(event.target.value)} placeholder="Name, enquiry no., course" />
+          </label>
+          <button type="submit">Apply</button>
+        </form>
+        {isLoadingCrm ? <LoadingState label="Loading CRM queue" /> : null}
+        {!isLoadingCrm && crmItems.length ? (
+          <div className="crm-list">
+            {crmItems.map((item) => (
+              <article className="crm-card" key={item.enquiry.id}>
+                <div className="crm-card-main">
+                  <span className={`temperature-chip temperature-chip--${item.leadTemperature || "inactive"}`}>{temperatureLabel(item.leadTemperature)}</span>
+                  <strong>{item.prospect.displayName}</strong>
+                  <small>{item.leadTemperatureReason}</small>
+                  <span>{item.course.name}</span>
+                  <small>{formatLabel(item.pipelineStage)} · {item.source}{item.referral ? " · Referral" : ""}</small>
+                </div>
+                <div className="crm-card-meta">
+                  <DetailLine label="Next" value={formatDateTime(item.nextFollowUpAt)} />
+                  <DetailLine label="Expected" value={item.expectedJoiningDate || "Not set"} />
+                  <DetailLine label="Assigned" value={item.assignedCounsellorLoginAccountId || "Unassigned"} />
+                </div>
+                <div className="crm-actions">
+                  {item.contact.whatsappUrl ? <a className="contact-action contact-action--whatsapp" href={item.contact.whatsappUrl} target="_blank" rel="noopener noreferrer">WhatsApp</a> : null}
+                  {item.contact.callUrl ? <a className="contact-action" href={item.contact.callUrl}>Call</a> : null}
+                  <a className="button-link" href={`/app/enquiries/${item.enquiry.id}`}>Open</a>
+                  <button type="button" className="secondary-button" onClick={() => setActiveLogId(activeLogId === item.enquiry.id ? null : item.enquiry.id)}>Log follow-up</button>
+                </div>
+                {activeLogId === item.enquiry.id ? (
+                  <form className="staff-form crm-log-form" onSubmit={(event) => void handleLogFollowUp(event, item)}>
+                    <label>Channel<select value={logForm.channel} onChange={(event) => setLogForm((current) => ({ ...current, channel: event.target.value }))}><option value="call">Call</option><option value="whatsapp">WhatsApp</option><option value="in_person">In person</option><option value="email">Email</option><option value="other">Other</option></select></label>
+                    <label>Outcome<select value={logForm.outcome} onChange={(event) => setLogForm((current) => ({ ...current, outcome: event.target.value }))}>{followUpOutcomes.map((outcome) => <option key={outcome} value={outcome}>{formatLabel(outcome)}</option>)}</select></label>
+                    <label>Pipeline<select value={logForm.pipelineStage} onChange={(event) => setLogForm((current) => ({ ...current, pipelineStage: event.target.value }))}>{pipelineStages.map((stage) => <option key={stage} value={stage}>{formatLabel(stage)}</option>)}</select></label>
+                    <label>Next follow-up<input type="datetime-local" value={logForm.nextFollowUpAt} onChange={(event) => setLogForm((current) => ({ ...current, nextFollowUpAt: event.target.value }))} /></label>
+                    <label>Expected joining<input type="date" value={logForm.expectedJoiningDate} onChange={(event) => setLogForm((current) => ({ ...current, expectedJoiningDate: event.target.value }))} /></label>
+                    <label>Lost reason<select value={logForm.closedReason} onChange={(event) => setLogForm((current) => ({ ...current, closedReason: event.target.value }))}><option value="">Only for lost</option><option value="not_interested">Not interested</option><option value="joined_elsewhere">Joined elsewhere</option><option value="fee_budget_issue">Fee/budget issue</option><option value="batch_timing_issue">Batch timing issue</option><option value="location_travel_issue">Location/travel issue</option><option value="course_not_suitable">Course not suitable</option><option value="no_response">No response</option><option value="postponed_indefinitely">Postponed indefinitely</option><option value="other">Other</option></select></label>
+                    <label className="crm-log-note">Note<input value={logForm.note} onChange={(event) => setLogForm((current) => ({ ...current, note: event.target.value }))} placeholder="Internal note" /></label>
+                    <div className="staff-form-actions"><button type="submit">Save follow-up</button></div>
+                  </form>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        ) : null}
+        {!isLoadingCrm && !crmItems.length ? <p className="staff-empty">No enquiries in this queue.</p> : null}
+      </section>
+
+      <header className="page-header page-header--compact">
+        <h1>New Enquiry</h1>
         <p>Search by mobile number before creating an enquiry to prevent duplicate student records.</p>
       </header>
 
@@ -303,6 +461,18 @@ export function EnquiriesPage() {
   );
 }
 
+function initialLogForm() {
+  return {
+    channel: "call",
+    outcome: "call_connected",
+    pipelineStage: "engaged",
+    nextFollowUpAt: "",
+    expectedJoiningDate: "",
+    closedReason: "",
+    note: "",
+  };
+}
+
 export function EnquirySuccessNotice({ message }: { message: string }) {
   return (
     <div className="notice notice--success" role="status" aria-live="polite">
@@ -391,7 +561,22 @@ function formatLabel(value: string) {
   return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function temperatureLabel(value: string | null) {
+  if (!value) return "Inactive";
+  return value === "hot_urgent" ? "HOT URGENT" : value.toUpperCase();
+}
+
+function DetailLine({ label, value }: { label: string; value: string }) {
+  return <span><small>{label}</small><strong>{value}</strong></span>;
+}
+
 function formatDate(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function formatDateTime(value: string | null) {
+  if (!value) return "Not scheduled";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
