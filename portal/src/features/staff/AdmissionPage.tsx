@@ -9,10 +9,12 @@ import {
   getAdmissionConfiguration,
   getEnquiryDetail,
   getActiveCourses,
+  recordAdmissionReceipt,
   requestDiscountApproval,
   saveAdmissionDraft,
   type AdmissionConfiguration,
   type AdmissionConfirmation,
+  type AdmissionFinancialSummary,
   type EnquiryDetail,
   type FieldErrors,
   type PaymentPlanRule,
@@ -58,6 +60,12 @@ export const ADMISSION_FIELD_LABELS: Record<string, string> = {
   "fee.discountReason": "Discount reason",
   "fee.paymentPlanType": "Payment plan",
   "fee.numberOfInstalments": "Number of instalments",
+  amountPaise: "Amount received",
+  receivedAt: "Received date/time",
+  paymentMode: "Payment mode",
+  paymentReference: "Payment reference",
+  notes: "Notes",
+  firstReceipt: "Admission token receipt",
   "declarations.informationCorrect": "Information entered is correct",
   "declarations.nameDobMatchesAadhaar": "Name and DOB match Aadhaar",
   "declarations.courseRulesExplained": "Course rules explained",
@@ -81,6 +89,9 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const [saved, setSaved] = useState<string | null>(null);
   const [approvalStatus, setApprovalStatus] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<AdmissionConfirmation | null>(null);
+  const [financialSummary, setFinancialSummary] = useState<AdmissionFinancialSummary | null>(null);
+  const [receiptInput, setReceiptInput] = useState(() => defaultReceiptInput());
+  const [isRecordingReceipt, setIsRecordingReceipt] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const confirmPendingRef = useRef(false);
   const errorSummaryRef = useRef<HTMLDivElement>(null);
@@ -100,6 +111,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       setConfiguration(configData);
       const next = draftData.draft?.payload ? mergeAdmissionPayload(defaultAdmissionPayload(detailData), draftData.draft.payload) : defaultAdmissionPayload(detailData);
       setPayload(next);
+      setFinancialSummary(draftData.financialSummary || null);
       setCurrentStep(draftData.draft?.currentStep || "identity");
       setIsLocked(Boolean(draftData.draft?.confirmationLockedAt));
       setError(null);
@@ -122,6 +134,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const allowedPaymentRules = useMemo(() => allowedPaymentRulesForCourse(selectedCourse, configuration.paymentPlanRules), [configuration.paymentPlanRules, selectedCourse]);
   const paymentPlanNotice = paymentPlanPolicyMessage(selectedCourse, configuration.paymentPlanRules, allowedPaymentRules);
   const configurationReady = isAdmissionConfigurationReady(configuration);
+  const tokenReceipt = financialSummary?.tokenReceipt || null;
+  const commercialLocked = Boolean(tokenReceipt) || isLocked;
 
   useEffect(() => {
     if (!focusSummaryRequestedRef.current) return;
@@ -194,6 +208,30 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
     } finally {
       confirmPendingRef.current = false;
       setIsConfirming(false);
+    }
+  }
+
+  async function handleRecordReceipt() {
+    setIsRecordingReceipt(true);
+    setError(null);
+    setFieldErrors({});
+    try {
+      const draft = await saveAdmissionDraft(enquiryId, payload as unknown as Record<string, unknown>, "receipt");
+      const result = await recordAdmissionReceipt(enquiryId, {
+        admissionDraftId: draft.draftId,
+        amountPaise: Math.round(Number(receiptInput.amount || 0) * 100),
+        receivedAt: localDateTimeToIso(receiptInput.receivedAt),
+        paymentMode: receiptInput.paymentMode,
+        paymentReference: receiptInput.paymentReference,
+        notes: receiptInput.notes,
+        idempotencyKey: receiptInput.idempotencyKey,
+      });
+      setFinancialSummary(result.financialSummary);
+      setSaved("Token receipt recorded.");
+    } catch (reason) {
+      captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, requestSummaryFocus, "Could not record token receipt.");
+    } finally {
+      setIsRecordingReceipt(false);
     }
   }
 
@@ -365,6 +403,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         />
       </AdmissionSection>
 
+      <fieldset className="plain-fieldset" disabled={commercialLocked}>
       <AdmissionSection title="E · Course enrolment">
         <label>Configured active course<RequiredMark /><select {...controlProps("course.courseId")} value={String(payload.course.courseId)} onChange={(e) => setSection("course", "courseId", e.target.value)}><option value="">Select course</option>{admissionCourses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select><FieldMessage id={admissionFieldErrorId("course.courseId")} message={errorFor("course.courseId")} /></label>
         <label>Branch<input value={branchDisplay(detail)} readOnly aria-readonly="true" /></label>
@@ -413,6 +452,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         <label>Initial payment expected<input type="number" min="0" value={Number(payload.fee.initialPaymentExpectedPaise || 0) / 100} onChange={(e) => setSection("fee", "initialPaymentExpectedPaise", Math.round(Number(e.target.value || 0) * 100))} /></label>
         {review.ownerApprovalRequired ? <div className="staff-form-actions"><button type="button" className="secondary-button" disabled={isSaving} onClick={() => void handleRequestApproval()}>{approvalStatus || "Request owner approval"}</button></div> : null}
       </AdmissionSection>
+      </fieldset>
+      {tokenReceipt ? <div className="notice notice--success" role="status"><strong>Commercial terms locked.</strong> Token receipt has been recorded.</div> : null}
 
       <AdmissionSection title="G · Declarations">
         {requiredDeclarations(payload.course.nsdcPreference === "yes").map(([key, label]) => (
@@ -420,8 +461,26 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         ))}
       </AdmissionSection>
 
+      <AdmissionSection title="H · Admission token / first receipt">
+        <FinancialSummary summary={financialSummary} fallbackFinalFee={Number(payload.fee.finalAgreedFeePaise || 0)} />
+        {tokenReceipt ? (
+          <ReceiptRecorded summary={financialSummary} />
+        ) : (
+          <>
+            <label>Amount received<RequiredMark /><input {...controlProps("amountPaise")} type="number" min="1" value={receiptInput.amount} onChange={(e) => setReceiptInput((current) => ({ ...current, amount: e.target.value }))} /><FieldMessage id={admissionFieldErrorId("amountPaise")} message={errorFor("amountPaise")} /></label>
+            <label>Received date/time<RequiredMark /><input {...controlProps("receivedAt")} type="datetime-local" value={receiptInput.receivedAt} onChange={(e) => setReceiptInput((current) => ({ ...current, receivedAt: e.target.value }))} /><FieldMessage id={admissionFieldErrorId("receivedAt")} message={errorFor("receivedAt")} /></label>
+            <label>Payment mode<RequiredMark /><select {...controlProps("paymentMode")} value={receiptInput.paymentMode} onChange={(e) => setReceiptInput((current) => ({ ...current, paymentMode: e.target.value }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank_transfer">Bank transfer</option><option value="cheque">Cheque</option><option value="other">Other</option></select><FieldMessage id={admissionFieldErrorId("paymentMode")} message={errorFor("paymentMode")} /></label>
+            <label>Reference<input {...controlProps("paymentReference")} value={receiptInput.paymentReference} onChange={(e) => setReceiptInput((current) => ({ ...current, paymentReference: e.target.value }))} /><FieldMessage id={admissionFieldErrorId("paymentReference")} message={errorFor("paymentReference")} /></label>
+            <label>Notes<input {...controlProps("notes")} value={receiptInput.notes} onChange={(e) => setReceiptInput((current) => ({ ...current, notes: e.target.value }))} /><FieldMessage id={admissionFieldErrorId("notes")} message={errorFor("notes")} /></label>
+            <div className="staff-form-actions">
+              <button type="button" disabled={isRecordingReceipt || isLocked} onClick={() => void handleRecordReceipt()}>{isRecordingReceipt ? "Recording..." : "Record Token Receipt"}</button>
+            </div>
+          </>
+        )}
+      </AdmissionSection>
+
       <section className="staff-card">
-        <div className="section-heading"><h2>H · Review</h2></div>
+        <div className="section-heading"><h2>I · Review</h2></div>
         <div className="detail-grid">
           <Review label="Official identity" value={String(payload.identity.officialFullName)} />
           <Review label="Locality" value={`${payload.locality.locality || "Missing"}, ${payload.locality.city || "Missing"}`} />
@@ -432,6 +491,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
           <Review label="Final fee" value={formatMoney(Number(payload.fee.finalAgreedFeePaise || 0))} />
           <Review label="Discount" value={formatMoney(review.discountPaise)} />
           <Review label="Payment plan" value={String(payload.fee.paymentPlanType)} />
+          <Review label="Token receipt" value={tokenReceipt ? tokenReceipt.receiptNumber : "Required before confirmation"} />
+          <Review label="Ready to Start Classes" value={financialSummary?.classStartEligible ? "Yes" : "No"} />
           <Review label="Regular admission" value={review.canConfirmRegularAdmission ? "Ready" : "Missing required fields"} />
           <Review label="NSDC readiness" value={review.nsdcReady ? "Ready for pending profile" : "Regular admission can continue separately"} />
         </div>
@@ -488,6 +549,30 @@ export function defaultAdmissionPayload(detail?: EnquiryDetail | null): Admissio
       photographTestimonialUse: false,
     },
   };
+}
+
+function defaultReceiptInput() {
+  return {
+    amount: "",
+    receivedAt: formatDateTimeLocal(new Date()),
+    paymentMode: "cash",
+    paymentReference: "",
+    notes: "",
+    idempotencyKey: randomIdempotencyKey(),
+  };
+}
+
+function randomIdempotencyKey() {
+  return `receipt_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+}
+
+function formatDateTimeLocal(date: Date) {
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function localDateTimeToIso(value: string) {
+  return value ? new Date(value).toISOString() : new Date().toISOString();
 }
 
 export function admissionReview(payload: AdmissionPayload, selectedCourse?: StaffCourse) {
@@ -798,6 +883,9 @@ export function AdmissionSuccess({ confirmation }: { confirmation: AdmissionConf
         <Review label="Enrolment number" value={confirmation.enrolmentNumber} />
         <Review label="Enquiry" value={confirmation.enquiryNumber} />
       </section>
+      <AdmissionSection title="Financial summary">
+        <FinancialSummary summary={confirmation.financialSummary} fallbackFinalFee={confirmation.financialSummary.finalAgreedFeePaise} />
+      </AdmissionSection>
       <a className="button-link" href={`/app/students/${confirmation.studentId}`}>Open student profile</a>
     </div>
   );
@@ -809,6 +897,36 @@ function AdmissionSection({ title, children }: { title: string; children: ReactN
 
 function Review({ label, value }: { label: string; value: string }) {
   return <div><small>{label}</small><strong>{value}</strong></div>;
+}
+
+function FinancialSummary({ summary, fallbackFinalFee }: { summary: AdmissionFinancialSummary | null; fallbackFinalFee: number }) {
+  const finalFee = summary?.finalAgreedFeePaise ?? fallbackFinalFee;
+  return (
+    <div className="detail-grid">
+      <Review label="Final Agreed Fee" value={formatMoney(finalFee)} />
+      <Review label="First Instalment Required" value={formatMoney(summary?.firstInstalmentRequiredPaise ?? finalFee)} />
+      <Review label="Token / Amount Received" value={formatMoney(summary?.totalReceivedPaise ?? 0)} />
+      <Review label="Pending before classes start" value={formatMoney(summary?.firstInstalmentBalancePaise ?? finalFee)} />
+      <Review label="Overall Balance" value={formatMoney(summary?.overallBalancePaise ?? finalFee)} />
+      <Review label="Ready to Start Classes" value={summary?.classStartEligible ? "Yes" : "No"} />
+    </div>
+  );
+}
+
+function ReceiptRecorded({ summary }: { summary: AdmissionFinancialSummary | null }) {
+  const receipt = summary?.tokenReceipt;
+  if (!receipt) return null;
+  return (
+    <div className="detail-grid">
+      <Review label="Receipt No." value={receipt.receiptNumber} />
+      <Review label="Amount" value={formatMoney(receipt.amountPaise)} />
+      <Review label="Mode" value={paymentModeLabel(receipt.paymentMode)} />
+      <Review label="Date/Time" value={formatDisplayDateTime(receipt.receivedAt)} />
+      <Review label="Reference" value={receipt.paymentReference || "Not recorded"} />
+      <Review label="Status" value="Recorded" />
+      <p className="notice notice--success">Token receipt recorded. Admission can now be confirmed once all other admission requirements are complete.</p>
+    </div>
+  );
 }
 
 function requiredDeclarations(nsdc: boolean): Array<[keyof AdmissionPayload["declarations"], string]> {
@@ -846,6 +964,22 @@ function paymentPlanLabel(value: string) {
   if (value === "three_instalments") return "Three instalments";
   if (value === "custom") return "Custom";
   return value || "Not selected";
+}
+
+function paymentModeLabel(value: string) {
+  if (value === "upi") return "UPI";
+  if (value === "bank_transfer") return "Bank transfer";
+  return value ? value.replace(/_/g, " ").replace(/^\w/, (letter) => letter.toUpperCase()) : "Not recorded";
+}
+
+function formatDisplayDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Kolkata",
+  }).format(date);
 }
 
 function formatMoney(paise: number) {

@@ -441,6 +441,73 @@ export const feeAgreements = sqliteTable(
   ],
 );
 
+export const receipts = sqliteTable(
+  "receipts",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branches.id),
+    receiptNumber: text("receipt_number").notNull(),
+    receiptYear: integer("receipt_year").notNull(),
+    enquiryId: text("enquiry_id").references(() => enquiries.id),
+    admissionDraftId: text("admission_draft_id").references(() => admissionDrafts.id),
+    personId: text("person_id")
+      .notNull()
+      .references(() => people.id),
+    studentId: text("student_id").references(() => students.id),
+    enrolmentId: text("enrolment_id").references(() => enrolments.id),
+    feeAgreementId: text("fee_agreement_id").references(() => feeAgreements.id),
+    amountPaise: integer("amount_paise").notNull(),
+    receivedAt: text("received_at").notNull(),
+    paymentMode: text("payment_mode").notNull(),
+    paymentReference: text("payment_reference"),
+    notes: text("notes"),
+    status: text("status").notNull().default("recorded"),
+    createdByLoginAccountId: text("created_by_login_account_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    payloadFingerprint: text("payload_fingerprint").notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("receipts_number_unique").on(table.organisationId, table.branchId, table.receiptNumber),
+    uniqueIndex("receipts_idempotency_unique").on(table.organisationId, table.createdByLoginAccountId, table.idempotencyKey),
+    uniqueIndex("receipts_one_preconfirm_token_per_draft")
+      .on(table.admissionDraftId)
+      .where(sql`${table.enrolmentId} is null and ${table.status} = 'recorded'`),
+    index("receipts_enquiry_created_idx").on(table.enquiryId, table.createdAt),
+    index("receipts_draft_created_idx").on(table.admissionDraftId, table.createdAt),
+    index("receipts_enrolment_created_idx").on(table.enrolmentId, table.createdAt),
+    index("receipts_fee_agreement_created_idx").on(table.feeAgreementId, table.createdAt),
+    check("receipts_amount_positive_check", sql`${table.amountPaise} > 0`),
+    check("receipts_status_check", sql`${table.status} in ('recorded')`),
+    check("receipts_payment_mode_check", sql`${table.paymentMode} in ('cash', 'upi', 'card', 'bank_transfer', 'cheque', 'other')`),
+  ],
+);
+
+export const feeAgreementInstalments = sqliteTable(
+  "fee_agreement_instalments",
+  {
+    id: text("id").primaryKey(),
+    feeAgreementId: text("fee_agreement_id")
+      .notNull()
+      .references(() => feeAgreements.id),
+    instalmentNumber: integer("instalment_number").notNull(),
+    amountPaise: integer("amount_paise").notNull(),
+    dueDate: text("due_date"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("fee_agreement_instalments_unique").on(table.feeAgreementId, table.instalmentNumber),
+    index("fee_agreement_instalments_order_idx").on(table.feeAgreementId, table.instalmentNumber),
+    check("fee_agreement_instalments_number_check", sql`${table.instalmentNumber} >= 1`),
+    check("fee_agreement_instalments_amount_check", sql`${table.amountPaise} >= 0`),
+  ],
+);
+
 export const nsdcProfiles = sqliteTable(
   "nsdc_profiles",
   {

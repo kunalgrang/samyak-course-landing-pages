@@ -8,7 +8,10 @@ import {
   fieldErrorsFromIssues,
   getAdmissionConfiguration,
   getAdmissionDraft,
+  getAdmissionReceiptSummary,
   listDiscountApprovals,
+  recordAdmissionReceipt,
+  recordAdmissionReceiptSchema,
   requestDiscountApproval,
   saveAdmissionDraft,
   saveAdmissionDraftSchema,
@@ -209,6 +212,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
             confirmationSnapshotVersion: draft.confirmation_snapshot_version,
           }
         : null,
+      financialSummary: await getAdmissionReceiptSummary(c, c.req.param("enquiryId")),
     });
   });
 
@@ -228,6 +232,16 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     const result = await confirmAdmission(c, staff, c.req.param("enquiryId"));
     if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message, fieldErrors: result.fieldErrors });
     return jsonPlain(c, { success: true, ...result.result });
+  });
+
+  app.post("/api/staff/admissions/:enquiryId/receipts", async (c) => {
+    const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
+    if (!staff) return forbidden(c);
+    const parsed = recordAdmissionReceiptSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_receipt", message: "Please correct receipt details.", fieldErrors: fieldErrorsFromIssues(parsed.error.issues) });
+    const result = await recordAdmissionReceipt(c, staff, c.req.param("enquiryId"), parsed.data);
+    if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message, fieldErrors: result.fieldErrors });
+    return jsonPlain(c, { success: true, receipt: result.receipt, financialSummary: result.financialSummary }, { status: 201 });
   });
 
   app.post("/api/staff/enquiries/:enquiryId/discount-approval", async (c) => {

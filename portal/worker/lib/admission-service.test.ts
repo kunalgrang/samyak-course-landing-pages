@@ -12,6 +12,7 @@ import {
   decideDiscountApproval,
   getAdmissionConfiguration,
   listDiscountApprovals,
+  recordAdmissionReceipt,
   requestDiscountApproval,
   saveAdmissionDraft,
   validateAdmissionDraftPayload,
@@ -316,11 +317,106 @@ describe("confirmAdmission service integration", () => {
     expect(count(db, "students")).toBe(1);
     expect(count(db, "enrolments")).toBe(1);
     expect(count(db, "fee_agreements")).toBe(1);
+    expect(count(db, "receipts")).toBe(1);
+    expect(count(db, "fee_agreement_instalments")).toBe(2);
+    expect(row(db, "select enrolment_id, fee_agreement_id from receipts")).toMatchObject({ enrolment_id: confirmed.result.enrolmentId });
+    expect(confirmed.result.financialSummary).toMatchObject({
+      finalAgreedFeePaise: 5000000,
+      firstInstalmentRequiredPaise: 2500000,
+      totalReceivedPaise: 50000,
+      firstInstalmentBalancePaise: 2450000,
+      classStartEligible: false,
+    });
     expect(row(db, "select status, converted_enrolment_id from enquiries where id = 'enq_first'")).toMatchObject({
       status: "converted",
       converted_enrolment_id: confirmed.result.enrolmentId,
     });
     expect(row(db, "select status from admission_drafts where enquiry_id = 'enq_first'")).toMatchObject({ status: "confirmed" });
+    db.close();
+  });
+
+  it("blocks confirmation until exactly one first receipt is recorded", async () => {
+    const db = testDb();
+    const c = context(db);
+    await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+
+    const blocked = await confirmAdmission(c, staff, "enq_first");
+    expect(blocked).toMatchObject({ ok: false, status: 400, code: "first_receipt_required" });
+    expect(count(db, "enrolments")).toBe(0);
+    db.close();
+  });
+
+  it("enforces one pre-confirmation token receipt and idempotent retry", async () => {
+    const db = testDb();
+    const c = context(db);
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+
+    const first = await recordTokenReceipt(c, "enq_first", draft.draftId, 50000);
+    const retry = await recordTokenReceipt(c, "enq_first", draft.draftId, 50000);
+    expect(retry.receipt.id).toBe(first.receipt.id);
+    const second = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 100000,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "cash",
+      idempotencyKey: "different_token_key",
+    });
+
+    expect(second).toMatchObject({ ok: false, status: 409, code: "first_receipt_already_recorded" });
+    expect(count(db, "receipts")).toBe(1);
+    db.close();
+  });
+
+  it("rejects idempotency payload conflicts and invalid receipt amounts", async () => {
+    const db = testDb();
+    const c = context(db);
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+    await recordTokenReceipt(c, "enq_first", draft.draftId, 50000);
+
+    const conflict = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 60000,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "cash",
+      idempotencyKey: "token_enq_first_50000_acct_staff",
+    });
+    expect(conflict).toMatchObject({ ok: false, status: 409, code: "idempotency_conflict" });
+
+    seedEnquiry(db, { id: "enq_second", personId: "person_asha", number: "ENQ-SION-2026-003" });
+    const secondDraft = await createAdmissionDraft(c, "enq_second", validPayload(), { recordReceipt: false });
+    const overpay = await recordAdmissionReceipt(c, staff, "enq_second", {
+      admissionDraftId: secondDraft.draftId,
+      amountPaise: 5000001,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "cash",
+      idempotencyKey: "token_overpay",
+    });
+    expect(overpay).toMatchObject({ ok: false, status: 400, code: "receipt_exceeds_final_fee" });
+    db.close();
+  });
+
+  it("applies mode/reference, backdate and role rules to receipt recording", async () => {
+    const db = testDb();
+    const c = context(db);
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+
+    const noReference = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "upi",
+      idempotencyKey: "token_upi_no_ref",
+    });
+    expect(noReference).toMatchObject({ ok: false, status: 400, code: "payment_reference_required" });
+
+    const telecaller = staffForRole("telecaller", "acct_staff");
+    const forbidden = await recordAdmissionReceipt(c, telecaller, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      paymentMode: "cash",
+      idempotencyKey: "token_telecaller",
+    });
+    expect(forbidden).toMatchObject({ ok: false, status: 403, code: "forbidden" });
     db.close();
   });
 
@@ -466,11 +562,12 @@ describe("confirmAdmission service integration", () => {
   it("recovers below-floor approval using locked approval values after Course Master floor changes", async () => {
     const db = testDb();
     const c = context(db);
-    await createAdmissionDraft(c, "enq_first", belowFloorPayload());
+    const draft = await createAdmissionDraft(c, "enq_first", belowFloorPayload(), { recordReceipt: false });
     const requested = await requestDiscountApproval(c, staff, "enq_first");
     expect(requested.ok).toBe(true);
     if (!requested.ok) throw new Error(requested.message);
     await decideDiscountApproval(c, staffForRole("owner", "acct_owner"), requested.approvalId, "approved");
+    await recordTokenReceipt(c, "enq_first", draft.draftId);
     db.failOnceSqlIncludes = "insert into fee_agreements";
 
     await expect(confirmAdmission(c, staff, "enq_first")).rejects.toThrow("Simulated D1 write failure");
@@ -528,7 +625,7 @@ describe("confirmAdmission service integration", () => {
     const c = context(db);
     const payload = validPayload();
     payload.course.branchId = "branch_tampered";
-    await createAdmissionDraft(c, "enq_first", payload);
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
 
     const confirmed = await confirmAdmission(c, staff, "enq_first");
     expect(confirmed.ok).toBe(false);
@@ -544,7 +641,7 @@ describe("confirmAdmission service integration", () => {
     const payload = validPayload();
     payload.fee.paymentPlanType = "custom";
     payload.fee.numberOfInstalments = 4;
-    await createAdmissionDraft(c, "enq_first", payload);
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
 
     const confirmed = await confirmAdmission(c, staff, "enq_first");
     expect(confirmed.ok).toBe(false);
@@ -557,7 +654,7 @@ describe("confirmAdmission service integration", () => {
     const db = testDb();
     const c = context(db);
     db.database.exec("update courses set duration_label = '1 month', duration_months = 1 where id = 'course_full_stack'");
-    await createAdmissionDraft(c, "enq_first");
+    await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
 
     const confirmed = await confirmAdmission(c, staff, "enq_first");
 
@@ -589,7 +686,7 @@ describe("confirmAdmission service integration", () => {
     payload.fee.finalAgreedFeePaise = 3500000;
     payload.fee.discountReason = "Merit scholarship";
     payload.fee.discountReasonCode = "scholarship_financial_support";
-    await createAdmissionDraft(c, "enq_first", payload);
+    const draft = await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
 
     const blocked = await confirmAdmission(c, staff, "enq_first");
     expect(blocked.ok).toBe(false);
@@ -602,6 +699,7 @@ describe("confirmAdmission service integration", () => {
     const owner = staffForRole("owner", "acct_owner");
     const decided = await decideDiscountApproval(c, owner, requested.approvalId, "approved");
     expect(decided.ok).toBe(true);
+    await recordTokenReceipt(c, "enq_first", draft.draftId);
 
     await expectOk(confirmAdmission(c, staff, "enq_first"));
     expect(row(db, "select final_agreed_fee_paise, discount_approved_by, discount_approval_id from fee_agreements")).toMatchObject({
@@ -615,7 +713,7 @@ describe("confirmAdmission service integration", () => {
   it.each(["admin", "system_admin", "admission_admin", "counsellor"])("rejects %s discount decisions at the service boundary", async (role) => {
     const db = testDb();
     const c = context(db);
-    await createAdmissionDraft(c, "enq_first", belowFloorPayload());
+    await createAdmissionDraft(c, "enq_first", belowFloorPayload(), { recordReceipt: false });
     const requested = await requestDiscountApproval(c, staff, "enq_first");
     expect(requested.ok).toBe(true);
     if (!requested.ok) throw new Error(requested.message);
@@ -669,7 +767,7 @@ describe("confirmAdmission service integration", () => {
     const db = testDb();
     const c = context(db);
     const payload = belowFloorPayload();
-    await createAdmissionDraft(c, "enq_first", payload);
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
     const requested = await requestDiscountApproval(c, staff, "enq_first");
     expect(requested.ok).toBe(true);
     if (!requested.ok) throw new Error(requested.message);
@@ -690,7 +788,7 @@ describe("confirmAdmission service integration", () => {
     const db = testDb();
     const c = context(db);
     const payload = belowFloorPayload();
-    await createAdmissionDraft(c, "enq_first", payload);
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
     const requested = await requestDiscountApproval(c, staff, "enq_first");
     expect(requested.ok).toBe(true);
     if (!requested.ok) throw new Error(requested.message);
@@ -706,7 +804,7 @@ describe("confirmAdmission service integration", () => {
   it("deduplicates concurrent identical approval requests to one active fingerprint", async () => {
     const db = testDb();
     const c = context(db);
-    await createAdmissionDraft(c, "enq_first", belowFloorPayload());
+    await createAdmissionDraft(c, "enq_first", belowFloorPayload(), { recordReceipt: false });
 
     const [first, second] = await Promise.all([requestDiscountApproval(c, staff, "enq_first"), requestDiscountApproval(c, staff, "enq_first")]);
     expect(first.ok).toBe(true);
@@ -720,7 +818,7 @@ describe("confirmAdmission service integration", () => {
   it("returns commercial snapshot values in the approval queue", async () => {
     const db = testDb();
     const c = context(db);
-    await createAdmissionDraft(c, "enq_first", belowFloorPayload());
+    await createAdmissionDraft(c, "enq_first", belowFloorPayload(), { recordReceipt: false });
     const requested = await requestDiscountApproval(c, staff, "enq_first");
     expect(requested.ok).toBe(true);
 
@@ -740,7 +838,7 @@ describe("confirmAdmission service integration", () => {
     const db = testDb();
     const c = context(db);
     db.database.exec("update courses set admission_configuration_complete = 0 where id = 'course_full_stack'");
-    await createAdmissionDraft(c, "enq_first");
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
 
     const blocked = await confirmAdmission(c, staff, "enq_first");
     expect(blocked.ok).toBe(false);
@@ -748,6 +846,7 @@ describe("confirmAdmission service integration", () => {
     expect(blocked.fieldErrors?.["course.courseId"]?.[0]).toContain("requires Course Master configuration");
 
     db.database.exec("update courses set admission_configuration_complete = 1 where id = 'course_full_stack'");
+    await recordTokenReceipt(c, "enq_first", draft.draftId);
     await expectOk(confirmAdmission(c, staff, "enq_first"));
     db.close();
   });
@@ -885,11 +984,29 @@ function belowFloorPayload() {
   return payload;
 }
 
-async function createAdmissionDraft(c: AppContext, enquiryId: string, payload = validPayload()) {
+async function createAdmissionDraft(c: AppContext, enquiryId: string, payload = validPayload(), options: { recordReceipt?: boolean; tokenAmountPaise?: number } = {}) {
   const saved = await saveAdmissionDraft(c, staff, enquiryId, { payload, currentStep: "review" });
   expect(saved.ok).toBe(true);
   if (!saved.ok) throw new Error(saved.message);
+  if (options.recordReceipt !== false) {
+    await recordTokenReceipt(c, enquiryId, saved.draftId, options.tokenAmountPaise ?? 50000);
+  }
   return saved;
+}
+
+async function recordTokenReceipt(c: AppContext, enquiryId: string, admissionDraftId: string, amountPaise = 50000, actor = staff) {
+  const receipt = await recordAdmissionReceipt(c, actor, enquiryId, {
+    admissionDraftId,
+    amountPaise,
+    receivedAt: "2026-08-01T10:00:00.000Z",
+    paymentMode: "cash",
+    paymentReference: "",
+    notes: "",
+    idempotencyKey: `token_${enquiryId}_${amountPaise}_${actor.loginAccountId}`,
+  });
+  expect(receipt.ok).toBe(true);
+  if (!receipt.ok) throw new Error(receipt.message);
+  return receipt;
 }
 
 async function expectOk(resultPromise: ReturnType<typeof confirmAdmission>) {

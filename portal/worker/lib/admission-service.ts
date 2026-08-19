@@ -9,6 +9,17 @@ const nameSchema = z.string().trim().min(2).max(140).regex(/^[^\d]+$/, "Name can
 const optionalNameSchema = z.string().trim().max(140).regex(/^[^\d]*$/, "Name cannot contain numbers.").optional().or(z.literal(""));
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const paiseSchema = z.coerce.number().int().min(0);
+const positivePaiseSchema = z.coerce.number().int().positive();
+
+export const recordAdmissionReceiptSchema = z.object({
+  admissionDraftId: z.string().trim().min(1).max(140),
+  amountPaise: positivePaiseSchema,
+  receivedAt: z.string().trim().max(40).optional(),
+  paymentMode: z.enum(["cash", "upi", "card", "bank_transfer", "cheque", "other"]),
+  paymentReference: z.string().trim().max(120).optional().or(z.literal("")),
+  notes: z.string().trim().max(500).optional().or(z.literal("")),
+  idempotencyKey: z.string().trim().min(8).max(120).regex(/^[A-Za-z0-9:_-]+$/),
+});
 
 export const admissionPayloadSchema = z.object({
   identity: z
@@ -250,7 +261,7 @@ type EnquiryRecord = {
   id: string;
   organisation_id: string;
   branch_id: string;
-  person_id: string;
+  person_id: string | null;
   enquiry_number: string;
   status: string;
   pipeline_stage: string;
@@ -275,6 +286,24 @@ type DraftRecord = {
   confirmation_locked_by_login_account_id: string | null;
 };
 
+type ReceiptRecord = {
+  id: string;
+  receipt_number: string;
+  amount_paise: number;
+  received_at: string;
+  payment_mode: string;
+  payment_reference: string | null;
+  notes: string | null;
+  status: "recorded";
+  payload_fingerprint: string;
+};
+
+type Instalment = {
+  instalmentNumber: number;
+  amountPaise: number;
+  dueDate: string | null;
+};
+
 export type AdmissionConfirmationResult = {
   studentId: string;
   studentNumber: string;
@@ -282,6 +311,26 @@ export type AdmissionConfirmationResult = {
   enrolmentNumber: string;
   enquiryNumber: string;
   isNewStudent: boolean;
+  financialSummary: FinancialSummary;
+};
+
+export type FinancialSummary = {
+  finalAgreedFeePaise: number;
+  firstInstalmentRequiredPaise: number;
+  totalReceivedPaise: number;
+  firstInstalmentBalancePaise: number;
+  overallBalancePaise: number;
+  classStartEligible: boolean;
+  instalments: Instalment[];
+  tokenReceipt: {
+    id: string;
+    receiptNumber: string;
+    amountPaise: number;
+    receivedAt: string;
+    paymentMode: string;
+    paymentReference: string | null;
+    status: "recorded";
+  } | null;
 };
 
 const REQUIRED_ADMISSION_OPTION_CATEGORIES = [
@@ -370,6 +419,18 @@ export async function saveAdmissionDraft(c: AppContext, staff: StaffContext, enq
   const normalizedPayload = await normalizeAdmissionOptionLabels(c, validated.payload);
   const normalizedCourseId = String(normalizedPayload.course?.courseId || "");
   const normalizedCourse = normalizedCourseId ? await getActiveCourse(c, normalizedCourseId) : null;
+  if (existing?.status === "draft" && (await preConfirmationReceiptCount(c, existing.id)) > 0) {
+    const currentPayload = JSON.parse(existing.payload_json) as AdmissionPayload;
+    if (commercialTermsFingerprint(currentPayload) !== commercialTermsFingerprint(normalizedPayload)) {
+      return {
+        ok: false as const,
+        status: 409,
+        code: "commercial_terms_locked",
+        message: "Commercial terms are locked after the token receipt is recorded.",
+        fieldErrors: { "fee.finalAgreedFeePaise": ["Commercial terms are locked after the token receipt is recorded."] },
+      };
+    }
+  }
   await supersedeChangedDiscountApprovals(c, draftId, normalizedPayload, normalizedCourse);
   const storedPayload = sanitizeAdmissionDraftPayload(normalizedPayload);
   if (existing?.status === "draft") {
@@ -393,6 +454,114 @@ export async function saveAdmissionDraft(c: AppContext, staff: StaffContext, enq
   await audit(c, staff, enquiry.branch_id, "admission_draft_saved", "admission_draft", draftId, { enquiryId });
   const readiness = await getAdmissionReadiness(c, enquiry, validated.payload, draftId);
   return { ok: true as const, draftId, payload: storedPayload, currentStep: input.currentStep, fieldErrors: readiness.fieldErrors };
+}
+
+export async function getAdmissionReceiptSummary(c: AppContext, enquiryId: string) {
+  const draft = await getAdmissionDraft(c, enquiryId);
+  if (!draft) return null;
+  const payload = JSON.parse(draft.payload_json) as AdmissionPayload;
+  const schedule = buildInstalmentSchedule(payload);
+  const receipts = await receiptsForDraft(c, draft.id);
+  return financialSummaryFromReceipts(Number(payload.fee?.finalAgreedFeePaise || 0), schedule, receipts);
+}
+
+export async function recordAdmissionReceipt(c: AppContext, staff: StaffContext, enquiryId: string, input: z.infer<typeof recordAdmissionReceiptSchema>) {
+  if (!canRecordAdmissionReceipt(staff)) {
+    return { ok: false as const, status: 403, code: "forbidden", message: "This role cannot record admission receipts." };
+  }
+  const enquiry = await getAdmissionEnquiry(c, enquiryId);
+  if (!enquiry) return { ok: false as const, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
+  if (!enquiry.person_id) return { ok: false as const, status: 400, code: "person_required", message: "Link or create the student Person before recording a receipt." };
+  const draft = await getAdmissionDraft(c, enquiryId);
+  if (!draft || draft.id !== input.admissionDraftId || draft.status !== "draft") {
+    return { ok: false as const, status: 404, code: "draft_not_found", message: "Save an active admission draft before recording a receipt." };
+  }
+  if (draft.confirmation_locked_at) {
+    return { ok: false as const, status: 409, code: "admission_confirmation_locked", message: "Admission confirmation has started. Receipt changes are locked." };
+  }
+  const payload = JSON.parse(draft.payload_json) as AdmissionPayload;
+  const readiness = await getAdmissionReadiness(c, enquiry, payload, draft.id);
+  const commercialErrors = Object.fromEntries(Object.entries(readiness.fieldErrors).filter(([path]) => path.startsWith("fee.") || path.startsWith("course.")));
+  if (Object.keys(commercialErrors).length) {
+    return { ok: false as const, status: 400, code: "commercial_terms_incomplete", message: firstFieldError(commercialErrors) || "Complete commercial terms before recording a receipt.", fieldErrors: commercialErrors };
+  }
+  const finalAgreedFeePaise = Number(payload.fee?.finalAgreedFeePaise || 0);
+  if (!Number.isInteger(input.amountPaise) || input.amountPaise <= 0) {
+    return { ok: false as const, status: 400, code: "invalid_receipt_amount", message: "Receipt amount must be greater than zero.", fieldErrors: { amountPaise: ["Receipt amount must be greater than zero."] } };
+  }
+  if (input.amountPaise > finalAgreedFeePaise) {
+    return { ok: false as const, status: 400, code: "receipt_exceeds_final_fee", message: "Receipt amount cannot exceed the final agreed fee.", fieldErrors: { amountPaise: ["Receipt amount cannot exceed the final agreed fee."] } };
+  }
+  const paymentValidation = validateReceiptPaymentFields(input, staff);
+  if (!paymentValidation.ok) return paymentValidation;
+  const fingerprint = await receiptPayloadFingerprint(c, enquiry, draft, input);
+  const existingByKey = await c.env.DB.prepare(
+    `select id, receipt_number, amount_paise, received_at, payment_mode, payment_reference, notes, status, payload_fingerprint
+     from receipts
+     where organisation_id = ? and created_by_login_account_id = ? and idempotency_key = ?
+     limit 1`,
+  )
+    .bind(ORG_ID, staff.loginAccountId, input.idempotencyKey)
+    .first<ReceiptRecord>();
+  if (existingByKey) {
+    if (existingByKey.payload_fingerprint !== fingerprint) {
+      return { ok: false as const, status: 409, code: "idempotency_conflict", message: "This idempotency key was already used for a different receipt payload." };
+    }
+    return { ok: true as const, receipt: publicReceipt(existingByKey), financialSummary: await financialSummaryForDraft(c, draft, payload) };
+  }
+  if ((await preConfirmationReceiptCount(c, draft.id)) >= 1) {
+    return { ok: false as const, status: 409, code: "first_receipt_already_recorded", message: "The admission token receipt is already recorded." };
+  }
+
+  const now = new Date().toISOString();
+  const receivedAt = normalizedReceivedAt(input.receivedAt);
+  const receiptYear = new Date(receivedAt).getUTCFullYear();
+  const sequence = await allocateSequence(c, ORG_ID, enquiry.branch_id, `receipt:${receiptYear}`);
+  const branch = await getBranch(c, enquiry.branch_id);
+  const receiptNumber = `RCP-${String(branch?.code || "BR").toUpperCase()}-${receiptYear}-${formatSequence(sequence)}`;
+  const receiptId = createOpaqueId("receipt");
+  try {
+    await c.env.DB.prepare(
+      `insert into receipts
+         (id, organisation_id, branch_id, receipt_number, receipt_year, enquiry_id, admission_draft_id, person_id,
+          amount_paise, received_at, payment_mode, payment_reference, notes, status,
+          created_by_login_account_id, idempotency_key, payload_fingerprint, created_at, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'recorded', ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        receiptId,
+        ORG_ID,
+        enquiry.branch_id,
+        receiptNumber,
+        receiptYear,
+        enquiry.id,
+        draft.id,
+        enquiry.person_id,
+        input.amountPaise,
+        receivedAt,
+        input.paymentMode,
+        input.paymentReference?.trim() || null,
+        input.notes?.trim() || null,
+        staff.loginAccountId,
+        input.idempotencyKey,
+        fingerprint,
+        now,
+        now,
+      )
+      .run();
+  } catch {
+    const existing = await receiptsForDraft(c, draft.id);
+    if (existing.length) return { ok: false as const, status: 409, code: "first_receipt_already_recorded", message: "The admission token receipt is already recorded." };
+    return { ok: false as const, status: 409, code: "receipt_not_recorded", message: "Receipt could not be recorded. Please retry." };
+  }
+  const receipt = await c.env.DB.prepare(
+    `select id, receipt_number, amount_paise, received_at, payment_mode, payment_reference, notes, status, payload_fingerprint
+     from receipts where id = ?`,
+  )
+    .bind(receiptId)
+    .first<ReceiptRecord>();
+  await audit(c, staff, enquiry.branch_id, "receipt_recorded", "receipt", receiptId, { enquiryId: enquiry.id, draftId: draft.id, receiptNumber, amountPaise: input.amountPaise, paymentMode: input.paymentMode });
+  return { ok: true as const, receipt: publicReceipt(receipt!), financialSummary: await financialSummaryForDraft(c, draft, payload) };
 }
 
 export async function confirmAdmission(c: AppContext, staff: StaffContext, enquiryId: string): Promise<
@@ -604,6 +773,10 @@ async function finalizeAdmission(
       fieldErrors: { "fee.finalAgreedFeePaise": ["Owner approval is required below the course floor price."] },
     };
   }
+  const existingFeeAgreement = await c.env.DB.prepare("select id from fee_agreements where enrolment_id = ?")
+    .bind(input.enrolmentId)
+    .first<{ id: string }>();
+  const feeAgreementId = existingFeeAgreement?.id || createOpaqueId("fee");
   await c.env.DB.prepare(
     `insert into fee_agreements
        (id, enrolment_id, standard_fee_paise, final_agreed_fee_paise, discount_paise, discount_reason,
@@ -623,7 +796,7 @@ async function finalizeAdmission(
        updated_at = excluded.updated_at`,
   )
     .bind(
-      createOpaqueId("fee"),
+      feeAgreementId,
       input.enrolmentId,
       snapshot.listedFeePaise,
       snapshot.finalAgreedFeePaise,
@@ -638,6 +811,16 @@ async function finalizeAdmission(
       input.now,
     )
     .run();
+  await freezeFeeAgreementInstalments(c, feeAgreementId, scheduleFromSnapshot(snapshot), input.now);
+  await c.env.DB.prepare(
+    `update receipts
+     set student_id = ?, enrolment_id = ?, fee_agreement_id = ?, updated_at = ?
+     where id = ? and organisation_id = ? and admission_draft_id = ? and status = 'recorded'
+       and (enrolment_id is null or enrolment_id = ?)`,
+  )
+    .bind(input.studentId, input.enrolmentId, feeAgreementId, input.now, snapshot.tokenReceiptId, ORG_ID, draft.id, input.enrolmentId)
+    .run();
+  await audit(c, staff, snapshot.branchId, "receipt_attached_to_enrolment", "receipt", snapshot.tokenReceiptId, { enrolmentId: input.enrolmentId, receiptNumber: snapshot.tokenReceiptNumber });
 
   if (snapshot.nsdcPreference === "yes") {
     await c.env.DB.prepare(
@@ -677,6 +860,7 @@ async function finalizeAdmission(
   });
   const finalCheck = await finalizationIntegrityError(c, enquiry, draft, input);
   if (finalCheck) return finalCheck;
+  const financialSummary = (await financialSummaryForEnrolment(c, input.enrolmentId, snapshot)) || financialSummaryFromReceipts(snapshot.finalAgreedFeePaise, scheduleFromSnapshot(snapshot), []);
   return {
     ok: true as const,
     result: {
@@ -686,6 +870,7 @@ async function finalizeAdmission(
       enrolmentNumber: input.enrolmentNumber,
       enquiryNumber: enquiry.enquiry_number,
       isNewStudent: input.isNewStudent,
+      financialSummary,
     },
   };
 }
@@ -746,6 +931,8 @@ async function finalizationIntegrityError(
   if (!feeAgreement || feeAgreementIntegrityErrorFor(input.snapshot, feeAgreement)) {
     return { ok: false as const, status: 409, code: "recovery_integrity_error", message: "Fee agreement does not match the locked confirmation snapshot." };
   }
+  const financialSummary = await financialSummaryForEnrolment(c, input.enrolmentId, input.snapshot);
+  if (!financialSummary) return { ok: false as const, status: 409, code: "recovery_integrity_error", message: "Receipt linkage does not match the locked confirmation snapshot." };
   return null;
 }
 
@@ -778,6 +965,15 @@ type ConfirmationSnapshot = {
   discountApprovalId: string | null;
   discountApprovedByLoginAccountId: string | null;
   payloadFingerprint: string;
+  tokenReceiptId: string;
+  tokenReceiptNumber: string;
+  tokenReceiptAmountPaise: number;
+  tokenReceivedAt: string;
+  tokenPaymentMode: string;
+  firstInstalmentRequiredPaise: number;
+  instalments: Instalment[];
+  instalmentScheduleFingerprint: string;
+  totalReceivedAtConfirmationPaise: number;
 };
 
 async function getOrCreateConfirmationSnapshot(c: AppContext, staff: StaffContext, enquiry: EnquiryRecord, draft: DraftRecord) {
@@ -800,8 +996,10 @@ async function getOrCreateConfirmationSnapshot(c: AppContext, staff: StaffContex
   if (Object.keys(readiness.fieldErrors).length) {
     return { ok: false as const, status: 400, code: "invalid_admission", message: firstFieldError(readiness.fieldErrors) || "Please check the admission details.", fieldErrors: readiness.fieldErrors };
   }
+  const receiptCheck = await tokenReceiptForConfirmation(c, draft, payload);
+  if (!receiptCheck.ok) return receiptCheck;
 
-  const snapshot = await buildConfirmationSnapshot(c, enquiry, draft, payload, branch, course);
+  const snapshot = await buildConfirmationSnapshot(c, enquiry, draft, payload, branch, course, receiptCheck.receipt, receiptCheck.instalments);
   const now = new Date().toISOString();
   await c.env.DB.prepare(
     `update admission_drafts
@@ -828,13 +1026,14 @@ async function getOrCreateConfirmationSnapshot(c: AppContext, staff: StaffContex
   return { ok: true as const, snapshot: lockedSnapshot };
 }
 
-async function buildConfirmationSnapshot(c: AppContext, enquiry: EnquiryRecord, draft: DraftRecord, payload: AdmissionPayload, branch: { id: string; code: string }, course: CourseRecord): Promise<ConfirmationSnapshot> {
+async function buildConfirmationSnapshot(c: AppContext, enquiry: EnquiryRecord, draft: DraftRecord, payload: AdmissionPayload, branch: { id: string; code: string }, course: CourseRecord, tokenReceipt: ReceiptRecord, instalments: Instalment[]): Promise<ConfirmationSnapshot> {
   const fee = payload.fee!;
   const courseInput = payload.course!;
   const listedFeePaise = Number(course.default_fee_paise || 0);
   const lowestAcceptableFeePaise = Number(course.lowest_acceptable_fee_paise || 0);
   const finalAgreedFeePaise = Number(fee.finalAgreedFeePaise || 0);
   const ownerApproval = await ownerApprovalForFeeAgreement(c, draft.id, course, fee);
+  const scheduleFingerprint = await instalmentScheduleFingerprint(c, instalments);
   return {
     version: CONFIRMATION_SNAPSHOT_VERSION,
     organisationId: ORG_ID,
@@ -862,6 +1061,15 @@ async function buildConfirmationSnapshot(c: AppContext, enquiry: EnquiryRecord, 
     discountApprovalId: ownerApproval?.id || null,
     discountApprovedByLoginAccountId: ownerApproval?.decided_by_login_account_id || null,
     payloadFingerprint: await hmacHex(c.env.SESSION_PEPPER, "admission-confirmation-payload", JSON.stringify(payload)),
+    tokenReceiptId: tokenReceipt.id,
+    tokenReceiptNumber: tokenReceipt.receipt_number,
+    tokenReceiptAmountPaise: Number(tokenReceipt.amount_paise),
+    tokenReceivedAt: tokenReceipt.received_at,
+    tokenPaymentMode: tokenReceipt.payment_mode,
+    firstInstalmentRequiredPaise: instalments[0]?.amountPaise || finalAgreedFeePaise,
+    instalments,
+    instalmentScheduleFingerprint: scheduleFingerprint,
+    totalReceivedAtConfirmationPaise: Number(tokenReceipt.amount_paise),
   };
 }
 
@@ -1071,6 +1279,232 @@ async function getAdmissionReadiness(c: AppContext, enquiry: EnquiryRecord, payl
   mergeFieldErrors(fieldErrors, await paymentPlanFieldErrors(c, payload, course));
   mergeFieldErrors(fieldErrors, await discountApprovalFieldErrors(c, payload, draftId, course));
   return { fieldErrors };
+}
+
+async function tokenReceiptForConfirmation(c: AppContext, draft: DraftRecord, payload: AdmissionPayload) {
+  const receipts = await receiptsForDraft(c, draft.id);
+  if (receipts.length === 0) {
+    return {
+      ok: false as const,
+      status: 400,
+      code: "first_receipt_required",
+      message: "Record the admission token/first receipt before confirming admission.",
+      fieldErrors: { firstReceipt: ["Record the admission token/first receipt before confirming admission."] },
+    };
+  }
+  if (receipts.length !== 1 || Number(receipts[0].amount_paise) <= 0) {
+    return { ok: false as const, status: 409, code: "invalid_first_receipt", message: "Admission requires exactly one valid pre-confirmation receipt." };
+  }
+  const schedule = buildInstalmentSchedule(payload);
+  const finalAgreedFeePaise = Number(payload.fee?.finalAgreedFeePaise || 0);
+  if (!schedule.length || schedule.reduce((total, instalment) => total + instalment.amountPaise, 0) !== finalAgreedFeePaise) {
+    return { ok: false as const, status: 400, code: "invalid_instalment_schedule", message: "Payment plan instalments must equal the final agreed fee." };
+  }
+  if (Number(receipts[0].amount_paise) > finalAgreedFeePaise) {
+    return { ok: false as const, status: 400, code: "receipt_exceeds_final_fee", message: "Receipt amount cannot exceed the final agreed fee." };
+  }
+  return { ok: true as const, receipt: receipts[0], instalments: schedule };
+}
+
+async function financialSummaryForDraft(c: AppContext, draft: DraftRecord, payload: AdmissionPayload) {
+  return financialSummaryFromReceipts(Number(payload.fee?.finalAgreedFeePaise || 0), buildInstalmentSchedule(payload), await receiptsForDraft(c, draft.id));
+}
+
+async function financialSummaryForEnrolment(c: AppContext, enrolmentId: string, snapshot: ConfirmationSnapshot | null): Promise<FinancialSummary | null> {
+  const feeAgreement = await c.env.DB.prepare("select id, final_agreed_fee_paise from fee_agreements where enrolment_id = ?")
+    .bind(enrolmentId)
+    .first<{ id: string; final_agreed_fee_paise: number }>();
+  if (!feeAgreement) return null;
+  const instalmentRows = await c.env.DB.prepare(
+    `select instalment_number, amount_paise, due_date
+     from fee_agreement_instalments
+     where fee_agreement_id = ?
+     order by instalment_number`,
+  )
+    .bind(feeAgreement.id)
+    .all<{ instalment_number: number; amount_paise: number; due_date: string | null }>();
+  const receipts = await c.env.DB.prepare(
+    `select id, receipt_number, amount_paise, received_at, payment_mode, payment_reference, notes, status, payload_fingerprint
+     from receipts
+     where enrolment_id = ? and status = 'recorded'
+     order by received_at, created_at`,
+  )
+    .bind(enrolmentId)
+    .all<ReceiptRecord>();
+  const instalments = (instalmentRows.results || []).map((row) => ({ instalmentNumber: Number(row.instalment_number), amountPaise: Number(row.amount_paise), dueDate: row.due_date || null }));
+  const summary = financialSummaryFromReceipts(Number(feeAgreement.final_agreed_fee_paise || snapshot?.finalAgreedFeePaise || 0), instalments.length ? instalments : scheduleFromSnapshot(snapshot), receipts.results || []);
+  if (snapshot && summary.tokenReceipt?.id !== snapshot.tokenReceiptId) return null;
+  return summary;
+}
+
+function financialSummaryFromReceipts(finalAgreedFeePaise: number, instalments: Instalment[], receipts: ReceiptRecord[]): FinancialSummary {
+  const totalReceivedPaise = receipts.reduce((total, receipt) => total + Number(receipt.amount_paise || 0), 0);
+  const firstInstalmentRequiredPaise = instalments[0]?.amountPaise || finalAgreedFeePaise;
+  return {
+    finalAgreedFeePaise,
+    firstInstalmentRequiredPaise,
+    totalReceivedPaise,
+    firstInstalmentBalancePaise: Math.max(0, firstInstalmentRequiredPaise - totalReceivedPaise),
+    overallBalancePaise: Math.max(0, finalAgreedFeePaise - totalReceivedPaise),
+    classStartEligible: totalReceivedPaise >= firstInstalmentRequiredPaise && firstInstalmentRequiredPaise > 0,
+    instalments,
+    tokenReceipt: receipts[0] ? publicReceipt(receipts[0]) : null,
+  };
+}
+
+function publicReceipt(receipt: ReceiptRecord) {
+  return {
+    id: receipt.id,
+    receiptNumber: receipt.receipt_number,
+    amountPaise: Number(receipt.amount_paise),
+    receivedAt: receipt.received_at,
+    paymentMode: receipt.payment_mode,
+    paymentReference: receipt.payment_reference || null,
+    status: "recorded" as const,
+  };
+}
+
+function buildInstalmentSchedule(payload: AdmissionPayload): Instalment[] {
+  const fee = payload.fee || {};
+  const finalFee = Number(fee.finalAgreedFeePaise || 0);
+  if (!Number.isInteger(finalFee) || finalFee < 0) return [];
+  const count = instalmentsFor(String(fee.paymentPlanType || "full"), Number(fee.numberOfInstalments || 0));
+  if (count <= 1) return [{ instalmentNumber: 1, amountPaise: finalFee, dueDate: null }];
+  const requestedFirst = Number(fee.initialPaymentExpectedPaise || 0);
+  const first = requestedFirst > 0 && requestedFirst <= finalFee ? requestedFirst : Math.ceil(finalFee / count);
+  const remaining = finalFee - first;
+  const tailCount = count - 1;
+  const baseTail = Math.floor(remaining / tailCount);
+  let remainder = remaining - baseTail * tailCount;
+  const instalments: Instalment[] = [{ instalmentNumber: 1, amountPaise: first, dueDate: null }];
+  for (let index = 2; index <= count; index += 1) {
+    const extra = remainder > 0 ? 1 : 0;
+    remainder -= extra;
+    instalments.push({ instalmentNumber: index, amountPaise: baseTail + extra, dueDate: null });
+  }
+  return instalments;
+}
+
+function scheduleFromSnapshot(snapshot: ConfirmationSnapshot | null): Instalment[] {
+  return snapshot?.instalments || [];
+}
+
+async function freezeFeeAgreementInstalments(c: AppContext, feeAgreementId: string, instalments: Instalment[], now: string) {
+  await c.env.DB.batch(
+    instalments.map((instalment) =>
+      c.env.DB.prepare(
+        `insert into fee_agreement_instalments
+           (id, fee_agreement_id, instalment_number, amount_paise, due_date, created_at)
+         values (?, ?, ?, ?, ?, ?)
+         on conflict(fee_agreement_id, instalment_number) do update set
+           amount_paise = excluded.amount_paise,
+           due_date = excluded.due_date`,
+      ).bind(createOpaqueId("inst"), feeAgreementId, instalment.instalmentNumber, instalment.amountPaise, instalment.dueDate, now),
+    ),
+  );
+}
+
+async function receiptsForDraft(c: AppContext, draftId: string) {
+  const receipts = await c.env.DB.prepare(
+    `select id, receipt_number, amount_paise, received_at, payment_mode, payment_reference, notes, status, payload_fingerprint
+     from receipts
+     where admission_draft_id = ? and status = 'recorded' and enrolment_id is null
+     order by received_at, created_at`,
+  )
+    .bind(draftId)
+    .all<ReceiptRecord>();
+  return receipts.results || [];
+}
+
+async function preConfirmationReceiptCount(c: AppContext, draftId: string) {
+  const row = await c.env.DB.prepare("select count(*) as count from receipts where admission_draft_id = ? and status = 'recorded' and enrolment_id is null")
+    .bind(draftId)
+    .first<{ count: number }>();
+  return Number(row?.count || 0);
+}
+
+function validateReceiptPaymentFields(input: z.infer<typeof recordAdmissionReceiptSchema>, staff: StaffContext): AdmissionFailure | { ok: true } {
+  const reference = input.paymentReference?.trim() || "";
+  const notes = input.notes?.trim() || "";
+  if (["upi", "card", "bank_transfer", "cheque"].includes(input.paymentMode) && !reference) {
+    return { ok: false, status: 400, code: "payment_reference_required", message: "Payment reference is required for this payment mode.", fieldErrors: { paymentReference: ["Payment reference is required for this payment mode."] } };
+  }
+  if (input.paymentMode === "other" && !notes) {
+    return { ok: false, status: 400, code: "receipt_notes_required", message: "Notes are required for other payment mode.", fieldErrors: { notes: ["Notes are required for other payment mode."] } };
+  }
+  const receivedAt = normalizedReceivedAt(input.receivedAt);
+  if (input.receivedAt && Number.isNaN(Date.parse(input.receivedAt))) {
+    return { ok: false, status: 400, code: "invalid_receipt_date", message: "Enter a valid receipt date.", fieldErrors: { receivedAt: ["Enter a valid receipt date."] } };
+  }
+  if (Date.parse(receivedAt) > Date.now()) {
+    return { ok: false, status: 400, code: "future_receipt_date", message: "Receipt date cannot be in the future.", fieldErrors: { receivedAt: ["Receipt date cannot be in the future."] } };
+  }
+  if (!canBackdateReceipt(staff, receivedAt)) {
+    return { ok: false, status: 403, code: "receipt_backdate_forbidden", message: "This role can record only current-day receipts." };
+  }
+  return { ok: true };
+}
+
+function normalizedReceivedAt(value: string | undefined) {
+  if (!value) return new Date().toISOString();
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return new Date().toISOString();
+  return parsed.toISOString();
+}
+
+function canRecordAdmissionReceipt(staff: StaffContext) {
+  return staff.roles.some((role) => ["owner", "system_admin", "admin", "admission_admin", "counsellor"].includes(role));
+}
+
+function canBackdateReceipt(staff: StaffContext, receivedAt: string) {
+  if (staff.roles.some((role) => ["owner", "system_admin", "admin", "admission_admin"].includes(role))) return true;
+  const received = new Date(receivedAt);
+  const now = new Date();
+  const kolkataDay = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" });
+  return kolkataDay.format(received) === kolkataDay.format(now);
+}
+
+async function receiptPayloadFingerprint(c: AppContext, enquiry: EnquiryRecord, draft: DraftRecord, input: z.infer<typeof recordAdmissionReceiptSchema>) {
+  return hmacHex(
+    c.env.SESSION_PEPPER,
+    "admission-receipt",
+    JSON.stringify({
+      enquiryId: enquiry.id,
+      draftId: draft.id,
+      amountPaise: input.amountPaise,
+      receivedAt: normalizedReceivedAt(input.receivedAt),
+      paymentMode: input.paymentMode,
+      paymentReference: input.paymentReference?.trim() || "",
+      notes: input.notes?.trim() || "",
+    }),
+  );
+}
+
+async function instalmentScheduleFingerprint(c: AppContext, instalments: Instalment[]) {
+  return hmacHex(c.env.SESSION_PEPPER, "admission-instalments", JSON.stringify(instalments));
+}
+
+function commercialTermsFingerprint(payload: AdmissionPayload) {
+  return JSON.stringify({
+    course: {
+      courseId: payload.course?.courseId || "",
+      branchId: payload.course?.branchId || "",
+      trainingMode: payload.course?.trainingMode || "",
+      batchPreferenceCode: payload.course?.batchPreferenceCode || "",
+      admissionDate: payload.course?.admissionDate || "",
+      joiningDate: payload.course?.joiningDate || "",
+      expectedCompletionDate: payload.course?.expectedCompletionDate || "",
+      nsdcPreference: payload.course?.nsdcPreference || "",
+    },
+    fee: {
+      finalAgreedFeePaise: Number(payload.fee?.finalAgreedFeePaise || 0),
+      discountReason: payload.fee?.discountReason || "",
+      discountReasonCode: payload.fee?.discountReasonCode || "",
+      paymentPlanType: payload.fee?.paymentPlanType || "",
+      numberOfInstalments: Number(payload.fee?.numberOfInstalments || 0),
+      initialPaymentExpectedPaise: Number(payload.fee?.initialPaymentExpectedPaise || 0),
+    },
+  });
 }
 
 async function payloadForConfirmationValidation(c: AppContext, draft: DraftRecord) {
@@ -1625,6 +2059,7 @@ async function confirmationForEnrolment(c: AppContext, enquiry: EnquiryRecord, e
     enrolmentNumber: row.enrolment_number,
     enquiryNumber: enquiry.enquiry_number,
     isNewStudent,
+    financialSummary: (await financialSummaryForEnrolment(c, row.enrolment_id, null)) || financialSummaryFromReceipts(0, [], []),
   };
 }
 

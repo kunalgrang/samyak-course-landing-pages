@@ -150,6 +150,7 @@ describe("AdmissionPage helpers", () => {
           enrolmentNumber: "ENR-SION-2026-000001",
           enquiryNumber: "ENQ-SION-2026-ABC",
           isNewStudent: true,
+          financialSummary: financialSummary(),
         }}
       />,
     );
@@ -458,6 +459,7 @@ function setDefaultAdmissionApiMocks() {
     enrolmentNumber: "ENR-SION-2026-000001",
     enquiryNumber: "ENQ-SION-2026-001",
     isNewStudent: true,
+    financialSummary: financialSummary(),
   });
   apiMocks.requestDiscountApproval.mockResolvedValue({ status: "requested" });
   apiMocks.saveAdmissionDraft.mockImplementation(async (_enquiryId, payload, currentStep) => ({
@@ -615,4 +617,28 @@ function readyPayload() {
     dataProcessingAccepted: true,
   };
   return payload;
+}
+
+function financialSummary() {
+  return {
+    finalAgreedFeePaise: 5000000,
+    firstInstalmentRequiredPaise: 2500000,
+    totalReceivedPaise: 50000,
+    firstInstalmentBalancePaise: 2450000,
+    overallBalancePaise: 4950000,
+    classStartEligible: false,
+    instalments: [
+      { instalmentNumber: 1, amountPaise: 2500000, dueDate: null },
+      { instalmentNumber: 2, amountPaise: 2500000, dueDate: null },
+    ],
+    tokenReceipt: {
+      id: "receipt_1",
+      receiptNumber: "RCP-SION-2026-000001",
+      amountPaise: 50000,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "cash",
+      paymentReference: null,
+      status: "recorded" as const,
+    },
+  };
 }
