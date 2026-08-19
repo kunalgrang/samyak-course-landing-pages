@@ -309,6 +309,204 @@
   color: var(--color-teal-dark);
 }
 
+.notification-toast {
+  position: sticky;
+  top: 12px;
+  z-index: 20;
+  display: grid;
+  gap: 4px;
+  max-width: min(100%, 420px);
+  justify-self: end;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.14);
+}
+
+.notification-toast span {
+  overflow-wrap: anywhere;
+}
+
+.notification-toast--success {
+  border-color: rgba(13, 148, 136, 0.3);
+  background: #ecfdf5;
+}
+
+.notification-toast--success strong {
+  color: #0f766e;
+}
+
+.notification-toast--error {
+  border-color: rgba(180, 35, 24, 0.3);
+  background: #fff4f2;
+}
+
+.notification-toast--error strong {
+  color: #8a1f14;
+}
+
+.page-header--compact {
+  margin-top: 8px;
+}
+
+.crm-queue-card,
+.crm-detail-card {
+  display: grid;
+  gap: 16px;
+}
+
+.crm-toolbar {
+  display: grid;
+  gap: 12px;
+  align-items: end;
+}
+
+.crm-toolbar label {
+  display: grid;
+  gap: 7px;
+  color: var(--color-navy);
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.crm-toolbar input,
+.crm-toolbar select,
+.crm-log-form input,
+.crm-log-form select {
+  min-height: 44px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 0 12px;
+  color: var(--color-ink);
+  background: #fff;
+  font: inherit;
+}
+
+.crm-list {
+  display: grid;
+  gap: 12px;
+}
+
+.crm-card {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: #fff;
+}
+
+.crm-card-main,
+.crm-card-meta,
+.crm-card-meta span {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.crm-contact-panel {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  border-top: 1px solid var(--color-line);
+  padding-top: 14px;
+}
+
+.crm-contact-panel strong,
+.crm-contact-panel span {
+  color: var(--color-navy);
+  overflow-wrap: anywhere;
+}
+
+.crm-terminal-note {
+  align-self: end;
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.crm-card-main strong,
+.crm-card-meta strong {
+  color: var(--color-navy);
+  overflow-wrap: anywhere;
+}
+
+.crm-card-main small,
+.crm-card-meta small {
+  color: var(--color-muted);
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.crm-actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.crm-actions .secondary-button,
+.crm-actions .button-link,
+.crm-actions .contact-action {
+  min-height: 40px;
+}
+
+.crm-log-form {
+  border-top: 1px solid var(--color-line);
+  padding-top: 14px;
+}
+
+.crm-log-note,
+.crm-log-form .staff-form-actions {
+  grid-column: 1 / -1;
+}
+
+.temperature-chip {
+  justify-self: start;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(99, 112, 131, 0.32);
+  border-radius: 999px;
+  padding: 0 10px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.temperature-chip--hot_urgent {
+  border-color: rgba(180, 35, 24, 0.34);
+  background: #fff4f2;
+  color: #a32014;
+}
+
+.temperature-chip--hot {
+  border-color: rgba(217, 119, 6, 0.36);
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.temperature-chip--warm {
+  border-color: rgba(13, 148, 136, 0.32);
+  background: #ecfdf5;
+  color: #0f766e;
+}
+
+.temperature-chip--cold {
+  border-color: rgba(71, 85, 105, 0.32);
+  background: #f1f5f9;
+  color: #334155;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -622,6 +820,23 @@
 
   .action-row {
     grid-template-columns: minmax(220px, 1fr) auto auto auto;
+  }
+
+  .crm-toolbar {
+    grid-template-columns: minmax(160px, 0.5fr) minmax(220px, 1fr) auto;
+  }
+
+  .crm-card {
+    grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.72fr);
+  }
+
+  .crm-actions,
+  .crm-log-form {
+    grid-column: 1 / -1;
+  }
+
+  .crm-log-form {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .referral-detail-hero,

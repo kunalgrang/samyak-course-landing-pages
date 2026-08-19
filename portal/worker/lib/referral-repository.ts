@@ -484,8 +484,8 @@ export class ReferralRepository {
       this.db.prepare(
         `insert into enquiries
           (id, organisation_id, branch_id, person_id, enquiry_number, mobile_used, course_interest_id,
-           source, source_detail, counsellor_login_account_id, status, created_at, updated_at)
-         values (?, ?, ?, null, ?, ?, ?, 'referral', ?, null, 'new', ?, ?)`,
+           source, source_detail, counsellor_login_account_id, status, pipeline_stage, created_at, updated_at)
+         values (?, ?, ?, null, ?, ?, ?, 'referral', ?, null, 'new', 'new', ?, ?)`,
       ).bind(
         enquiryId,
         input.organisationId,

@@ -2,12 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, RefObject } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
+import { NotificationToast, nextNotification, type AppNotification } from "../../components/NotificationToast";
 import {
   createEnquiry,
   getEnquiryOptions,
+  getCrmEnquiries,
+  recordEnquiryFollowUp,
   searchStudentByMobile,
   type CreateEnquiryInput,
   type CreateEnquiryResponse,
+  type CrmEnquiryItem,
   type EnquiryOptions,
   type StudentSearchResult,
 } from "../../lib/api";
@@ -44,8 +48,59 @@ const emptyFormFields: FormState = {
   existingPersonId: "",
 };
 
+const queueOptions = [
+  ["my", "My enquiries"],
+  ["hot_urgent", "Hot Urgent"],
+  ["hot", "Hot"],
+  ["warm", "Warm"],
+  ["cold", "Cold"],
+  ["today", "Today"],
+  ["overdue", "Overdue"],
+  ["new", "New"],
+  ["upcoming", "Upcoming"],
+  ["considering", "Considering"],
+  ["deferred", "Deferred"],
+  ["admission_ready", "Admission Ready"],
+  ["unassigned", "Unassigned"],
+  ["all", "All branch"],
+] as const;
+
+const followUpOutcomes = [
+  "call_connected",
+  "call_no_answer",
+  "call_busy",
+  "whatsapp_sent",
+  "whatsapp_replied",
+  "whatsapp_no_response",
+  "callback_requested",
+  "course_details_shared",
+  "fee_discussed",
+  "batch_discussed",
+  "visit_scheduled",
+  "demo_scheduled",
+  "demo_completed",
+  "thinking",
+  "deferred_joining",
+  "not_interested",
+  "joined_elsewhere",
+  "invalid_contact",
+  "other",
+] as const;
+
+const pipelineStages = ["new", "contacting", "engaged", "considering", "deferred", "admission_ready", "lost", "invalid", "duplicate"] as const;
+const terminalPipelineStages = new Set(["lost", "invalid", "duplicate"]);
+const IST_TIME_ZONE = "Asia/Kolkata";
+
 export function EnquiriesPage() {
   const [options, setOptions] = useState<EnquiryOptions | null>(null);
+  const [crmItems, setCrmItems] = useState<CrmEnquiryItem[]>([]);
+  const [crmQueue, setCrmQueue] = useState("hot_urgent");
+  const [crmSearch, setCrmSearch] = useState("");
+  const [crmTotal, setCrmTotal] = useState(0);
+  const [isLoadingCrm, setIsLoadingCrm] = useState(true);
+  const [activeLogId, setActiveLogId] = useState<string | null>(null);
+  const [loggingFollowUpId, setLoggingFollowUpId] = useState<string | null>(null);
+  const [logForm, setLogForm] = useState(initialLogForm());
   const [mobile, setMobile] = useState("");
   const [searchResult, setSearchResult] = useState<StudentSearchResult | null>(null);
   const [form, setForm] = useState<FormState>(initialEnquiryForm());
@@ -54,6 +109,7 @@ export function EnquiriesPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [notification, setNotification] = useState<AppNotification | null>(null);
   const mobileInputRef = useRef<HTMLInputElement | null>(null);
   const isSubmittingRef = useRef(false);
 
@@ -67,6 +123,10 @@ export function EnquiriesPage() {
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Could not load enquiry options."))
       .finally(() => setIsLoadingOptions(false));
   }, []);
+
+  useEffect(() => {
+    void loadCrmQueue();
+  }, [crmQueue]);
 
   const selectedPerson = useMemo(
     () => searchResult?.possiblePeople.find((person) => person.person_id === form.existingPersonId) || null,
@@ -93,6 +153,70 @@ export function EnquiriesPage() {
     } finally {
       setIsSearching(false);
     }
+  }
+
+  async function loadCrmQueue(search = crmSearch) {
+    setIsLoadingCrm(true);
+    try {
+      const data = await getCrmEnquiries({
+        queue: crmQueue === "my" ? "all" : crmQueue,
+        assignedTo: crmQueue === "my" ? "me" : undefined,
+        search: search || undefined,
+        limit: 30,
+      });
+      setCrmItems(data.items);
+      setCrmTotal(data.pagination.total);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not load CRM queue.");
+    } finally {
+      setIsLoadingCrm(false);
+    }
+  }
+
+  async function handleCrmSearch(event: FormEvent) {
+    event.preventDefault();
+    await loadCrmQueue(crmSearch);
+  }
+
+  async function handleLogFollowUp(event: FormEvent, enquiry: CrmEnquiryItem) {
+    event.preventDefault();
+    if (loggingFollowUpId) return;
+    const sanitized = sanitizeLogForm(logForm);
+    if (sanitized.pipelineStage === "lost" && !sanitized.closedReason) {
+      showNotification("error", "Lost reason is required.");
+      setLogForm(sanitized);
+      return;
+    }
+    if (sanitized.nextFollowUpAt && !isQuarterHourLocalInput(sanitized.nextFollowUpAt)) {
+      showNotification("error", "Next follow-up must use 15-minute increments.");
+      setLogForm(sanitized);
+      return;
+    }
+    setLoggingFollowUpId(enquiry.enquiry.id);
+    try {
+      await recordEnquiryFollowUp(enquiry.enquiry.id, {
+        channel: sanitized.channel,
+        outcome: sanitized.outcome,
+        note: sanitized.note || null,
+        pipelineStage: sanitized.pipelineStage,
+        nextFollowUpAt: toIsoDateTime(sanitized.nextFollowUpAt),
+        expectedJoiningDate: sanitized.expectedJoiningDate || null,
+        closedReason: sanitized.pipelineStage === "lost" ? sanitized.closedReason || null : null,
+      });
+      setActiveLogId(null);
+      setLogForm(initialLogForm());
+      await loadCrmQueue();
+      showNotification("success", sanitized.nextFollowUpAt ? `Follow-up saved. Next follow-up scheduled for ${formatDateTime(toIsoDateTime(sanitized.nextFollowUpAt))}.` : "Follow-up saved.");
+    } catch (reason) {
+      showNotification("error", "Could not save follow-up. Please try again.");
+    } finally {
+      setLoggingFollowUpId(null);
+    }
+  }
+
+  function showNotification(kind: "success" | "error", message: string) {
+    setNotification((current) => nextNotification(kind, message, current));
   }
 
   async function handleCreate(event: FormEvent) {
@@ -134,8 +258,77 @@ export function EnquiriesPage() {
 
   return (
     <div className="content-stack staff-enquiries-page">
+      <NotificationToast notification={notification} onDismiss={() => setNotification(null)} />
       <header className="page-header">
-        <h1>Student & Enquiry Search</h1>
+        <h1>Enquiry Follow-up CRM</h1>
+        <p>Prioritise active enquiries, log contact outcomes and keep admission-ready leads moving.</p>
+      </header>
+
+      <section className="staff-card crm-queue-card">
+        <div className="section-heading">
+          <h2>Work queue</h2>
+          <span>{crmTotal}</span>
+        </div>
+        <form className="crm-toolbar" onSubmit={handleCrmSearch}>
+          <label>
+            Queue
+            <select value={crmQueue} onChange={(event) => setCrmQueue(event.target.value)}>
+              {queueOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          <label>
+            Search
+            <input value={crmSearch} onChange={(event) => setCrmSearch(event.target.value)} placeholder="Name, enquiry no., course" />
+          </label>
+          <button type="submit">Apply</button>
+        </form>
+        {isLoadingCrm ? <LoadingState label="Loading CRM queue" /> : null}
+        {!isLoadingCrm && crmItems.length ? (
+          <div className="crm-list">
+            {crmItems.map((item) => (
+              <article className="crm-card" key={item.enquiry.id}>
+                <div className="crm-card-main">
+                  <span className={`temperature-chip temperature-chip--${item.leadTemperature || "inactive"}`}>{temperatureLabel(item.leadTemperature)}</span>
+                  <strong>{item.prospect.displayName}</strong>
+                  <small>{item.leadTemperatureReason}</small>
+                  <span>{item.course.name}</span>
+                  <small>{formatLabel(item.pipelineStage)} · {item.source}{item.referral ? " · Referral" : ""}</small>
+                </div>
+                <div className="crm-card-meta">
+                  <CrmContactLine contact={item.contact} />
+                  <DetailLine label="Next" value={formatDateTime(item.nextFollowUpAt)} />
+                  <DetailLine label="Expected" value={item.expectedJoiningDate || "Not set"} />
+                  <DetailLine label="Assigned" value={assignedCounsellorLabel(item)} />
+                </div>
+                <div className="crm-actions">
+                  {item.contact.whatsappUrl ? <a className="contact-action contact-action--whatsapp" href={item.contact.whatsappUrl} target="_blank" rel="noopener noreferrer">WhatsApp</a> : null}
+                  {item.contact.callUrl ? <a className="contact-action" href={item.contact.callUrl}>Call</a> : null}
+                  <a className="button-link" href={`/app/enquiries/${item.enquiry.id}`}>Open</a>
+                  <button type="button" className="secondary-button" onClick={() => setActiveLogId(activeLogId === item.enquiry.id ? null : item.enquiry.id)}>Log follow-up</button>
+                </div>
+                {activeLogId === item.enquiry.id ? (
+                  <form className="staff-form crm-log-form" onSubmit={(event) => void handleLogFollowUp(event, item)}>
+                    <label>Channel<select value={logForm.channel} onChange={(event) => setLogForm((current) => ({ ...current, channel: event.target.value }))}><option value="call">Call</option><option value="whatsapp">WhatsApp</option><option value="in_person">In person</option><option value="email">Email</option><option value="other">Other</option></select></label>
+                    <label>Outcome<select value={logForm.outcome} onChange={(event) => setLogForm((current) => ({ ...current, outcome: event.target.value }))}>{followUpOutcomes.map((outcome) => <option key={outcome} value={outcome}>{formatLabel(outcome)}</option>)}</select></label>
+                    <label>Pipeline<select value={logForm.pipelineStage} onChange={(event) => setLogForm((current) => sanitizeLogForm({ ...current, pipelineStage: event.target.value }))}>{pipelineStages.map((stage) => <option key={stage} value={stage}>{formatLabel(stage)}</option>)}</select></label>
+                    {isTerminalPipelineStage(logForm.pipelineStage) ? <p className="crm-terminal-note">No active next follow-up for terminal stages.</p> : <label>Next follow-up<input type="datetime-local" step={900} value={logForm.nextFollowUpAt} onChange={(event) => setLogForm((current) => ({ ...current, nextFollowUpAt: event.target.value }))} /></label>}
+                    <label>Expected joining<input type="date" value={logForm.expectedJoiningDate} onChange={(event) => setLogForm((current) => ({ ...current, expectedJoiningDate: event.target.value }))} /></label>
+                    {logForm.pipelineStage === "lost" ? <label>Lost reason<select required value={logForm.closedReason} onChange={(event) => setLogForm((current) => ({ ...current, closedReason: event.target.value }))}><option value="">Select lost reason</option><option value="not_interested">Not interested</option><option value="joined_elsewhere">Joined elsewhere</option><option value="fee_budget_issue">Fee/budget issue</option><option value="batch_timing_issue">Batch timing issue</option><option value="location_travel_issue">Location/travel issue</option><option value="course_not_suitable">Course not suitable</option><option value="no_response">No response</option><option value="postponed_indefinitely">Postponed indefinitely</option><option value="other">Other</option></select></label> : null}
+                    <label className="crm-log-note">Note<input value={logForm.note} onChange={(event) => setLogForm((current) => ({ ...current, note: event.target.value }))} placeholder="Internal note" /></label>
+                    <div className="staff-form-actions">
+                      <button type="submit" disabled={loggingFollowUpId === item.enquiry.id}>{loggingFollowUpId === item.enquiry.id ? "Saving..." : "Save follow-up"}</button>
+                    </div>
+                  </form>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        ) : null}
+        {!isLoadingCrm && !crmItems.length ? <p className="staff-empty">No enquiries in this queue.</p> : null}
+      </section>
+
+      <header className="page-header page-header--compact">
+        <h1>New Enquiry</h1>
         <p>Search by mobile number before creating an enquiry to prevent duplicate student records.</p>
       </header>
 
@@ -303,6 +496,33 @@ export function EnquiriesPage() {
   );
 }
 
+function initialLogForm() {
+  return {
+    channel: "call",
+    outcome: "call_connected",
+    pipelineStage: "engaged",
+    nextFollowUpAt: "",
+    expectedJoiningDate: "",
+    closedReason: "",
+    note: "",
+  };
+}
+
+type LogFormState = ReturnType<typeof initialLogForm>;
+
+export function sanitizeLogForm(form: LogFormState): LogFormState {
+  const terminal = isTerminalPipelineStage(form.pipelineStage);
+  return {
+    ...form,
+    nextFollowUpAt: terminal ? "" : form.nextFollowUpAt,
+    closedReason: form.pipelineStage === "lost" ? form.closedReason : "",
+  };
+}
+
+export function isTerminalPipelineStage(stage: string) {
+  return terminalPipelineStages.has(stage);
+}
+
 export function EnquirySuccessNotice({ message }: { message: string }) {
   return (
     <div className="notice notice--success" role="status" aria-live="polite">
@@ -391,7 +611,60 @@ function formatLabel(value: string) {
   return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function temperatureLabel(value: string | null) {
+  if (!value) return "Inactive";
+  return value === "hot_urgent" ? "HOT URGENT" : value.toUpperCase();
+}
+
+function DetailLine({ label, value }: { label: string; value: string }) {
+  return <span><small>{label}</small><strong>{value}</strong></span>;
+}
+
+export function assignedCounsellorLabel(item: Pick<CrmEnquiryItem, "assignedCounsellor" | "assignedCounsellorLoginAccountId">) {
+  if (!item.assignedCounsellorLoginAccountId) return "Unassigned";
+  return item.assignedCounsellor?.displayName || "Unknown staff";
+}
+
+export function CrmContactLine({ contact }: { contact: CrmEnquiryItem["contact"] }) {
+  return <DetailLine label="Mobile" value={contact.mobileDisplay || "Contact number unavailable"} />;
+}
+
 function formatDate(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function formatDateTime(value: string | null) {
+  if (!value) return "Not scheduled";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("en-IN", { timeZone: IST_TIME_ZONE, day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+export function toIsoDateTime(value: string) {
+  if (!value) return null;
+  const date = new Date(`${value.length === 16 ? `${value}:00` : value}+05:30`);
+  return Number.isNaN(date.getTime()) ? value : date.toISOString();
+}
+
+export function toIstDateTimeLocal(value: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: IST_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value || "";
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
+}
+
+export function isQuarterHourLocalInput(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value);
+  if (!match) return false;
+  return ["00", "15", "30", "45"].includes(match[5]);
 }

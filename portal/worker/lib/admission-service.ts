@@ -253,6 +253,7 @@ type EnquiryRecord = {
   person_id: string;
   enquiry_number: string;
   status: string;
+  pipeline_stage: string;
   converted_enrolment_id: string | null;
   converted_at: string | null;
   course_interest_id: string | null;
@@ -651,7 +652,12 @@ async function finalizeAdmission(
   await insertConsents(c, input.personId, input.enrolmentId, input.declarations, staff.loginAccountId, input.now);
   await c.env.DB.prepare(
     `update enquiries
-     set status = 'converted', converted_enrolment_id = ?, converted_at = coalesce(converted_at, ?), updated_at = ?
+     set status = 'converted',
+         pipeline_stage = 'converted',
+         next_follow_up_at = null,
+         converted_enrolment_id = ?,
+         converted_at = coalesce(converted_at, ?),
+         updated_at = ?
      where id = ? and organisation_id = ? and (converted_enrolment_id is null or converted_enrolment_id = ?)`,
   )
     .bind(input.enrolmentId, input.now, input.now, enquiry.id, ORG_ID, input.enrolmentId)
@@ -708,6 +714,7 @@ async function finalizationIntegrityError(
   if (
     finalEnquiry?.converted_enrolment_id !== input.enrolmentId ||
     finalEnquiry.status !== "converted" ||
+    finalEnquiry.pipeline_stage !== "converted" ||
     finalDraft?.status !== "confirmed" ||
     !finalDraft.confirmed_at ||
     !snapshotsMatch(input.snapshot, finalSnapshot)

@@ -2,7 +2,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import {
   CreateEnquirySubmitButton,
+  CrmContactLine,
   EnquirySuccessNotice,
+  assignedCounsellorLabel,
   buildCreateEnquiryInput,
   createEnquirySuccessMessage,
   enquiryStateAfterFailure,
@@ -10,9 +12,16 @@ import {
   focusMobileSearchInput,
   guardedCreateEnquiry,
   initialEnquiryForm,
+  isQuarterHourLocalInput,
+  isTerminalPipelineStage,
+  sanitizeLogForm,
+  toIsoDateTime,
+  toIstDateTimeLocal,
   type EnquiryPageState,
   type FormState,
 } from "./EnquiriesPage";
+import { StaffAssigneeOptions, StaffCrmContactPanel, staffDisplayLabel } from "./EnquiryDetailPage";
+import { NotificationToast, nextNotification } from "../../components/NotificationToast";
 import type { CreateEnquiryResponse, EnquiryOptions, StudentSearchResult } from "../../lib/api";
 
 const singleBranchOptions: EnquiryOptions = {
@@ -164,5 +173,123 @@ describe("EnquiriesPage submission lifecycle", () => {
     resolveCreate(created);
     await expect(first).resolves.toEqual(created);
     expect(pending.current).toBe(false);
+  });
+});
+
+describe("CRM contact and feedback UI", () => {
+  const contact = {
+    mobile: "9876543210",
+    mobileDisplay: "+91 98765 43210",
+    whatsappUrl: "https://wa.me/919876543210",
+    callUrl: "tel:+919876543210",
+  };
+
+  it("renders the full authorized mobile in CRM list contact lines", () => {
+    const html = renderToStaticMarkup(<CrmContactLine contact={contact} />);
+
+    expect(html).toContain("+91 98765 43210");
+  });
+
+  it("renders the full authorized mobile and actions in CRM detail contact panel", () => {
+    const html = renderToStaticMarkup(<StaffCrmContactPanel contact={contact} />);
+
+    expect(html).toContain("Prospect Contact");
+    expect(html).toContain("+91 98765 43210");
+    expect(html).toContain("WhatsApp");
+    expect(html).toContain("Call");
+  });
+
+  it("shows unavailable state when CRM contact is missing", () => {
+    const html = renderToStaticMarkup(<StaffCrmContactPanel contact={{ mobile: null, mobileDisplay: null, whatsappUrl: null, callUrl: null }} />);
+
+    expect(html).toContain("Contact number unavailable");
+    expect(html).not.toContain("WhatsApp");
+    expect(html).not.toContain("Call");
+  });
+
+  it("renders accessible success and error notifications", () => {
+    const success = nextNotification("success", "Assignment updated.");
+    const error = nextNotification("error", "Could not update assignment. Please try again.", success);
+
+    expect(renderToStaticMarkup(<NotificationToast notification={success} onDismiss={() => undefined} />)).toContain("role=\"status\"");
+    expect(renderToStaticMarkup(<NotificationToast notification={error} onDismiss={() => undefined} />)).toContain("role=\"alert\"");
+    expect(error.id).toBe(success.id + 1);
+  });
+
+  it("renders human assignee names without exposing internal account ids", () => {
+    expect(assignedCounsellorLabel({
+      assignedCounsellorLoginAccountId: "acct_04176173eb024647afbc0f9c8f693d88",
+      assignedCounsellor: { accountId: "acct_04176173eb024647afbc0f9c8f693d88", displayName: "Kunal" },
+    })).toBe("Kunal");
+
+    expect(assignedCounsellorLabel({
+      assignedCounsellorLoginAccountId: "acct_04176173eb024647afbc0f9c8f693d88",
+      assignedCounsellor: null,
+    })).toBe("Unknown staff");
+  });
+
+  it("uses staff names as assignment dropdown labels while preserving account ids as values", () => {
+    const html = renderToStaticMarkup(
+      <select>
+        <StaffAssigneeOptions assignees={[
+          { id: "acct_04176173eb024647afbc0f9c8f693d88", label: "Kunal" },
+          { id: "acct_missing_name", label: "acct_missing_name" },
+        ]} />
+      </select>,
+    );
+
+    expect(html).toContain("value=\"acct_04176173eb024647afbc0f9c8f693d88\"");
+    expect(html).toContain(">Kunal</option>");
+    expect(html).toContain(">Unknown staff</option>");
+    expect(html).not.toContain(">acct_");
+    expect(staffDisplayLabel("person_internal")).toBe("Unknown staff");
+  });
+});
+
+describe("CRM follow-up form state", () => {
+  it("clears hidden lost reason when stage changes away from lost", () => {
+    expect(sanitizeLogForm({
+      channel: "call",
+      outcome: "call_connected",
+      pipelineStage: "engaged",
+      nextFollowUpAt: "2026-09-01T10:00",
+      expectedJoiningDate: "",
+      closedReason: "not_interested",
+      note: "",
+    }).closedReason).toBe("");
+  });
+
+  it("keeps lost reason only when lost is selected", () => {
+    expect(sanitizeLogForm({
+      channel: "call",
+      outcome: "not_interested",
+      pipelineStage: "lost",
+      nextFollowUpAt: "2026-09-01T10:00",
+      expectedJoiningDate: "",
+      closedReason: "not_interested",
+      note: "",
+    })).toMatchObject({ closedReason: "not_interested", nextFollowUpAt: "" });
+  });
+
+  it("clears next follow-up for terminal stages and leaves converted unavailable manually", () => {
+    expect(isTerminalPipelineStage("invalid")).toBe(true);
+    expect(isTerminalPipelineStage("duplicate")).toBe(true);
+    expect(sanitizeLogForm({
+      channel: "call",
+      outcome: "invalid_contact",
+      pipelineStage: "invalid",
+      nextFollowUpAt: "2026-09-01T10:00",
+      expectedJoiningDate: "",
+      closedReason: "not_interested",
+      note: "",
+    })).toMatchObject({ nextFollowUpAt: "", closedReason: "" });
+    expect(["new", "contacting", "engaged", "considering", "deferred", "admission_ready", "lost", "invalid", "duplicate"]).not.toContain("converted");
+  });
+
+  it("accepts only quarter-hour follow-up times and round-trips IST to storage", () => {
+    expect(["2026-08-20T18:00", "2026-08-20T18:15", "2026-08-20T18:30", "2026-08-20T18:45"].every(isQuarterHourLocalInput)).toBe(true);
+    expect(["2026-08-20T18:01", "2026-08-20T18:14", "2026-08-20T18:23", "2026-08-20T18:59"].some(isQuarterHourLocalInput)).toBe(false);
+    expect(toIsoDateTime("2026-08-20T18:30")).toBe("2026-08-20T13:00:00.000Z");
+    expect(toIstDateTimeLocal("2026-08-20T13:00:00.000Z")).toBe("2026-08-20T18:30");
   });
 });

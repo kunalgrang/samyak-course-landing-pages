@@ -183,8 +183,8 @@ export function registerStaffStudentRoutes(app: PortalHono) {
         `insert into enquiries
            (id, organisation_id, branch_id, person_id, enquiry_number, mobile_used, course_interest_id,
             source, source_detail, counsellor_login_account_id, preferred_timing, preferred_joining_date,
-            status, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)`,
+            status, pipeline_stage, assigned_at, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', 'new', ?, ?, ?)`,
       ).bind(
         enquiryId,
         ORG_ID,
@@ -198,6 +198,7 @@ export function registerStaffStudentRoutes(app: PortalHono) {
         staff.loginAccountId,
         parsed.data.preferredTiming || null,
         parsed.data.preferredJoiningDate || null,
+        now,
         now,
         now,
       ),
