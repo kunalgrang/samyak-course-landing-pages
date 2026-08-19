@@ -182,6 +182,9 @@ function toCrmListItem(row: EnquiryCrmRow, temperature: { leadTemperature: LeadT
     pipelineStage: row.pipeline_stage,
     leadTemperature: temperature.leadTemperature,
     leadTemperatureReason: temperature.leadTemperatureReason,
+    assignedCounsellor: row.counsellor_login_account_id
+      ? { accountId: row.counsellor_login_account_id, displayName: row.assigned_counsellor_display_name || "Unknown staff" }
+      : null,
     assignedCounsellorLoginAccountId: row.counsellor_login_account_id,
     assignedAt: row.assigned_at,
     lastContactedAt: row.last_contacted_at,

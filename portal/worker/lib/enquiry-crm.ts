@@ -133,6 +133,7 @@ export type EnquiryCrmRow = {
   enrolment_status: string | null;
   student_id: string | null;
   student_number: string | null;
+  assigned_counsellor_display_name: string | null;
 };
 
 export type FollowUpEventRecord = {
@@ -227,6 +228,7 @@ export function validatePipelineUpdate(input: {
   if (input.currentStage === "converted") return "Converted enquiries cannot be edited.";
   if (TERMINAL_STAGE_SET.has(input.currentStage)) return "Terminal enquiries cannot be edited.";
   if (input.nextFollowUpAt && !isValidDateTime(input.nextFollowUpAt)) return "Next follow-up date/time is invalid.";
+  if (input.nextFollowUpAt && !isQuarterHourInBranchTime(input.nextFollowUpAt)) return "Next follow-up must use 15-minute increments.";
   if (input.nextFollowUpAt && Date.parse(input.nextFollowUpAt) <= Date.parse(nowIso)) return "Next follow-up must be in the future.";
   if (input.preferredJoiningDate && !isValidDateOnly(input.preferredJoiningDate)) return "Expected joining date is invalid.";
   if (input.preferredJoiningDate && !hasFutureDate(input.preferredJoiningDate, nowIso)) return "Expected joining date cannot be in the past.";
@@ -498,7 +500,8 @@ export function enquirySelectSql() {
     enrolments.enrolment_number,
     enrolments.status as enrolment_status,
     students.id as student_id,
-    students.student_number
+    students.student_number,
+    coalesce(assigned_people.public_name, assigned_people.full_name) as assigned_counsellor_display_name
    from enquiries
    left join people on people.id = enquiries.person_id
    left join branches on branches.id = enquiries.branch_id
@@ -508,7 +511,10 @@ export function enquirySelectSql() {
    left join referrer_profiles on referrer_profiles.id = referrals.referrer_profile_id
    left join people referrer_people on referrer_people.id = referrer_profiles.person_id
    left join enrolments on enrolments.enquiry_id = enquiries.id
-   left join students on students.id = enrolments.student_id`;
+   left join students on students.id = enrolments.student_id
+   left join login_accounts assigned_accounts on assigned_accounts.id = enquiries.counsellor_login_account_id
+   left join login_account_people assigned_account_people on assigned_account_people.login_account_id = assigned_accounts.id and assigned_account_people.is_default = 1
+   left join people assigned_people on assigned_people.id = assigned_account_people.person_id`;
 }
 
 export async function getEnquiryById(c: AppContext, enquiryId: string) {
@@ -519,7 +525,7 @@ export async function getEnquiryById(c: AppContext, enquiryId: string) {
 
 export async function staffForBranch(c: AppContext, branchId: string) {
   const rows = await c.env.DB.prepare(
-    `select distinct login_accounts.id, coalesce(people.public_name, people.full_name, login_accounts.mobile_last_four) as label
+    `select distinct login_accounts.id, coalesce(people.public_name, people.full_name, 'Unknown staff') as label
      from login_accounts
      join login_account_roles on login_account_roles.login_account_id = login_accounts.id
      join roles on roles.id = login_account_roles.role_id
@@ -635,6 +641,13 @@ function hasFutureDateTime(dateValue: string | null, nowIso: string) {
 
 function isValidDateTime(value: string) {
   return Number.isFinite(Date.parse(value));
+}
+
+function isQuarterHourInBranchTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime()) || date.getUTCSeconds() !== 0 || date.getUTCMilliseconds() !== 0) return false;
+  const minute = Number(new Intl.DateTimeFormat("en-GB", { timeZone: IST_TIME_ZONE, minute: "2-digit" }).format(date));
+  return [0, 15, 30, 45].includes(minute);
 }
 
 function isValidDateOnly(value: string) {

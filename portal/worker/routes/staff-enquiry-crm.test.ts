@@ -100,6 +100,44 @@ describe("staff enquiry CRM route contact exposure", () => {
     expect(body.crm.contact).toEqual({ mobile: null, mobileDisplay: null, whatsappUrl: null, callUrl: null });
   });
 
+  it("returns a human-readable assigned counsellor label without using the raw account id as display text", async () => {
+    const app = routeApp();
+    const db = crmDb([enquiry({
+      counsellor_login_account_id: "acct_04176173eb024647afbc0f9c8f693d88",
+      assigned_counsellor_display_name: "Kunal",
+    })]);
+
+    const response = await app.request("/api/staff/enquiries/crm", {}, env(db));
+    const body = await response.json() as {
+      items: Array<{
+        assignedCounsellor: { accountId: string; displayName: string };
+        assignedCounsellorLoginAccountId: string;
+      }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.items[0].assignedCounsellor).toEqual({
+      accountId: "acct_04176173eb024647afbc0f9c8f693d88",
+      displayName: "Kunal",
+    });
+    expect(body.items[0].assignedCounsellor.displayName).not.toContain("acct_");
+    expect(body.items[0].assignedCounsellorLoginAccountId).toBe("acct_04176173eb024647afbc0f9c8f693d88");
+  });
+
+  it("falls back to Unknown staff for assigned accounts missing a display name", async () => {
+    const app = routeApp();
+    const db = crmDb([enquiry({
+      counsellor_login_account_id: "acct_missing_name",
+      assigned_counsellor_display_name: null,
+    })]);
+
+    const response = await app.request("/api/staff/enquiries/crm", {}, env(db));
+    const body = await response.json() as { items: Array<{ assignedCounsellor: { displayName: string } }> };
+
+    expect(response.status).toBe(200);
+    expect(body.items[0].assignedCounsellor.displayName).toBe("Unknown staff");
+  });
+
   it("denies unauthenticated CRM requests before contact resolution", async () => {
     mocks.getSessionFromRequest.mockResolvedValue(null);
     const app = routeApp();
@@ -201,6 +239,7 @@ function enquiry(overrides: Partial<EnquiryCrmRow> = {}): EnquiryCrmRow {
     enrolment_status: null,
     student_id: null,
     student_number: null,
+    assigned_counsellor_display_name: null,
     ...overrides,
   };
 }

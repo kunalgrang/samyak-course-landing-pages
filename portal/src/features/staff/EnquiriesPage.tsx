@@ -89,6 +89,7 @@ const followUpOutcomes = [
 
 const pipelineStages = ["new", "contacting", "engaged", "considering", "deferred", "admission_ready", "lost", "invalid", "duplicate"] as const;
 const terminalPipelineStages = new Set(["lost", "invalid", "duplicate"]);
+const IST_TIME_ZONE = "Asia/Kolkata";
 
 export function EnquiriesPage() {
   const [options, setOptions] = useState<EnquiryOptions | null>(null);
@@ -184,6 +185,11 @@ export function EnquiriesPage() {
     const sanitized = sanitizeLogForm(logForm);
     if (sanitized.pipelineStage === "lost" && !sanitized.closedReason) {
       showNotification("error", "Lost reason is required.");
+      setLogForm(sanitized);
+      return;
+    }
+    if (sanitized.nextFollowUpAt && !isQuarterHourLocalInput(sanitized.nextFollowUpAt)) {
+      showNotification("error", "Next follow-up must use 15-minute increments.");
       setLogForm(sanitized);
       return;
     }
@@ -292,7 +298,7 @@ export function EnquiriesPage() {
                   <CrmContactLine contact={item.contact} />
                   <DetailLine label="Next" value={formatDateTime(item.nextFollowUpAt)} />
                   <DetailLine label="Expected" value={item.expectedJoiningDate || "Not set"} />
-                  <DetailLine label="Assigned" value={item.assignedCounsellorLoginAccountId || "Unassigned"} />
+                  <DetailLine label="Assigned" value={assignedCounsellorLabel(item)} />
                 </div>
                 <div className="crm-actions">
                   {item.contact.whatsappUrl ? <a className="contact-action contact-action--whatsapp" href={item.contact.whatsappUrl} target="_blank" rel="noopener noreferrer">WhatsApp</a> : null}
@@ -305,7 +311,7 @@ export function EnquiriesPage() {
                     <label>Channel<select value={logForm.channel} onChange={(event) => setLogForm((current) => ({ ...current, channel: event.target.value }))}><option value="call">Call</option><option value="whatsapp">WhatsApp</option><option value="in_person">In person</option><option value="email">Email</option><option value="other">Other</option></select></label>
                     <label>Outcome<select value={logForm.outcome} onChange={(event) => setLogForm((current) => ({ ...current, outcome: event.target.value }))}>{followUpOutcomes.map((outcome) => <option key={outcome} value={outcome}>{formatLabel(outcome)}</option>)}</select></label>
                     <label>Pipeline<select value={logForm.pipelineStage} onChange={(event) => setLogForm((current) => sanitizeLogForm({ ...current, pipelineStage: event.target.value }))}>{pipelineStages.map((stage) => <option key={stage} value={stage}>{formatLabel(stage)}</option>)}</select></label>
-                    {isTerminalPipelineStage(logForm.pipelineStage) ? <p className="crm-terminal-note">No active next follow-up for terminal stages.</p> : <label>Next follow-up<input type="datetime-local" value={logForm.nextFollowUpAt} onChange={(event) => setLogForm((current) => ({ ...current, nextFollowUpAt: event.target.value }))} /></label>}
+                    {isTerminalPipelineStage(logForm.pipelineStage) ? <p className="crm-terminal-note">No active next follow-up for terminal stages.</p> : <label>Next follow-up<input type="datetime-local" step={900} value={logForm.nextFollowUpAt} onChange={(event) => setLogForm((current) => ({ ...current, nextFollowUpAt: event.target.value }))} /></label>}
                     <label>Expected joining<input type="date" value={logForm.expectedJoiningDate} onChange={(event) => setLogForm((current) => ({ ...current, expectedJoiningDate: event.target.value }))} /></label>
                     {logForm.pipelineStage === "lost" ? <label>Lost reason<select required value={logForm.closedReason} onChange={(event) => setLogForm((current) => ({ ...current, closedReason: event.target.value }))}><option value="">Select lost reason</option><option value="not_interested">Not interested</option><option value="joined_elsewhere">Joined elsewhere</option><option value="fee_budget_issue">Fee/budget issue</option><option value="batch_timing_issue">Batch timing issue</option><option value="location_travel_issue">Location/travel issue</option><option value="course_not_suitable">Course not suitable</option><option value="no_response">No response</option><option value="postponed_indefinitely">Postponed indefinitely</option><option value="other">Other</option></select></label> : null}
                     <label className="crm-log-note">Note<input value={logForm.note} onChange={(event) => setLogForm((current) => ({ ...current, note: event.target.value }))} placeholder="Internal note" /></label>
@@ -614,6 +620,11 @@ function DetailLine({ label, value }: { label: string; value: string }) {
   return <span><small>{label}</small><strong>{value}</strong></span>;
 }
 
+export function assignedCounsellorLabel(item: Pick<CrmEnquiryItem, "assignedCounsellor" | "assignedCounsellorLoginAccountId">) {
+  if (!item.assignedCounsellorLoginAccountId) return "Unassigned";
+  return item.assignedCounsellor?.displayName || "Unknown staff";
+}
+
 export function CrmContactLine({ contact }: { contact: CrmEnquiryItem["contact"] }) {
   return <DetailLine label="Mobile" value={contact.mobileDisplay || "Contact number unavailable"} />;
 }
@@ -626,11 +637,34 @@ function formatDate(value: string) {
 function formatDateTime(value: string | null) {
   if (!value) return "Not scheduled";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("en-IN", { timeZone: IST_TIME_ZONE, day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-function toIsoDateTime(value: string) {
+export function toIsoDateTime(value: string) {
   if (!value) return null;
-  const date = new Date(value);
+  const date = new Date(`${value.length === 16 ? `${value}:00` : value}+05:30`);
   return Number.isNaN(date.getTime()) ? value : date.toISOString();
+}
+
+export function toIstDateTimeLocal(value: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: IST_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value || "";
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
+}
+
+export function isQuarterHourLocalInput(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value);
+  if (!match) return false;
+  return ["00", "15", "30", "45"].includes(match[5]);
 }

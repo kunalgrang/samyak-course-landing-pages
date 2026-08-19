@@ -4,6 +4,8 @@ import { LoadingState } from "../../components/LoadingState";
 import { NotificationToast, nextNotification, type AppNotification } from "../../components/NotificationToast";
 import { assignEnquiry, getCrmEnquiryDetail, getEnquiryDetail, updateEnquiryStatus, type CrmEnquiryDetail, type EnquiryDetail } from "../../lib/api";
 
+const IST_TIME_ZONE = "Asia/Kolkata";
+
 export function EnquiryDetailPage({ enquiryId }: { enquiryId: string }) {
   const [detail, setDetail] = useState<EnquiryDetail | null>(null);
   const [crmDetail, setCrmDetail] = useState<CrmEnquiryDetail | null>(null);
@@ -53,7 +55,7 @@ export function EnquiryDetailPage({ enquiryId }: { enquiryId: string }) {
       setCrmDetail(nextCrm);
       setAssignee(nextCrm.crm.assignedCounsellorLoginAccountId || "");
       setError(null);
-      showNotification("success", assignee ? `Assigned to ${assigneeLabel(nextCrm, assignee)}.` : "Assignment updated.");
+      showNotification("success", "Assignment updated.");
     } catch (reason) {
       showNotification("error", "Could not update assignment. Please try again.");
     } finally {
@@ -108,7 +110,7 @@ export function EnquiryDetailPage({ enquiryId }: { enquiryId: string }) {
               Assigned counsellor
               <select value={assignee} disabled={converted || isSavingAssignee} onChange={(event) => setAssignee(event.target.value)}>
                 <option value="">Unassigned</option>
-                {crmDetail.assignees.map((staff) => <option key={staff.id} value={staff.id}>{staff.label}</option>)}
+                <StaffAssigneeOptions assignees={crmDetail.assignees} />
               </select>
             </label>
             <button type="button" disabled={converted || isSavingAssignee} onClick={() => void saveAssignee()}>{isSavingAssignee ? "Saving..." : "Save assignment"}</button>
@@ -165,6 +167,15 @@ function Detail({ label, value }: { label: string; value: string }) {
   return <div><small>{label}</small><strong>{value}</strong></div>;
 }
 
+export function StaffAssigneeOptions({ assignees }: { assignees: CrmEnquiryDetail["assignees"] }) {
+  return <>{assignees.map((staff) => <option key={staff.id} value={staff.id}>{staffDisplayLabel(staff.label)}</option>)}</>;
+}
+
+export function staffDisplayLabel(label: string | null | undefined) {
+  const value = String(label || "").trim();
+  return value && !/^(acct|person|contact|student)_[a-z0-9_ -]+$/i.test(value) ? value : "Unknown staff";
+}
+
 export function StaffCrmContactPanel({ contact }: { contact: CrmEnquiryDetail["crm"]["contact"] }) {
   return (
     <div className="crm-contact-panel">
@@ -176,10 +187,6 @@ export function StaffCrmContactPanel({ contact }: { contact: CrmEnquiryDetail["c
       </div>
     </div>
   );
-}
-
-function assigneeLabel(crmDetail: CrmEnquiryDetail, assigneeId: string) {
-  return crmDetail.assignees.find((staff) => staff.id === assigneeId)?.label || "selected staff";
 }
 
 function formatLabel(value: string) {
@@ -199,5 +206,5 @@ function formatDate(value: string) {
 function formatDateTime(value: string | null) {
   if (!value) return "Not scheduled";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("en-IN", { timeZone: IST_TIME_ZONE, day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }

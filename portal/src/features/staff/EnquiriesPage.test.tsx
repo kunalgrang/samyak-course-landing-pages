@@ -4,6 +4,7 @@ import {
   CreateEnquirySubmitButton,
   CrmContactLine,
   EnquirySuccessNotice,
+  assignedCounsellorLabel,
   buildCreateEnquiryInput,
   createEnquirySuccessMessage,
   enquiryStateAfterFailure,
@@ -11,12 +12,15 @@ import {
   focusMobileSearchInput,
   guardedCreateEnquiry,
   initialEnquiryForm,
+  isQuarterHourLocalInput,
   isTerminalPipelineStage,
   sanitizeLogForm,
+  toIsoDateTime,
+  toIstDateTimeLocal,
   type EnquiryPageState,
   type FormState,
 } from "./EnquiriesPage";
-import { StaffCrmContactPanel } from "./EnquiryDetailPage";
+import { StaffAssigneeOptions, StaffCrmContactPanel, staffDisplayLabel } from "./EnquiryDetailPage";
 import { NotificationToast, nextNotification } from "../../components/NotificationToast";
 import type { CreateEnquiryResponse, EnquiryOptions, StudentSearchResult } from "../../lib/api";
 
@@ -211,6 +215,35 @@ describe("CRM contact and feedback UI", () => {
     expect(renderToStaticMarkup(<NotificationToast notification={error} onDismiss={() => undefined} />)).toContain("role=\"alert\"");
     expect(error.id).toBe(success.id + 1);
   });
+
+  it("renders human assignee names without exposing internal account ids", () => {
+    expect(assignedCounsellorLabel({
+      assignedCounsellorLoginAccountId: "acct_04176173eb024647afbc0f9c8f693d88",
+      assignedCounsellor: { accountId: "acct_04176173eb024647afbc0f9c8f693d88", displayName: "Kunal" },
+    })).toBe("Kunal");
+
+    expect(assignedCounsellorLabel({
+      assignedCounsellorLoginAccountId: "acct_04176173eb024647afbc0f9c8f693d88",
+      assignedCounsellor: null,
+    })).toBe("Unknown staff");
+  });
+
+  it("uses staff names as assignment dropdown labels while preserving account ids as values", () => {
+    const html = renderToStaticMarkup(
+      <select>
+        <StaffAssigneeOptions assignees={[
+          { id: "acct_04176173eb024647afbc0f9c8f693d88", label: "Kunal" },
+          { id: "acct_missing_name", label: "acct_missing_name" },
+        ]} />
+      </select>,
+    );
+
+    expect(html).toContain("value=\"acct_04176173eb024647afbc0f9c8f693d88\"");
+    expect(html).toContain(">Kunal</option>");
+    expect(html).toContain(">Unknown staff</option>");
+    expect(html).not.toContain(">acct_");
+    expect(staffDisplayLabel("person_internal")).toBe("Unknown staff");
+  });
 });
 
 describe("CRM follow-up form state", () => {
@@ -251,5 +284,12 @@ describe("CRM follow-up form state", () => {
       note: "",
     })).toMatchObject({ nextFollowUpAt: "", closedReason: "" });
     expect(["new", "contacting", "engaged", "considering", "deferred", "admission_ready", "lost", "invalid", "duplicate"]).not.toContain("converted");
+  });
+
+  it("accepts only quarter-hour follow-up times and round-trips IST to storage", () => {
+    expect(["2026-08-20T18:00", "2026-08-20T18:15", "2026-08-20T18:30", "2026-08-20T18:45"].every(isQuarterHourLocalInput)).toBe(true);
+    expect(["2026-08-20T18:01", "2026-08-20T18:14", "2026-08-20T18:23", "2026-08-20T18:59"].some(isQuarterHourLocalInput)).toBe(false);
+    expect(toIsoDateTime("2026-08-20T18:30")).toBe("2026-08-20T13:00:00.000Z");
+    expect(toIstDateTimeLocal("2026-08-20T13:00:00.000Z")).toBe("2026-08-20T18:30");
   });
 });

@@ -312,6 +312,7 @@ const crmItemSchema = z.object({
   pipelineStage: z.string(),
   leadTemperature: z.union([z.literal("hot_urgent"), z.literal("hot"), z.literal("warm"), z.literal("cold")]).nullable(),
   leadTemperatureReason: z.string(),
+  assignedCounsellor: z.object({ accountId: z.string(), displayName: z.string() }).nullable().default(null),
   assignedCounsellorLoginAccountId: z.string().nullable(),
   assignedAt: z.string().nullable(),
   lastContactedAt: z.string().nullable(),

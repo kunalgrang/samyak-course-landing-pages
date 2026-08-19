@@ -26,6 +26,10 @@ describe("enquiry CRM lead temperature", () => {
   });
 
   it("requires both attempt count and elapsed days for cold", () => {
+    expect(temp(enquiry(), [event("whatsapp_no_response", "2026-08-19T09:00:00.000Z")])).toMatchObject({
+      leadTemperature: "warm",
+      leadTemperatureReason: "New enquiry, no strong buying signal yet",
+    });
     expect(coldStreak(unsuccessfulAttempts(9, "2026-08-01T10:00:00.000Z"), NOW)).toMatchObject({ count: 9, isCold: false });
     expect(temp(enquiry(), unsuccessfulAttempts(10, "2026-08-16T10:00:00.000Z")).leadTemperature).not.toBe("cold");
     expect(coldStreak(unsuccessfulAttempts(10, "2026-08-05T10:00:01.000Z"), NOW)).toMatchObject({ count: 10, elapsedDays: 13, isCold: false });
@@ -87,6 +91,17 @@ describe("enquiry CRM pipeline validation", () => {
     expect(validatePipelineUpdate(update({ nextStage: "deferred", outcome: "deferred_joining", preferredJoiningDate: "2026-08-01", nextFollowUpAt: "2026-09-01T10:00:00.000Z" }))).toMatch("cannot be in the past");
   });
 
+  it("requires CRM-created next follow-ups to use 15-minute IST increments", () => {
+    for (const nextFollowUpAt of ["2026-08-20T12:30:00.000Z", "2026-08-20T12:45:00.000Z", "2026-08-20T13:00:00.000Z", "2026-08-20T13:15:00.000Z"]) {
+      expect(validatePipelineUpdate(update({ nextStage: "engaged", nextFollowUpAt }))).toBeNull();
+    }
+
+    for (const nextFollowUpAt of ["2026-08-20T12:31:00.000Z", "2026-08-20T12:44:00.000Z", "2026-08-20T12:53:00.000Z", "2026-08-20T13:29:00.000Z"]) {
+      expect(validatePipelineUpdate(update({ nextStage: "engaged", nextFollowUpAt }))).toMatch("15-minute increments");
+    }
+    expect(validatePipelineUpdate(update({ nextStage: "engaged", nextFollowUpAt: "2026-08-20T13:00:01.000Z" }))).toMatch("15-minute increments");
+  });
+
   it("rejects contradictory outcome and pipeline combinations", () => {
     expect(validatePipelineUpdate(update({ nextStage: "engaged", outcome: "not_interested" }))).toMatch("must close");
     expect(validatePipelineUpdate(update({ nextStage: "considering", outcome: "invalid_contact" }))).toMatch("Invalid contact");
@@ -144,6 +159,7 @@ function enquiry(overrides: Partial<EnquiryCrmRow> = {}): EnquiryCrmRow {
     enrolment_status: null,
     student_id: null,
     student_number: null,
+    assigned_counsellor_display_name: null,
     ...overrides,
   };
 }
