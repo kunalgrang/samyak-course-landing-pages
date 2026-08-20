@@ -677,7 +677,7 @@ export function admissionReview(payload: AdmissionPayload, selectedCourse?: Staf
       payload.declarations.dataProcessingAccepted &&
       (!discountPaise || payload.fee.discountReasonCode),
   );
-  const nsdcReady = !nsdcYes || Boolean(payload.identity.fatherName && payload.declarations.nsdcProcessingAccepted && payload.declarations.nsdcPendingDocumentsUnderstood);
+  const nsdcReady = !nsdcYes || Boolean(payload.identity.fatherName && payload.declarations.nsdcProcessingAccepted);
   return { discountPaise, canConfirmRegularAdmission: regularReady, nsdcReady, ownerApprovalRequired };
 }
 
@@ -1085,7 +1085,7 @@ function requiredDeclarations(nsdc: boolean): Array<[keyof AdmissionPayload["dec
     ["photographTestimonialUse", "Photograph/testimonial use"],
   ];
   if (nsdc) {
-    base.splice(5, 0, ["nsdcProcessingAccepted", "NSDC/Skill India processing authorised"], ["nsdcPendingDocumentsUnderstood", "Aadhaar and document completion is pending"]);
+    base.splice(5, 0, ["nsdcProcessingAccepted", "NSDC/Skill India processing authorised"], ["nsdcPendingDocumentsUnderstood", "Aadhaar and document completion is pending (optional if complete)"]);
   }
   return base;
 }
@@ -1097,7 +1097,6 @@ const requiredDeclarationKeys = new Set<keyof AdmissionPayload["declarations"]>(
   "feeTermsAccepted",
   "dataProcessingAccepted",
   "nsdcProcessingAccepted",
-  "nsdcPendingDocumentsUnderstood",
 ]);
 
 function paymentPlanLabel(value: string) {

@@ -137,14 +137,40 @@ describe("Admission Workflow v1 rules", () => {
     expect(validateAdmissionForConfirmation(payload).success).toBe(true);
   });
 
-  it("requires father's name and NSDC declarations when NSDC is Yes", () => {
+  it("requires father's name and NSDC processing authorisation when NSDC is Yes", () => {
     const payload = validPayload();
     payload.course.nsdcPreference = "yes";
     expect(validateAdmissionForConfirmation(payload)).toMatchObject({ success: false });
 
     payload.identity.fatherName = "Ramesh Student";
     payload.declarations.nsdcProcessingAccepted = true;
+    payload.declarations.nsdcPendingDocumentsUnderstood = false;
+    expect(validateAdmissionForConfirmation(payload).success).toBe(true);
+  });
+
+  it("targets missing NSDC processing authorisation without requiring pending-document acknowledgement", () => {
+    const payload = validPayload();
+    payload.course.nsdcPreference = "yes";
+    payload.identity.fatherName = "Ramesh Student";
+    payload.declarations.nsdcProcessingAccepted = false;
     payload.declarations.nsdcPendingDocumentsUnderstood = true;
+
+    const result = validateAdmissionForConfirmation(payload);
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error("Expected NSDC processing authorisation to be required");
+    expect(result.fieldErrors).toMatchObject({
+      "declarations.nsdcProcessingAccepted": ["NSDC/Skill India processing authorisation is required."],
+    });
+    expect(result.fieldErrors?.["declarations.nsdcPendingDocumentsUnderstood"]).toBeUndefined();
+  });
+
+  it.each(["no", "decide_later"] as const)("does not require NSDC authorisation when preference is %s", (preference) => {
+    const payload = validPayload();
+    payload.course.nsdcPreference = preference;
+    payload.declarations.nsdcProcessingAccepted = false;
+    payload.declarations.nsdcPendingDocumentsUnderstood = false;
+
     expect(validateAdmissionForConfirmation(payload).success).toBe(true);
   });
 
