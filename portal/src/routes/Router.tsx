@@ -14,6 +14,7 @@ import { CourseMasterPage } from "../features/staff/CourseMasterPage";
 import { DiscountApprovalsPage } from "../features/staff/DiscountApprovalsPage";
 import { EnquiryDetailPage } from "../features/staff/EnquiryDetailPage";
 import { StudentProfilePage } from "../features/staff/StudentProfilePage";
+import { PaymentsLedgerPage } from "../features/staff/PaymentsLedgerPage";
 import { RulesPage } from "./RulesPage";
 import { ShellHomePage } from "./ShellHomePage";
 import { AppShell } from "./AppShell";
@@ -31,6 +32,7 @@ function normalizePath(pathname: string): RoutePath {
   if (/^\/app\/enquiries\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/referral-operations\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/students\/[^/]+$/.test(pathname)) return pathname as RoutePath;
+  if (/^\/app\/enrolments\/[^/]+\/payments$/.test(pathname)) return pathname as RoutePath;
   return "/login";
 }
 
@@ -57,7 +59,7 @@ export function Router() {
   }, [hasSessionError, isAuthenticated, isLoading, path]);
 
   useEffect(() => {
-    if (!isLoading && isAuthenticated && (path === "/app/enquiries" || path === "/app/referral-operations" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/enquiries/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/students/")) && !isStaff) {
+    if (!isLoading && isAuthenticated && (path === "/app/enquiries" || path === "/app/referral-operations" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/enquiries/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/students/") || path.startsWith("/app/enrolments/")) && !isStaff) {
       navigate("/app", true);
     }
     if (!isLoading && isAuthenticated && path === "/app/courses" && !isCourseAdmin) {
@@ -76,6 +78,7 @@ export function Router() {
   const enquiryDetailMatch = activeAppPath.match(/^\/app\/enquiries\/([^/]+)$/);
   const referralOperationsMatch = activeAppPath.match(/^\/app\/referral-operations\/([^/]+)$/);
   const studentProfileMatch = activeAppPath.match(/^\/app\/students\/([^/]+)$/);
+  const paymentsMatch = activeAppPath.match(/^\/app\/enrolments\/([^/]+)\/payments$/);
 
   function navigate(nextPath: RoutePath, replace = false) {
     const next = normalizePath(nextPath);
@@ -124,6 +127,7 @@ export function Router() {
       {enquiryAdmissionMatch && isStaff ? <AdmissionPage enquiryId={enquiryAdmissionMatch[1]} /> : null}
       {referralOperationsMatch && isStaff ? <ReferralOperationsDetailPage referralId={referralOperationsMatch[1]} onNavigate={navigate} isOwner={isDiscountApprover} /> : null}
       {studentProfileMatch && isStaff ? <StudentProfilePage studentId={studentProfileMatch[1]} /> : null}
+      {paymentsMatch && isStaff ? <PaymentsLedgerPage enrolmentId={paymentsMatch[1]} /> : null}
       {activeAppPath === "/app/referrals" ? <ReferralsPage /> : null}
       {activeAppPath === "/app/rules" ? <RulesPage /> : null}
       {activeAppPath === "/app/profile" ? <ProfilePage /> : null}

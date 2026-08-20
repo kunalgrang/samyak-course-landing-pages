@@ -10,6 +10,7 @@ import { registerHealthRoutes } from "./routes/health";
 import { registerStaffStudentRoutes } from "./routes/staff-students";
 import { registerStaffEnquiryCrmRoutes } from "./routes/staff-enquiry-crm";
 import { registerStaffAdmissionRoutes } from "./routes/staff-admissions";
+import { registerStaffPaymentRoutes } from "./routes/staff-payments";
 import { registerStaffReferralRoutes } from "./routes/staff-referrals";
 import { registerStudentRoutes } from "./routes/student";
 import { registerPublicReferralRoutes } from "./routes/public-referrals";
@@ -34,6 +35,7 @@ registerPublicReferralRoutes(app);
 registerStaffStudentRoutes(app);
 registerStaffEnquiryCrmRoutes(app);
 registerStaffAdmissionRoutes(app);
+registerStaffPaymentRoutes(app);
 registerStaffReferralRoutes(app);
 registerCertificateRoutes(app);
 

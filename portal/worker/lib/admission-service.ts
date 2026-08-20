@@ -4,6 +4,7 @@ import { ORG_ID, mobileHash } from "./auth-store";
 import { createOpaqueId, encryptText, hmacHex } from "./crypto";
 import { DISCOUNT_APPROVER_ROLES, canBackdateReceipts, canRecordReceipts, type StaffContext } from "./staff-auth";
 import { normalizeIndianMobile } from "./mobile";
+import { financialSummaryFromReceipts, type FinancialSummary } from "./payments-ledger";
 
 const nameSchema = z.string().trim().min(2).max(140).regex(/^[^\d]+$/, "Name cannot contain numbers.");
 const optionalNameSchema = z.string().trim().max(140).regex(/^[^\d]*$/, "Name cannot contain numbers.").optional().or(z.literal(""));
@@ -312,25 +313,6 @@ export type AdmissionConfirmationResult = {
   enquiryNumber: string;
   isNewStudent: boolean;
   financialSummary: FinancialSummary;
-};
-
-export type FinancialSummary = {
-  finalAgreedFeePaise: number;
-  firstInstalmentRequiredPaise: number;
-  totalReceivedPaise: number;
-  firstInstalmentBalancePaise: number;
-  overallBalancePaise: number;
-  classStartEligible: boolean;
-  instalments: Instalment[];
-  tokenReceipt: {
-    id: string;
-    receiptNumber: string;
-    amountPaise: number;
-    receivedAt: string;
-    paymentMode: string;
-    paymentReference: string | null;
-    status: "recorded";
-  } | null;
 };
 
 const REQUIRED_ADMISSION_OPTION_CATEGORIES = [
@@ -1344,21 +1326,6 @@ async function financialSummaryForEnrolment(c: AppContext, enrolmentId: string, 
   return summary;
 }
 
-function financialSummaryFromReceipts(finalAgreedFeePaise: number, instalments: Instalment[], receipts: ReceiptRecord[]): FinancialSummary {
-  const totalReceivedPaise = receipts.reduce((total, receipt) => total + Number(receipt.amount_paise || 0), 0);
-  const firstInstalmentRequiredPaise = instalments[0]?.amountPaise || finalAgreedFeePaise;
-  return {
-    finalAgreedFeePaise,
-    firstInstalmentRequiredPaise,
-    totalReceivedPaise,
-    firstInstalmentBalancePaise: Math.max(0, firstInstalmentRequiredPaise - totalReceivedPaise),
-    overallBalancePaise: Math.max(0, finalAgreedFeePaise - totalReceivedPaise),
-    classStartEligible: totalReceivedPaise >= firstInstalmentRequiredPaise && firstInstalmentRequiredPaise > 0,
-    instalments,
-    tokenReceipt: receipts[0] ? publicReceipt(receipts[0]) : null,
-  };
-}
-
 function publicReceipt(receipt: ReceiptRecord) {
   return {
     id: receipt.id,
@@ -1367,6 +1334,7 @@ function publicReceipt(receipt: ReceiptRecord) {
     receivedAt: receipt.received_at,
     paymentMode: receipt.payment_mode,
     paymentReference: receipt.payment_reference || null,
+    recordedBy: null,
     status: "recorded" as const,
   };
 }

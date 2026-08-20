@@ -317,6 +317,96 @@
   font-weight: 800;
 }
 
+.payments-page {
+  min-width: 0;
+}
+
+.payment-summary-grid,
+.instalment-list,
+.receipt-list,
+.first-instalment-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.summary-tile {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: #fff;
+}
+
+.summary-tile small,
+.payment-progress-line span,
+.receipt-card small,
+.instalment-row small {
+  color: var(--color-muted);
+  font-weight: 800;
+}
+
+.summary-tile strong,
+.payment-progress-line strong,
+.receipt-card strong,
+.instalment-row strong {
+  color: var(--color-navy);
+  overflow-wrap: anywhere;
+}
+
+.summary-tile--emphasis {
+  border-color: rgba(217, 119, 6, 0.32);
+  background: #fffbeb;
+}
+
+.payment-progress-line,
+.instalment-row {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.payment-progress {
+  width: 100%;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e6edf0;
+}
+
+.payment-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-teal);
+}
+
+.payment-form .payment-notes-field,
+.payment-form .field-error {
+  grid-column: 1 / -1;
+}
+
+.receipt-card,
+.instalment-row {
+  min-width: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: #fff;
+}
+
+.receipt-card {
+  display: grid;
+  gap: 12px;
+}
+
+.receipt-card span {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
 .notice--success {
   border-color: rgba(13, 148, 136, 0.28);
   background: var(--color-green-soft);
@@ -833,6 +923,14 @@
 
   .detail-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .payment-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .receipt-card {
+    grid-template-columns: minmax(150px, 1.2fr) minmax(130px, 1fr) minmax(110px, 0.8fr) minmax(96px, 0.7fr) minmax(120px, 0.9fr);
   }
 
   .action-row {

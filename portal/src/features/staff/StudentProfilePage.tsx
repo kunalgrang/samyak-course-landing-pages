@@ -41,6 +41,7 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
             <strong>{String(enrolment.enrolment_number)}</strong>
             <span>{String(enrolment.course_name)} · Joining {String(enrolment.joining_date)}</span>
             <small>Fee {formatMoney(Number(enrolment.final_agreed_fee_paise || 0))} · {String(enrolment.payment_plan_type || "No plan")} · NSDC {String(enrolment.nsdc_status || "Not requested")}</small>
+            {enrolment.final_agreed_fee_paise ? <a className="button-link" href={`/app/enrolments/${String(enrolment.id)}/payments`}>Payments</a> : null}
           </article>
         ))}
       </section>
