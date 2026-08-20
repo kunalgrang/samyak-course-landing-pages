@@ -116,6 +116,7 @@ export type EnquiryCrmRow = {
   created_at: string;
   updated_at: string;
   full_name: string | null;
+  official_full_name: string | null;
   course_name: string | null;
   course_interest_text: string | null;
   branch_name: string | null;
@@ -131,6 +132,7 @@ export type EnquiryCrmRow = {
   enrolment_id: string | null;
   enrolment_number: string | null;
   enrolment_status: string | null;
+  fee_agreement_id: string | null;
   student_id: string | null;
   student_number: string | null;
   assigned_counsellor_display_name: string | null;
@@ -483,7 +485,8 @@ export async function scopedEnquiry(c: AppContext, staff: StaffContext, enquiryI
 export function enquirySelectSql() {
   return `select
     enquiries.*,
-    coalesce(people.public_name, people.full_name, referrals.prospect_name) as full_name,
+    coalesce(person_identity_details.official_full_name, people.public_name, people.full_name, referrals.prospect_name) as full_name,
+    person_identity_details.official_full_name,
     courses.name as course_name,
     enquiry_course_interests.course_interest_text,
     branches.name as branch_name,
@@ -499,18 +502,21 @@ export function enquirySelectSql() {
     enrolments.id as enrolment_id,
     enrolments.enrolment_number,
     enrolments.status as enrolment_status,
+    fee_agreements.id as fee_agreement_id,
     students.id as student_id,
     students.student_number,
     coalesce(assigned_people.public_name, assigned_people.full_name) as assigned_counsellor_display_name
    from enquiries
    left join people on people.id = enquiries.person_id
+   left join person_identity_details on person_identity_details.person_id = people.id
    left join branches on branches.id = enquiries.branch_id
    left join courses on courses.id = enquiries.course_interest_id
    left join enquiry_course_interests on enquiry_course_interests.enquiry_id = enquiries.id
    left join referrals on referrals.enquiry_id = enquiries.id
    left join referrer_profiles on referrer_profiles.id = referrals.referrer_profile_id
    left join people referrer_people on referrer_people.id = referrer_profiles.person_id
-   left join enrolments on enrolments.enquiry_id = enquiries.id
+   left join enrolments on enrolments.id = enquiries.converted_enrolment_id and enrolments.enquiry_id = enquiries.id and enrolments.organisation_id = enquiries.organisation_id
+   left join fee_agreements on fee_agreements.enrolment_id = enrolments.id and fee_agreements.status = 'active'
    left join students on students.id = enrolments.student_id
    left join login_accounts assigned_accounts on assigned_accounts.id = enquiries.counsellor_login_account_id
    left join login_account_people assigned_account_people on assigned_account_people.login_account_id = assigned_accounts.id and assigned_account_people.is_default = 1

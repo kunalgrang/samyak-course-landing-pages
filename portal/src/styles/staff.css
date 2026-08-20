@@ -614,6 +614,12 @@
   color: #334155;
 }
 
+.temperature-chip--admitted {
+  border-color: rgba(15, 118, 110, 0.34);
+  background: #ecfdf5;
+  color: #0f766e;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;

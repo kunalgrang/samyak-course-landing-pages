@@ -1,9 +1,10 @@
 import { z } from "zod";
 import type { Context, Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
-import { ORG_ID } from "../lib/auth-store";
+import { ORG_ID, mobileHash } from "../lib/auth-store";
 import { isResponse, readJsonBody, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
+import { normalizeIndianMobile } from "../lib/mobile";
 import { ADMISSION_STAFF_ROLES, requireStaffRoles } from "../lib/staff-auth";
 import {
   LEAD_TEMPERATURES,
@@ -36,7 +37,7 @@ type PortalContext = Context<{
   Variables: WorkerVariables;
 }>;
 
-const queueSchema = z.enum(["hot_urgent", "hot", "warm", "cold", "today", "overdue", "new", "upcoming", "considering", "deferred", "admission_ready", "unassigned", "all"]).default("all");
+const queueSchema = z.enum(["hot_urgent", "hot", "warm", "cold", "today", "overdue", "new", "upcoming", "considering", "deferred", "admission_ready", "unassigned", "all"]).default("hot");
 const CRM_LIMIT_MAX = 50;
 const IST_TIME_ZONE = "Asia/Kolkata";
 
@@ -47,7 +48,7 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
     const scope = await branchScope(c, staff);
     if (!scope.canAccessAnyBranch) return jsonPlain(c, crmListPayload([], 0, listPagination(c), {}));
 
-    const filters = listFilters(c, staff.loginAccountId);
+    const filters = await listFilters(c, staff.loginAccountId);
     const pagination = listPagination(c);
     const rows = await crmRows(c, scope, filters);
     const eventsByEnquiry = await fetchEventsForEnquiries(c, rows.map((row) => row.id));
@@ -118,7 +119,9 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
   });
 }
 
-async function crmRows(c: Parameters<typeof branchScope>[0], scope: Awaited<ReturnType<typeof branchScope>>, filters: ReturnType<typeof listFilters>) {
+type ListFilters = Awaited<ReturnType<typeof listFilters>>;
+
+async function crmRows(c: Parameters<typeof branchScope>[0], scope: Awaited<ReturnType<typeof branchScope>>, filters: ListFilters) {
   const clauses = ["enquiries.organisation_id = ?"];
   const params: Array<string | number | null> = [ORG_ID];
   if (filters.stage) push(clauses, params, "enquiries.pipeline_stage = ?", filters.stage);
@@ -130,8 +133,27 @@ async function crmRows(c: Parameters<typeof branchScope>[0], scope: Awaited<Retu
   if (filters.toDate) push(clauses, params, "enquiries.created_at <= ?", `${filters.toDate}T23:59:59.999Z`);
   if (filters.search) {
     const q = `%${filters.search}%`;
-    clauses.push("(enquiries.enquiry_number like ? or people.full_name like ? or referrals.prospect_name like ? or courses.name like ?)");
-    params.push(q, q, q, q);
+    const searchClauses = [
+      "enquiries.enquiry_number like ?",
+      "people.full_name like ?",
+      "people.public_name like ?",
+      "person_identity_details.official_full_name like ?",
+      "referrals.prospect_name like ?",
+      "courses.name like ?",
+      "enquiry_course_interests.course_interest_text like ?",
+      "students.student_number like ?",
+      "enrolments.enrolment_number like ?",
+    ];
+    params.push(q, q, q, q, q, q, q, q, q);
+    if (filters.searchMobileHash) {
+      searchClauses.push(
+        "enquiries.mobile_used = ?",
+        "exists (select 1 from person_contacts left join person_contact_details on person_contact_details.contact_id = person_contacts.id where person_contacts.person_id = people.id and person_contacts.contact_type = 'mobile' and coalesce(person_contact_details.status, 'active') = 'active' and person_contacts.normalized_value = ?)",
+        "referrals.prospect_mobile_hash = ?",
+      );
+      params.push(filters.searchMobileHash, filters.searchMobileHash, filters.searchMobileHash);
+    }
+    clauses.push(`(${searchClauses.join(" or ")})`);
   }
   applyQueueSqlFilters(filters.queue, clauses);
   const where = scopedWhere(scope, clauses, params, "enquiries");
@@ -158,6 +180,7 @@ function applyQueueSqlFilters(queue: string, clauses: string[]) {
 }
 
 function toCrmListItem(row: EnquiryCrmRow, temperature: { leadTemperature: LeadTemperature | null; leadTemperatureReason: string }, eventCount: number, contact: ReturnType<typeof emptyContact>) {
+  const authorizedConvertedEnrolmentId = row.converted_enrolment_id && row.enrolment_id === row.converted_enrolment_id ? row.converted_enrolment_id : null;
   return {
     enquiry: {
       id: row.id,
@@ -192,25 +215,27 @@ function toCrmListItem(row: EnquiryCrmRow, temperature: { leadTemperature: LeadT
     expectedJoiningDate: row.preferred_joining_date,
     branch: { id: row.branch_id, name: row.branch_name, code: row.branch_code },
     admission: {
-      convertedEnrolmentId: row.converted_enrolment_id,
+      convertedEnrolmentId: authorizedConvertedEnrolmentId,
       convertedAt: row.converted_at,
       enrolmentId: row.enrolment_id,
       enrolmentNumber: row.enrolment_number,
       enrolmentStatus: row.enrolment_status,
       studentId: row.student_id,
       studentNumber: row.student_number,
+      paymentLedgerAvailable: Boolean(authorizedConvertedEnrolmentId && row.student_id && row.fee_agreement_id),
     },
     closedReason: row.closed_reason,
     followUpEventCount: eventCount,
   };
 }
 
-function matchesTemperatureFilter(filters: ReturnType<typeof listFilters>, temperature: LeadTemperature | null) {
+function matchesTemperatureFilter(filters: ListFilters, temperature: LeadTemperature | null) {
   return !filters.leadTemperature || temperature === filters.leadTemperature;
 }
 
-function matchesQueue(row: EnquiryCrmRow, temperature: LeadTemperature | null, queue: string, events: unknown[], nowIso: string) {
-  if (["hot_urgent", "hot", "warm", "cold"].includes(queue)) return temperature === queue;
+export function matchesQueue(row: EnquiryCrmRow, temperature: LeadTemperature | null, queue: string, events: unknown[], nowIso: string) {
+  if (queue === "hot") return temperature === "hot_urgent" || temperature === "hot";
+  if (["hot_urgent", "warm", "cold"].includes(queue)) return temperature === queue;
   if (queue === "today") return isActiveStage(row.pipeline_stage) && isToday(row.next_follow_up_at, nowIso);
   if (queue === "overdue") return isActiveStage(row.pipeline_stage) && Boolean(row.next_follow_up_at) && Date.parse(row.next_follow_up_at!) < Date.parse(nowIso);
   if (queue === "upcoming") return isActiveStage(row.pipeline_stage) && Boolean(row.next_follow_up_at) && Date.parse(row.next_follow_up_at!) > Date.parse(nowIso) && !isToday(row.next_follow_up_at, nowIso);
@@ -243,11 +268,13 @@ function dueRank(value: string | null, nowIso: string) {
   return 2;
 }
 
-function listFilters(c: PortalContext, staffLoginAccountId: string) {
+async function listFilters(c: PortalContext, staffLoginAccountId: string) {
   const url = new URL(c.req.url);
-  const queue = queueSchema.catch("all").parse(url.searchParams.get("queue") || "all");
+  const queue = queueSchema.catch("hot").parse(url.searchParams.get("queue") || "hot");
   const stageValue = url.searchParams.get("stage");
   const leadTemperatureValue = url.searchParams.get("leadTemperature");
+  const search = clean(url.searchParams.get("search"));
+  const normalizedSearchMobile = search ? normalizeIndianMobile(search) : null;
   return {
     queue,
     stage: PIPELINE_STAGES.includes(stageValue as PipelineStage) ? (stageValue as PipelineStage) : null,
@@ -257,7 +284,8 @@ function listFilters(c: PortalContext, staffLoginAccountId: string) {
     assignedTo: clean(url.searchParams.get("assignedTo")),
     fromDate: dateParam(url.searchParams.get("fromDate")),
     toDate: dateParam(url.searchParams.get("toDate")),
-    search: clean(url.searchParams.get("search")),
+    search,
+    searchMobileHash: normalizedSearchMobile ? await mobileHash(c, normalizedSearchMobile) : null,
     staffLoginAccountId,
   };
 }
@@ -279,7 +307,7 @@ function crmListPayload(items: unknown[], total: number, pagination: { limit: nu
       total,
       hasMore: pagination.offset + pagination.limit < total,
     },
-    queues: ["hot_urgent", "hot", "warm", "cold", "today", "overdue", "new", "upcoming", "considering", "deferred", "admission_ready", "unassigned", "all"],
+    queues: ["hot", "hot_urgent", "warm", "cold", "today", "overdue", "new", "upcoming", "considering", "deferred", "admission_ready", "unassigned", "all"],
     items,
   };
 }
