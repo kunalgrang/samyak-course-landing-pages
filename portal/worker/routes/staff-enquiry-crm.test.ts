@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { registerStaffEnquiryCrmRoutes } from "./staff-enquiry-crm";
@@ -257,7 +258,168 @@ describe("staff enquiry CRM route contact exposure", () => {
     expect(response.status).toBe(200);
     expect(body.items[0].admission).toMatchObject({ convertedEnrolmentId: null, paymentLedgerAvailable: false, studentId: null });
   });
+
+  it("executes the generated CRM SELECT against production-shaped admission tables", async () => {
+    const app = routeApp();
+    const db = productionShapeCrmDb();
+
+    try {
+      for (const [path, expectedId] of [
+        ["/api/staff/enquiries/crm", null],
+        ["/api/staff/enquiries/crm?queue=all", "enq_aman"],
+        ["/api/staff/enquiries/crm?queue=all&search=Aman", "enq_aman"],
+        ["/api/staff/enquiries/crm?queue=all&search=SYK-SION-000057", "enq_aman"],
+        ["/api/staff/enquiries/crm?queue=all&search=ENR-SION-2026-000060", "enq_aman"],
+        ["/api/staff/enquiries/crm?queue=all&search=9876543210", "enq_aman"],
+      ] as const) {
+        const response = await app.request(path, {}, env(db));
+        const body = await response.json() as { items: Array<{ enquiry: { id: string }; admission: { convertedEnrolmentId: string | null; paymentLedgerAvailable: boolean } }> };
+
+        expect(response.status, path).toBe(200);
+        if (expectedId) expect(body.items.map((item) => item.enquiry.id), path).toContain(expectedId);
+      }
+
+      expect(db.seenSql.some((sql) => sql.includes("enrolments.organisation_id"))).toBe(false);
+      expect(db.seenSql.some((sql) => sql.includes("students.id = enrolments.student_id and students.organisation_id = enquiries.organisation_id"))).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
 });
+
+class SqliteD1Statement {
+  private values: unknown[] = [];
+
+  constructor(private readonly db: ProductionShapeCrmDb, private readonly sql: string) {}
+
+  bind(...values: unknown[]) {
+    this.values = values;
+    return this;
+  }
+
+  async first<T>() {
+    return (this.db.database.prepare(this.sql).get(...(this.values as never[])) ?? null) as T;
+  }
+
+  async all<T>() {
+    return { results: this.db.database.prepare(this.sql).all(...(this.values as never[])) } as T;
+  }
+
+  async run() {
+    const result = this.db.database.prepare(this.sql).run(...(this.values as never[]));
+    return { success: true, meta: { changes: result.changes, rows_written: result.changes } };
+  }
+}
+
+class ProductionShapeCrmDb {
+  readonly database = new DatabaseSync(":memory:");
+  readonly seenSql: string[] = [];
+
+  prepare(sql: string) {
+    this.seenSql.push(sql);
+    return new SqliteD1Statement(this, sql);
+  }
+
+  close() {
+    this.database.close();
+  }
+}
+
+function productionShapeCrmDb() {
+  const db = new ProductionShapeCrmDb();
+  db.database.exec(`
+    create table enquiries (
+      id text primary key,
+      organisation_id text not null,
+      branch_id text not null,
+      person_id text,
+      enquiry_number text not null,
+      mobile_used text not null,
+      course_interest_id text,
+      source text not null,
+      source_detail text,
+      campaign_data_json text,
+      counsellor_login_account_id text,
+      preferred_timing text,
+      preferred_joining_date text,
+      status text not null,
+      next_follow_up_at text,
+      lost_reason text,
+      converted_enrolment_id text,
+      converted_at text,
+      created_at text not null,
+      updated_at text not null,
+      pipeline_stage text not null,
+      assigned_at text,
+      last_contacted_at text,
+      closed_reason text
+    );
+    create table people (id text primary key, organisation_id text not null, home_branch_id text, full_name text not null, public_name text, status text not null, created_at text not null, updated_at text not null);
+    create table person_identity_details (person_id text primary key, official_full_name text not null, date_of_birth text not null, identity_verified integer not null default 0, created_at text not null, updated_at text not null);
+    create table branches (id text primary key, name text not null, code text not null);
+    create table courses (id text primary key, name text not null);
+    create table enquiry_course_interests (enquiry_id text primary key, course_interest_text text);
+    create table referrals (
+      id text primary key,
+      organisation_id text not null,
+      branch_id text not null,
+      referral_programme_id text not null,
+      referral_link_id text,
+      referrer_profile_id text not null,
+      prospect_person_id text,
+      enquiry_id text,
+      course_interest_id text,
+      source text not null,
+      status text not null,
+      submitted_at text not null,
+      valid_until text not null,
+      prospect_mobile_hash text not null,
+      prospect_mobile_last_four text,
+      prospect_mobile_ciphertext text,
+      prospect_name text not null default ''
+    );
+    create table referrer_profiles (id text primary key, person_id text not null);
+    create table enrolments (
+      id text primary key,
+      student_id text not null,
+      branch_id text not null,
+      course_id text not null,
+      enquiry_id text,
+      enrolment_number text not null,
+      training_mode text not null,
+      admission_date text not null,
+      joining_date text not null,
+      status text not null,
+      nsdc_preference text not null,
+      created_at text not null,
+      updated_at text not null
+    );
+    create table students (id text primary key, organisation_id text not null, person_id text not null, home_branch_id text not null, student_number text not null, sequence_number integer not null, student_since text not null, current_status text not null, portal_status text not null, created_at text not null, updated_at text not null);
+    create table fee_agreements (id text primary key, enrolment_id text not null, standard_fee_paise integer not null, final_agreed_fee_paise integer not null, payment_plan_type text not null, status text not null, created_at text not null, updated_at text not null);
+    create table login_accounts (id text primary key);
+    create table login_account_people (login_account_id text not null, person_id text not null, is_default integer not null);
+    create table person_contacts (id text primary key, person_id text not null, contact_type text not null, normalized_value text not null, display_value text, last_four text, is_primary integer not null, is_verified integer not null, created_at text not null, updated_at text not null);
+    create table person_contact_details (contact_id text primary key, status text not null);
+    create table person_contact_secrets (contact_id text primary key, value_ciphertext text);
+    create table enquiry_follow_up_events (id text primary key, enquiry_id text not null, organisation_id text not null, branch_id text not null, actor_login_account_id text not null, channel text not null, outcome text not null, note text, occurred_at text not null, next_follow_up_at_snapshot text, pipeline_stage_snapshot text not null, created_at text not null);
+
+    insert into branches (id, name, code) values ('branch_sion', 'Sion', 'SION');
+    insert into courses (id, name) values ('course_full_stack', 'Full Stack');
+    insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at)
+      values ('person_aman', 'org_samyak', 'branch_sion', 'Aman Sharma', 'Aman', 'active', '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z');
+    insert into person_identity_details (person_id, official_full_name, date_of_birth, created_at, updated_at)
+      values ('person_aman', 'Aman Sharma', '2000-01-01', '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z');
+    insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at)
+      values ('student_aman', 'org_samyak', 'person_aman', 'branch_sion', 'SYK-SION-000057', 57, '2026-08-20', 'active', 'not_invited', '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z');
+    insert into enquiries (id, organisation_id, branch_id, person_id, enquiry_number, mobile_used, course_interest_id, source, source_detail, counsellor_login_account_id, preferred_timing, preferred_joining_date, status, next_follow_up_at, lost_reason, converted_enrolment_id, converted_at, created_at, updated_at, pipeline_stage, assigned_at, last_contacted_at, closed_reason)
+      values ('enq_aman', 'org_samyak', 'branch_sion', 'person_aman', 'ENQ-SION-2026-1', 'hash_9876543210', 'course_full_stack', 'referral', null, null, null, null, 'converted', null, null, 'enrol_aman', '2026-08-20T01:00:00.000Z', '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z', 'converted', null, null, null);
+    insert into enrolments (id, student_id, branch_id, course_id, enquiry_id, enrolment_number, training_mode, admission_date, joining_date, status, nsdc_preference, created_at, updated_at)
+      values ('enrol_aman', 'student_aman', 'branch_sion', 'course_full_stack', 'enq_aman', 'ENR-SION-2026-000060', 'offline', '2026-08-20', '2026-08-20', 'active', 'decide_later', '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z');
+    insert into fee_agreements (id, enrolment_id, standard_fee_paise, final_agreed_fee_paise, payment_plan_type, status, created_at, updated_at)
+      values ('fee_aman', 'enrol_aman', 1000000, 1000000, 'full', 'active', '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z');
+  `);
+  return db;
+}
 
 function crmDb(rows: EnquiryCrmRow[]) {
   return {

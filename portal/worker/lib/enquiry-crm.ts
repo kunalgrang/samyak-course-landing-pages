@@ -515,9 +515,9 @@ export function enquirySelectSql() {
    left join referrals on referrals.enquiry_id = enquiries.id
    left join referrer_profiles on referrer_profiles.id = referrals.referrer_profile_id
    left join people referrer_people on referrer_people.id = referrer_profiles.person_id
-   left join enrolments on enrolments.id = enquiries.converted_enrolment_id and enrolments.enquiry_id = enquiries.id and enrolments.organisation_id = enquiries.organisation_id
+   left join enrolments on enrolments.id = enquiries.converted_enrolment_id and enrolments.enquiry_id = enquiries.id
    left join fee_agreements on fee_agreements.enrolment_id = enrolments.id and fee_agreements.status = 'active'
-   left join students on students.id = enrolments.student_id
+   left join students on students.id = enrolments.student_id and students.organisation_id = enquiries.organisation_id
    left join login_accounts assigned_accounts on assigned_accounts.id = enquiries.counsellor_login_account_id
    left join login_account_people assigned_account_people on assigned_account_people.login_account_id = assigned_accounts.id and assigned_account_people.is_default = 1
    left join people assigned_people on assigned_people.id = assigned_account_people.person_id`;
