@@ -195,8 +195,14 @@ export async function recordEnrolmentReceipt(c: AppContext, staff: StaffContext,
     return { ok: true, receipt: publicReceipt(existingByKey, true), financialSummary: (await ledgerForRecord(c, enrolment, false)).financialSummary };
   }
   const current = await ledgerForRecord(c, enrolment, false);
-  if (current.financialSummary.fullyPaid) return { ok: false, status: 409, code: "fee_fully_paid", message: "This fee is already fully paid." };
+  if (current.financialSummary.fullyPaid) {
+    const idempotent = await idempotentReceiptResult(c, staff, enrolment, input, fingerprint);
+    if (idempotent) return idempotent;
+    return { ok: false, status: 409, code: "fee_fully_paid", message: "This fee is already fully paid." };
+  }
   if (current.financialSummary.totalReceivedPaise + input.amountPaise > current.financialSummary.finalAgreedFeePaise) {
+    const idempotent = await idempotentReceiptResult(c, staff, enrolment, input, fingerprint);
+    if (idempotent) return idempotent;
     return { ok: false, status: 400, code: "receipt_exceeds_final_fee", message: "Receipt amount cannot exceed the outstanding balance.", fieldErrors: { amountPaise: ["Receipt amount cannot exceed the outstanding balance."] } };
   }
 
@@ -250,6 +256,8 @@ export async function recordEnrolmentReceipt(c: AppContext, staff: StaffContext,
       )
       .run();
     if (!changed(inserted)) {
+      const idempotent = await idempotentReceiptResult(c, staff, enrolment, input, fingerprint);
+      if (idempotent) return idempotent;
       return { ok: false, status: 400, code: "receipt_exceeds_final_fee", message: "Receipt amount cannot exceed the outstanding balance.", fieldErrors: { amountPaise: ["Receipt amount cannot exceed the outstanding balance."] } };
     }
   } catch {
@@ -274,6 +282,16 @@ export async function recordEnrolmentReceipt(c: AppContext, staff: StaffContext,
     branchId: enrolment.branch_id,
   });
   return { ok: true, receipt: publicReceipt(receipt!, true), financialSummary: (await ledgerForRecord(c, enrolment, false)).financialSummary };
+}
+
+async function idempotentReceiptResult(c: AppContext, staff: StaffContext, enrolment: EnrolmentLedgerRecord, input: ReceiptInput, fingerprint: string): Promise<({ ok: true; receipt: PublicReceipt; financialSummary: FinancialSummary } | ServiceFailure) | null> {
+  const idempotent = await receiptByIdempotencyKey(c, staff, input.idempotencyKey);
+  if (!idempotent) return null;
+  const idempotentFingerprint = input.receivedAt ? fingerprint : await receiptPayloadFingerprint(c, enrolment, input, idempotent.received_at);
+  if (idempotent.payload_fingerprint !== idempotentFingerprint) {
+    return { ok: false, status: 409, code: "idempotency_conflict", message: "This idempotency key was already used for a different receipt payload." };
+  }
+  return { ok: true, receipt: publicReceipt(idempotent, true), financialSummary: (await ledgerForRecord(c, enrolment, false)).financialSummary };
 }
 
 async function getLedgerEnrolment(c: AppContext, enrolmentId: string) {

@@ -120,6 +120,21 @@ describe("Payments / Receipts Ledger V1", () => {
     }
   });
 
+  it("allows only one concurrent remaining-balance payment to win", async () => {
+    const db = seededDb();
+    try {
+      const c = context(db);
+      const [first, second] = await Promise.all([
+        recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 100000, paymentMode: "cash", idempotencyKey: "pay_race_a" }),
+        recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 100000, paymentMode: "cash", idempotencyKey: "pay_race_b" }),
+      ]);
+      expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
+      expect(row(db, "select sum(amount_paise) as total from receipts where enrolment_id = 'enrol_a'")?.total).toBe(1400000);
+    } finally {
+      db.close();
+    }
+  });
+
   it("keeps receipt idempotency stable and conflicts changed payloads", async () => {
     const db = seededDb();
     try {
@@ -132,7 +147,35 @@ describe("Payments / Receipts Ledger V1", () => {
       expect(retry.receipt.receiptNumber).toBe(first.receipt.receiptNumber);
       const changed = await recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 99999, paymentMode: "cash", idempotencyKey: "pay_same" });
       expect(changed).toMatchObject({ ok: false, code: "idempotency_conflict" });
+      const changedInputs = [
+        { amountPaise: 100000, receivedAt: "2020-01-01T10:30:00.000Z", paymentMode: "cash", idempotencyKey: "pay_same" },
+        { amountPaise: 100000, paymentMode: "upi", paymentReference: "UPI-123", idempotencyKey: "pay_same" },
+        { amountPaise: 100000, paymentMode: "cash", paymentReference: "changed", idempotencyKey: "pay_same" },
+        { amountPaise: 100000, paymentMode: "cash", notes: "changed", idempotencyKey: "pay_same" },
+      ] as const;
+      for (const input of changedInputs) {
+        await expect(recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", input)).resolves.toMatchObject({ ok: false, code: "idempotency_conflict" });
+      }
+      await expect(recordEnrolmentReceipt(c, ownerStaff(), "enrol_b", { amountPaise: 100000, paymentMode: "cash", idempotencyKey: "pay_same" })).resolves.toMatchObject({ ok: false, code: "idempotency_conflict" });
       expect(row(db, "select count(*) as count from receipts where enrolment_id = 'enrol_a'")?.count).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("returns the same receipt for concurrent identical idempotent submissions", async () => {
+    const db = seededDb();
+    try {
+      const c = context(db);
+      const [first, retry] = await Promise.all([
+        recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 100000, paymentMode: "cash", idempotencyKey: "pay_concurrent_same" }),
+        recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 100000, paymentMode: "cash", idempotencyKey: "pay_concurrent_same" }),
+      ]);
+      expect(first.ok).toBe(true);
+      expect(retry.ok).toBe(true);
+      if (!first.ok || !retry.ok) throw new Error("concurrent idempotency failed");
+      expect(retry.receipt.receiptNumber).toBe(first.receipt.receiptNumber);
+      expect(row(db, "select count(*) as count from receipts where enrolment_id = 'enrol_a' and idempotency_key = 'pay_concurrent_same'")?.count).toBe(1);
     } finally {
       db.close();
     }
@@ -146,8 +189,10 @@ describe("Payments / Receipts Ledger V1", () => {
       expect(await recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 1000, paymentMode: "other", idempotencyKey: "pay_other_missing" })).toMatchObject({ ok: false, code: "receipt_notes_required" });
       expect(await recordEnrolmentReceipt(c, staffForRole("telecaller"), "enrol_a", { amountPaise: 1000, paymentMode: "cash", idempotencyKey: "pay_telecaller" })).toMatchObject({ ok: false, code: "forbidden" });
       expect(await recordEnrolmentReceipt(c, staffForRole("counsellor"), "enrol_a", { amountPaise: 1000, receivedAt: "2020-01-01T00:00:00.000Z", paymentMode: "cash", idempotencyKey: "pay_backdate_counsellor" })).toMatchObject({ ok: false, code: "receipt_backdate_forbidden" });
+      expect(await recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 1000, receivedAt: "2999-01-01T00:00:00.000Z", paymentMode: "cash", idempotencyKey: "pay_future_owner" })).toMatchObject({ ok: false, code: "future_receipt_date" });
       expect(await recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 1000, receivedAt: "2020-01-01T00:00:00.000Z", paymentMode: "cash", idempotencyKey: "pay_backdate_owner" })).toMatchObject({ ok: true });
       expect(await getPaymentLedger(c, staffForRole("counsellor", "acct_wadala"), "enrol_a")).toMatchObject({ ok: false, code: "forbidden" });
+      expect(await recordEnrolmentReceipt(c, ownerStaff(), "missing_enrolment", { amountPaise: 1000, paymentMode: "cash", idempotencyKey: "pay_missing" })).toMatchObject({ ok: false, code: "enrolment_not_found" });
     } finally {
       db.close();
     }
