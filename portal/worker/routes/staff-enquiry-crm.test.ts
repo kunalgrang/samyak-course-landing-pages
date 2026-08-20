@@ -186,6 +186,28 @@ describe("staff enquiry CRM route contact exposure", () => {
     expect(body.items[0].admission).toMatchObject({ convertedEnrolmentId: "enrol_sion", studentId: "student_sion" });
   });
 
+  it("marks the converted payment ledger available only for the exact converted enrolment with an active fee agreement", async () => {
+    const app = routeApp();
+    const db = crmDb([
+      enquiry({ id: "enq_exact", pipeline_stage: "converted", status: "converted", converted_enrolment_id: "enrol_converted", enrolment_id: "enrol_converted", enrolment_number: "ENR-SION-2026-000060", fee_agreement_id: "fee_active", student_id: "student_aman", student_number: "SYK-SION-000057" }),
+      enquiry({ id: "enq_other_enrolment", pipeline_stage: "converted", status: "converted", converted_enrolment_id: "enrol_converted", enrolment_id: "enrol_latest", enrolment_number: "ENR-SION-2026-000061", fee_agreement_id: "fee_latest", student_id: "student_aman", student_number: "SYK-SION-000057" }),
+    ]);
+
+    const response = await app.request("/api/staff/enquiries/crm?queue=all", {}, env(db));
+    const body = await response.json() as { items: Array<{ enquiry: { id: string }; admission: { convertedEnrolmentId: string | null; paymentLedgerAvailable: boolean; enrolmentNumber: string | null } }> };
+
+    expect(response.status).toBe(200);
+    expect(body.items.find((item) => item.enquiry.id === "enq_exact")?.admission).toMatchObject({
+      convertedEnrolmentId: "enrol_converted",
+      enrolmentNumber: "ENR-SION-2026-000060",
+      paymentLedgerAvailable: true,
+    });
+    expect(body.items.find((item) => item.enquiry.id === "enq_other_enrolment")?.admission).toMatchObject({
+      convertedEnrolmentId: null,
+      paymentLedgerAvailable: false,
+    });
+  });
+
   it("searches All by student name, Student ID and mobile hash", async () => {
     const app = routeApp();
     const db = crmDb([
@@ -206,6 +228,23 @@ describe("staff enquiry CRM route contact exposure", () => {
     expect(mocks.mobileHash).toHaveBeenCalledWith(expect.anything(), "9876543210");
     expect(db.seenSql.some((sql) => sql.includes("students.student_number like ?"))).toBe(true);
     expect(db.seenSql.some((sql) => sql.includes("person_contacts.normalized_value = ?"))).toBe(true);
+    expect(db.seenSql.some((sql) => sql.includes("person_contact_details.status"))).toBe(true);
+  });
+
+  it("keeps shared-mobile CRM search branch-scoped and does not duplicate returned enquiries", async () => {
+    authenticateAs(["counsellor"]);
+    const app = routeApp();
+    const db = crmDb([
+      enquiry({ id: "enq_sion_mobile", branch_id: "branch_sion", mobile_used: "hash_9876543210", pipeline_stage: "converted", status: "converted", converted_enrolment_id: "enrol_sion", enrolment_id: "enrol_sion", fee_agreement_id: "fee_sion", student_id: "student_sion", student_number: "SYK-SION-000057" }),
+      enquiry({ id: "enq_dadar_mobile", branch_id: "branch_dadar", mobile_used: "hash_9876543210", pipeline_stage: "converted", status: "converted", converted_enrolment_id: "enrol_dadar", enrolment_id: "enrol_dadar", fee_agreement_id: "fee_dadar", student_id: "student_dadar", student_number: "SYK-DADAR-000057" }),
+    ]);
+
+    const response = await app.request("/api/staff/enquiries/crm?queue=all&search=9876543210", {}, env(db));
+    const body = await response.json() as { items: Array<{ enquiry: { id: string } }> };
+
+    expect(response.status).toBe(200);
+    expect(body.items.map((item) => item.enquiry.id)).toEqual(["enq_sion_mobile"]);
+    expect(new Set(body.items.map((item) => item.enquiry.id)).size).toBe(body.items.length);
   });
 
   it("does not return converted navigation data when the canonical converted enrolment join is unavailable", async () => {

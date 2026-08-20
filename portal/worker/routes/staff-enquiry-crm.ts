@@ -148,7 +148,7 @@ async function crmRows(c: Parameters<typeof branchScope>[0], scope: Awaited<Retu
     if (filters.searchMobileHash) {
       searchClauses.push(
         "enquiries.mobile_used = ?",
-        "exists (select 1 from person_contacts where person_contacts.person_id = people.id and person_contacts.contact_type = 'mobile' and person_contacts.normalized_value = ?)",
+        "exists (select 1 from person_contacts left join person_contact_details on person_contact_details.contact_id = person_contacts.id where person_contacts.person_id = people.id and person_contacts.contact_type = 'mobile' and coalesce(person_contact_details.status, 'active') = 'active' and person_contacts.normalized_value = ?)",
         "referrals.prospect_mobile_hash = ?",
       );
       params.push(filters.searchMobileHash, filters.searchMobileHash, filters.searchMobileHash);
