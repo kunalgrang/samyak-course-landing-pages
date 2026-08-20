@@ -246,12 +246,23 @@ const admissionDraftPayloadSchema = z.record(z.string(), z.unknown());
 
 const receiptSummarySchema = z.object({
   finalAgreedFeePaise: z.number(),
-  firstInstalmentRequiredPaise: z.number(),
   totalReceivedPaise: z.number(),
-  firstInstalmentBalancePaise: z.number(),
   overallBalancePaise: z.number(),
+  firstInstalmentRequiredPaise: z.number(),
+  firstInstalmentReceivedPaise: z.number().optional(),
+  firstInstalmentBalancePaise: z.number(),
   classStartEligible: z.boolean(),
-  instalments: z.array(z.object({ instalmentNumber: z.number(), amountPaise: z.number(), dueDate: z.string().nullable() })),
+  fullyPaid: z.boolean().optional(),
+  receiptCount: z.number().optional(),
+  instalments: z.array(z.object({
+    instalmentNumber: z.number(),
+    amountPaise: z.number().optional(),
+    requiredPaise: z.number().optional(),
+    allocatedReceivedPaise: z.number().optional(),
+    balancePaise: z.number().optional(),
+    status: z.string().optional(),
+    dueDate: z.string().nullable(),
+  })),
   tokenReceipt: z.object({
     id: z.string(),
     receiptNumber: z.string(),
@@ -259,8 +270,29 @@ const receiptSummarySchema = z.object({
     receivedAt: z.string(),
     paymentMode: z.string(),
     paymentReference: z.string().nullable(),
+    notes: z.string().nullable().optional(),
+    recordedBy: z.string().nullable().optional(),
     status: z.literal("recorded"),
   }).nullable(),
+});
+
+const paymentReceiptSchema = receiptSummarySchema.shape.tokenReceipt.unwrap();
+
+const paymentLedgerSchema = z.object({
+  enrolment: z.object({
+    id: z.string(),
+    enrolmentNumber: z.string(),
+    status: z.string(),
+    branchName: z.string().nullable(),
+    studentId: z.string(),
+    studentNumber: z.string(),
+    studentName: z.string(),
+    courseId: z.string(),
+    courseCode: z.string().nullable(),
+    courseName: z.string(),
+  }),
+  financialSummary: receiptSummarySchema,
+  receipts: z.array(paymentReceiptSchema),
 });
 
 const admissionDraftSchema = z.object({
@@ -299,7 +331,7 @@ const admissionConfirmationSchema = z.object({
 
 const admissionReceiptResponseSchema = z.object({
   success: z.literal(true),
-  receipt: receiptSummarySchema.shape.tokenReceipt.unwrap(),
+  receipt: paymentReceiptSchema,
   financialSummary: receiptSummarySchema,
 });
 
@@ -615,6 +647,8 @@ export type AdmissionDraft = z.infer<typeof admissionDraftSchema>["draft"];
 export type AdmissionConfirmation = z.infer<typeof admissionConfirmationSchema>;
 export type AdmissionFinancialSummary = z.infer<typeof receiptSummarySchema>;
 export type AdmissionReceipt = NonNullable<AdmissionFinancialSummary["tokenReceipt"]>;
+export type PaymentLedger = z.infer<typeof paymentLedgerSchema>;
+export type PaymentReceipt = z.infer<typeof paymentReceiptSchema>;
 export type StaffStudentProfile = z.infer<typeof studentProfileSchema>;
 export type StudentSearchPerson = StudentSearchResult["possiblePeople"][number];
 export type AdmissionConfiguration = z.infer<typeof admissionConfigurationSchema>;
@@ -792,6 +826,14 @@ export async function confirmAdmission(enquiryId: string) {
 
 export async function recordAdmissionReceipt(enquiryId: string, input: Record<string, unknown>) {
   return postJson(`/api/staff/admissions/${encodeURIComponent(enquiryId)}/receipts`, input, admissionReceiptResponseSchema);
+}
+
+export async function getPaymentLedger(enrolmentId: string) {
+  return getJson(`/api/staff/enrolments/${encodeURIComponent(enrolmentId)}/payments`, paymentLedgerSchema);
+}
+
+export async function recordEnrolmentReceipt(enrolmentId: string, input: Record<string, unknown>) {
+  return postJson(`/api/staff/enrolments/${encodeURIComponent(enrolmentId)}/receipts`, input, admissionReceiptResponseSchema);
 }
 
 export async function linkAdmissionEnquiryPerson(enquiryId: string, input: { mode: "existing"; personId: string } | { mode: "create"; idempotencyKey: string }) {
