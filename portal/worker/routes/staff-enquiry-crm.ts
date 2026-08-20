@@ -180,7 +180,7 @@ function applyQueueSqlFilters(queue: string, clauses: string[]) {
 }
 
 function toCrmListItem(row: EnquiryCrmRow, temperature: { leadTemperature: LeadTemperature | null; leadTemperatureReason: string }, eventCount: number, contact: ReturnType<typeof emptyContact>) {
-  const authorizedConvertedEnrolmentId = row.converted_enrolment_id && row.enrolment_id === row.converted_enrolment_id ? row.converted_enrolment_id : null;
+  const authorizedConvertedEnrolmentId = row.converted_enrolment_id && row.enrolment_id === row.converted_enrolment_id && row.student_id ? row.converted_enrolment_id : null;
   return {
     enquiry: {
       id: row.id,
@@ -217,11 +217,11 @@ function toCrmListItem(row: EnquiryCrmRow, temperature: { leadTemperature: LeadT
     admission: {
       convertedEnrolmentId: authorizedConvertedEnrolmentId,
       convertedAt: row.converted_at,
-      enrolmentId: row.enrolment_id,
-      enrolmentNumber: row.enrolment_number,
-      enrolmentStatus: row.enrolment_status,
-      studentId: row.student_id,
-      studentNumber: row.student_number,
+      enrolmentId: authorizedConvertedEnrolmentId ? row.enrolment_id : null,
+      enrolmentNumber: authorizedConvertedEnrolmentId ? row.enrolment_number : null,
+      enrolmentStatus: authorizedConvertedEnrolmentId ? row.enrolment_status : null,
+      studentId: authorizedConvertedEnrolmentId ? row.student_id : null,
+      studentNumber: authorizedConvertedEnrolmentId ? row.student_number : null,
       paymentLedgerAvailable: Boolean(authorizedConvertedEnrolmentId && row.student_id && row.fee_agreement_id),
     },
     closedReason: row.closed_reason,

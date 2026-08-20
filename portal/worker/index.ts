@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { WorkerBindings, WorkerVariables } from "./bindings";
 import { cacheControlMiddleware } from "./middleware/cache";
@@ -22,6 +22,10 @@ const app = new Hono<{
   Bindings: WorkerBindings;
   Variables: WorkerVariables;
 }>();
+type AppContext = Context<{
+  Bindings: WorkerBindings;
+  Variables: WorkerVariables;
+}>;
 
 app.use("*", requestIdMiddleware);
 app.use("*", securityHeadersMiddleware);
@@ -49,6 +53,7 @@ app.notFound((c) =>
 
 app.onError((error, c) => {
   if (error instanceof HTTPException) {
+    logSafeServerError(c, "http_error", error.status);
     return jsonError(c, {
       status: error.status,
       code: "http_error",
@@ -57,6 +62,7 @@ app.onError((error, c) => {
   }
 
   if (error instanceof AuthConfigurationError) {
+    logSafeServerError(c, "server_configuration_error", 500);
     return jsonError(c, {
       status: 500,
       code: "server_configuration_error",
@@ -64,11 +70,23 @@ app.onError((error, c) => {
     });
   }
 
+  logSafeServerError(c, "internal_error", 500);
   return jsonError(c, {
     status: 500,
     code: "internal_error",
     message: "Internal server error",
   });
 });
+
+function logSafeServerError(c: AppContext, category: string, status: number) {
+  const url = new URL(c.req.url);
+  console.error("worker_error", {
+    requestId: c.get("requestId"),
+    method: c.req.method,
+    path: url.pathname,
+    status,
+    category,
+  });
+}
 
 export default app;
