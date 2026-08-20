@@ -48,10 +48,12 @@ const emptyFormFields: FormState = {
   existingPersonId: "",
 };
 
-const queueOptions = [
+export const defaultCrmQueue = "hot";
+
+export const queueOptions = [
   ["my", "My enquiries"],
+  ["hot", "Hot Enquiries"],
   ["hot_urgent", "Hot Urgent"],
-  ["hot", "Hot"],
   ["warm", "Warm"],
   ["cold", "Cold"],
   ["today", "Today"],
@@ -62,7 +64,7 @@ const queueOptions = [
   ["deferred", "Deferred"],
   ["admission_ready", "Admission Ready"],
   ["unassigned", "Unassigned"],
-  ["all", "All branch"],
+  ["all", "All"],
 ] as const;
 
 const followUpOutcomes = [
@@ -88,13 +90,13 @@ const followUpOutcomes = [
 ] as const;
 
 const pipelineStages = ["new", "contacting", "engaged", "considering", "deferred", "admission_ready", "lost", "invalid", "duplicate"] as const;
-const terminalPipelineStages = new Set(["lost", "invalid", "duplicate"]);
+const terminalPipelineStages = new Set(["converted", "lost", "invalid", "duplicate"]);
 const IST_TIME_ZONE = "Asia/Kolkata";
 
 export function EnquiriesPage() {
   const [options, setOptions] = useState<EnquiryOptions | null>(null);
   const [crmItems, setCrmItems] = useState<CrmEnquiryItem[]>([]);
-  const [crmQueue, setCrmQueue] = useState("hot_urgent");
+  const [crmQueue, setCrmQueue] = useState(defaultCrmQueue);
   const [crmSearch, setCrmSearch] = useState("");
   const [crmTotal, setCrmTotal] = useState(0);
   const [isLoadingCrm, setIsLoadingCrm] = useState(true);
@@ -278,9 +280,9 @@ export function EnquiriesPage() {
           </label>
           <label>
             Search
-            <input value={crmSearch} onChange={(event) => setCrmSearch(event.target.value)} placeholder="Name, enquiry no., course" />
+            <input value={crmSearch} onChange={(event) => setCrmSearch(event.target.value)} placeholder="Name, Student ID, mobile, enquiry no., course" />
           </label>
-          <button type="submit">Apply</button>
+          <button type="submit">{crmSearch.trim() ? "Search" : "Apply"}</button>
         </form>
         {isLoadingCrm ? <LoadingState label="Loading CRM queue" /> : null}
         {!isLoadingCrm && crmItems.length ? (
@@ -288,9 +290,9 @@ export function EnquiriesPage() {
             {crmItems.map((item) => (
               <article className="crm-card" key={item.enquiry.id}>
                 <div className="crm-card-main">
-                  <span className={`temperature-chip temperature-chip--${item.leadTemperature || "inactive"}`}>{temperatureLabel(item.leadTemperature)}</span>
+                  {isConvertedCrmEnquiry(item) ? <span className="temperature-chip temperature-chip--admitted">ADMITTED</span> : <span className={`temperature-chip temperature-chip--${item.leadTemperature || "inactive"}`}>{temperatureLabel(item.leadTemperature)}</span>}
                   <strong>{item.prospect.displayName}</strong>
-                  <small>{item.leadTemperatureReason}</small>
+                  <small>{crmLeadContext(item)}</small>
                   <span>{item.course.name}</span>
                   <small>{formatLabel(item.pipelineStage)} · {item.source}{item.referral ? " · Referral" : ""}</small>
                 </div>
@@ -303,8 +305,9 @@ export function EnquiriesPage() {
                 <div className="crm-actions">
                   {item.contact.whatsappUrl ? <a className="contact-action contact-action--whatsapp" href={item.contact.whatsappUrl} target="_blank" rel="noopener noreferrer">WhatsApp</a> : null}
                   {item.contact.callUrl ? <a className="contact-action" href={item.contact.callUrl}>Call</a> : null}
-                  <a className="button-link" href={`/app/enquiries/${item.enquiry.id}`}>Open</a>
-                  <button type="button" className="secondary-button" onClick={() => setActiveLogId(activeLogId === item.enquiry.id ? null : item.enquiry.id)}>Log follow-up</button>
+                  <a className="button-link" href={crmPrimaryAction(item).href}>{crmPrimaryAction(item).label}</a>
+                  {crmPaymentPath(item) ? <a className="button-link button-link--primary" href={crmPaymentPath(item)!}>Payments</a> : null}
+                  {canLogCrmFollowUp(item) ? <button type="button" className="secondary-button" onClick={() => setActiveLogId(activeLogId === item.enquiry.id ? null : item.enquiry.id)}>Log follow-up</button> : null}
                 </div>
                 {activeLogId === item.enquiry.id ? (
                   <form className="staff-form crm-log-form" onSubmit={(event) => void handleLogFollowUp(event, item)}>
@@ -521,6 +524,32 @@ export function sanitizeLogForm(form: LogFormState): LogFormState {
 
 export function isTerminalPipelineStage(stage: string) {
   return terminalPipelineStages.has(stage);
+}
+
+export function isConvertedCrmEnquiry(item: Pick<CrmEnquiryItem, "pipelineStage" | "admission">) {
+  return item.pipelineStage === "converted" && Boolean(item.admission.convertedEnrolmentId && item.admission.studentId);
+}
+
+export function crmPaymentPath(item: Pick<CrmEnquiryItem, "pipelineStage" | "admission">) {
+  return isConvertedCrmEnquiry(item) && item.admission.paymentLedgerAvailable && item.admission.convertedEnrolmentId
+    ? `/app/enrolments/${encodeURIComponent(item.admission.convertedEnrolmentId)}/payments`
+    : null;
+}
+
+export function crmPrimaryAction(item: Pick<CrmEnquiryItem, "enquiry" | "pipelineStage" | "admission">) {
+  if (isConvertedCrmEnquiry(item) && item.admission.studentId) {
+    return { label: "Profile", href: `/app/students/${encodeURIComponent(item.admission.studentId)}` };
+  }
+  return { label: "Open Enquiry", href: `/app/enquiries/${encodeURIComponent(item.enquiry.id)}` };
+}
+
+export function canLogCrmFollowUp(item: Pick<CrmEnquiryItem, "pipelineStage">) {
+  return !isTerminalPipelineStage(item.pipelineStage);
+}
+
+export function crmLeadContext(item: Pick<CrmEnquiryItem, "leadTemperatureReason" | "admission"> & { admission: Pick<CrmEnquiryItem["admission"], "studentNumber" | "enrolmentNumber"> }) {
+  if (item.admission.studentNumber) return `Student ID ${item.admission.studentNumber}${item.admission.enrolmentNumber ? ` · ${item.admission.enrolmentNumber}` : ""}`;
+  return item.leadTemperatureReason;
 }
 
 export function EnquirySuccessNotice({ message }: { message: string }) {

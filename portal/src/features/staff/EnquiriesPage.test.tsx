@@ -6,14 +6,21 @@ import {
   EnquirySuccessNotice,
   assignedCounsellorLabel,
   buildCreateEnquiryInput,
+  canLogCrmFollowUp,
   createEnquirySuccessMessage,
+  crmLeadContext,
+  crmPaymentPath,
+  crmPrimaryAction,
+  defaultCrmQueue,
   enquiryStateAfterFailure,
   enquiryStateAfterSuccess,
   focusMobileSearchInput,
   guardedCreateEnquiry,
   initialEnquiryForm,
+  isConvertedCrmEnquiry,
   isQuarterHourLocalInput,
   isTerminalPipelineStage,
+  queueOptions,
   sanitizeLogForm,
   toIsoDateTime,
   toIstDateTimeLocal,
@@ -22,7 +29,7 @@ import {
 } from "./EnquiriesPage";
 import { StaffAssigneeOptions, StaffCrmContactPanel, staffDisplayLabel } from "./EnquiryDetailPage";
 import { NotificationToast, nextNotification } from "../../components/NotificationToast";
-import type { CreateEnquiryResponse, EnquiryOptions, StudentSearchResult } from "../../lib/api";
+import type { CreateEnquiryResponse, CrmEnquiryItem, EnquiryOptions, StudentSearchResult } from "../../lib/api";
 
 const singleBranchOptions: EnquiryOptions = {
   branches: [{ id: "branch_sion", code: "SION", name: "Sion" }],
@@ -246,6 +253,65 @@ describe("CRM contact and feedback UI", () => {
   });
 });
 
+describe("CRM queue and converted enquiry navigation", () => {
+  it("defaults to Hot Enquiries while keeping All visible", () => {
+    expect(defaultCrmQueue).toBe("hot");
+    expect(queueOptions).toContainEqual(["hot", "Hot Enquiries"]);
+    expect(queueOptions).toContainEqual(["all", "All"]);
+  });
+
+  it("builds direct converted-student actions from canonical admission context", () => {
+    const item = crmItem({
+      pipelineStage: "converted",
+      admission: {
+        convertedEnrolmentId: "enrol_conversion",
+        convertedAt: "2026-08-20T10:00:00.000Z",
+        enrolmentId: "enrol_conversion",
+        enrolmentNumber: "ENR-SION-2026-000060",
+        enrolmentStatus: "confirmed",
+        studentId: "student_aman",
+        studentNumber: "SYK-SION-000057",
+        paymentLedgerAvailable: true,
+      },
+    });
+
+    expect(isConvertedCrmEnquiry(item)).toBe(true);
+    expect(crmPrimaryAction(item)).toEqual({ label: "Profile", href: "/app/students/student_aman" });
+    expect(crmPaymentPath(item)).toBe("/app/enrolments/enrol_conversion/payments");
+    expect(canLogCrmFollowUp(item)).toBe(false);
+    expect(crmLeadContext(item)).toBe("Student ID SYK-SION-000057 · ENR-SION-2026-000060");
+  });
+
+  it("falls back to Open Enquiry and hides payments when converted navigation context is incomplete", () => {
+    const item = crmItem({
+      pipelineStage: "converted",
+      admission: {
+        convertedEnrolmentId: null,
+        convertedAt: "2026-08-20T10:00:00.000Z",
+        enrolmentId: null,
+        enrolmentNumber: null,
+        enrolmentStatus: null,
+        studentId: null,
+        studentNumber: null,
+        paymentLedgerAvailable: false,
+      },
+    });
+
+    expect(isConvertedCrmEnquiry(item)).toBe(false);
+    expect(crmPrimaryAction(item)).toEqual({ label: "Open Enquiry", href: "/app/enquiries/enq_aman" });
+    expect(crmPaymentPath(item)).toBeNull();
+    expect(canLogCrmFollowUp(item)).toBe(false);
+  });
+
+  it("keeps follow-up and no payment action for active enquiries", () => {
+    const item = crmItem({ pipelineStage: "considering", leadTemperature: "hot" });
+
+    expect(crmPrimaryAction(item)).toEqual({ label: "Open Enquiry", href: "/app/enquiries/enq_aman" });
+    expect(crmPaymentPath(item)).toBeNull();
+    expect(canLogCrmFollowUp(item)).toBe(true);
+  });
+});
+
 describe("CRM follow-up form state", () => {
   it("clears hidden lost reason when stage changes away from lost", () => {
     expect(sanitizeLogForm({
@@ -293,3 +359,56 @@ describe("CRM follow-up form state", () => {
     expect(toIstDateTimeLocal("2026-08-20T13:00:00.000Z")).toBe("2026-08-20T18:30");
   });
 });
+
+function crmItem(overrides: Partial<CrmEnquiryItem> = {}): CrmEnquiryItem {
+  return {
+    enquiry: {
+      id: "enq_aman",
+      enquiryNumber: "ENQ-SION-2026-000060",
+      status: "new",
+      pipelineStage: "new",
+      createdAt: "2026-08-20T09:00:00.000Z",
+      updatedAt: "2026-08-20T09:00:00.000Z",
+    },
+    prospect: { displayName: "Aman Sharma" },
+    contact: {
+      mobile: "9876543210",
+      mobileDisplay: "+91 98765 43210",
+      whatsappUrl: "https://wa.me/919876543210",
+      callUrl: "tel:+919876543210",
+    },
+    prospectContact: {
+      mobile: "9876543210",
+      mobileDisplay: "+91 98765 43210",
+      whatsappUrl: "https://wa.me/919876543210",
+      callUrl: "tel:+919876543210",
+    },
+    course: { id: "course_tally", name: "CAP - TALLY WITH TAX AND MS OFFICE" },
+    source: "Walk-in",
+    sourceDetail: null,
+    referral: null,
+    pipelineStage: "new",
+    leadTemperature: "hot_urgent",
+    leadTemperatureReason: "Walk-in enquiry received today",
+    assignedCounsellor: null,
+    assignedCounsellorLoginAccountId: null,
+    assignedAt: null,
+    lastContactedAt: null,
+    nextFollowUpAt: null,
+    expectedJoiningDate: null,
+    branch: { id: "branch_sion", name: "Sion", code: "SION" },
+    admission: {
+      convertedEnrolmentId: null,
+      convertedAt: null,
+      enrolmentId: null,
+      enrolmentNumber: null,
+      enrolmentStatus: null,
+      studentId: null,
+      studentNumber: null,
+      paymentLedgerAvailable: false,
+    },
+    closedReason: null,
+    followUpEventCount: 0,
+    ...overrides,
+  };
+}

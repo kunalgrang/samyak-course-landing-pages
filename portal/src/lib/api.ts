@@ -400,6 +400,7 @@ const crmItemSchema = z.object({
     enrolmentStatus: z.string().nullable(),
     studentId: z.string().nullable(),
     studentNumber: z.string().nullable(),
+    paymentLedgerAvailable: z.boolean().default(false),
   }),
   closedReason: z.string().nullable(),
   followUpEventCount: z.number(),
