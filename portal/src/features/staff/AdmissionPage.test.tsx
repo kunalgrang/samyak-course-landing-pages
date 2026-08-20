@@ -138,7 +138,7 @@ describe("AdmissionPage helpers", () => {
 
     payload.identity.fatherName = "Ramesh Student";
     payload.declarations.nsdcProcessingAccepted = true;
-    payload.declarations.nsdcPendingDocumentsUnderstood = true;
+    payload.declarations.nsdcPendingDocumentsUnderstood = false;
     review = admissionReview(payload, course);
     expect(review.nsdcReady).toBe(true);
   });

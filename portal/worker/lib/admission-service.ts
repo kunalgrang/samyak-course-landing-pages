@@ -210,8 +210,8 @@ const confirmationSchema = admissionPayloadSchema.superRefine((payload, ctx) => 
   }
   if (course.nsdcPreference === "yes") {
     if (!identity.fatherName?.trim()) ctx.addIssue({ code: "custom", path: ["identity", "fatherName"], message: "Father's full name is required for NSDC." });
-    if (!declarations.nsdcProcessingAccepted || !declarations.nsdcPendingDocumentsUnderstood) {
-      ctx.addIssue({ code: "custom", path: ["declarations", "nsdcProcessingAccepted"], message: "NSDC processing declarations are required." });
+    if (!declarations.nsdcProcessingAccepted) {
+      ctx.addIssue({ code: "custom", path: ["declarations", "nsdcProcessingAccepted"], message: "NSDC/Skill India processing authorisation is required." });
     }
   }
 });
