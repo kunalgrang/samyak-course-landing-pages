@@ -2,9 +2,10 @@ import { z } from "zod";
 import type { Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { ORG_ID, getSessionFromRequest, mobileHash } from "../lib/auth-store";
-import { createOpaqueId, encryptText } from "../lib/crypto";
+import { createOpaqueId } from "../lib/crypto";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile as normalizeCanonicalIndianMobile } from "../lib/mobile";
+import { addMobileIfMissing } from "../lib/person-contact";
 import { ADMISSION_STAFF_ROLES, requireStaffRoles } from "../lib/staff-auth";
 
 type PortalHono = Hono<{
@@ -216,42 +217,6 @@ export function registerStaffStudentRoutes(app: PortalHono) {
     await c.env.DB.batch(statements);
     return jsonPlain(c, { success: true, enquiryId, enquiryNumber, personId }, { status: 201 });
   });
-}
-
-async function addMobileIfMissing(
-  c: Parameters<typeof getSessionFromRequest>[0],
-  personId: string,
-  normalizedMobile: string,
-  lookupHash: string,
-  now: string,
-  makePrimary = false,
-) {
-  const contact = await c.env.DB.prepare(
-    "select id from person_contacts where person_id = ? and contact_type = 'mobile' and normalized_value = ?",
-  )
-    .bind(personId, lookupHash)
-    .first<{ id: string }>();
-  if (contact) return;
-
-  const contactId = createOpaqueId("contact");
-  const ciphertext = await encryptText(c.env.SESSION_PEPPER, `contact:${contactId}`, normalizedMobile);
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      `insert into person_contacts
-         (id, person_id, contact_type, normalized_value, display_value, last_four, is_primary, is_verified, created_at, updated_at)
-       values (?, ?, 'mobile', ?, null, ?, ?, 0, ?, ?)`,
-    ).bind(contactId, personId, lookupHash, normalizedMobile.slice(-4), makePrimary ? 1 : 0, now, now),
-    c.env.DB.prepare(
-      `insert into person_contact_details
-         (contact_id, belongs_to, is_whatsapp, status, created_at, updated_at)
-       values (?, 'student', 1, 'active', ?, ?)`,
-    ).bind(contactId, now, now),
-    c.env.DB.prepare(
-      `insert into person_contact_secrets
-         (contact_id, value_ciphertext, encryption_version, created_at, updated_at)
-       values (?, ?, 'v1', ?, ?)`,
-    ).bind(contactId, ciphertext, now, now),
-  ]);
 }
 
 async function requireStaff(c: Parameters<typeof getSessionFromRequest>[0]) {

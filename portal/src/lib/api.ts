@@ -244,6 +244,25 @@ const courseListSchema = z.object({ courses: z.array(courseSchema) });
 
 const admissionDraftPayloadSchema = z.record(z.string(), z.unknown());
 
+const receiptSummarySchema = z.object({
+  finalAgreedFeePaise: z.number(),
+  firstInstalmentRequiredPaise: z.number(),
+  totalReceivedPaise: z.number(),
+  firstInstalmentBalancePaise: z.number(),
+  overallBalancePaise: z.number(),
+  classStartEligible: z.boolean(),
+  instalments: z.array(z.object({ instalmentNumber: z.number(), amountPaise: z.number(), dueDate: z.string().nullable() })),
+  tokenReceipt: z.object({
+    id: z.string(),
+    receiptNumber: z.string(),
+    amountPaise: z.number(),
+    receivedAt: z.string(),
+    paymentMode: z.string(),
+    paymentReference: z.string().nullable(),
+    status: z.literal("recorded"),
+  }).nullable(),
+});
+
 const admissionDraftSchema = z.object({
   draft: z
     .object({
@@ -256,6 +275,7 @@ const admissionDraftSchema = z.object({
       confirmationSnapshotVersion: z.string().nullable().optional(),
     })
     .nullable(),
+  financialSummary: receiptSummarySchema.nullable().optional(),
 });
 
 const admissionDraftSaveSchema = z.object({
@@ -274,6 +294,21 @@ const admissionConfirmationSchema = z.object({
   enrolmentNumber: z.string(),
   enquiryNumber: z.string(),
   isNewStudent: z.boolean(),
+  financialSummary: receiptSummarySchema,
+});
+
+const admissionReceiptResponseSchema = z.object({
+  success: z.literal(true),
+  receipt: receiptSummarySchema.shape.tokenReceipt.unwrap(),
+  financialSummary: receiptSummarySchema,
+});
+
+const admissionPersonLinkResponseSchema = z.object({
+  success: z.literal(true),
+  enquiryId: z.string(),
+  personId: z.string(),
+  mode: z.union([z.literal("existing"), z.literal("create")]),
+  alreadyLinked: z.boolean().optional(),
 });
 
 const enquiryDetailSchema = z.object({
@@ -282,6 +317,12 @@ const enquiryDetailSchema = z.object({
   alternateMobile: z.string().nullable().optional(),
   mobileDisplay: z.string().nullable(),
   alternateMobileDisplay: z.string().nullable().optional(),
+  personLinkCandidate: z.object({
+    displayName: z.string(),
+    mobile: z.string().nullable(),
+    mobileDisplay: z.string().nullable(),
+    enquiryNumber: z.string(),
+  }).nullable().optional(),
   previousEnrolments: z.array(z.record(z.string(), z.unknown())),
   activeDraft: z.object({ id: z.string(), status: z.string(), currentStep: z.string() }).nullable(),
 });
@@ -572,7 +613,10 @@ export type CrmEnquiryList = z.infer<typeof crmListSchema>;
 export type CrmEnquiryDetail = z.infer<typeof crmDetailSchema>;
 export type AdmissionDraft = z.infer<typeof admissionDraftSchema>["draft"];
 export type AdmissionConfirmation = z.infer<typeof admissionConfirmationSchema>;
+export type AdmissionFinancialSummary = z.infer<typeof receiptSummarySchema>;
+export type AdmissionReceipt = NonNullable<AdmissionFinancialSummary["tokenReceipt"]>;
 export type StaffStudentProfile = z.infer<typeof studentProfileSchema>;
+export type StudentSearchPerson = StudentSearchResult["possiblePeople"][number];
 export type AdmissionConfiguration = z.infer<typeof admissionConfigurationSchema>;
 export type AdmissionOptionValue = AdmissionConfiguration["options"][number];
 export type PaymentPlanRule = AdmissionConfiguration["paymentPlanRules"][number];
@@ -744,6 +788,14 @@ export async function saveAdmissionDraft(enquiryId: string, payload: Record<stri
 
 export async function confirmAdmission(enquiryId: string) {
   return postJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/confirm-admission`, {}, admissionConfirmationSchema);
+}
+
+export async function recordAdmissionReceipt(enquiryId: string, input: Record<string, unknown>) {
+  return postJson(`/api/staff/admissions/${encodeURIComponent(enquiryId)}/receipts`, input, admissionReceiptResponseSchema);
+}
+
+export async function linkAdmissionEnquiryPerson(enquiryId: string, input: { mode: "existing"; personId: string } | { mode: "create"; idempotencyKey: string }) {
+  return postJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/person-link`, input, admissionPersonLinkResponseSchema);
 }
 
 export async function getStaffStudentProfile(studentId: string) {

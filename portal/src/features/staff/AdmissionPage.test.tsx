@@ -10,7 +10,9 @@ const apiMocks = vi.hoisted(() => ({
   getAdmissionDraft: vi.fn(),
   getActiveCourses: vi.fn(),
   getEnquiryDetail: vi.fn(),
+  linkAdmissionEnquiryPerson: vi.fn(),
   requestDiscountApproval: vi.fn(),
+  searchStudentByMobile: vi.fn(),
   saveAdmissionDraft: vi.fn(),
 }));
 
@@ -23,7 +25,9 @@ vi.mock("../../lib/api", async (importOriginal) => {
     getAdmissionDraft: apiMocks.getAdmissionDraft,
     getActiveCourses: apiMocks.getActiveCourses,
     getEnquiryDetail: apiMocks.getEnquiryDetail,
+    linkAdmissionEnquiryPerson: apiMocks.linkAdmissionEnquiryPerson,
     requestDiscountApproval: apiMocks.requestDiscountApproval,
+    searchStudentByMobile: apiMocks.searchStudentByMobile,
     saveAdmissionDraft: apiMocks.saveAdmissionDraft,
   };
 });
@@ -150,6 +154,7 @@ describe("AdmissionPage helpers", () => {
           enrolmentNumber: "ENR-SION-2026-000001",
           enquiryNumber: "ENQ-SION-2026-ABC",
           isNewStudent: true,
+          financialSummary: financialSummary(),
         }}
       />,
     );
@@ -428,14 +433,56 @@ describe("AdmissionPage draft validation interactions", () => {
     expect(apiMocks.saveAdmissionDraft).not.toHaveBeenCalled();
     expect(apiMocks.confirmAdmission).toHaveBeenCalledWith("enq_first");
   });
+
+  it("gates unlinked referral enquiries behind explicit student link actions", async () => {
+    apiMocks.getEnquiryDetail
+      .mockResolvedValueOnce(unlinkedReferralDetail())
+      .mockResolvedValue(linkedEnquiryDetail());
+    apiMocks.searchStudentByMobile.mockResolvedValue({
+      mobileLastFour: "3210",
+      possiblePeople: [
+        {
+          person_id: "person_existing",
+          student_id: "student_existing",
+          full_name: "Asha Existing",
+          date_of_birth: null,
+          student_number: "SYK-SION-000123",
+          student_status: "active",
+          mobile_last_four: "3210",
+        },
+      ],
+      enquiries: [],
+    });
+    apiMocks.linkAdmissionEnquiryPerson.mockResolvedValue({ success: true, enquiryId: "enq_first", personId: "person_existing", mode: "existing" });
+    const container = await renderAdmissionPage(roots);
+
+    expect(container.textContent).toContain("Student record not linked");
+    expect(container.textContent).toContain("This enquiry must be linked to a student record before admission can continue.");
+    expect(container.textContent).not.toContain("Save Draft");
+
+    await click(buttonByText(container, "Find Existing Student"));
+    expect(apiMocks.searchStudentByMobile).toHaveBeenCalledWith("9876543210");
+    expect(container.textContent).toContain("Asha Existing");
+    expect(container.textContent).toContain("SYK-SION-000123");
+
+    const match = container.querySelector("input[name='admission-person']") as HTMLInputElement;
+    await click(match);
+    await click(buttonByText(container, "Link this student"));
+
+    expect(apiMocks.linkAdmissionEnquiryPerson).toHaveBeenCalledWith("enq_first", { mode: "existing", personId: "person_existing" });
+    expect(container.textContent).toContain("Save Draft");
+  });
 });
 
 function setDefaultAdmissionApiMocks() {
+  apiMocks.linkAdmissionEnquiryPerson.mockResolvedValue({ success: true, enquiryId: "enq_first", personId: "person_asha", mode: "existing" });
+  apiMocks.searchStudentByMobile.mockResolvedValue({ mobileLastFour: "3210", possiblePeople: [], enquiries: [] });
   apiMocks.getEnquiryDetail.mockResolvedValue({
     enquiry: {
       enquiry_number: "ENQ-SION-2026-001",
       full_name: "",
       date_of_birth: "",
+      person_id: "person_asha",
       course_id: "",
       branch_id: "branch_sion",
       branch_name: "Sion",
@@ -458,6 +505,7 @@ function setDefaultAdmissionApiMocks() {
     enrolmentNumber: "ENR-SION-2026-000001",
     enquiryNumber: "ENQ-SION-2026-001",
     isNewStudent: true,
+    financialSummary: financialSummary(),
   });
   apiMocks.requestDiscountApproval.mockResolvedValue({ status: "requested" });
   apiMocks.saveAdmissionDraft.mockImplementation(async (_enquiryId, payload, currentStep) => ({
@@ -467,6 +515,44 @@ function setDefaultAdmissionApiMocks() {
     currentStep,
     fieldErrors: {},
   }));
+}
+
+function linkedEnquiryDetail() {
+  return {
+    enquiry: {
+      enquiry_number: "ENQ-SION-2026-001",
+      full_name: "",
+      date_of_birth: "",
+      person_id: "person_asha",
+      course_id: "",
+      branch_id: "branch_sion",
+      branch_name: "Sion",
+      branch_code: "SION",
+    },
+    primaryMobile: "",
+    alternateMobile: "",
+    mobileDisplay: null,
+    previousEnrolments: [],
+    activeDraft: null,
+  };
+}
+
+function unlinkedReferralDetail() {
+  return {
+    ...linkedEnquiryDetail(),
+    enquiry: {
+      ...linkedEnquiryDetail().enquiry,
+      person_id: null,
+      full_name: null,
+      source: "referral",
+    },
+    personLinkCandidate: {
+      displayName: "Asha Referral",
+      mobile: "9876543210",
+      mobileDisplay: "+91 98765 43210",
+      enquiryNumber: "ENQ-SION-2026-001",
+    },
+  };
 }
 
 async function renderAdmissionPage(roots: Root[]) {
@@ -615,4 +701,28 @@ function readyPayload() {
     dataProcessingAccepted: true,
   };
   return payload;
+}
+
+function financialSummary() {
+  return {
+    finalAgreedFeePaise: 5000000,
+    firstInstalmentRequiredPaise: 2500000,
+    totalReceivedPaise: 50000,
+    firstInstalmentBalancePaise: 2450000,
+    overallBalancePaise: 4950000,
+    classStartEligible: false,
+    instalments: [
+      { instalmentNumber: 1, amountPaise: 2500000, dueDate: null },
+      { instalmentNumber: 2, amountPaise: 2500000, dueDate: null },
+    ],
+    tokenReceipt: {
+      id: "receipt_1",
+      receiptNumber: "RCP-SION-2026-000001",
+      amountPaise: 50000,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "cash",
+      paymentReference: null,
+      status: "recorded" as const,
+    },
+  };
 }

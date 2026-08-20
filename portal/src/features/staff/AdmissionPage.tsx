@@ -9,14 +9,20 @@ import {
   getAdmissionConfiguration,
   getEnquiryDetail,
   getActiveCourses,
+  linkAdmissionEnquiryPerson,
+  recordAdmissionReceipt,
   requestDiscountApproval,
   saveAdmissionDraft,
+  searchStudentByMobile,
   type AdmissionConfiguration,
   type AdmissionConfirmation,
+  type AdmissionFinancialSummary,
   type EnquiryDetail,
   type FieldErrors,
   type PaymentPlanRule,
   type StaffCourse,
+  type StudentSearchPerson,
+  type StudentSearchResult,
 } from "../../lib/api";
 
 export type AdmissionPayload = {
@@ -58,6 +64,12 @@ export const ADMISSION_FIELD_LABELS: Record<string, string> = {
   "fee.discountReason": "Discount reason",
   "fee.paymentPlanType": "Payment plan",
   "fee.numberOfInstalments": "Number of instalments",
+  amountPaise: "Amount received",
+  receivedAt: "Received date/time",
+  paymentMode: "Payment mode",
+  paymentReference: "Payment reference",
+  notes: "Notes",
+  firstReceipt: "Admission token receipt",
   "declarations.informationCorrect": "Information entered is correct",
   "declarations.nameDobMatchesAadhaar": "Name and DOB match Aadhaar",
   "declarations.courseRulesExplained": "Course rules explained",
@@ -81,7 +93,16 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const [saved, setSaved] = useState<string | null>(null);
   const [approvalStatus, setApprovalStatus] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<AdmissionConfirmation | null>(null);
+  const [financialSummary, setFinancialSummary] = useState<AdmissionFinancialSummary | null>(null);
+  const [receiptInput, setReceiptInput] = useState(() => defaultReceiptInput());
+  const [isRecordingReceipt, setIsRecordingReceipt] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
+  const [studentSearchMobile, setStudentSearchMobile] = useState("");
+  const [studentSearchResult, setStudentSearchResult] = useState<StudentSearchResult | null>(null);
+  const [selectedPersonId, setSelectedPersonId] = useState("");
+  const [isSearchingPerson, setIsSearchingPerson] = useState(false);
+  const [isLinkingPerson, setIsLinkingPerson] = useState(false);
+  const [personLinkIdempotencyKey, setPersonLinkIdempotencyKey] = useState(() => randomPersonLinkKey());
   const confirmPendingRef = useRef(false);
   const errorSummaryRef = useRef<HTMLDivElement>(null);
   const focusSummaryRequestedRef = useRef(false);
@@ -100,8 +121,12 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       setConfiguration(configData);
       const next = draftData.draft?.payload ? mergeAdmissionPayload(defaultAdmissionPayload(detailData), draftData.draft.payload) : defaultAdmissionPayload(detailData);
       setPayload(next);
+      setFinancialSummary(draftData.financialSummary || null);
       setCurrentStep(draftData.draft?.currentStep || "identity");
       setIsLocked(Boolean(draftData.draft?.confirmationLockedAt));
+      setStudentSearchMobile(draftData.draft ? studentSearchMobile : detailData.personLinkCandidate?.mobile || "");
+      setStudentSearchResult(null);
+      setSelectedPersonId("");
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not load admission.");
@@ -122,6 +147,9 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const allowedPaymentRules = useMemo(() => allowedPaymentRulesForCourse(selectedCourse, configuration.paymentPlanRules), [configuration.paymentPlanRules, selectedCourse]);
   const paymentPlanNotice = paymentPlanPolicyMessage(selectedCourse, configuration.paymentPlanRules, allowedPaymentRules);
   const configurationReady = isAdmissionConfigurationReady(configuration);
+  const tokenReceipt = financialSummary?.tokenReceipt || null;
+  const commercialLocked = Boolean(tokenReceipt) || isLocked;
+  const needsPersonLink = !detail?.enquiry.person_id;
 
   useEffect(() => {
     if (!focusSummaryRequestedRef.current) return;
@@ -197,6 +225,30 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
     }
   }
 
+  async function handleRecordReceipt() {
+    setIsRecordingReceipt(true);
+    setError(null);
+    setFieldErrors({});
+    try {
+      const draft = await saveAdmissionDraft(enquiryId, payload as unknown as Record<string, unknown>, "receipt");
+      const result = await recordAdmissionReceipt(enquiryId, {
+        admissionDraftId: draft.draftId,
+        amountPaise: Math.round(Number(receiptInput.amount || 0) * 100),
+        receivedAt: localDateTimeToIso(receiptInput.receivedAt),
+        paymentMode: receiptInput.paymentMode,
+        paymentReference: receiptInput.paymentReference,
+        notes: receiptInput.notes,
+        idempotencyKey: receiptInput.idempotencyKey,
+      });
+      setFinancialSummary(result.financialSummary);
+      setSaved("Token receipt recorded.");
+    } catch (reason) {
+      captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, requestSummaryFocus, "Could not record token receipt.");
+    } finally {
+      setIsRecordingReceipt(false);
+    }
+  }
+
   function setSection(section: keyof AdmissionPayload, key: string, value: string | boolean | number | null) {
     if (isLocked) return;
     setPayload((current) => normalizeDependentFields({ ...current, [section]: { ...current[section], [key]: value } } as AdmissionPayload, section, key));
@@ -233,6 +285,49 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, requestSummaryFocus, "Could not request approval.");
     } finally {
       setIsSaving(false);
+    }
+  }
+
+  async function handleSearchPerson() {
+    setIsSearchingPerson(true);
+    setError(null);
+    try {
+      const result = await searchStudentByMobile(studentSearchMobile || String(detail?.personLinkCandidate?.mobile || ""));
+      setStudentSearchResult(result);
+      setSelectedPersonId("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not search student records.");
+    } finally {
+      setIsSearchingPerson(false);
+    }
+  }
+
+  async function handleLinkExistingPerson() {
+    if (!selectedPersonId) {
+      setError("Select a student record to link.");
+      return;
+    }
+    await linkPerson(async () => linkAdmissionEnquiryPerson(enquiryId, { mode: "existing", personId: selectedPersonId }));
+  }
+
+  async function handleCreateLinkedPerson() {
+    await linkPerson(async () => linkAdmissionEnquiryPerson(enquiryId, { mode: "create", idempotencyKey: personLinkIdempotencyKey }));
+  }
+
+  async function linkPerson(action: () => Promise<unknown>) {
+    setIsLinkingPerson(true);
+    setError(null);
+    try {
+      await action();
+      setSaved("Student linked successfully.");
+      setStudentSearchResult(null);
+      setSelectedPersonId("");
+      setPersonLinkIdempotencyKey(randomPersonLinkKey());
+      await loadAdmissionData();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not link student record.");
+    } finally {
+      setIsLinkingPerson(false);
     }
   }
 
@@ -279,7 +374,21 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       {isLocked ? <AdmissionRecoveryNotice isConfirming={isConfirming} onRetry={() => void handleConfirm()} /> : null}
       {!configurationReady ? <AdmissionConfigurationMissing onRetry={() => void loadAdmissionData()} /> : null}
 
-      {configurationReady ? <AdmissionLockedFieldset isLocked={isLocked}>
+      {needsPersonLink ? (
+        <AdmissionPersonLinkPanel
+          detail={detail}
+          mobile={studentSearchMobile}
+          searchResult={studentSearchResult}
+          selectedPersonId={selectedPersonId}
+          isSearching={isSearchingPerson}
+          isLinking={isLinkingPerson}
+          onMobileChange={setStudentSearchMobile}
+          onSearch={() => void handleSearchPerson()}
+          onSelectPerson={setSelectedPersonId}
+          onLinkExisting={() => void handleLinkExistingPerson()}
+          onCreateNew={() => void handleCreateLinkedPerson()}
+        />
+      ) : configurationReady ? <AdmissionLockedFieldset isLocked={isLocked}>
       <AdmissionSection title="A · Official identity">
         <label>Full name as per Aadhaar<RequiredMark /><input {...controlProps("identity.officialFullName")} value={String(payload.identity.officialFullName)} onChange={(e) => setSection("identity", "officialFullName", e.target.value)} /><FieldMessage id={admissionFieldErrorId("identity.officialFullName")} message={errorFor("identity.officialFullName")} /></label>
         <label>First name<input value={String(payload.identity.firstName)} onChange={(e) => setSection("identity", "firstName", e.target.value)} /></label>
@@ -365,6 +474,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         />
       </AdmissionSection>
 
+      <fieldset className="plain-fieldset" disabled={commercialLocked}>
       <AdmissionSection title="E · Course enrolment">
         <label>Configured active course<RequiredMark /><select {...controlProps("course.courseId")} value={String(payload.course.courseId)} onChange={(e) => setSection("course", "courseId", e.target.value)}><option value="">Select course</option>{admissionCourses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select><FieldMessage id={admissionFieldErrorId("course.courseId")} message={errorFor("course.courseId")} /></label>
         <label>Branch<input value={branchDisplay(detail)} readOnly aria-readonly="true" /></label>
@@ -413,6 +523,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         <label>Initial payment expected<input type="number" min="0" value={Number(payload.fee.initialPaymentExpectedPaise || 0) / 100} onChange={(e) => setSection("fee", "initialPaymentExpectedPaise", Math.round(Number(e.target.value || 0) * 100))} /></label>
         {review.ownerApprovalRequired ? <div className="staff-form-actions"><button type="button" className="secondary-button" disabled={isSaving} onClick={() => void handleRequestApproval()}>{approvalStatus || "Request owner approval"}</button></div> : null}
       </AdmissionSection>
+      </fieldset>
+      {tokenReceipt ? <div className="notice notice--success" role="status"><strong>Commercial terms locked.</strong> Token receipt has been recorded.</div> : null}
 
       <AdmissionSection title="G · Declarations">
         {requiredDeclarations(payload.course.nsdcPreference === "yes").map(([key, label]) => (
@@ -420,8 +532,26 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         ))}
       </AdmissionSection>
 
+      <AdmissionSection title="H · Admission token / first receipt">
+        <FinancialSummary summary={financialSummary} fallbackFinalFee={Number(payload.fee.finalAgreedFeePaise || 0)} />
+        {tokenReceipt ? (
+          <ReceiptRecorded summary={financialSummary} />
+        ) : (
+          <>
+            <label>Amount received<RequiredMark /><input {...controlProps("amountPaise")} type="number" min="1" value={receiptInput.amount} onChange={(e) => setReceiptInput((current) => ({ ...current, amount: e.target.value }))} /><FieldMessage id={admissionFieldErrorId("amountPaise")} message={errorFor("amountPaise")} /></label>
+            <label>Received date/time<RequiredMark /><input {...controlProps("receivedAt")} type="datetime-local" value={receiptInput.receivedAt} onChange={(e) => setReceiptInput((current) => ({ ...current, receivedAt: e.target.value }))} /><FieldMessage id={admissionFieldErrorId("receivedAt")} message={errorFor("receivedAt")} /></label>
+            <label>Payment mode<RequiredMark /><select {...controlProps("paymentMode")} value={receiptInput.paymentMode} onChange={(e) => setReceiptInput((current) => ({ ...current, paymentMode: e.target.value }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank_transfer">Bank transfer</option><option value="cheque">Cheque</option><option value="other">Other</option></select><FieldMessage id={admissionFieldErrorId("paymentMode")} message={errorFor("paymentMode")} /></label>
+            <label>Reference<input {...controlProps("paymentReference")} value={receiptInput.paymentReference} onChange={(e) => setReceiptInput((current) => ({ ...current, paymentReference: e.target.value }))} /><FieldMessage id={admissionFieldErrorId("paymentReference")} message={errorFor("paymentReference")} /></label>
+            <label>Notes<input {...controlProps("notes")} value={receiptInput.notes} onChange={(e) => setReceiptInput((current) => ({ ...current, notes: e.target.value }))} /><FieldMessage id={admissionFieldErrorId("notes")} message={errorFor("notes")} /></label>
+            <div className="staff-form-actions">
+              <button type="button" disabled={isRecordingReceipt || isLocked} onClick={() => void handleRecordReceipt()}>{isRecordingReceipt ? "Recording..." : "Record Token Receipt"}</button>
+            </div>
+          </>
+        )}
+      </AdmissionSection>
+
       <section className="staff-card">
-        <div className="section-heading"><h2>H · Review</h2></div>
+        <div className="section-heading"><h2>I · Review</h2></div>
         <div className="detail-grid">
           <Review label="Official identity" value={String(payload.identity.officialFullName)} />
           <Review label="Locality" value={`${payload.locality.locality || "Missing"}, ${payload.locality.city || "Missing"}`} />
@@ -432,6 +562,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
           <Review label="Final fee" value={formatMoney(Number(payload.fee.finalAgreedFeePaise || 0))} />
           <Review label="Discount" value={formatMoney(review.discountPaise)} />
           <Review label="Payment plan" value={String(payload.fee.paymentPlanType)} />
+          <Review label="Token receipt" value={tokenReceipt ? tokenReceipt.receiptNumber : "Required before confirmation"} />
+          <Review label="Ready to Start Classes" value={financialSummary?.classStartEligible ? "Yes" : "No"} />
           <Review label="Regular admission" value={review.canConfirmRegularAdmission ? "Ready" : "Missing required fields"} />
           <Review label="NSDC readiness" value={review.nsdcReady ? "Ready for pending profile" : "Regular admission can continue separately"} />
         </div>
@@ -488,6 +620,34 @@ export function defaultAdmissionPayload(detail?: EnquiryDetail | null): Admissio
       photographTestimonialUse: false,
     },
   };
+}
+
+function defaultReceiptInput() {
+  return {
+    amount: "",
+    receivedAt: formatDateTimeLocal(new Date()),
+    paymentMode: "cash",
+    paymentReference: "",
+    notes: "",
+    idempotencyKey: randomIdempotencyKey(),
+  };
+}
+
+function randomIdempotencyKey() {
+  return `receipt_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+}
+
+function randomPersonLinkKey() {
+  return `person_link_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+}
+
+function formatDateTimeLocal(date: Date) {
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function localDateTimeToIso(value: string) {
+  return value ? new Date(value).toISOString() : new Date().toISOString();
 }
 
 export function admissionReview(payload: AdmissionPayload, selectedCourse?: StaffCourse) {
@@ -683,6 +843,73 @@ export function AdmissionConfigurationMissing({ onRetry }: { onRetry: () => void
   );
 }
 
+export function AdmissionPersonLinkPanel({
+  detail,
+  mobile,
+  searchResult,
+  selectedPersonId,
+  isSearching,
+  isLinking,
+  onMobileChange,
+  onSearch,
+  onSelectPerson,
+  onLinkExisting,
+  onCreateNew,
+}: {
+  detail: EnquiryDetail;
+  mobile: string;
+  searchResult: StudentSearchResult | null;
+  selectedPersonId: string;
+  isSearching: boolean;
+  isLinking: boolean;
+  onMobileChange: (value: string) => void;
+  onSearch: () => void;
+  onSelectPerson: (personId: string) => void;
+  onLinkExisting: () => void;
+  onCreateNew: () => void;
+}) {
+  const candidate = detail.personLinkCandidate;
+  return (
+    <section className="staff-card admission-person-link-card" aria-labelledby="admission-person-link-title">
+      <div className="section-heading">
+        <h2 id="admission-person-link-title">Student record not linked</h2>
+        <p>This enquiry must be linked to a student record before admission can continue.</p>
+      </div>
+      <div className="detail-grid">
+        <Review label="Enquiry" value={String(detail.enquiry.enquiry_number || candidate?.enquiryNumber || "Current enquiry")} />
+        <Review label="Prospect" value={String(candidate?.displayName || detail.enquiry.full_name || "Referral prospect")} />
+        <Review label="Prospect mobile" value={candidate?.mobileDisplay || detail.mobileDisplay || "Contact unavailable"} />
+      </div>
+      <div className="admission-person-link-actions">
+        <label>
+          Search existing by mobile
+          <input value={mobile} onChange={(event) => onMobileChange(event.target.value)} placeholder="10-digit mobile" />
+        </label>
+        <button type="button" className="secondary-button" disabled={isSearching || isLinking} onClick={onSearch}>{isSearching ? "Searching..." : "Find Existing Student"}</button>
+        <button type="button" disabled={isLinking} onClick={onCreateNew}>{isLinking ? "Linking..." : "Create New Student"}</button>
+      </div>
+      {searchResult ? (
+        <div className="admission-person-results" role="list" aria-label="Existing student matches">
+          {searchResult.possiblePeople.length ? searchResult.possiblePeople.map((person) => (
+            <label key={person.person_id} className="match-card" role="listitem">
+              <input type="radio" name="admission-person" checked={selectedPersonId === person.person_id} onChange={() => onSelectPerson(person.person_id)} />
+              <span>
+                <strong>{person.full_name}</strong>
+                <small>{person.student_number || "No Student ID"} · {person.student_status || "Person record"} · mobile ending {person.mobile_last_four || searchResult.mobileLastFour}</small>
+              </span>
+            </label>
+          )) : <p className="staff-empty">No existing student record was found for this mobile.</p>}
+          {searchResult.possiblePeople.length ? (
+            <div className="staff-form-actions">
+              <button type="button" disabled={!selectedPersonId || isLinking} onClick={onLinkExisting}>{isLinking ? "Linking..." : "Link this student"}</button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export function AdmissionLockedFieldset({ isLocked, children }: { isLocked: boolean; children: ReactNode }) {
   return <fieldset className="admission-locked-fieldset" disabled={isLocked}>{children}</fieldset>;
 }
@@ -798,6 +1025,9 @@ export function AdmissionSuccess({ confirmation }: { confirmation: AdmissionConf
         <Review label="Enrolment number" value={confirmation.enrolmentNumber} />
         <Review label="Enquiry" value={confirmation.enquiryNumber} />
       </section>
+      <AdmissionSection title="Financial summary">
+        <FinancialSummary summary={confirmation.financialSummary} fallbackFinalFee={confirmation.financialSummary.finalAgreedFeePaise} />
+      </AdmissionSection>
       <a className="button-link" href={`/app/students/${confirmation.studentId}`}>Open student profile</a>
     </div>
   );
@@ -809,6 +1039,36 @@ function AdmissionSection({ title, children }: { title: string; children: ReactN
 
 function Review({ label, value }: { label: string; value: string }) {
   return <div><small>{label}</small><strong>{value}</strong></div>;
+}
+
+function FinancialSummary({ summary, fallbackFinalFee }: { summary: AdmissionFinancialSummary | null; fallbackFinalFee: number }) {
+  const finalFee = summary?.finalAgreedFeePaise ?? fallbackFinalFee;
+  return (
+    <div className="detail-grid">
+      <Review label="Final Agreed Fee" value={formatMoney(finalFee)} />
+      <Review label="First Instalment Required" value={formatMoney(summary?.firstInstalmentRequiredPaise ?? finalFee)} />
+      <Review label="Token / Amount Received" value={formatMoney(summary?.totalReceivedPaise ?? 0)} />
+      <Review label="Pending before classes start" value={formatMoney(summary?.firstInstalmentBalancePaise ?? finalFee)} />
+      <Review label="Overall Balance" value={formatMoney(summary?.overallBalancePaise ?? finalFee)} />
+      <Review label="Ready to Start Classes" value={summary?.classStartEligible ? "Yes" : "No"} />
+    </div>
+  );
+}
+
+function ReceiptRecorded({ summary }: { summary: AdmissionFinancialSummary | null }) {
+  const receipt = summary?.tokenReceipt;
+  if (!receipt) return null;
+  return (
+    <div className="detail-grid">
+      <Review label="Receipt No." value={receipt.receiptNumber} />
+      <Review label="Amount" value={formatMoney(receipt.amountPaise)} />
+      <Review label="Mode" value={paymentModeLabel(receipt.paymentMode)} />
+      <Review label="Date/Time" value={formatDisplayDateTime(receipt.receivedAt)} />
+      <Review label="Reference" value={receipt.paymentReference || "Not recorded"} />
+      <Review label="Status" value="Recorded" />
+      <p className="notice notice--success">Token receipt recorded. Admission can now be confirmed once all other admission requirements are complete.</p>
+    </div>
+  );
 }
 
 function requiredDeclarations(nsdc: boolean): Array<[keyof AdmissionPayload["declarations"], string]> {
@@ -846,6 +1106,22 @@ function paymentPlanLabel(value: string) {
   if (value === "three_instalments") return "Three instalments";
   if (value === "custom") return "Custom";
   return value || "Not selected";
+}
+
+function paymentModeLabel(value: string) {
+  if (value === "upi") return "UPI";
+  if (value === "bank_transfer") return "Bank transfer";
+  return value ? value.replace(/_/g, " ").replace(/^\w/, (letter) => letter.toUpperCase()) : "Not recorded";
+}
+
+function formatDisplayDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Kolkata",
+  }).format(date);
 }
 
 function formatMoney(paise: number) {

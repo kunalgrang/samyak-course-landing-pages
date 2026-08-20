@@ -5,6 +5,8 @@ export const COURSE_ADMIN_ROLES = ["owner", "system_admin", "admin"] as const;
 export const DISCOUNT_APPROVER_ROLES = ["owner"] as const;
 export const ADMISSION_STAFF_ROLES = ["owner", "system_admin", "admin", "counsellor", "admission_admin"] as const;
 export const SENSITIVE_ADMISSION_ROLES = ["owner", "system_admin", "admission_admin"] as const;
+export const RECEIPT_RECORDER_ROLES = ["owner", "system_admin", "admin", "admission_admin", "counsellor"] as const;
+export const RECEIPT_BACKDATE_ROLES = ["owner", "system_admin", "admin", "admission_admin"] as const;
 
 export type StaffContext = {
   loginAccountId: string;
@@ -22,4 +24,12 @@ export async function requireStaffRoles(c: AppContext, allowedRoles: readonly st
     activePersonId: session.record.active_person_id,
     roles,
   };
+}
+
+export function canRecordReceipts(staff: Pick<StaffContext, "roles">) {
+  return staff.roles.some((role) => RECEIPT_RECORDER_ROLES.includes(role as (typeof RECEIPT_RECORDER_ROLES)[number]));
+}
+
+export function canBackdateReceipts(staff: Pick<StaffContext, "roles">) {
+  return staff.roles.some((role) => RECEIPT_BACKDATE_ROLES.includes(role as (typeof RECEIPT_BACKDATE_ROLES)[number]));
 }

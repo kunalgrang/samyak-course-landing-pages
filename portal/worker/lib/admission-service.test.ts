@@ -2,7 +2,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AppContext } from "./http";
 import type { StaffContext } from "./staff-auth";
 import type { WorkerBindings } from "../bindings";
@@ -12,6 +12,7 @@ import {
   decideDiscountApproval,
   getAdmissionConfiguration,
   listDiscountApprovals,
+  recordAdmissionReceipt,
   requestDiscountApproval,
   saveAdmissionDraft,
   validateAdmissionDraftPayload,
@@ -301,6 +302,33 @@ describe("admission configuration defaults migration", () => {
   });
 });
 
+describe("admission first receipt migration", () => {
+  it("replays fresh through 0019 with receipt and instalment constraints", () => {
+    const db = new SqliteD1();
+    applyMigrations(db);
+
+    expect(row(db, "select name from sqlite_master where type = 'table' and name = 'receipts'")).toMatchObject({ name: "receipts" });
+    expect(row(db, "select name from sqlite_master where type = 'table' and name = 'fee_agreement_instalments'")).toMatchObject({ name: "fee_agreement_instalments" });
+    expect(row(db, "select name from sqlite_master where type = 'index' and name = 'receipts_one_preconfirm_token_per_draft'")).toMatchObject({ name: "receipts_one_preconfirm_token_per_draft" });
+    expect(() => db.database.exec("insert into fee_agreement_instalments (id, fee_agreement_id, instalment_number, amount_paise, created_at) values ('fi_bad', 'missing', 1, 0, '2026-08-01T00:00:00.000Z')")).toThrow();
+    db.close();
+  });
+
+  it("replays upgrade from 0018 to 0019 without destructive existing-data changes", () => {
+    const db = new SqliteD1();
+    applyMigrations(db, "0018_enquiry_follow_up_crm.sql");
+    seedOrganisation(db, "org_samyak");
+    const before = count(db, "organisations where id = 'org_samyak'");
+
+    applyMigrationFile(db, "0019_admission_first_receipts.sql");
+
+    expect(count(db, "organisations where id = 'org_samyak'")).toBe(before);
+    expect(row(db, "select name from sqlite_master where type = 'table' and name = 'receipts'")).toMatchObject({ name: "receipts" });
+    expect(row(db, "select name from sqlite_master where type = 'index' and name = 'receipts_idempotency_unique'")).toMatchObject({ name: "receipts_idempotency_unique" });
+    db.close();
+  });
+});
+
 describe("confirmAdmission service integration", () => {
   it("creates the first admission and persists all primary records", async () => {
     const db = testDb();
@@ -316,11 +344,215 @@ describe("confirmAdmission service integration", () => {
     expect(count(db, "students")).toBe(1);
     expect(count(db, "enrolments")).toBe(1);
     expect(count(db, "fee_agreements")).toBe(1);
+    expect(count(db, "receipts")).toBe(1);
+    expect(count(db, "fee_agreement_instalments")).toBe(2);
+    expect(row(db, "select enrolment_id, fee_agreement_id from receipts")).toMatchObject({ enrolment_id: confirmed.result.enrolmentId });
+    expect(confirmed.result.financialSummary).toMatchObject({
+      finalAgreedFeePaise: 5000000,
+      firstInstalmentRequiredPaise: 2500000,
+      totalReceivedPaise: 50000,
+      firstInstalmentBalancePaise: 2450000,
+      classStartEligible: false,
+    });
     expect(row(db, "select status, converted_enrolment_id from enquiries where id = 'enq_first'")).toMatchObject({
       status: "converted",
       converted_enrolment_id: confirmed.result.enrolmentId,
     });
     expect(row(db, "select status from admission_drafts where enquiry_id = 'enq_first'")).toMatchObject({ status: "confirmed" });
+    db.close();
+  });
+
+  it("blocks confirmation until exactly one first receipt is recorded", async () => {
+    const db = testDb();
+    const c = context(db);
+    await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+
+    const blocked = await confirmAdmission(c, staff, "enq_first");
+    expect(blocked).toMatchObject({ ok: false, status: 400, code: "first_receipt_required" });
+    expect(count(db, "enrolments")).toBe(0);
+    db.close();
+  });
+
+  it("enforces one pre-confirmation token receipt and idempotent retry", async () => {
+    const db = testDb();
+    const c = context(db);
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+
+    const first = await recordTokenReceipt(c, "enq_first", draft.draftId, 50000);
+    const retry = await recordTokenReceipt(c, "enq_first", draft.draftId, 50000);
+    expect(retry.receipt.id).toBe(first.receipt.id);
+    const second = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 100000,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "cash",
+      idempotencyKey: "different_token_key",
+    });
+
+    expect(second).toMatchObject({ ok: false, status: 409, code: "first_receipt_already_recorded" });
+    expect(count(db, "receipts")).toBe(1);
+    db.close();
+  });
+
+  it("rejects idempotency payload conflicts and invalid receipt amounts", async () => {
+    const db = testDb();
+    const c = context(db);
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+    await recordTokenReceipt(c, "enq_first", draft.draftId, 50000);
+
+    const conflict = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 60000,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "cash",
+      idempotencyKey: "token_enq_first_50000_acct_staff",
+    });
+    expect(conflict).toMatchObject({ ok: false, status: 409, code: "idempotency_conflict" });
+
+    seedEnquiry(db, { id: "enq_second", personId: "person_asha", number: "ENQ-SION-2026-003" });
+    const secondDraft = await createAdmissionDraft(c, "enq_second", validPayload(), { recordReceipt: false });
+    const overpay = await recordAdmissionReceipt(c, staff, "enq_second", {
+      admissionDraftId: secondDraft.draftId,
+      amountPaise: 5000001,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "cash",
+      idempotencyKey: "token_overpay",
+    });
+    expect(overpay).toMatchObject({ ok: false, status: 400, code: "receipt_exceeds_final_fee" });
+
+    const zero = await recordAdmissionReceipt(c, staff, "enq_second", {
+      admissionDraftId: secondDraft.draftId,
+      amountPaise: 0,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "cash",
+      idempotencyKey: "token_zero",
+    } as never);
+    expect(zero).toMatchObject({ ok: false, status: 400, code: "invalid_receipt_amount" });
+    db.close();
+  });
+
+  it("returns the same receipt when an idempotent retry omitted receivedAt", async () => {
+    const db = testDb();
+    const c = context(db);
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+
+    const first = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      paymentMode: "cash",
+      idempotencyKey: "token_without_date",
+    });
+    const retry = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      paymentMode: "cash",
+      idempotencyKey: "token_without_date",
+    });
+
+    expect(first.ok).toBe(true);
+    expect(retry.ok).toBe(true);
+    if (!first.ok || !retry.ok) throw new Error("idempotent receipt failed");
+    expect(retry.receipt.id).toBe(first.receipt.id);
+    expect(count(db, "receipts")).toBe(1);
+    db.close();
+  });
+
+  it("uses the branch timezone for the receipt number year", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2027-01-01T00:30:00.000Z"));
+    const db = testDb();
+    try {
+      const c = context(db);
+      const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+
+      const receipt = await recordAdmissionReceipt(c, staff, "enq_first", {
+        admissionDraftId: draft.draftId,
+        amountPaise: 50000,
+        receivedAt: "2026-12-31T20:00:00.000Z",
+        paymentMode: "cash",
+        idempotencyKey: "token_ist_rollover",
+      });
+
+      expect(receipt.ok).toBe(true);
+      if (!receipt.ok) throw new Error(receipt.message);
+      expect(receipt.receipt.receiptNumber).toContain("RCP-SION-2027-");
+    } finally {
+      db.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("applies mode/reference, backdate and role rules to receipt recording", async () => {
+    const db = testDb();
+    const c = context(db);
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+
+    const noReference = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "upi",
+      idempotencyKey: "token_upi_no_ref",
+    });
+    expect(noReference).toMatchObject({ ok: false, status: 400, code: "payment_reference_required" });
+
+    const telecaller = staffForRole("telecaller", "acct_staff");
+    const forbidden = await recordAdmissionReceipt(c, telecaller, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      paymentMode: "cash",
+      idempotencyKey: "token_telecaller",
+    });
+    expect(forbidden).toMatchObject({ ok: false, status: 403, code: "forbidden" });
+    db.close();
+  });
+
+  it("denies receipt recording when the staff grant belongs to another branch", async () => {
+    const db = testDb();
+    const c = context(db);
+    seedBranch(db, "branch_wadala", "WAD");
+    db.database.exec("update login_account_roles set branch_id = 'branch_wadala' where login_account_id = 'acct_staff'");
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+
+    const result = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      paymentMode: "cash",
+      idempotencyKey: "token_wrong_branch",
+    });
+
+    expect(result).toMatchObject({ ok: false, status: 403, code: "forbidden" });
+    expect(count(db, "receipts")).toBe(0);
+    db.close();
+  });
+
+  it("allows counsellor current-day receipts and blocks arbitrary backdates in Asia/Kolkata", async () => {
+    const db = testDb();
+    const c = context(db);
+    const counsellor = { ...staffForRole("counsellor", "acct_staff"), activePersonId: "person_staff" };
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 36 * 60 * 60 * 1000);
+
+    const sameDay = await recordAdmissionReceipt(c, counsellor, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      receivedAt: now.toISOString(),
+      paymentMode: "cash",
+      idempotencyKey: "token_same_day_counsellor",
+    });
+    expect(sameDay.ok).toBe(true);
+
+    seedEnquiry(db, { id: "enq_backdate", personId: "person_asha", number: "ENQ-SION-2026-004" });
+    const backdateDraft = await createAdmissionDraft(c, "enq_backdate", validPayload(), { recordReceipt: false });
+    const backdate = await recordAdmissionReceipt(c, counsellor, "enq_backdate", {
+      admissionDraftId: backdateDraft.draftId,
+      amountPaise: 50000,
+      receivedAt: yesterday.toISOString(),
+      paymentMode: "cash",
+      idempotencyKey: "token_yesterday_counsellor",
+    });
+    expect(backdate).toMatchObject({ ok: false, status: 403, code: "receipt_backdate_forbidden" });
     db.close();
   });
 
@@ -466,11 +698,12 @@ describe("confirmAdmission service integration", () => {
   it("recovers below-floor approval using locked approval values after Course Master floor changes", async () => {
     const db = testDb();
     const c = context(db);
-    await createAdmissionDraft(c, "enq_first", belowFloorPayload());
+    const draft = await createAdmissionDraft(c, "enq_first", belowFloorPayload(), { recordReceipt: false });
     const requested = await requestDiscountApproval(c, staff, "enq_first");
     expect(requested.ok).toBe(true);
     if (!requested.ok) throw new Error(requested.message);
     await decideDiscountApproval(c, staffForRole("owner", "acct_owner"), requested.approvalId, "approved");
+    await recordTokenReceipt(c, "enq_first", draft.draftId);
     db.failOnceSqlIncludes = "insert into fee_agreements";
 
     await expect(confirmAdmission(c, staff, "enq_first")).rejects.toThrow("Simulated D1 write failure");
@@ -528,7 +761,7 @@ describe("confirmAdmission service integration", () => {
     const c = context(db);
     const payload = validPayload();
     payload.course.branchId = "branch_tampered";
-    await createAdmissionDraft(c, "enq_first", payload);
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
 
     const confirmed = await confirmAdmission(c, staff, "enq_first");
     expect(confirmed.ok).toBe(false);
@@ -544,7 +777,7 @@ describe("confirmAdmission service integration", () => {
     const payload = validPayload();
     payload.fee.paymentPlanType = "custom";
     payload.fee.numberOfInstalments = 4;
-    await createAdmissionDraft(c, "enq_first", payload);
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
 
     const confirmed = await confirmAdmission(c, staff, "enq_first");
     expect(confirmed.ok).toBe(false);
@@ -557,7 +790,7 @@ describe("confirmAdmission service integration", () => {
     const db = testDb();
     const c = context(db);
     db.database.exec("update courses set duration_label = '1 month', duration_months = 1 where id = 'course_full_stack'");
-    await createAdmissionDraft(c, "enq_first");
+    await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
 
     const confirmed = await confirmAdmission(c, staff, "enq_first");
 
@@ -589,7 +822,7 @@ describe("confirmAdmission service integration", () => {
     payload.fee.finalAgreedFeePaise = 3500000;
     payload.fee.discountReason = "Merit scholarship";
     payload.fee.discountReasonCode = "scholarship_financial_support";
-    await createAdmissionDraft(c, "enq_first", payload);
+    const draft = await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
 
     const blocked = await confirmAdmission(c, staff, "enq_first");
     expect(blocked.ok).toBe(false);
@@ -602,6 +835,7 @@ describe("confirmAdmission service integration", () => {
     const owner = staffForRole("owner", "acct_owner");
     const decided = await decideDiscountApproval(c, owner, requested.approvalId, "approved");
     expect(decided.ok).toBe(true);
+    await recordTokenReceipt(c, "enq_first", draft.draftId);
 
     await expectOk(confirmAdmission(c, staff, "enq_first"));
     expect(row(db, "select final_agreed_fee_paise, discount_approved_by, discount_approval_id from fee_agreements")).toMatchObject({
@@ -615,7 +849,7 @@ describe("confirmAdmission service integration", () => {
   it.each(["admin", "system_admin", "admission_admin", "counsellor"])("rejects %s discount decisions at the service boundary", async (role) => {
     const db = testDb();
     const c = context(db);
-    await createAdmissionDraft(c, "enq_first", belowFloorPayload());
+    await createAdmissionDraft(c, "enq_first", belowFloorPayload(), { recordReceipt: false });
     const requested = await requestDiscountApproval(c, staff, "enq_first");
     expect(requested.ok).toBe(true);
     if (!requested.ok) throw new Error(requested.message);
@@ -669,7 +903,7 @@ describe("confirmAdmission service integration", () => {
     const db = testDb();
     const c = context(db);
     const payload = belowFloorPayload();
-    await createAdmissionDraft(c, "enq_first", payload);
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
     const requested = await requestDiscountApproval(c, staff, "enq_first");
     expect(requested.ok).toBe(true);
     if (!requested.ok) throw new Error(requested.message);
@@ -690,7 +924,7 @@ describe("confirmAdmission service integration", () => {
     const db = testDb();
     const c = context(db);
     const payload = belowFloorPayload();
-    await createAdmissionDraft(c, "enq_first", payload);
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
     const requested = await requestDiscountApproval(c, staff, "enq_first");
     expect(requested.ok).toBe(true);
     if (!requested.ok) throw new Error(requested.message);
@@ -706,7 +940,7 @@ describe("confirmAdmission service integration", () => {
   it("deduplicates concurrent identical approval requests to one active fingerprint", async () => {
     const db = testDb();
     const c = context(db);
-    await createAdmissionDraft(c, "enq_first", belowFloorPayload());
+    await createAdmissionDraft(c, "enq_first", belowFloorPayload(), { recordReceipt: false });
 
     const [first, second] = await Promise.all([requestDiscountApproval(c, staff, "enq_first"), requestDiscountApproval(c, staff, "enq_first")]);
     expect(first.ok).toBe(true);
@@ -720,7 +954,7 @@ describe("confirmAdmission service integration", () => {
   it("returns commercial snapshot values in the approval queue", async () => {
     const db = testDb();
     const c = context(db);
-    await createAdmissionDraft(c, "enq_first", belowFloorPayload());
+    await createAdmissionDraft(c, "enq_first", belowFloorPayload(), { recordReceipt: false });
     const requested = await requestDiscountApproval(c, staff, "enq_first");
     expect(requested.ok).toBe(true);
 
@@ -740,7 +974,7 @@ describe("confirmAdmission service integration", () => {
     const db = testDb();
     const c = context(db);
     db.database.exec("update courses set admission_configuration_complete = 0 where id = 'course_full_stack'");
-    await createAdmissionDraft(c, "enq_first");
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
 
     const blocked = await confirmAdmission(c, staff, "enq_first");
     expect(blocked.ok).toBe(false);
@@ -748,6 +982,7 @@ describe("confirmAdmission service integration", () => {
     expect(blocked.fieldErrors?.["course.courseId"]?.[0]).toContain("requires Course Master configuration");
 
     db.database.exec("update courses set admission_configuration_complete = 1 where id = 'course_full_stack'");
+    await recordTokenReceipt(c, "enq_first", draft.draftId);
     await expectOk(confirmAdmission(c, staff, "enq_first"));
     db.close();
   });
@@ -885,11 +1120,29 @@ function belowFloorPayload() {
   return payload;
 }
 
-async function createAdmissionDraft(c: AppContext, enquiryId: string, payload = validPayload()) {
+async function createAdmissionDraft(c: AppContext, enquiryId: string, payload = validPayload(), options: { recordReceipt?: boolean; tokenAmountPaise?: number } = {}) {
   const saved = await saveAdmissionDraft(c, staff, enquiryId, { payload, currentStep: "review" });
   expect(saved.ok).toBe(true);
   if (!saved.ok) throw new Error(saved.message);
+  if (options.recordReceipt !== false) {
+    await recordTokenReceipt(c, enquiryId, saved.draftId, options.tokenAmountPaise ?? 50000);
+  }
   return saved;
+}
+
+async function recordTokenReceipt(c: AppContext, enquiryId: string, admissionDraftId: string, amountPaise = 50000, actor = staff) {
+  const receipt = await recordAdmissionReceipt(c, actor, enquiryId, {
+    admissionDraftId,
+    amountPaise,
+    receivedAt: "2026-08-01T10:00:00.000Z",
+    paymentMode: "cash",
+    paymentReference: "",
+    notes: "",
+    idempotencyKey: `token_${enquiryId}_${amountPaise}_${actor.loginAccountId}`,
+  });
+  expect(receipt.ok).toBe(true);
+  if (!receipt.ok) throw new Error(receipt.message);
+  return receipt;
 }
 
 async function expectOk(resultPromise: ReturnType<typeof confirmAdmission>) {
@@ -950,6 +1203,8 @@ function seedBase(db: SqliteD1) {
     values ('org_samyak', 'Samyak', 'samyak', 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
     insert into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at)
     values ('branch_sion', 'org_samyak', 'Sion', 'SION', 'Asia/Kolkata', 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+    insert into roles (id, organisation_id, code, name, created_at)
+    values ('role_admission_admin', 'org_samyak', 'admission_admin', 'Admission Admin', '2026-07-21T00:00:00.000Z');
     insert into people (id, organisation_id, home_branch_id, full_name, public_name, date_of_birth, status, created_at, updated_at)
     values
       ('person_staff', 'org_samyak', 'branch_sion', 'Staff User', 'Staff', null, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
@@ -961,6 +1216,8 @@ function seedBase(db: SqliteD1) {
       ('acct_owner', 'org_samyak', 'owner_mobile_hash', 'owner_mobile_hash', '1111', 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
     insert into login_account_roles (login_account_id, role_id, branch_id, created_at)
     select 'acct_owner', roles.id, null, '2026-07-21T00:00:00.000Z' from roles where roles.organisation_id = 'org_samyak' and roles.code = 'owner';
+    insert into login_account_roles (login_account_id, role_id, branch_id, created_at)
+    select 'acct_staff', roles.id, 'branch_sion', '2026-07-21T00:00:00.000Z' from roles where roles.organisation_id = 'org_samyak' and roles.code = 'admission_admin';
     insert into courses (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
     values ('course_full_stack', 'org_samyak', 'FSD', 'Full Stack Development', '6 months', 6, 5000000, 4000000, 1, 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
   `);
