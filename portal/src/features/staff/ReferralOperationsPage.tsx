@@ -190,6 +190,9 @@ export function ReferralOperationsDetailPage({ referralId, onNavigate, isOwner }
 
   async function approveReward() {
     if (!detail || busy) return;
+    const rewardAmount = detail.reward ? paise(detail.reward.cashRewardPaise) : "the configured reward";
+    const confirmed = window.confirm(`Approve ${rewardAmount} for ${detail.referrer.publicName || detail.referrerName} after ${detail.prospectPublicName}'s admission to ${detail.linkedEnrolment?.courseName || detail.courseInterested || "the selected course"}?`);
+    if (!confirmed) return;
     setBusy(true);
     setActionError("");
     try {
@@ -205,6 +208,9 @@ export function ReferralOperationsDetailPage({ referralId, onNavigate, isOwner }
   async function recordPayout(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!detail || busy) return;
+    const rewardAmount = detail.reward ? paise(detail.reward.cashRewardPaise) : "the approved reward";
+    const confirmed = window.confirm(`Record ${rewardAmount} as paid to ${detail.referrer.publicName || detail.referrerName}?`);
+    if (!confirmed) return;
     setBusy(true);
     setActionError("");
     try {

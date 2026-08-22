@@ -10,6 +10,7 @@ import { ADMISSION_STAFF_ROLES, requireStaffRoles, type StaffContext } from "../
 import {
   approveReferralReward,
   getReferralQualification,
+  getReferralQualifications,
   recordReferralRewardPayout,
   referralRewardPayoutSchema,
   type ReferralQualification,
@@ -111,7 +112,8 @@ export function registerStaffReferralRoutes(app: PortalHono) {
       .first<{ count: number }>();
 
     const pageRows = (rows.results || []).slice(0, pagination.limit);
-    const referrals = await Promise.all(pageRows.map((row) => toListItem(c, row)));
+    const qualifications = await getReferralQualifications(c, pageRows.map((row) => row.referral_id));
+    const referrals = await Promise.all(pageRows.map((row) => toListItem(c, row, qualifications.get(row.referral_id))));
     return jsonPlain(c, {
       success: true,
       summary: summarize(referrals),
@@ -257,7 +259,7 @@ async function referralDetail(c: PortalContext, staff: StaffContext, referralId:
   return {
     success: true,
     referral: {
-      ...(await toListItem(c, row)),
+      ...(await toListItem(c, row, qualification || undefined)),
       programmeName: row.referral_programme_name,
       validityDays: Number(row.validity_days || 0),
       referrer: {
@@ -423,6 +425,7 @@ function pushRewardFilter(clauses: string[], params: Array<string | number>, rew
     where receipts.organisation_id = referrals.organisation_id
       and receipts.enrolment_id = enrolments.id
       and receipts.fee_agreement_id = fee_agreements.id
+      and receipts.branch_id = referrals.branch_id
       and receipts.status = 'recorded'
   ), 0)`;
   const qualifyingMinimum = "((fee_agreements.final_agreed_fee_paise * referral_programmes.minimum_fee_percentage + 99) / 100)";
@@ -507,8 +510,7 @@ function listPagination(c: PortalContext) {
   };
 }
 
-async function toListItem(c: PortalContext, row: ReferralListRow) {
-  const qualification = await getReferralQualification(c, row.referral_id);
+async function toListItem(c: PortalContext, row: ReferralListRow, qualification?: ReferralQualification) {
   const state = qualification?.status || qualificationState(row);
   return {
     referralId: row.referral_id,

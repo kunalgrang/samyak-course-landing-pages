@@ -126,6 +126,17 @@ export async function getReferralQualification(c: AppContext, referralId: string
   return qualificationFromRow(row, slabs);
 }
 
+export async function getReferralQualifications(c: AppContext, referralIds: string[]) {
+  const uniqueIds = [...new Set(referralIds)].filter(Boolean);
+  const result = new Map<string, ReferralQualification>();
+  if (uniqueIds.length === 0) return result;
+  const rows = await qualificationRows(c, uniqueIds);
+  const ruleSetIds = [...new Set(rows.map((row) => row.reward_rule_set_id).filter((value): value is string => Boolean(value)))];
+  const slabsByRuleSet = await activeSlabsByRuleSet(c, ruleSetIds);
+  for (const row of rows) result.set(row.referral_id, qualificationFromRow(row, slabsByRuleSet.get(row.reward_rule_set_id || "") || []));
+  return result;
+}
+
 export async function approveReferralReward(c: AppContext, staff: StaffContext, referralId: string): Promise<{ ok: true; qualification: ReferralQualification; idempotent: boolean } | ServiceFailure> {
   if (!canApproveReferralRewards(staff)) return { ok: false, status: 403, code: "forbidden", message: "Only the owner can approve referral rewards." };
   const row = await qualificationRow(c, referralId);
@@ -251,7 +262,7 @@ export async function recordReferralRewardPayout(
     const replayed = await getReferralQualification(c, referralId);
     return { ok: true, qualification: replayed!, payout: replayed!.payout!, idempotent: true };
   }
-  if (qualification.payout) return { ok: true, qualification, payout: qualification.payout, idempotent: true };
+  if (qualification.payout) return { ok: false, status: 409, code: "reward_already_paid", message: "This referral reward payout has already been recorded." };
 
   const now = new Date().toISOString();
   const payoutId = createOpaqueId("rrpay");
@@ -311,7 +322,14 @@ export async function recordReferralRewardPayout(
 }
 
 async function qualificationRow(c: AppContext, referralId: string) {
-  return c.env.DB.prepare(
+  const rows = await qualificationRows(c, [referralId]);
+  return rows[0] || null;
+}
+
+async function qualificationRows(c: AppContext, referralIds: string[]) {
+  if (referralIds.length === 0) return [];
+  const placeholders = referralIds.map(() => "?").join(",");
+  const rows = await c.env.DB.prepare(
     `select
        referrals.id as referral_id,
        referrals.organisation_id,
@@ -350,6 +368,7 @@ async function qualificationRow(c: AppContext, referralId: string) {
          where receipts.organisation_id = referrals.organisation_id
            and receipts.enrolment_id = enrolments.id
            and receipts.fee_agreement_id = fee_agreements.id
+           and receipts.branch_id = referrals.branch_id
            and receipts.status = 'recorded'
        ), 0) as total_received_paise
      from referrals
@@ -365,11 +384,11 @@ async function qualificationRow(c: AppContext, referralId: string) {
      left join referral_reward_snapshots on referral_reward_snapshots.referral_id = referrals.id
        and referral_reward_snapshots.enrolment_id = enrolments.id
      left join referral_reward_payouts on referral_reward_payouts.reward_snapshot_id = referral_reward_snapshots.id
-     where referrals.id = ? and referrals.organisation_id = ?
-     limit 1`,
+     where referrals.id in (${placeholders}) and referrals.organisation_id = ?`,
   )
-    .bind(referralId, ORG_ID)
-    .first<QualificationRow>();
+    .bind(...referralIds, ORG_ID)
+    .all<QualificationRow>();
+  return rows.results || [];
 }
 
 async function activeSlabs(c: AppContext, rewardRuleSetId: string) {
@@ -398,6 +417,41 @@ async function activeSlabs(c: AppContext, rewardRuleSetId: string) {
   }));
 }
 
+async function activeSlabsByRuleSet(c: AppContext, rewardRuleSetIds: string[]) {
+  const result = new Map<string, RewardSlab[]>();
+  if (rewardRuleSetIds.length === 0) return result;
+  const placeholders = rewardRuleSetIds.map(() => "?").join(",");
+  const rows = await c.env.DB.prepare(
+    `select id, reward_rule_set_id, min_final_fee_paise, max_final_fee_paise, cash_reward_paise, course_credit_paise, sort_order
+     from referral_reward_slabs
+     where reward_rule_set_id in (${placeholders})
+     order by reward_rule_set_id, sort_order`,
+  )
+    .bind(...rewardRuleSetIds)
+    .all<{
+      id: string;
+      reward_rule_set_id: string;
+      min_final_fee_paise: number;
+      max_final_fee_paise: number | null;
+      cash_reward_paise: number;
+      course_credit_paise: number;
+      sort_order: number;
+    }>();
+  for (const row of rows.results || []) {
+    const slabs = result.get(row.reward_rule_set_id) || [];
+    slabs.push({
+      id: row.id,
+      minFinalFeePaise: Number(row.min_final_fee_paise),
+      maxFinalFeePaise: row.max_final_fee_paise === null ? null : Number(row.max_final_fee_paise),
+      cashRewardPaise: Number(row.cash_reward_paise),
+      courseCreditPaise: Number(row.course_credit_paise),
+      sortOrder: Number(row.sort_order),
+    });
+    result.set(row.reward_rule_set_id, slabs);
+  }
+  return result;
+}
+
 function qualificationFromRow(row: QualificationRow, slabs: RewardSlab[]): ReferralQualification {
   const admitted = Boolean(row.enrolment_id);
   const admittedWithinValidityWindow = admitted && validAdmission(row.admission_date, row.valid_until);
@@ -415,6 +469,7 @@ function qualificationFromRow(row: QualificationRow, slabs: RewardSlab[]): Refer
     admitted
       && row.enrolment_status === "confirmed"
       && row.enrolment_referrer_profile_id === row.referrer_profile_id
+      && row.enrolment_branch_id === row.branch_id
       && row.fee_agreement_id
       && row.fee_agreement_status === "active"
       && admittedWithinValidityWindow
