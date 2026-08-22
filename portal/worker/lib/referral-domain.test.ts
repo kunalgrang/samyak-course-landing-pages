@@ -303,7 +303,8 @@ function applyMigrations(db: DatabaseSync, throughFile?: string) {
       file === "0013_referral_service_integrity.sql" ||
       file === "0014_course_master_and_referral_courses.sql" ||
       file === "0015_add_spoken_english_course.sql" ||
-      file === "0016_legacy_student_import_foundation.sql"
+      file === "0016_legacy_student_import_foundation.sql" ||
+      file === "0020_referral_reward_payout_v1.sql"
     ) continue;
     if (throughFile && file > throughFile) continue;
     applyMigrationFile(db, file);

@@ -621,7 +621,7 @@ export async function fetchDashboardForActiveProfile(c: AppContext, personId: st
   const summary = await c.env.DB.prepare(
     `select
        count(*) as total_referrals,
-       sum(case when status = 'converted' then 1 else 0 end) as successful_admissions,
+       sum(case when referrals.status = 'converted' then 1 else 0 end) as successful_admissions,
        coalesce(sum(referral_reward_snapshots.cash_reward_paise), 0) as cash_reward_paise,
        coalesce(sum(referral_reward_snapshots.course_credit_paise), 0) as course_credit_paise
      from referrals
@@ -643,10 +643,13 @@ export async function fetchDashboardForActiveProfile(c: AppContext, personId: st
        referrals.submitted_at,
        referrals.status,
        coalesce(referral_reward_snapshots.cash_reward_paise, 0) as cash_reward_paise,
-       coalesce(referral_reward_snapshots.course_credit_paise, 0) as course_credit_paise
+       coalesce(referral_reward_snapshots.course_credit_paise, 0) as course_credit_paise,
+       referral_reward_snapshots.approved_at,
+       referral_reward_payouts.payment_date as reward_payment_date
      from referrals
      left join courses on courses.id = referrals.course_interest_id
      left join referral_reward_snapshots on referral_reward_snapshots.referral_id = referrals.id
+     left join referral_reward_payouts on referral_reward_payouts.reward_snapshot_id = referral_reward_snapshots.id
      where referrals.referrer_profile_id = ?
      order by referrals.submitted_at desc, referrals.id desc
      limit ? offset ?`,
@@ -660,23 +663,26 @@ export async function fetchDashboardForActiveProfile(c: AppContext, personId: st
       status: string;
       cash_reward_paise: number;
       course_credit_paise: number;
+      approved_at: string | null;
+      reward_payment_date: string | null;
     }>();
   const items = (referrals.results || []).slice(0, limit).map((row) => {
     const cashReward = Math.round(Number(row.cash_reward_paise || 0) / 100);
     const courseCredit = Math.round(Number(row.course_credit_paise || 0) / 100);
-    const hasRewardSnapshot = cashReward > 0 || courseCredit > 0;
+    const hasRewardSnapshot = Boolean(row.approved_at) || cashReward > 0 || courseCredit > 0;
+    const hasPayout = Boolean(row.reward_payment_date);
     return {
       referralId: row.referral_id,
       prospectPublicName: publicProspectName(row.prospect_name),
       courseInterested: row.course_name || "",
       submissionDate: row.submitted_at.slice(0, 10),
       publicStatus: publicReferralStatus(row.status),
-      rewardStatus: hasRewardSnapshot ? "Calculated" : "Pending",
-      rewardChoice: hasRewardSnapshot ? "Available" : "Pending",
+      rewardStatus: hasPayout ? "Paid" : hasRewardSnapshot ? "Approved" : "Pending",
+      rewardChoice: hasPayout ? "Cash paid" : hasRewardSnapshot ? "Cash reward approved" : "Pending",
       cashReward,
       courseCredit,
       approvedRewardAmount: hasRewardSnapshot ? cashReward : 0,
-      rewardPaymentDate: "",
+      rewardPaymentDate: row.reward_payment_date || "",
     };
   });
   return {

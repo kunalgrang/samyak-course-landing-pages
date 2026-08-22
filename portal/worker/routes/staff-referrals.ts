@@ -8,6 +8,14 @@ import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
 import { ADMISSION_STAFF_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import {
+  approveReferralReward,
+  getReferralQualification,
+  getReferralQualifications,
+  recordReferralRewardPayout,
+  referralRewardPayoutSchema,
+  type ReferralQualification,
+} from "../lib/referral-rewards";
+import {
   calculateMinimumQualifyingPaymentPaise,
   type ReferralStatus,
 } from "../lib/referral-domain";
@@ -23,6 +31,7 @@ type PortalContext = Context<{
 }>;
 
 const MAX_STATUS_BODY_BYTES = 2048;
+const MAX_PAYOUT_BODY_BYTES = 4096;
 const ADMIN_REFERRAL_STATUSES = ["rejected", "cancelled", "closed"] as const;
 
 const statusSchema = z.object({
@@ -103,16 +112,18 @@ export function registerStaffReferralRoutes(app: PortalHono) {
       .first<{ count: number }>();
 
     const pageRows = (rows.results || []).slice(0, pagination.limit);
+    const qualifications = await getReferralQualifications(c, pageRows.map((row) => row.referral_id));
+    const referrals = await Promise.all(pageRows.map((row) => toListItem(c, row, qualifications.get(row.referral_id))));
     return jsonPlain(c, {
       success: true,
-      summary: summarize(pageRows),
+      summary: summarize(referrals),
       pagination: {
         ...pagination,
         total: Number(total?.count || 0),
         hasMore: (rows.results || []).length > pagination.limit,
       },
       filters,
-      referrals: await Promise.all(pageRows.map((row) => toListItem(c, row))),
+      referrals,
     });
   });
 
@@ -163,6 +174,38 @@ export function registerStaffReferralRoutes(app: PortalHono) {
 
     return jsonPlain(c, { success: true, referralId: existing.id, status: parsed.data.status, idempotent: false });
   });
+
+  app.post("/api/staff/referrals/:referralId/reward/approve", async (c) => {
+    const sameOriginError = requireSameOrigin(c);
+    if (sameOriginError) return sameOriginError;
+    const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
+    if (!staff) return forbidden(c);
+    const existing = await scopedReferral(c, staff, c.req.param("referralId"));
+    if (!existing) return jsonError(c, { status: 404, code: "referral_not_found", message: "Referral was not found." });
+    const result = await approveReferralReward(c, staff, existing.id);
+    if (!result.ok) return jsonError(c, serviceFailureJson(result));
+    return jsonPlain(c, { success: true, referralId: existing.id, idempotent: result.idempotent, reward: rewardPayload(result.qualification), qualificationState: result.qualification.status });
+  });
+
+  app.post("/api/staff/referrals/:referralId/reward/payout", async (c) => {
+    const sameOriginError = requireSameOrigin(c);
+    if (sameOriginError) return sameOriginError;
+    const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
+    if (!staff) return forbidden(c);
+    const contentType = c.req.header("Content-Type") || "";
+    if (!contentType.toLowerCase().startsWith("application/json")) return jsonError(c, { status: 415, code: "json_required", message: "Only JSON requests are accepted." });
+    const bodyText = await c.req.raw.text();
+    if (new TextEncoder().encode(bodyText).byteLength > MAX_PAYOUT_BODY_BYTES) {
+      return jsonError(c, { status: 413, code: "request_too_large", message: "Please shorten the payout details." });
+    }
+    const parsed = referralRewardPayoutSchema.safeParse(safeJson(bodyText));
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_payout", message: "Enter valid payout details.", fieldErrors: parsed.error.flatten().fieldErrors });
+    const existing = await scopedReferral(c, staff, c.req.param("referralId"));
+    if (!existing) return jsonError(c, { status: 404, code: "referral_not_found", message: "Referral was not found." });
+    const result = await recordReferralRewardPayout(c, staff, existing.id, parsed.data);
+    if (!result.ok) return jsonError(c, serviceFailureJson(result));
+    return jsonPlain(c, { success: true, referralId: existing.id, idempotent: result.idempotent, reward: rewardPayload(result.qualification), payout: result.payout, qualificationState: result.qualification.status });
+  });
 }
 
 async function referralDetail(c: PortalContext, staff: StaffContext, referralId: string) {
@@ -186,6 +229,7 @@ async function referralDetail(c: PortalContext, staff: StaffContext, referralId:
     .bind(...where.params)
     .first<ReferralDetailRow>();
   if (!row) return null;
+  const qualification = await getReferralQualification(c, referralId);
   const events = await c.env.DB.prepare(
     `select
        referral_status_events.id,
@@ -215,7 +259,7 @@ async function referralDetail(c: PortalContext, staff: StaffContext, referralId:
   return {
     success: true,
     referral: {
-      ...(await toListItem(c, row)),
+      ...(await toListItem(c, row, qualification || undefined)),
       programmeName: row.referral_programme_name,
       validityDays: Number(row.validity_days || 0),
       referrer: {
@@ -228,12 +272,13 @@ async function referralDetail(c: PortalContext, staff: StaffContext, referralId:
         ? {
             feeAgreementId: row.fee_agreement_id,
             finalAgreedFeePaise: Number(row.final_agreed_fee_paise || 0),
-            minimumQualifyingPaymentPaise: Number(row.minimum_qualifying_payment_paise || calculateMinimum(row)),
+            minimumQualifyingPaymentPaise: Number(qualification?.minimumQualifyingPaymentPaise ?? row.minimum_qualifying_payment_paise ?? calculateMinimum(row)),
             paymentPlanType: row.payment_plan_type || "",
-            receivedAmountPaise: null,
-            receivedAmountAvailable: false,
+            receivedAmountPaise: Number(qualification?.totalReceivedPaise || 0),
+            receivedAmountAvailable: true,
           }
         : null,
+      reward: rewardPayload(qualification),
       rewardSlabs: (rewardSlabs.results || []).map((slab) => ({
         id: String(slab.id),
         minFinalFeePaise: Number(slab.min_final_fee_paise || 0),
@@ -339,7 +384,8 @@ function listFromSql() {
      left join students on students.id = enrolments.student_id
      left join courses enrolment_courses on enrolment_courses.id = enrolments.course_id
      left join fee_agreements on fee_agreements.enrolment_id = enrolments.id and fee_agreements.status = 'active'
-     left join referral_reward_snapshots on referral_reward_snapshots.referral_id = referrals.id`;
+     left join referral_reward_snapshots on referral_reward_snapshots.referral_id = referrals.id
+     left join referral_reward_payouts on referral_reward_payouts.reward_snapshot_id = referral_reward_snapshots.id`;
 }
 
 async function listWhere(c: PortalContext, scope: BranchScope, filters: ReturnType<typeof listFilters>) {
@@ -372,7 +418,32 @@ function push(clauses: string[], params: Array<string | number>, clause: string,
 }
 
 function pushRewardFilter(clauses: string[], params: Array<string | number>, rewardStatus: string, now: string) {
-  if (rewardStatus === "payment_data_unavailable") clauses.push("enrolments.id is not null and enrolments.admission_date <= referrals.valid_until");
+  const canonicalAdmission = "enrolments.id is not null and enrolments.referral_id = referrals.id and enrolments.referrer_profile_id = referrals.referrer_profile_id and enrolments.admission_date <= referrals.valid_until";
+  const qualifyingReceiptTotal = `coalesce((
+    select sum(receipts.amount_paise)
+    from receipts
+    where receipts.organisation_id = referrals.organisation_id
+      and receipts.enrolment_id = enrolments.id
+      and receipts.fee_agreement_id = fee_agreements.id
+      and receipts.branch_id = referrals.branch_id
+      and receipts.status = 'recorded'
+  ), 0)`;
+  const qualifyingMinimum = "((fee_agreements.final_agreed_fee_paise * referral_programmes.minimum_fee_percentage + 99) / 100)";
+  const hasMatchingSlab = `exists (
+    select 1
+    from referral_reward_slabs
+    join referral_reward_rule_sets on referral_reward_rule_sets.id = referral_reward_slabs.reward_rule_set_id
+    where referral_reward_rule_sets.referral_programme_id = referrals.referral_programme_id
+      and referral_reward_rule_sets.organisation_id = referrals.organisation_id
+      and referral_reward_rule_sets.status = 'active'
+      and fee_agreements.final_agreed_fee_paise >= referral_reward_slabs.min_final_fee_paise
+      and (referral_reward_slabs.max_final_fee_paise is null or fee_agreements.final_agreed_fee_paise <= referral_reward_slabs.max_final_fee_paise)
+  )`;
+  if (rewardStatus === "payment_data_unavailable") clauses.push(`${canonicalAdmission} and referral_reward_snapshots.id is null and (fee_agreements.id is null or not ${hasMatchingSlab})`);
+  if (rewardStatus === "awaiting_payment") clauses.push(`${canonicalAdmission} and enrolments.status = 'confirmed' and referral_reward_snapshots.id is null and fee_agreements.id is not null and ${hasMatchingSlab} and ${qualifyingReceiptTotal} < ${qualifyingMinimum}`);
+  if (rewardStatus === "qualified") clauses.push(`${canonicalAdmission} and enrolments.status = 'confirmed' and referral_reward_snapshots.id is null and fee_agreements.id is not null and ${hasMatchingSlab} and ${qualifyingReceiptTotal} >= ${qualifyingMinimum}`);
+  if (rewardStatus === "approved") clauses.push("referral_reward_snapshots.id is not null and referral_reward_payouts.id is null");
+  if (rewardStatus === "paid") clauses.push("referral_reward_payouts.id is not null");
   if (rewardStatus === "pending") clauses.push("enrolments.id is null and referrals.valid_until >= ?");
   if (rewardStatus === "expired") {
     clauses.push("((enrolments.id is null and referrals.valid_until < ?) or (enrolments.id is not null and enrolments.admission_date > referrals.valid_until))");
@@ -421,7 +492,7 @@ function listFilters(c: PortalContext) {
   return {
     q: clean(url.searchParams.get("q")),
     status: enumParam(url.searchParams.get("status"), ["submitted", "accepted", "rejected", "active", "converted", "expired", "cancelled", "closed"] as const),
-    rewardStatus: enumParam(url.searchParams.get("rewardStatus"), ["pending", "payment_data_unavailable", "expired"] as const),
+    rewardStatus: enumParam(url.searchParams.get("rewardStatus"), ["pending", "payment_data_unavailable", "awaiting_payment", "qualified", "approved", "paid", "expired"] as const),
     referrerType: enumParam(url.searchParams.get("referrerType"), ["student", "alumni"] as const),
     courseId: clean(url.searchParams.get("courseId")),
     fromDate: dateParam(url.searchParams.get("fromDate")),
@@ -439,8 +510,8 @@ function listPagination(c: PortalContext) {
   };
 }
 
-async function toListItem(c: PortalContext, row: ReferralListRow) {
-  const qualification = qualificationState(row);
+async function toListItem(c: PortalContext, row: ReferralListRow, qualification?: ReferralQualification) {
+  const state = qualification?.status || qualificationState(row);
   return {
     referralId: row.referral_id,
     shortReference: row.referral_id.slice(-8).toUpperCase(),
@@ -458,9 +529,9 @@ async function toListItem(c: PortalContext, row: ReferralListRow) {
     linkedEnquiry: row.enquiry_id ? { id: row.enquiry_id, enquiryNumber: row.enquiry_number || "", status: row.enquiry_status || "" } : null,
     linkedEnrolment: row.enrolment_id ? { id: row.enrolment_id, enrolmentNumber: row.enrolment_number || "", studentNumber: row.student_number || "", status: row.enrolment_status || "", courseName: row.enrolment_course_name || row.course_name || "", admissionDate: row.enrolment_admission_date || "", joiningDate: row.enrolment_joining_date || "" } : null,
     admissionStatus: admissionStatus(row),
-    qualificationState: qualification,
-    rewardStatus: rewardStatus(row, qualification),
-    reward: null,
+    qualificationState: state,
+    rewardStatus: rewardStatus(state),
+    reward: rewardPayload(qualification),
   };
 }
 
@@ -511,10 +582,14 @@ function admissionStatus(row: ReferralListRow) {
   return validityState(row) === "admission_after_expiry" ? "outside_validity" : "done";
 }
 
-function rewardStatus(row: ReferralListRow, qualification: string) {
-  if (qualification === "admitted_payment_data_unavailable") return "Payment data unavailable";
-  if (qualification === "expired") return "Expired";
-  return "Pending";
+function rewardStatus(qualification: string) {
+  if (qualification === "payment_data_unavailable") return "Payment data unavailable";
+  if (qualification === "admission_outside_validity" || qualification === "not_eligible") return "Not eligible";
+  if (qualification === "awaiting_payment") return "Awaiting payment";
+  if (qualification === "qualified") return "Qualified for approval";
+  if (qualification === "approved") return "Approved";
+  if (qualification === "paid") return "Paid";
+  return "Pending admission";
 }
 
 function validityState(row: ReferralListRow) {
@@ -527,23 +602,29 @@ function validityState(row: ReferralListRow) {
   return Date.parse(row.valid_until) >= Date.now() ? "active" : "expired";
 }
 
-function summarize(rows: ReferralListRow[]) {
+type ReferralListItemPayload = Awaited<ReturnType<typeof toListItem>>;
+
+function summarize(rows: ReferralListItemPayload[]) {
   return rows.reduce(
     (summary, row) => {
       summary.totalReferrals += 1;
-      if (row.enrolment_id) summary.admitted += 1;
-      if (qualificationState(row) === "admitted_payment_data_unavailable") summary.paymentDataUnavailable += 1;
-      if (qualificationState(row) === "expired") summary.expired += 1;
+      if (row.linkedEnrolment) summary.admitted += 1;
+      if (row.qualificationState === "awaiting_payment") summary.awaitingPayment += 1;
+      if (row.qualificationState === "qualified") summary.qualified += 1;
+      if (row.qualificationState === "approved") summary.approved += 1;
+      if (row.qualificationState === "paid") summary.paid += 1;
+      if (row.qualificationState === "payment_data_unavailable") summary.paymentDataUnavailable += 1;
+      if (row.qualificationState === "admission_outside_validity" || row.qualificationState === "not_eligible") summary.expired += 1;
       return summary;
     },
-    { totalReferrals: 0, admitted: 0, paymentDataUnavailable: 0, expired: 0 },
+    { totalReferrals: 0, admitted: 0, awaitingPayment: 0, qualified: 0, approved: 0, paid: 0, paymentDataUnavailable: 0, expired: 0 },
   );
 }
 
 function emptyListPayload(pagination: ReturnType<typeof listPagination>) {
   return {
     success: true,
-    summary: { totalReferrals: 0, admitted: 0, paymentDataUnavailable: 0, expired: 0 },
+    summary: { totalReferrals: 0, admitted: 0, awaitingPayment: 0, qualified: 0, approved: 0, paid: 0, paymentDataUnavailable: 0, expired: 0 },
     pagination: { ...pagination, total: 0, hasMore: false },
     filters: {},
     referrals: [],
@@ -583,6 +664,27 @@ function enumParam<T extends readonly string[]>(value: string | null, allowed: T
 
 function nullableString(value: unknown) {
   return typeof value === "string" && value ? value : null;
+}
+
+function rewardPayload(qualification: ReferralQualification | null | undefined) {
+  if (!qualification || (!qualification.rewardSlab && !qualification.rewardSnapshot)) return null;
+  return {
+    slabId: qualification.rewardSnapshot?.slabId || qualification.rewardSlab?.id || "",
+    cashRewardPaise: Number(qualification.rewardAmountPaise || 0),
+    courseCreditPaise: Number(qualification.courseCreditPaise || 0),
+    status: qualification.status,
+    approvedAt: qualification.rewardSnapshot?.approvedAt || null,
+    payout: qualification.payout,
+  };
+}
+
+function serviceFailureJson(result: { status: number; code: string; message: string; fieldErrors?: Record<string, string[]> }) {
+  return {
+    status: result.status as 400 | 401 | 403 | 404 | 409 | 413 | 415,
+    code: result.code,
+    message: result.message,
+    fieldErrors: result.fieldErrors,
+  };
 }
 
 function safeJson(bodyText: string) {

@@ -3,8 +3,10 @@ import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
 import {
+  approveStaffReferralReward,
   getStaffReferralDetail,
   getStaffReferrals,
+  recordStaffReferralRewardPayout,
   type StaffReferralDetail,
   type StaffReferralList,
   type StaffReferralListItem,
@@ -54,7 +56,11 @@ export function ReferralOperationsPage({ onNavigate }: { onNavigate: (path: Rout
           Reward state
           <select value={draft.rewardStatus} onChange={(event) => setDraft({ ...draft, rewardStatus: event.target.value })}>
             <option value="">All reward states</option>
-            <option value="pending">Pending</option>
+            <option value="pending">Pending admission</option>
+            <option value="awaiting_payment">Awaiting payment</option>
+            <option value="qualified">Qualified</option>
+            <option value="approved">Approved</option>
+            <option value="paid">Paid</option>
             <option value="payment_data_unavailable">Payment data unavailable</option>
             <option value="expired">Expired</option>
           </select>
@@ -113,8 +119,9 @@ export function ReferralOperationsContent({
       <section className="metric-grid" aria-label="Referral operations summary">
         <Metric label="Loaded referrals" value={data.summary.totalReferrals} />
         <Metric label="Admitted" value={data.summary.admitted} />
-        <Metric label="Payment data unavailable" value={data.summary.paymentDataUnavailable} />
-        <Metric label="Expired" value={data.summary.expired} />
+        <Metric label="Awaiting payment" value={data.summary.awaitingPayment} />
+        <Metric label="Qualified" value={data.summary.qualified} />
+        <Metric label="Paid" value={data.summary.paid} />
       </section>
 
       <section className="staff-card referral-ops-table-card" aria-labelledby="referral-ops-table-title">
@@ -154,7 +161,7 @@ export function ReferralOperationsContent({
                 <span><strong>{admissionLabel(referral.admissionStatus)}</strong><small>{referral.linkedEnrolment?.enrolmentNumber || "No enrolment"}</small></span>
                 <span><strong>{validityLabel(referral.validityState, referral.validUntil)}</strong><small>90-day admission rule</small></span>
                 <span><strong>{label(referral.qualificationState)}</strong><small>{referral.rewardStatus}</small></span>
-                <span><strong>{referral.rewardStatus}</strong><small>Rewards deferred</small></span>
+                <span><strong>{referral.rewardStatus}</strong><small>{referral.reward ? paise(referral.reward.cashRewardPaise) : "No reward yet"}</small></span>
               </div>
             ))}
           </div>
@@ -170,7 +177,52 @@ export function ReferralOperationsContent({
 }
 
 export function ReferralOperationsDetailPage({ referralId, onNavigate, isOwner }: { referralId: string; onNavigate: (path: RoutePath) => void; isOwner: boolean }) {
-  const { detail, error } = useStaffReferralDetail(referralId);
+  const { detail, error, refresh } = useStaffReferralDetail(referralId);
+  const [actionError, setActionError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [payout, setPayout] = useState({
+    paymentDate: new Date().toISOString().slice(0, 10),
+    paymentMode: "cash" as "cash" | "upi" | "bank_transfer" | "other",
+    paymentReference: "",
+    notes: "",
+    idempotencyKey: `rrp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+  });
+
+  async function approveReward() {
+    if (!detail || busy) return;
+    const rewardAmount = detail.reward ? paise(detail.reward.cashRewardPaise) : "the configured reward";
+    const confirmed = window.confirm(`Approve ${rewardAmount} for ${detail.referrer.publicName || detail.referrerName} after ${detail.prospectPublicName}'s admission to ${detail.linkedEnrolment?.courseName || detail.courseInterested || "the selected course"}?`);
+    if (!confirmed) return;
+    setBusy(true);
+    setActionError("");
+    try {
+      await approveStaffReferralReward(detail.referralId);
+      await refresh();
+    } catch (caught) {
+      setActionError(errorMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function recordPayout(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!detail || busy) return;
+    const rewardAmount = detail.reward ? paise(detail.reward.cashRewardPaise) : "the approved reward";
+    const confirmed = window.confirm(`Record ${rewardAmount} as paid to ${detail.referrer.publicName || detail.referrerName}?`);
+    if (!confirmed) return;
+    setBusy(true);
+    setActionError("");
+    try {
+      await recordStaffReferralRewardPayout(detail.referralId, payout);
+      setPayout((current) => ({ ...current, idempotencyKey: `rrp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}` }));
+      await refresh();
+    } catch (caught) {
+      setActionError(errorMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   if (error) return <ErrorState title="Could not load referral" message="This referral may be outside your staff scope." />;
   if (!detail) return <LoadingState label="Loading referral detail" />;
@@ -224,14 +276,14 @@ export function ReferralOperationsDetailPage({ referralId, onNavigate, isOwner }
       <section className="staff-card">
         <div className="section-heading">
           <h2>Payment Qualification</h2>
-          <span>Receipts system pending</span>
+          <span>{label(detail.qualificationState)}</span>
         </div>
         {detail.fee ? (
           <div className="detail-grid referral-fee-grid">
             <DetailField label="Final agreed fee" value={paise(detail.fee.finalAgreedFeePaise)} />
             <DetailField label="Reward threshold" value="50%" />
             <DetailField label="Required amount" value={paise(detail.fee.minimumQualifyingPaymentPaise)} />
-            <DetailField label="Amount received" value="Unavailable" />
+            <DetailField label="Amount received" value={detail.fee.receivedAmountAvailable ? paise(detail.fee.receivedAmountPaise) : "Unavailable"} />
             <DetailField label="Qualification" value={label(detail.qualificationState)} />
           </div>
         ) : (
@@ -246,11 +298,41 @@ export function ReferralOperationsDetailPage({ referralId, onNavigate, isOwner }
         </div>
         <div className="detail-grid referral-fee-grid">
           <DetailField label="Current status" value={detail.rewardStatus} />
-          <DetailField label="Cash reward if qualified" value={rewardOption(detail.rewardSlabs, "cash")} />
-          <DetailField label="Course credit if qualified" value={rewardOption(detail.rewardSlabs, "credit")} />
-          <DetailField label="Approval / payout" value="Deferred" />
+          <DetailField label="Cash reward" value={detail.reward ? paise(detail.reward.cashRewardPaise) : rewardOption(detail.rewardSlabs, "cash")} />
+          <DetailField label="Course credit" value={detail.reward ? paise(detail.reward.courseCreditPaise) : rewardOption(detail.rewardSlabs, "credit")} />
+          <DetailField label="Approval" value={detail.reward?.approvedAt ? formatDateTime(detail.reward.approvedAt) : "Not approved"} />
+          <DetailField label="Payout" value={detail.reward?.payout ? `${paise(detail.reward.payout.amountPaise)} on ${formatDate(detail.reward.payout.paymentDate)}` : "Not paid"} />
         </div>
-        <p className="staff-empty">Reward approval and payout actions are not enabled because receipts and audited reward fulfilment are future modules.</p>
+        {actionError ? <p className="form-error">{actionError}</p> : null}
+        {isOwner && detail.qualificationState === "qualified" ? (
+          <button type="button" className="primary-button referral-inline-action" disabled={busy} onClick={approveReward}>Approve Reward</button>
+        ) : null}
+        {isOwner && detail.qualificationState === "approved" && detail.reward ? (
+          <form className="referral-payout-form" onSubmit={recordPayout}>
+            <label>
+              Payout date
+              <input type="date" value={payout.paymentDate} onChange={(event) => setPayout({ ...payout, paymentDate: event.target.value })} />
+            </label>
+            <label>
+              Mode
+              <select value={payout.paymentMode} onChange={(event) => setPayout({ ...payout, paymentMode: event.target.value as typeof payout.paymentMode })}>
+                <option value="cash">Cash</option>
+                <option value="upi">UPI</option>
+                <option value="bank_transfer">Bank transfer</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label>
+              Reference
+              <input value={payout.paymentReference} onChange={(event) => setPayout({ ...payout, paymentReference: event.target.value })} />
+            </label>
+            <label>
+              Notes
+              <input value={payout.notes} onChange={(event) => setPayout({ ...payout, notes: event.target.value })} />
+            </label>
+            <button type="submit" className="primary-button" disabled={busy}>Record Cash Payout</button>
+          </form>
+        ) : null}
       </section>
 
       <section className="staff-card">
@@ -307,6 +389,11 @@ function useStaffReferralDetail(referralId: string) {
   const [detail, setDetail] = useState<StaffReferralDetail | null>(null);
   const [error, setError] = useState(false);
 
+  async function refresh() {
+    const next = await getStaffReferralDetail(referralId);
+    setDetail(next);
+  }
+
   useEffect(() => {
     let active = true;
     setDetail(null);
@@ -323,7 +410,7 @@ function useStaffReferralDetail(referralId: string) {
     };
   }, [referralId]);
 
-  return { detail, error };
+  return { detail, error, refresh };
 }
 
 export function ContactCell({ contact, compact = false }: { contact: StaffReferralListItem["prospectContact"]; compact?: boolean }) {
@@ -404,4 +491,8 @@ function rewardOption(slabs: StaffReferralDetail["rewardSlabs"], type: "cash" | 
   const min = Math.min(...values);
   const max = Math.max(...values);
   return min === max ? paise(min) : `${paise(min)}-${paise(max)}`;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error && error.message ? error.message : "The reward action could not be completed.";
 }
