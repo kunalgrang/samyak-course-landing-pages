@@ -436,10 +436,40 @@ const studentProfileSchema = z.object({
   student: z.record(z.string(), z.unknown()),
   primaryMobile: z.string().nullable(),
   mobileDisplay: z.string().nullable(),
+  canMaintainContact: z.boolean().default(false),
+  contactVersion: z.string().nullable().default(null),
+  contactHistory: z.array(z.object({
+    mobileDisplay: z.string(),
+    lastFour: z.string().nullable(),
+    isPrimary: z.boolean(),
+    status: z.string(),
+    changedAt: z.string(),
+  })).default([]),
   locality: z.record(z.string(), z.unknown()).nullable(),
   education: z.record(z.string(), z.unknown()).nullable(),
   enrolments: z.array(z.record(z.string(), z.unknown())),
   enquiries: z.array(z.record(z.string(), z.unknown())),
+});
+
+const sharedMobileMatchSchema = z.object({
+  personId: z.string(),
+  displayName: z.string(),
+  studentId: z.string().nullable(),
+  studentNumber: z.string().nullable(),
+  status: z.string().nullable(),
+});
+
+const studentMobileChangeResponseSchema = z.object({
+  success: z.literal(true),
+  studentId: z.string(),
+  studentNumber: z.string(),
+  personId: z.string(),
+  idempotent: z.boolean(),
+  mobileDisplay: z.string(),
+  oldLastFour: z.string().nullable(),
+  newLastFour: z.string(),
+  sharedMobileMatches: z.array(sharedMobileMatchSchema),
+  otpProfiles: z.number(),
 });
 
 const admissionConfigurationSchema = z.object({
@@ -651,6 +681,8 @@ export type AdmissionReceipt = NonNullable<AdmissionFinancialSummary["tokenRecei
 export type PaymentLedger = z.infer<typeof paymentLedgerSchema>;
 export type PaymentReceipt = z.infer<typeof paymentReceiptSchema>;
 export type StaffStudentProfile = z.infer<typeof studentProfileSchema>;
+export type StudentMobileChangeResponse = z.infer<typeof studentMobileChangeResponseSchema>;
+export type SharedMobileMatch = z.infer<typeof sharedMobileMatchSchema>;
 export type StudentSearchPerson = StudentSearchResult["possiblePeople"][number];
 export type AdmissionConfiguration = z.infer<typeof admissionConfigurationSchema>;
 export type AdmissionOptionValue = AdmissionConfiguration["options"][number];
@@ -667,12 +699,14 @@ export type StaffReferralDetail = z.infer<typeof staffReferralDetailSchema>["ref
 export class ApiError extends Error {
   code?: string;
   fieldErrors?: FieldErrors;
+  details?: Record<string, unknown>;
 
-  constructor(message: string, fieldErrors?: FieldErrors, code?: string) {
+  constructor(message: string, fieldErrors?: FieldErrors, code?: string, details?: Record<string, unknown>) {
     super(message);
     this.name = "ApiError";
     this.fieldErrors = fieldErrors;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -845,6 +879,10 @@ export async function getStaffStudentProfile(studentId: string) {
   return getJson(`/api/staff/students/${encodeURIComponent(studentId)}`, studentProfileSchema);
 }
 
+export async function changeStaffStudentPrimaryMobile(studentId: string, input: { newMobile: string; confirmSharedMobile?: boolean; reason?: string; expectedContactVersion: string }) {
+  return patchJson(`/api/staff/students/${encodeURIComponent(studentId)}/contact/mobile`, input, studentMobileChangeResponseSchema);
+}
+
 export async function requestDiscountApproval(enquiryId: string) {
   return postJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/discount-approval`, {}, z.object({ success: z.literal(true), approvalId: z.string(), status: z.string() }));
 }
@@ -963,10 +1001,11 @@ function apiErrorMessage(data: unknown) {
 }
 
 function apiError(data: unknown) {
-  const error = data && typeof data === "object" ? (data as { error?: { code?: unknown; fieldErrors?: unknown } }).error : undefined;
+  const error = data && typeof data === "object" ? (data as { error?: { code?: unknown; fieldErrors?: unknown; details?: unknown } }).error : undefined;
   const fieldErrors = error?.fieldErrors;
   const code = typeof error?.code === "string" ? error.code : undefined;
-  return new ApiError(apiErrorMessage(data), isFieldErrors(fieldErrors) ? fieldErrors : undefined, code);
+  const details = error?.details && typeof error.details === "object" ? (error.details as Record<string, unknown>) : undefined;
+  return new ApiError(apiErrorMessage(data), isFieldErrors(fieldErrors) ? fieldErrors : undefined, code, details);
 }
 
 function isFieldErrors(value: unknown): value is FieldErrors {

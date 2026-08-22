@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { navigationForRoles, canAccessDiscountApprovals } from "../../routes/Router";
 import { DiscountApprovalsContent } from "./DiscountApprovalsPage";
 import { courseConfigurationLabel, isCourseConfigurationComplete } from "./CourseMasterPage";
+import { ContactEditPanel } from "./StudentProfilePage";
 
 describe("staff approval UI", () => {
   it("shows approval navigation only to owners", () => {
@@ -71,5 +72,41 @@ describe("staff approval UI", () => {
     expect(courseConfigurationLabel({ ...baseCourse, admission_configuration_complete: false })).toBe("Configuration required");
     expect(isCourseConfigurationComplete({ ...baseCourse, admission_configuration_complete: true })).toBe(true);
     expect(courseConfigurationLabel({ ...baseCourse, admission_configuration_complete: true })).toBe("");
+  });
+
+  it("renders owner contact maintenance confirmation without raw mobile", () => {
+    const html = renderToStaticMarkup(
+      <ContactEditPanel
+        studentId="student_a"
+        profile={{
+          student: {
+            id: "student_a",
+            student_number: "SYK-SION-0001",
+            full_name: "Asha Student",
+            date_of_birth: "2000-01-01",
+            student_since: "2024-01-01",
+            current_status: "active",
+          },
+          primaryMobile: "9876543210",
+          mobileDisplay: "******3210",
+          canMaintainContact: true,
+          contactVersion: "contact-version-token",
+          contactHistory: [],
+          locality: null,
+          education: null,
+          enrolments: [],
+          enquiries: [],
+        }}
+        onCancel={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain("Change primary mobile");
+    expect(html).toContain("Old");
+    expect(html).toContain("New");
+    expect(html).toContain("Confirm Change");
+    expect(html).toContain("******3210");
+    expect(html).not.toContain("9876543210");
   });
 });
