@@ -437,8 +437,8 @@ const studentProfileSchema = z.object({
   primaryMobile: z.string().nullable(),
   mobileDisplay: z.string().nullable(),
   canMaintainContact: z.boolean().default(false),
+  contactVersion: z.string().nullable().default(null),
   contactHistory: z.array(z.object({
-    id: z.string(),
     mobileDisplay: z.string(),
     lastFour: z.string().nullable(),
     isPrimary: z.boolean(),
@@ -879,7 +879,7 @@ export async function getStaffStudentProfile(studentId: string) {
   return getJson(`/api/staff/students/${encodeURIComponent(studentId)}`, studentProfileSchema);
 }
 
-export async function changeStaffStudentPrimaryMobile(studentId: string, input: { newMobile: string; confirmSharedMobile?: boolean; reason?: string }) {
+export async function changeStaffStudentPrimaryMobile(studentId: string, input: { newMobile: string; confirmSharedMobile?: boolean; reason?: string; expectedContactVersion: string }) {
   return patchJson(`/api/staff/students/${encodeURIComponent(studentId)}/contact/mobile`, input, studentMobileChangeResponseSchema);
 }
 

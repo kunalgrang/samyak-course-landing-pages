@@ -90,6 +90,7 @@ describe("staff approval UI", () => {
           primaryMobile: "9876543210",
           mobileDisplay: "******3210",
           canMaintainContact: true,
+          contactVersion: "contact-version-token",
           contactHistory: [],
           locality: null,
           education: null,

@@ -2,7 +2,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { lookupPortalProfilesByMobile, mobileHash, ORG_ID } from "./auth-store";
-import { changeStudentPrimaryMobile } from "./owner-student-maintenance";
+import { changeStudentPrimaryMobile, getStudentContactVersion } from "./owner-student-maintenance";
 import { hmacHex } from "./crypto";
 
 const NOW = "2026-08-22T00:00:00.000Z";
@@ -15,6 +15,7 @@ describe("owner student maintenance", () => {
     const result = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
       newMobile: "91234 56780",
       confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
       reason: "Student changed number",
     });
 
@@ -46,12 +47,14 @@ describe("owner student maintenance", () => {
     const rejected = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
       newMobile: "9234567890",
       confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
     });
     expect(rejected).toMatchObject({ ok: false, status: 409, code: "shared_mobile_confirmation_required" });
 
     const accepted = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
       newMobile: "9234567890",
       confirmSharedMobile: true,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
     });
     expect(accepted).toMatchObject({ ok: true });
     const sharedHash = await testMobileHash("9234567890");
@@ -64,12 +67,13 @@ describe("owner student maintenance", () => {
     const same = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
       newMobile: "9876543210",
       confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
     });
     expect(same).toMatchObject({ ok: true, idempotent: true });
     expect(row(fixture.db, "select count(*) as count from person_contacts where person_id = 'person_a'")?.count).toBe(1);
 
-    await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", { newMobile: "9123456780", confirmSharedMobile: false });
-    await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", { newMobile: "9876543210", confirmSharedMobile: false });
+    await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", { newMobile: "9123456780", confirmSharedMobile: false, expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a") });
+    await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", { newMobile: "9876543210", confirmSharedMobile: false, expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a") });
     expect(row(fixture.db, "select count(*) as count from person_contacts where person_id = 'person_a'")?.count).toBe(2);
     expect(row(fixture.db, "select status from person_contact_details where contact_id = 'contact_old_a'")).toMatchObject({ status: "active" });
   });
@@ -79,19 +83,71 @@ describe("owner student maintenance", () => {
     const result = await changeStudentPrimaryMobile(fixture.c, { loginAccountId: "acct_counsellor", activePersonId: null, roles: ["counsellor"] }, "student_a", {
       newMobile: "9123456780",
       confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
     });
     expect(result).toMatchObject({ ok: false, status: 403 });
   });
+
+  it("rejects stale contact versions without mutating the current contact", async () => {
+    const fixture = await createFixture();
+    const staleVersion = await getStudentContactVersion(fixture.c, "person_a");
+    await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9123456780",
+      confirmSharedMobile: false,
+      expectedContactVersion: staleVersion,
+    });
+    const stale = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9345678901",
+      confirmSharedMobile: false,
+      expectedContactVersion: staleVersion,
+    });
+    expect(stale).toMatchObject({ ok: false, status: 409, code: "stale_contact" });
+    expect(row(fixture.db, "select count(*) as count from person_contacts where person_id = 'person_a' and is_primary = 1")?.count).toBe(1);
+    expect(row(fixture.db, "select last_four from person_contacts where person_id = 'person_a' and is_primary = 1")).toMatchObject({ last_four: "6780" });
+  });
+
+  it("scopes old shared login account and sessions to the changed person only", async () => {
+    const fixture = await createFixture({ withSharedOldMobile: true });
+    seedLoginAccountForMobile(fixture.db, await testMobileHash("9876543210"), [
+      { personId: "person_a", sessionId: "sess_a" },
+      { personId: "person_b", sessionId: "sess_b" },
+    ]);
+
+    const result = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9123456780",
+      confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(row(fixture.db, "select is_available from login_account_people where login_account_id = 'acct_9876543210' and person_id = 'person_a'")).toMatchObject({ is_available: 0 });
+    expect(row(fixture.db, "select is_available from login_account_people where login_account_id = 'acct_9876543210' and person_id = 'person_b'")).toMatchObject({ is_available: 1 });
+    expect(row(fixture.db, "select active_person_id from user_sessions where id = 'sess_a'")).toMatchObject({ active_person_id: null });
+    expect(row(fixture.db, "select active_person_id from user_sessions where id = 'sess_b'")).toMatchObject({ active_person_id: "person_b" });
+    expect((await lookupPortalProfilesByMobile(fixture.c, "9876543210")).profiles.map((profile) => profile.personId)).toEqual(["person_b"]);
+  });
 });
 
-async function createFixture(options: { withSharedTarget?: boolean } = {}) {
+async function createFixture(options: { withSharedTarget?: boolean; withSharedOldMobile?: boolean } = {}) {
   const db = new DatabaseSync(":memory:");
   installSchema(db);
   seedBase(db);
   await seedStudent(db, "person_a", "student_a", "SYK-SION-0001", "contact_old_a", "9876543210");
   if (options.withSharedTarget) await seedStudent(db, "person_b", "student_b", "SYK-SION-0002", "contact_shared_b", "9234567890");
+  if (options.withSharedOldMobile) await seedStudent(db, "person_b", "student_b", "SYK-SION-0002", "contact_old_b", "9876543210");
   const c = { env: { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" }, req: { header: () => null } };
   return { db, c: c as never };
+}
+
+function seedLoginAccountForMobile(db: DatabaseSync, mobileHashValue: string, links: Array<{ personId: string; sessionId: string }>) {
+  db.prepare("insert into login_accounts values ('acct_9876543210', ?, ?, ?, '3210', 1, 'active', null, ?, ?)")
+    .run(ORG_ID, mobileHashValue, mobileHashValue, NOW, NOW);
+  for (const link of links) {
+    db.prepare("insert into login_account_people values ('acct_9876543210', ?, 'self', 0, 1, ?)")
+      .run(link.personId, NOW);
+    db.prepare("insert into user_sessions values (?, 'acct_9876543210', ?, ?, ?, '2026-09-22T00:00:00.000Z', ?, null)")
+      .run(link.sessionId, link.personId, `hash_${link.sessionId}`, NOW, NOW);
+  }
 }
 
 function installSchema(db: DatabaseSync) {

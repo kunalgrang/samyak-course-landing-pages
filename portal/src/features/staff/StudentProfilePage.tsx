@@ -52,7 +52,7 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
         <section className="staff-card">
           <div className="section-heading"><h2>Contact history</h2><span>{profile.contactHistory.length}</span></div>
           {profile.contactHistory.map((contact) => (
-            <article className="table-row" key={contact.id}>
+            <article className="table-row" key={`${contact.mobileDisplay}-${contact.status}-${contact.changedAt}`}>
               <strong>{contact.mobileDisplay}</strong>
               <span>{contact.isPrimary ? "Current primary" : contact.status}</span>
               <small>Changed {contact.changedAt.slice(0, 10)}</small>
@@ -118,7 +118,11 @@ export function ContactEditPanel({
     setSaving(true);
     setMessage(null);
     try {
-      await changeStaffStudentPrimaryMobile(studentId, { newMobile, reason, confirmSharedMobile });
+      if (!profile.contactVersion) {
+        setMessage("Refresh the profile before changing contact details.");
+        return;
+      }
+      await changeStaffStudentPrimaryMobile(studentId, { newMobile, reason, confirmSharedMobile, expectedContactVersion: profile.contactVersion });
       const nextProfile = await getStaffStudentProfile(studentId);
       onSaved(nextProfile);
     } catch (cause) {

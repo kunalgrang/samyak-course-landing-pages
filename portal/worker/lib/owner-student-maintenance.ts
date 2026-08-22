@@ -1,6 +1,6 @@
 import type { AppContext } from "./http";
 import { ORG_ID, lookupPortalProfilesByMobile, mobileHash } from "./auth-store";
-import { createOpaqueId, encryptText } from "./crypto";
+import { createOpaqueId, encryptText, hmacHex } from "./crypto";
 import { normalizeIndianMobile } from "./mobile";
 import type { StaffContext } from "./staff-auth";
 
@@ -21,6 +21,14 @@ type ContactRecord = {
   status: string | null;
   valid_until: string | null;
   created_at: string;
+  updated_at: string;
+};
+
+type D1RunResult = {
+  meta?: {
+    changes?: number;
+    rows_written?: number;
+  };
 };
 
 export type MobileChangeResult =
@@ -50,7 +58,7 @@ export async function changeStudentPrimaryMobile(
   c: AppContext,
   staff: StaffContext,
   studentId: string,
-  input: { newMobile: string; confirmSharedMobile: boolean; reason?: string },
+  input: { newMobile: string; confirmSharedMobile: boolean; reason?: string; expectedContactVersion: string },
 ): Promise<MobileChangeResult> {
   const student = await getStudentForMaintenance(c, studentId);
   if (!student) return { ok: false, status: 404, code: "student_not_found", message: "Student was not found." };
@@ -65,7 +73,13 @@ export async function changeStudentPrimaryMobile(
   const now = new Date().toISOString();
   const lookupHash = await mobileHash(c, normalizedMobile);
   const currentPrimary = await getCurrentPrimaryMobileContact(c, student.person_id);
-  if (currentPrimary?.normalized_value === lookupHash) {
+  if (!currentPrimary) return { ok: false, status: 409, code: "contact_state_invalid", message: "Student does not have an active primary mobile to replace." };
+  const currentVersion = await contactVersion(c, student.person_id, currentPrimary);
+  if (input.expectedContactVersion !== currentVersion) {
+    return { ok: false, status: 409, code: "stale_contact", message: "Student contact changed. Refresh the profile and try again." };
+  }
+
+  if (currentPrimary.normalized_value === lookupHash) {
     return {
       ok: true,
       studentId: student.student_id,
@@ -94,59 +108,72 @@ export async function changeStudentPrimaryMobile(
   const existingContact = await getPersonMobileContactByHash(c, student.person_id, lookupHash);
   const newContactId = existingContact?.id || createOpaqueId("contact");
   const ciphertext = existingContact ? null : await encryptText(c.env.SESSION_PEPPER, `contact:${newContactId}`, normalizedMobile);
-  const oldLoginAccount = currentPrimary?.normalized_value
-    ? await c.env.DB.prepare("select id from login_accounts where organisation_id = ? and mobile_normalized = ?")
-        .bind(ORG_ID, currentPrimary.normalized_value)
-        .first<{ id: string }>()
-    : null;
+  const oldLoginAccount = await c.env.DB.prepare("select id from login_accounts where organisation_id = ? and mobile_normalized = ?")
+    .bind(ORG_ID, currentPrimary.normalized_value)
+    .first<{ id: string }>();
 
-  const statements: D1PreparedStatement[] = [
-    c.env.DB.prepare("update person_contacts set is_primary = 0, updated_at = ? where person_id = ? and contact_type = 'mobile'").bind(now, student.person_id),
-    c.env.DB.prepare(
-      `update person_contact_details
-       set status = 'previous', valid_until = coalesce(valid_until, ?), updated_at = ?
-       where contact_id in (select id from person_contacts where person_id = ? and contact_type = 'mobile')
-         and contact_id != ?
-         and status = 'active'`,
-    ).bind(now, now, student.person_id, newContactId),
-  ];
+  const currentPrimaryGuard = `exists (
+    select 1
+    from person_contacts expected_contact
+    where expected_contact.id = ?
+      and expected_contact.person_id = ?
+      and expected_contact.contact_type = 'mobile'
+      and expected_contact.is_primary = 1
+  )`;
 
+  const statements: D1PreparedStatement[] = [];
+  const activationStatementIndex = statements.length;
   if (existingContact) {
     statements.push(
-      c.env.DB.prepare("update person_contacts set is_primary = 1, last_four = ?, updated_at = ? where id = ? and person_id = ?")
-        .bind(normalizedMobile.slice(-4), now, newContactId, student.person_id),
+      c.env.DB.prepare(`update person_contacts set is_primary = 1, last_four = ?, updated_at = ? where id = ? and person_id = ? and ${currentPrimaryGuard}`)
+        .bind(normalizedMobile.slice(-4), now, newContactId, student.person_id, currentPrimary.id, student.person_id),
       c.env.DB.prepare(
         `insert into person_contact_details (contact_id, belongs_to, is_whatsapp, valid_until, status, created_at, updated_at)
-         values (?, 'student', 1, null, 'active', ?, ?)
+         select ?, 'student', 1, null, 'active', ?, ?
+         where ${currentPrimaryGuard}
          on conflict(contact_id) do update set status = 'active', valid_until = null, updated_at = excluded.updated_at`,
-      ).bind(newContactId, now, now),
+      ).bind(newContactId, now, now, currentPrimary.id, student.person_id),
     );
   } else {
     statements.push(
       c.env.DB.prepare(
         `insert into person_contacts
            (id, person_id, contact_type, normalized_value, display_value, last_four, is_primary, is_verified, created_at, updated_at)
-         values (?, ?, 'mobile', ?, null, ?, 1, 0, ?, ?)`,
-      ).bind(newContactId, student.person_id, lookupHash, normalizedMobile.slice(-4), now, now),
+         select ?, ?, 'mobile', ?, null, ?, 1, 0, ?, ?
+         where ${currentPrimaryGuard}`,
+      ).bind(newContactId, student.person_id, lookupHash, normalizedMobile.slice(-4), now, now, currentPrimary.id, student.person_id),
       c.env.DB.prepare(
         `insert into person_contact_details
            (contact_id, belongs_to, is_whatsapp, valid_until, status, created_at, updated_at)
-         values (?, 'student', 1, null, 'active', ?, ?)`,
-      ).bind(newContactId, now, now),
+         select ?, 'student', 1, null, 'active', ?, ?
+         where exists (select 1 from person_contacts where id = ? and person_id = ?)`,
+      ).bind(newContactId, now, now, newContactId, student.person_id),
       c.env.DB.prepare(
         `insert into person_contact_secrets
            (contact_id, value_ciphertext, encryption_version, created_at, updated_at)
-         values (?, ?, 'v1', ?, ?)`,
-      ).bind(newContactId, ciphertext, now, now),
+         select ?, ?, 'v1', ?, ?
+         where exists (select 1 from person_contacts where id = ? and person_id = ?)`,
+      ).bind(newContactId, ciphertext, now, now, newContactId, student.person_id),
     );
   }
 
+  statements.push(
+    c.env.DB.prepare(
+      `update person_contact_details
+       set status = 'previous', valid_until = coalesce(valid_until, ?), updated_at = ?
+       where contact_id in (select id from person_contacts where person_id = ? and contact_type = 'mobile')
+         and contact_id != ?
+         and status = 'active'
+         and ${currentPrimaryGuard}`,
+    ).bind(now, now, student.person_id, newContactId, currentPrimary.id, student.person_id),
+  );
+
   if (oldLoginAccount) {
     statements.push(
-      c.env.DB.prepare("update login_account_people set is_available = 0 where login_account_id = ? and person_id = ?")
-        .bind(oldLoginAccount.id, student.person_id),
-      c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ?")
-        .bind(oldLoginAccount.id, student.person_id),
+      c.env.DB.prepare(`update login_account_people set is_available = 0 where login_account_id = ? and person_id = ? and ${currentPrimaryGuard}`)
+        .bind(oldLoginAccount.id, student.person_id, currentPrimary.id, student.person_id),
+      c.env.DB.prepare(`update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ? and ${currentPrimaryGuard}`)
+        .bind(oldLoginAccount.id, student.person_id, currentPrimary.id, student.person_id),
     );
   }
 
@@ -154,7 +181,8 @@ export async function changeStudentPrimaryMobile(
     c.env.DB.prepare(
       `insert into audit_logs
          (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
-       values (?, ?, ?, ?, ?, 'student_mobile_changed', 'student', ?, ?, ?)`,
+       select ?, ?, ?, ?, ?, 'student_mobile_changed', 'student', ?, ?, ?
+       where ${currentPrimaryGuard}`,
     ).bind(
       createOpaqueId("audit"),
       ORG_ID,
@@ -166,16 +194,27 @@ export async function changeStudentPrimaryMobile(
         studentId: student.student_id,
         studentNumber: student.student_number,
         personId: student.person_id,
-        oldLastFour: currentPrimary?.last_four || null,
+        oldLastFour: currentPrimary.last_four,
         newLastFour: normalizedMobile.slice(-4),
         sharedMobileConfirmed: sharedMobileMatches.length > 0 && input.confirmSharedMobile,
         reason: input.reason || null,
       }),
       now,
+      currentPrimary.id,
+      student.person_id,
     ),
+    c.env.DB.prepare(`update person_contacts set is_primary = 0, updated_at = ? where person_id = ? and contact_type = 'mobile' and id != ? and ${currentPrimaryGuard}`)
+      .bind(now, student.person_id, newContactId, currentPrimary.id, student.person_id),
   );
 
-  await c.env.DB.batch(statements);
+  const results = await c.env.DB.batch(statements);
+  if (!changed(results[activationStatementIndex] as D1RunResult)) {
+    return { ok: false, status: 409, code: "stale_contact", message: "Student contact changed. Refresh the profile and try again." };
+  }
+  if ((await countActivePrimaryMobiles(c, student.person_id)) !== 1) {
+    return { ok: false, status: 409, code: "contact_state_invalid", message: "Student contact state needs review before another change." };
+  }
+
   const otpProfiles = (await lookupPortalProfilesByMobile(c, normalizedMobile)).profiles.filter((profile) => profile.personId === student.person_id).length;
   return {
     ok: true,
@@ -184,16 +223,20 @@ export async function changeStudentPrimaryMobile(
     personId: student.person_id,
     idempotent: false,
     mobileDisplay: maskMobileByLastFour(normalizedMobile.slice(-4)),
-    oldLastFour: currentPrimary?.last_four || null,
+    oldLastFour: currentPrimary.last_four,
     newLastFour: normalizedMobile.slice(-4),
     sharedMobileMatches,
     otpProfiles,
   };
 }
 
+export async function getStudentContactVersion(c: AppContext, personId: string) {
+  return contactVersion(c, personId, await getCurrentPrimaryMobileContact(c, personId));
+}
+
 export async function getStudentContactHistory(c: AppContext, personId: string) {
   const rows = await c.env.DB.prepare(
-    `select person_contacts.id, person_contacts.last_four, person_contacts.is_primary,
+    `select person_contacts.last_four, person_contacts.is_primary,
             coalesce(person_contact_details.status, 'active') as status,
             person_contact_details.valid_until,
             person_contacts.created_at,
@@ -207,9 +250,8 @@ export async function getStudentContactHistory(c: AppContext, personId: string) 
               person_contacts.updated_at desc`,
   )
     .bind(personId)
-    .all<{ id: string; last_four: string | null; is_primary: number; status: string; valid_until: string | null; created_at: string; updated_at: string }>();
+    .all<{ last_four: string | null; is_primary: number; status: string; valid_until: string | null; created_at: string; updated_at: string }>();
   return (rows.results || []).map((row) => ({
-    id: row.id,
     mobileDisplay: maskMobileByLastFour(row.last_four || ""),
     lastFour: row.last_four,
     isPrimary: row.is_primary === 1,
@@ -237,7 +279,7 @@ async function getCurrentPrimaryMobileContact(c: AppContext, personId: string) {
   return c.env.DB.prepare(
     `select person_contacts.id, person_contacts.normalized_value, person_contacts.last_four,
             person_contacts.is_primary, coalesce(person_contact_details.status, 'active') as status,
-            person_contact_details.valid_until, person_contacts.created_at
+            person_contact_details.valid_until, person_contacts.created_at, person_contacts.updated_at
      from person_contacts
      left join person_contact_details on person_contact_details.contact_id = person_contacts.id
      where person_contacts.person_id = ?
@@ -256,7 +298,7 @@ async function getPersonMobileContactByHash(c: AppContext, personId: string, loo
   return c.env.DB.prepare(
     `select person_contacts.id, person_contacts.normalized_value, person_contacts.last_four,
             person_contacts.is_primary, coalesce(person_contact_details.status, 'active') as status,
-            person_contact_details.valid_until, person_contacts.created_at
+            person_contact_details.valid_until, person_contacts.created_at, person_contacts.updated_at
      from person_contacts
      left join person_contact_details on person_contact_details.contact_id = person_contacts.id
      where person_contacts.person_id = ?
@@ -303,6 +345,22 @@ async function findActiveSharedMobileMatches(c: AppContext, lookupHash: string, 
   }));
 }
 
+async function countActivePrimaryMobiles(c: AppContext, personId: string) {
+  const row = await c.env.DB.prepare(
+    `select count(*) as count
+     from person_contacts
+     left join person_contact_details on person_contact_details.contact_id = person_contacts.id
+     where person_contacts.person_id = ?
+       and person_contacts.contact_type = 'mobile'
+       and person_contacts.is_primary = 1
+       and coalesce(person_contact_details.status, 'active') = 'active'
+       and (person_contact_details.valid_until is null or person_contact_details.valid_until > ?)`,
+  )
+    .bind(personId, new Date().toISOString())
+    .first<{ count: number }>();
+  return Number(row?.count || 0);
+}
+
 async function hasOwnerMaintenanceAccessForBranch(c: AppContext, staff: StaffContext, branchId: string) {
   const row = await c.env.DB.prepare(
     `select 1 as ok
@@ -317,6 +375,17 @@ async function hasOwnerMaintenanceAccessForBranch(c: AppContext, staff: StaffCon
     .bind(staff.loginAccountId, ORG_ID, branchId)
     .first<{ ok: number }>();
   return Boolean(row);
+}
+
+async function contactVersion(c: AppContext, personId: string, contact: ContactRecord | null) {
+  const value = contact
+    ? `${personId}:${contact.id}:${contact.normalized_value}:${contact.is_primary}:${contact.status || ""}:${contact.valid_until || ""}:${contact.updated_at}`
+    : `${personId}:no-active-primary`;
+  return hmacHex(c.env.SESSION_PEPPER, "student-contact-version", value);
+}
+
+function changed(result: D1RunResult | null | undefined) {
+  return Number(result?.meta?.changes ?? result?.meta?.rows_written ?? 0) > 0;
 }
 
 function maskMobileByLastFour(lastFour: string) {

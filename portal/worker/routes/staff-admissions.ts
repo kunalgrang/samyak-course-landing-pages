@@ -19,9 +19,10 @@ import {
 import { ADMISSION_STAFF_ROLES, COURSE_ADMIN_ROLES, DISCOUNT_APPROVER_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import { createOpaqueId, decryptText, hmacHex } from "../lib/crypto";
 import { mapStatusToPipelineStage } from "../lib/enquiry-crm";
+import { isResponse, readJsonBody, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
-import { changeStudentPrimaryMobile, getStudentContactHistory } from "../lib/owner-student-maintenance";
+import { changeStudentPrimaryMobile, getStudentContactHistory, getStudentContactVersion } from "../lib/owner-student-maintenance";
 import { addMobileIfMissing } from "../lib/person-contact";
 
 type PortalHono = Hono<{
@@ -75,6 +76,7 @@ const studentMobileChangeSchema = z.object({
   newMobile: z.string().trim().min(10).max(20),
   confirmSharedMobile: z.boolean().default(false),
   reason: z.string().trim().max(160).optional(),
+  expectedContactVersion: z.string().trim().min(16).max(256),
 });
 
 export function registerStaffAdmissionRoutes(app: PortalHono) {
@@ -301,11 +303,13 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   });
 
   app.patch("/api/staff/students/:studentId/contact/mobile", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Only owner accounts can maintain student contact details." });
-    const parsed = studentMobileChangeSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_mobile_change", message: "Enter a valid mobile change request." });
-    const result = await changeStudentPrimaryMobile(c, staff, c.req.param("studentId"), parsed.data);
+    const body = await readJsonBody(c, studentMobileChangeSchema);
+    if (isResponse(body)) return body;
+    const result = await changeStudentPrimaryMobile(c, staff, c.req.param("studentId"), body);
     if (!result.ok) {
       return jsonError(c, {
         status: result.status as 400,
@@ -580,6 +584,7 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], sta
     primaryMobile: null,
     mobileDisplay: primaryMobile ? maskMobile(primaryMobile) : null,
     canMaintainContact,
+    contactVersion: canMaintainContact ? await getStudentContactVersion(c, String(student.person_id)) : null,
     contactHistory: canMaintainContact ? await getStudentContactHistory(c, String(student.person_id)) : [],
     locality: localities.results?.[0] || null,
     education: education.results?.[0] || null,
