@@ -451,6 +451,29 @@ const studentProfileSchema = z.object({
   enquiries: z.array(z.record(z.string(), z.unknown())),
 });
 
+const staffStudentDirectoryItemSchema = z.object({
+  studentId: z.string(),
+  studentNumber: z.string(),
+  currentStatus: z.string(),
+  studentSince: z.string(),
+  displayName: z.string(),
+  mobileDisplay: z.string().nullable(),
+  latestCourseName: z.string().nullable(),
+  latestEnrolmentNumber: z.string().nullable(),
+  enrolmentCount: z.number(),
+  paymentShortcutEnrolmentId: z.string().nullable(),
+});
+
+const staffStudentDirectorySchema = z.object({
+  success: z.literal(true),
+  filters: z.object({
+    status: z.union([z.literal("all"), z.literal("current"), z.literal("alumni")]),
+    search: z.string(),
+  }),
+  pagination: z.object({ limit: z.number(), offset: z.number(), total: z.number(), hasMore: z.boolean() }),
+  items: z.array(staffStudentDirectoryItemSchema),
+});
+
 const sharedMobileMatchSchema = z.object({
   personId: z.string(),
   displayName: z.string(),
@@ -681,6 +704,8 @@ export type AdmissionReceipt = NonNullable<AdmissionFinancialSummary["tokenRecei
 export type PaymentLedger = z.infer<typeof paymentLedgerSchema>;
 export type PaymentReceipt = z.infer<typeof paymentReceiptSchema>;
 export type StaffStudentProfile = z.infer<typeof studentProfileSchema>;
+export type StaffStudentDirectory = z.infer<typeof staffStudentDirectorySchema>;
+export type StaffStudentDirectoryItem = z.infer<typeof staffStudentDirectoryItemSchema>;
 export type StudentMobileChangeResponse = z.infer<typeof studentMobileChangeResponseSchema>;
 export type SharedMobileMatch = z.infer<typeof sharedMobileMatchSchema>;
 export type StudentSearchPerson = StudentSearchResult["possiblePeople"][number];
@@ -877,6 +902,17 @@ export async function linkAdmissionEnquiryPerson(enquiryId: string, input: { mod
 
 export async function getStaffStudentProfile(studentId: string) {
   return getJson(`/api/staff/students/${encodeURIComponent(studentId)}`, studentProfileSchema);
+}
+
+export type StaffStudentDirectoryQuery = {
+  status?: "all" | "current" | "alumni";
+  search?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export async function getStaffStudents(params: StaffStudentDirectoryQuery = {}) {
+  return getJson(`/api/staff/students${queryString(params)}`, staffStudentDirectorySchema);
 }
 
 export async function changeStaffStudentPrimaryMobile(studentId: string, input: { newMobile: string; confirmSharedMobile?: boolean; reason?: string; expectedContactVersion: string }) {

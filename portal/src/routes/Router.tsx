@@ -9,6 +9,7 @@ import { ReferralsPage } from "../features/referrals/ReferralsPage";
 import { ReferralOperationsDetailPage, ReferralOperationsPage } from "../features/staff/ReferralOperationsPage";
 import { CertificatesPage } from "../features/certificates/CertificatesPage";
 import { EnquiriesPage } from "../features/staff/EnquiriesPage";
+import { StudentsPage } from "../features/staff/StudentsPage";
 import { AdmissionPage } from "../features/staff/AdmissionPage";
 import { CourseMasterPage } from "../features/staff/CourseMasterPage";
 import { DiscountApprovalsPage } from "../features/staff/DiscountApprovalsPage";
@@ -20,7 +21,7 @@ import { ShellHomePage } from "./ShellHomePage";
 import { AppShell } from "./AppShell";
 import type { AppRoute, RoutePath } from "./types";
 
-const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/referral-operations", "/app/courses", "/app/discount-approvals", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
+const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/students", "/app/referral-operations", "/app/courses", "/app/discount-approvals", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
 const staffRoles = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
 const courseAdminRoles = new Set(["owner", "admin", "system_admin"]);
 const discountApproverRoles = new Set(["owner"]);
@@ -59,7 +60,7 @@ export function Router() {
   }, [hasSessionError, isAuthenticated, isLoading, path]);
 
   useEffect(() => {
-    if (!isLoading && isAuthenticated && (path === "/app/enquiries" || path === "/app/referral-operations" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/enquiries/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/students/") || path.startsWith("/app/enrolments/")) && !isStaff) {
+    if (!isLoading && isAuthenticated && (path === "/app/enquiries" || path === "/app/students" || path === "/app/referral-operations" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/enquiries/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/students/") || path.startsWith("/app/enrolments/")) && !isStaff) {
       navigate("/app", true);
     }
     if (!isLoading && isAuthenticated && path === "/app/courses" && !isCourseAdmin) {
@@ -119,6 +120,7 @@ export function Router() {
     <AppShell activePath={activeAppPath} navigation={navigation} onNavigate={navigate} onSignOut={handleSignOut}>
       {activeAppPath === "/app" ? <ShellHomePage /> : null}
       {activeAppPath === "/app/enquiries" && isStaff ? <EnquiriesPage /> : null}
+      {activeAppPath === "/app/students" && isStaff ? <StudentsPage /> : null}
       {activeAppPath === "/app/referral-operations" && isStaff ? <ReferralOperationsPage onNavigate={navigate} /> : null}
       {activeAppPath === "/app/courses" && isStaff ? <CourseMasterPage /> : null}
       {activeAppPath === "/app/discount-approvals" && isDiscountApprover ? <DiscountApprovalsPage /> : null}

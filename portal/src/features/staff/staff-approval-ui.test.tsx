@@ -4,12 +4,22 @@ import { navigationForRoles, canAccessDiscountApprovals } from "../../routes/Rou
 import { DiscountApprovalsContent } from "./DiscountApprovalsPage";
 import { courseConfigurationLabel, isCourseConfigurationComplete } from "./CourseMasterPage";
 import { ContactEditPanel } from "./StudentProfilePage";
+import { StudentDirectoryContent, statusLabel } from "./StudentsPage";
 
 describe("staff approval UI", () => {
   it("shows approval navigation only to owners", () => {
     expect(navigationForRoles(["owner"]).map((item) => item.path)).toContain("/app/discount-approvals");
     expect(navigationForRoles(["admin"]).map((item) => item.path)).not.toContain("/app/discount-approvals");
     expect(canAccessDiscountApprovals(["system_admin"])).toBe(false);
+  });
+
+  it("separates Enquiries and Students navigation for current staff roles", () => {
+    const ownerNav = navigationForRoles(["owner"]);
+    expect(ownerNav.map((item) => item.label)).toEqual(expect.arrayContaining(["Enquiries", "Students"]));
+    expect(ownerNav.map((item) => item.label)).not.toContain("Students & Enquiries");
+    expect(navigationForRoles(["counsellor"]).map((item) => item.path)).toEqual(expect.arrayContaining(["/app/enquiries", "/app/students"]));
+    expect(navigationForRoles(["admission_admin"]).map((item) => item.path)).toEqual(expect.arrayContaining(["/app/enquiries", "/app/students"]));
+    expect(navigationForRoles(["student"]).map((item) => item.path)).not.toContain("/app/students");
   });
 
   it("blocks non-owner direct discount approval access", () => {
@@ -108,5 +118,85 @@ describe("staff approval UI", () => {
     expect(html).toContain("Confirm Change");
     expect(html).toContain("******3210");
     expect(html).not.toContain("9876543210");
+  });
+
+  it("renders student directory filters, status chips, profile links and deduped enrolment summary", () => {
+    const html = renderToStaticMarkup(
+      <StudentDirectoryContent
+        directory={{
+          success: true,
+          filters: { status: "all", search: "" },
+          pagination: { limit: 25, offset: 0, total: 2, hasMore: false },
+          items: [
+            {
+              studentId: "student_current",
+              studentNumber: "SYK-SION-0001",
+              currentStatus: "active",
+              studentSince: "2026-01-01",
+              displayName: "Asha Current",
+              mobileDisplay: "******3210",
+              latestCourseName: "Advanced Excel",
+              latestEnrolmentNumber: "ENR-SION-0001",
+              enrolmentCount: 1,
+              paymentShortcutEnrolmentId: "enrol_current",
+            },
+            {
+              studentId: "student_alumni",
+              studentNumber: "SYK-SION-0002",
+              currentStatus: "alumni",
+              studentSince: "2025-01-01",
+              displayName: "Legacy Alumni",
+              mobileDisplay: "******7890",
+              latestCourseName: "Tally Prime",
+              latestEnrolmentNumber: "ENR-SION-0002-B",
+              enrolmentCount: 2,
+              paymentShortcutEnrolmentId: null,
+            },
+          ],
+        }}
+        error={null}
+        isLoading={false}
+        searchDraft=""
+        status="all"
+        onSearchDraftChange={vi.fn()}
+        onSearchSubmit={vi.fn()}
+        onStatusChange={vi.fn()}
+        onNextPage={vi.fn()}
+        onPreviousPage={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain("Students");
+    expect(html).toContain("All Students");
+    expect(html).toContain("Current");
+    expect(html).toContain("Alumni");
+    expect(html).toContain("CURRENT");
+    expect(html).toContain("ALUMNI");
+    expect(html).toContain("SYK-SION-0001");
+    expect(html).toContain("******3210");
+    expect(html).toContain("/app/students/student_current");
+    expect(html).toContain("/app/enrolments/enrol_current/payments");
+    expect(html).toContain("2 enrolments");
+    expect(html).not.toContain("9876543210");
+  });
+
+  it("renders directory empty states", () => {
+    const html = renderToStaticMarkup(
+      <StudentDirectoryContent
+        directory={{ success: true, filters: { status: "alumni", search: "" }, pagination: { limit: 25, offset: 0, total: 0, hasMore: false }, items: [] }}
+        error={null}
+        isLoading={false}
+        searchDraft=""
+        status="alumni"
+        onSearchDraftChange={vi.fn()}
+        onSearchSubmit={vi.fn()}
+        onStatusChange={vi.fn()}
+        onNextPage={vi.fn()}
+        onPreviousPage={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain("No alumni found.");
+    expect(statusLabel("on_hold")).toBe("ON HOLD");
   });
 });

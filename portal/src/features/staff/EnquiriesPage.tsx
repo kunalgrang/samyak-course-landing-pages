@@ -262,8 +262,8 @@ export function EnquiriesPage() {
     <div className="content-stack staff-enquiries-page">
       <NotificationToast notification={notification} onDismiss={() => setNotification(null)} />
       <header className="page-header">
-        <h1>Enquiry Follow-up CRM</h1>
-        <p>Prioritise active enquiries, log contact outcomes and keep admission-ready leads moving.</p>
+        <h1>Enquiries</h1>
+        <p>Follow up active leads and manage admissions.</p>
       </header>
 
       <section className="staff-card crm-queue-card">

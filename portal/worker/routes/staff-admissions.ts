@@ -24,6 +24,7 @@ import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
 import { changeStudentPrimaryMobile, getStudentContactHistory, getStudentContactVersion } from "../lib/owner-student-maintenance";
 import { addMobileIfMissing } from "../lib/person-contact";
+import { listStaffStudents } from "../lib/student-directory";
 
 type PortalHono = Hono<{
   Bindings: WorkerBindings;
@@ -77,6 +78,12 @@ const studentMobileChangeSchema = z.object({
   confirmSharedMobile: z.boolean().default(false),
   reason: z.string().trim().max(160).optional(),
   expectedContactVersion: z.string().trim().min(16).max(256),
+});
+const studentDirectoryQuerySchema = z.object({
+  status: z.enum(["all", "current", "alumni"]).default("all"),
+  search: z.string().trim().max(120).default(""),
+  limit: z.coerce.number().int().min(1).max(50).default(25),
+  offset: z.coerce.number().int().min(0).default(0),
 });
 
 export function registerStaffAdmissionRoutes(app: PortalHono) {
@@ -292,6 +299,19 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     const result = await decideDiscountApproval(c, staff, c.req.param("approvalId"), parsed.data.decision);
     if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message });
     return jsonPlain(c, { success: true, approvalId: result.approvalId, status: result.status });
+  });
+
+  app.get("/api/staff/students", async (c) => {
+    const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
+    if (!staff) return forbidden(c);
+    const parsed = studentDirectoryQuerySchema.safeParse({
+      status: c.req.query("status") || "all",
+      search: c.req.query("search") || "",
+      limit: c.req.query("limit") || undefined,
+      offset: c.req.query("offset") || undefined,
+    });
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_student_directory_query", message: "Check student filters and pagination." });
+    return jsonPlain(c, await listStaffStudents(c, staff, parsed.data));
   });
 
   app.get("/api/staff/students/:studentId", async (c) => {
@@ -556,6 +576,7 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], sta
     .bind(studentId, ORG_ID)
     .first<Record<string, unknown>>();
   if (!student) return null;
+  if (!(await hasAdmissionAccessForBranch(c, staff, String(student.home_branch_id)))) return null;
   const [localities, education, enrolments, enquiries] = await Promise.all([
     c.env.DB.prepare("select * from person_localities where person_id = ? and status = 'active' order by created_at desc limit 1")
       .bind(student.person_id)
