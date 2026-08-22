@@ -40,8 +40,8 @@ export type StudentDirectoryResult = {
   items: StudentDirectoryItem[];
 };
 
-const CURRENT_STATUS_VALUES = ["active", "current"];
-const ALUMNI_STATUS_VALUES = ["alumni", "completed", "former"];
+export const CURRENT_STUDENT_STATUS_VALUES = ["active", "on_hold"] as const;
+export const ALUMNI_STUDENT_STATUS_VALUES = ["alumni", "completed"] as const;
 const MAX_LIMIT = 50;
 
 export async function listStaffStudents(c: AppContext, staff: StaffContext, query: StudentDirectoryQuery = {}): Promise<StudentDirectoryResult> {
@@ -98,6 +98,8 @@ export async function listStaffStudents(c: AppContext, staff: StaffContext, quer
          from enrolments
          join fee_agreements on fee_agreements.enrolment_id = enrolments.id
          where enrolments.student_id = students.id
+           and enrolments.status = 'confirmed'
+           and fee_agreements.status = 'active'
            and fee_agreements.final_agreed_fee_paise is not null
        ) as paymentShortcutEnrolmentId
      ${where.fromAndWhere}
@@ -160,11 +162,11 @@ async function directoryWhere(
   const bindings: Array<string | number> = [ORG_ID, staff.loginAccountId, ORG_ID, ...ADMISSION_STAFF_ROLES];
 
   if (input.status === "current") {
-    clauses.push(`lower(students.current_status) in (${CURRENT_STATUS_VALUES.map(() => "?").join(", ")})`);
-    bindings.push(...CURRENT_STATUS_VALUES);
+    clauses.push(`lower(students.current_status) in (${CURRENT_STUDENT_STATUS_VALUES.map(() => "?").join(", ")})`);
+    bindings.push(...CURRENT_STUDENT_STATUS_VALUES);
   } else if (input.status === "alumni") {
-    clauses.push(`lower(students.current_status) in (${ALUMNI_STATUS_VALUES.map(() => "?").join(", ")})`);
-    bindings.push(...ALUMNI_STATUS_VALUES);
+    clauses.push(`lower(students.current_status) in (${ALUMNI_STUDENT_STATUS_VALUES.map(() => "?").join(", ")})`);
+    bindings.push(...ALUMNI_STUDENT_STATUS_VALUES);
   }
 
   if (input.search) {

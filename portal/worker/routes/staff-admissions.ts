@@ -571,9 +571,9 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], sta
     `select students.*, people.full_name, people.date_of_birth
      from students
      join people on people.id = students.person_id
-     where students.id = ? and students.organisation_id = ?`,
+     where students.id = ? and students.organisation_id = ? and people.organisation_id = ? and people.status != 'archived'`,
   )
-    .bind(studentId, ORG_ID)
+    .bind(studentId, ORG_ID, ORG_ID)
     .first<Record<string, unknown>>();
   if (!student) return null;
   if (!(await hasAdmissionAccessForBranch(c, staff, String(student.home_branch_id)))) return null;

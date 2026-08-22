@@ -166,20 +166,56 @@ describe("staff student directory routes", () => {
   it("denies direct student profile reads outside staff branch scope", async () => {
     const app = routeApp();
     authenticateAs(["counsellor"]);
-    const db = new DatabaseSync(":memory:");
-    installStudentProfileSchema(db);
-    db.exec(`
-      insert into roles values ('role_counsellor', 'org_samyak', 'counsellor', 'Counsellor', '2026-08-22T00:00:00.000Z');
-      insert into login_account_roles values ('acct_test', 'role_counsellor', 'branch_sion', '2026-08-22T00:00:00.000Z');
-      insert into people values ('person_bandra', 'org_samyak', 'branch_bandra', 'Band Stand Student', 'Band Student', null, 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
-      insert into students values ('student_bandra', 'org_samyak', 'person_bandra', 'branch_bandra', 'SYK-BANDRA-0001', 1, '2026-01-01', 'active', 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
-    `);
+    const db = studentProfileDb();
 
     const response = await app.request("/api/staff/students/student_bandra", {}, { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" });
 
     expect(response.status).toBe(404);
   });
+
+  it("allows direct student profile reads inside staff branch scope", async () => {
+    const app = routeApp();
+    authenticateAs(["counsellor"]);
+    const db = studentProfileDb();
+
+    const response = await app.request("/api/staff/students/student_sion", {}, { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      student: {
+        id: "student_sion",
+        student_number: "SYK-SION-0001",
+      },
+      canMaintainContact: false,
+    });
+  });
+
+  it("denies archived Person direct student profile reads", async () => {
+    const app = routeApp();
+    authenticateAs(["counsellor"]);
+    const db = studentProfileDb();
+
+    const response = await app.request("/api/staff/students/student_archived", {}, { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" });
+
+    expect(response.status).toBe(404);
+  });
 });
+
+function studentProfileDb() {
+  const db = new DatabaseSync(":memory:");
+  installStudentProfileSchema(db);
+  db.exec(`
+    insert into roles values ('role_counsellor', 'org_samyak', 'counsellor', 'Counsellor', '2026-08-22T00:00:00.000Z');
+    insert into login_account_roles values ('acct_test', 'role_counsellor', 'branch_sion', '2026-08-22T00:00:00.000Z');
+    insert into people values ('person_sion', 'org_samyak', 'branch_sion', 'Sion Student', 'Sion Student', null, 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+    insert into students values ('student_sion', 'org_samyak', 'person_sion', 'branch_sion', 'SYK-SION-0001', 1, '2026-01-01', 'active', 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+    insert into people values ('person_bandra', 'org_samyak', 'branch_bandra', 'Band Stand Student', 'Band Student', null, 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+    insert into students values ('student_bandra', 'org_samyak', 'person_bandra', 'branch_bandra', 'SYK-BANDRA-0001', 1, '2026-01-01', 'active', 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+    insert into people values ('person_archived', 'org_samyak', 'branch_sion', 'Archived Student', 'Archived Student', null, 'archived', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+    insert into students values ('student_archived', 'org_samyak', 'person_archived', 'branch_sion', 'SYK-SION-ARCHIVED', 2, '2026-01-01', 'active', 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+  `);
+  return db;
+}
 
 function installStudentProfileSchema(db: DatabaseSync) {
   db.exec(`

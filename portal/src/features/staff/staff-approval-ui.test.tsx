@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { navigationForRoles, canAccessDiscountApprovals } from "../../routes/Router";
+import { navigationForRoles, canAccessDiscountApprovals, canViewEnquiries, canViewStudents } from "../../routes/Router";
 import { DiscountApprovalsContent } from "./DiscountApprovalsPage";
 import { courseConfigurationLabel, isCourseConfigurationComplete } from "./CourseMasterPage";
 import { ContactEditPanel } from "./StudentProfilePage";
@@ -20,6 +20,9 @@ describe("staff approval UI", () => {
     expect(navigationForRoles(["counsellor"]).map((item) => item.path)).toEqual(expect.arrayContaining(["/app/enquiries", "/app/students"]));
     expect(navigationForRoles(["admission_admin"]).map((item) => item.path)).toEqual(expect.arrayContaining(["/app/enquiries", "/app/students"]));
     expect(navigationForRoles(["student"]).map((item) => item.path)).not.toContain("/app/students");
+    expect(canViewEnquiries(["counsellor"])).toBe(true);
+    expect(canViewStudents(["counsellor"])).toBe(true);
+    expect(canViewStudents(["student"])).toBe(false);
   });
 
   it("blocks non-owner direct discount approval access", () => {
@@ -141,6 +144,18 @@ describe("staff approval UI", () => {
               paymentShortcutEnrolmentId: "enrol_current",
             },
             {
+              studentId: "student_on_hold",
+              studentNumber: "SYK-SION-0005",
+              currentStatus: "on_hold",
+              studentSince: "2025-08-01",
+              displayName: "On Hold Current",
+              mobileDisplay: "******6655",
+              latestCourseName: "Advanced Excel",
+              latestEnrolmentNumber: "ENR-SION-0005",
+              enrolmentCount: 1,
+              paymentShortcutEnrolmentId: null,
+            },
+            {
               studentId: "student_alumni",
               studentNumber: "SYK-SION-0002",
               currentStatus: "alumni",
@@ -171,6 +186,7 @@ describe("staff approval UI", () => {
     expect(html).toContain("Current");
     expect(html).toContain("Alumni");
     expect(html).toContain("CURRENT");
+    expect(html).toContain("ON HOLD");
     expect(html).toContain("ALUMNI");
     expect(html).toContain("SYK-SION-0001");
     expect(html).toContain("******3210");

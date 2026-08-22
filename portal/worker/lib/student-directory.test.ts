@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { ORG_ID } from "./auth-store";
 import { hmacHex } from "./crypto";
-import { listStaffStudents } from "./student-directory";
+import { CURRENT_STUDENT_STATUS_VALUES, listStaffStudents } from "./student-directory";
 
 const NOW = "2026-08-22T00:00:00.000Z";
 type SqlValue = string | number | bigint | Uint8Array | null;
@@ -15,10 +15,12 @@ describe("student directory", () => {
     const current = await listStaffStudents(fixture.c, ownerStaff(), { status: "current" });
     const alumni = await listStaffStudents(fixture.c, ownerStaff(), { status: "alumni" });
 
-    expect(all.items.map((item) => item.studentNumber)).toEqual(expect.arrayContaining(["SYK-SION-0001", "SYK-SION-0002", "SYK-SION-0003"]));
-    expect(current.items.map((item) => item.currentStatus)).toEqual(["active", "active"]);
+    expect(all.items.map((item) => item.studentNumber)).toEqual(expect.arrayContaining(["SYK-SION-0001", "SYK-SION-0002", "SYK-SION-0003", "SYK-SION-0005"]));
+    expect(CURRENT_STUDENT_STATUS_VALUES).toEqual(["active", "on_hold"]);
+    expect(current.items.map((item) => item.currentStatus)).toEqual(["active", "active", "on_hold"]);
     expect(alumni.items.map((item) => item.currentStatus)).toEqual(["alumni", "alumni"]);
     expect(alumni.items.find((item) => item.studentNumber === "SYK-SION-0002")).toMatchObject({ displayName: "Legacy Alumni", enrolmentCount: 1 });
+    expect(current.items.find((item) => item.studentNumber === "SYK-SION-0005")).toMatchObject({ currentStatus: "on_hold" });
   });
 
   it("searches name, student id, mobile, course and enrolment number", async () => {
@@ -26,7 +28,7 @@ describe("student directory", () => {
     await expectNumbers(fixture, { search: "legacy" }, ["SYK-SION-0002"]);
     await expectNumbers(fixture, { search: "SYK-SION-0001" }, ["SYK-SION-0001"]);
     await expectNumbers(fixture, { search: "98765 43210" }, ["SYK-SION-0001"]);
-    await expectNumbers(fixture, { search: "Advanced Excel" }, ["SYK-SION-0001", "SYK-SION-0003"]);
+    await expectNumbers(fixture, { search: "Advanced Excel" }, ["SYK-SION-0001", "SYK-SION-0005", "SYK-SION-0003"]);
     await expectNumbers(fixture, { search: "ENR-SION-0003-B" }, ["SYK-SION-0003"]);
   });
 
@@ -50,13 +52,27 @@ describe("student directory", () => {
     });
   });
 
+  it("shows a payments shortcut only for one confirmed active financial enrolment", async () => {
+    const fixture = await createFixture();
+
+    const singleFinancial = await listStaffStudents(fixture.c, ownerStaff(), { search: "SYK-SION-0001" });
+    const multipleFinancial = await listStaffStudents(fixture.c, ownerStaff(), { search: "SYK-SION-0003" });
+    const noFeeLegacy = await listStaffStudents(fixture.c, ownerStaff(), { search: "SYK-SION-0002" });
+    const inactiveFee = await listStaffStudents(fixture.c, ownerStaff(), { search: "SYK-SION-0005" });
+
+    expect(singleFinancial.items[0].paymentShortcutEnrolmentId).toBe("enrol_a");
+    expect(multipleFinancial.items[0].paymentShortcutEnrolmentId).toBeNull();
+    expect(noFeeLegacy.items[0].paymentShortcutEnrolmentId).toBeNull();
+    expect(inactiveFee.items[0].paymentShortcutEnrolmentId).toBeNull();
+  });
+
   it("excludes archived people and branch-inaccessible students", async () => {
     const fixture = await createFixture();
     const owner = await listStaffStudents(fixture.c, ownerStaff(), { status: "all" });
     const branchStaff = await listStaffStudents(fixture.c, branchStaffContext(), { status: "all" });
 
     expect(owner.items.map((item) => item.studentNumber)).not.toContain("SYK-SION-ARCHIVED");
-    expect(branchStaff.items.map((item) => item.studentNumber)).toEqual(["SYK-SION-0001", "SYK-SION-0002", "SYK-SION-0003"]);
+    expect(branchStaff.items.map((item) => item.studentNumber)).toEqual(["SYK-SION-0001", "SYK-SION-0005", "SYK-SION-0002", "SYK-SION-0003"]);
     await expectNumbers(fixture, { search: "SYK-BANDRA-0004" }, [], branchStaffContext());
   });
 
@@ -66,7 +82,7 @@ describe("student directory", () => {
 
     const page = await listStaffStudents(fixture.c, ownerStaff(), { status: "all", limit: 2, offset: 0 });
     expect(page.items).toHaveLength(2);
-    expect(page.pagination).toMatchObject({ limit: 2, offset: 0, total: 4, hasMore: true });
+    expect(page.pagination).toMatchObject({ limit: 2, offset: 0, total: 5, hasMore: true });
   });
 
   it("returns only safe display fields", async () => {
@@ -100,6 +116,7 @@ async function createFixture() {
   await seedStudent(db, { personId: "person_b", studentId: "student_b", studentNumber: "SYK-SION-0002", fullName: "Legacy Alumni", status: "alumni", mobile: "9234567890", withEnquiry: false, enrolments: [{ id: "enrol_b", number: "ENR-SION-0002", courseId: "course_tally", joiningDate: "2025-01-02", hasFee: false }] });
   await seedStudent(db, { personId: "person_c", studentId: "student_c", studentNumber: "SYK-SION-0003", fullName: "Multi Course Alumni", status: "alumni", mobile: "9234567890", withEnquiry: true, enrolments: [{ id: "enrol_c1", number: "ENR-SION-0003-A", courseId: "course_excel", joiningDate: "2024-01-02", hasFee: true }, { id: "enrol_c2", number: "ENR-SION-0003-B", courseId: "course_tally", joiningDate: "2026-02-02", hasFee: true }] });
   await seedStudent(db, { personId: "person_d", studentId: "student_d", studentNumber: "SYK-BANDRA-0004", fullName: "Branch Student", status: "active", mobile: "9123456780", branchId: "branch_bandra", withEnquiry: false, enrolments: [{ id: "enrol_d", number: "ENR-BANDRA-0004", courseId: "course_tally", joiningDate: "2026-03-02", hasFee: false }] });
+  await seedStudent(db, { personId: "person_e", studentId: "student_e", studentNumber: "SYK-SION-0005", fullName: "On Hold Current", status: "on_hold", mobile: "9988776655", withEnquiry: false, enrolments: [{ id: "enrol_e", number: "ENR-SION-0005", courseId: "course_excel", joiningDate: "2025-08-02", hasFee: true, feeStatus: "cancelled" }] });
   await seedStudent(db, { personId: "person_archived", studentId: "student_archived", studentNumber: "SYK-SION-ARCHIVED", fullName: "Archived Student", status: "active", mobile: "9000000000", personStatus: "archived", withEnquiry: false, enrolments: [] });
   await seedInactiveMobile(db, "person_a", "9345678901");
   const c = { env: { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" }, req: { header: () => null } };
@@ -117,7 +134,7 @@ function installSchema(db: DatabaseSync) {
     create table login_account_roles (login_account_id text, role_id text, branch_id text, created_at text);
     create table courses (id text primary key, code text, name text);
     create table enrolments (id text primary key, student_id text, course_id text, enrolment_number text, admission_date text, joining_date text, actual_completion_date text, status text, created_at text);
-    create table fee_agreements (id text primary key, enrolment_id text, final_agreed_fee_paise integer);
+    create table fee_agreements (id text primary key, enrolment_id text, final_agreed_fee_paise integer, status text);
     create table enquiries (id text primary key, person_id text);
   `);
 }
@@ -138,7 +155,7 @@ async function seedStudent(db: DatabaseSync, input: {
   branchId?: string;
   personStatus?: string;
   withEnquiry: boolean;
-  enrolments: Array<{ id: string; number: string; courseId: string; joiningDate: string; hasFee: boolean }>;
+  enrolments: Array<{ id: string; number: string; courseId: string; joiningDate: string; hasFee: boolean; feeStatus?: string }>;
 }) {
   const branchId = input.branchId || "branch_sion";
   db.prepare("insert into people values (?, ?, ?, ?, ?, null, ?, ?, ?)").run(input.personId, ORG_ID, branchId, input.fullName, input.fullName, input.personStatus || "active", NOW, NOW);
@@ -146,8 +163,8 @@ async function seedStudent(db: DatabaseSync, input: {
   db.prepare("insert into students values (?, ?, ?, ?, ?, 1, ?, ?, 'active', ?, ?)").run(input.studentId, ORG_ID, input.personId, branchId, input.studentNumber, input.enrolments[0]?.joiningDate || "2024-01-01", input.status, NOW, NOW);
   await seedMobile(db, input.personId, `contact_${input.studentId}`, input.mobile, "active", 1);
   for (const enrolment of input.enrolments) {
-    db.prepare("insert into enrolments values (?, ?, ?, ?, ?, ?, null, 'active', ?)").run(enrolment.id, input.studentId, enrolment.courseId, enrolment.number, enrolment.joiningDate, enrolment.joiningDate, NOW);
-    if (enrolment.hasFee) db.prepare("insert into fee_agreements values (?, ?, 100000)").run(`fee_${enrolment.id}`, enrolment.id);
+    db.prepare("insert into enrolments values (?, ?, ?, ?, ?, ?, null, 'confirmed', ?)").run(enrolment.id, input.studentId, enrolment.courseId, enrolment.number, enrolment.joiningDate, enrolment.joiningDate, NOW);
+    if (enrolment.hasFee) db.prepare("insert into fee_agreements values (?, ?, 100000, ?)").run(`fee_${enrolment.id}`, enrolment.id, enrolment.feeStatus || "active");
   }
   if (input.withEnquiry) db.prepare("insert into enquiries values (?, ?)").run(`enq_${input.studentId}`, input.personId);
 }
