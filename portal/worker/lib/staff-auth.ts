@@ -3,6 +3,7 @@ import { getAccountRoles, getSessionFromRequest } from "./auth-store";
 
 export const COURSE_ADMIN_ROLES = ["owner", "system_admin", "admin"] as const;
 export const DISCOUNT_APPROVER_ROLES = ["owner"] as const;
+export const OWNER_STUDENT_MAINTENANCE_ROLES = ["owner"] as const;
 export const ADMISSION_STAFF_ROLES = ["owner", "system_admin", "admin", "counsellor", "admission_admin"] as const;
 export const SENSITIVE_ADMISSION_ROLES = ["owner", "system_admin", "admission_admin"] as const;
 export const RECEIPT_RECORDER_ROLES = ["owner", "system_admin", "admin", "admission_admin", "counsellor"] as const;

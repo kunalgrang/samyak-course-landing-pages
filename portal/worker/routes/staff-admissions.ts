@@ -21,6 +21,7 @@ import { createOpaqueId, decryptText, hmacHex } from "../lib/crypto";
 import { mapStatusToPipelineStage } from "../lib/enquiry-crm";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
+import { changeStudentPrimaryMobile, getStudentContactHistory } from "../lib/owner-student-maintenance";
 import { addMobileIfMissing } from "../lib/person-contact";
 
 type PortalHono = Hono<{
@@ -69,6 +70,11 @@ const enquiryStatusSchema = z.object({
     "duplicate",
     "invalid",
   ]),
+});
+const studentMobileChangeSchema = z.object({
+  newMobile: z.string().trim().min(10).max(20),
+  confirmSharedMobile: z.boolean().default(false),
+  reason: z.string().trim().max(160).optional(),
 });
 
 export function registerStaffAdmissionRoutes(app: PortalHono) {
@@ -289,9 +295,26 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.get("/api/staff/students/:studentId", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
-    const profile = await getStudentProfile(c, c.req.param("studentId"));
+    const profile = await getStudentProfile(c, staff, c.req.param("studentId"));
     if (!profile) return jsonError(c, { status: 404, code: "student_not_found", message: "Student was not found." });
     return jsonPlain(c, profile);
+  });
+
+  app.patch("/api/staff/students/:studentId/contact/mobile", async (c) => {
+    const staff = await requireStaffRoles(c, ["owner"]);
+    if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Only owner accounts can maintain student contact details." });
+    const parsed = studentMobileChangeSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_mobile_change", message: "Enter a valid mobile change request." });
+    const result = await changeStudentPrimaryMobile(c, staff, c.req.param("studentId"), parsed.data);
+    if (!result.ok) {
+      return jsonError(c, {
+        status: result.status as 400,
+        code: result.code,
+        message: result.message,
+        ...(result.sharedMobileMatches ? { details: { sharedMobileMatches: result.sharedMobileMatches } } : {}),
+      });
+    }
+    return jsonPlain(c, { success: true, ...result });
   });
 }
 
@@ -489,6 +512,22 @@ async function hasAdmissionAccessForBranch(c: PortalContext, staff: StaffContext
   return Boolean(row);
 }
 
+async function hasOwnerMaintenanceAccessForBranch(c: PortalContext, staff: StaffContext, branchId: string) {
+  const row = await c.env.DB.prepare(
+    `select 1 as ok
+     from login_account_roles
+     join roles on roles.id = login_account_roles.role_id
+     where login_account_roles.login_account_id = ?
+       and roles.organisation_id = ?
+       and roles.code = 'owner'
+       and (login_account_roles.branch_id is null or login_account_roles.branch_id = ?)
+     limit 1`,
+  )
+    .bind(staff.loginAccountId, ORG_ID, branchId)
+    .first<{ ok: number }>();
+  return Boolean(row);
+}
+
 async function auditPersonLink(c: PortalContext, staff: StaffContext, branchId: string, action: string, enquiryId: string, metadata: Record<string, unknown>) {
   await c.env.DB.prepare(
     `insert into audit_logs
@@ -503,7 +542,7 @@ function formatIndianMobileDisplay(mobile: string) {
   return `+91 ${mobile.slice(0, 5)} ${mobile.slice(5)}`;
 }
 
-async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], studentId: string) {
+async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], staff: StaffContext, studentId: string) {
   const student = await c.env.DB.prepare(
     `select students.*, people.full_name, people.date_of_birth
      from students
@@ -535,10 +574,13 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], stu
       .all(),
   ]);
   const primaryMobile = await fullPrimaryMobile(c, String(student.person_id));
+  const canMaintainContact = await hasOwnerMaintenanceAccessForBranch(c, staff, String(student.home_branch_id));
   return {
     student,
-    primaryMobile,
+    primaryMobile: null,
     mobileDisplay: primaryMobile ? maskMobile(primaryMobile) : null,
+    canMaintainContact,
+    contactHistory: canMaintainContact ? await getStudentContactHistory(c, String(student.person_id)) : [],
     locality: localities.results?.[0] || null,
     education: education.results?.[0] || null,
     enrolments: enrolments.results || [],

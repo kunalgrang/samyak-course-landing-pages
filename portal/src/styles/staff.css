@@ -12,6 +12,79 @@
   background: var(--color-surface);
 }
 
+.contact-edit-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.contact-edit-panel label {
+  display: grid;
+  gap: 7px;
+  color: var(--color-navy);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.contact-edit-panel input,
+.contact-edit-panel select {
+  width: 100%;
+  min-height: 46px;
+  box-sizing: border-box;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 0 13px;
+  color: var(--color-ink);
+  background: #fff;
+  font: inherit;
+}
+
+.confirmation-box,
+.warning-box {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  background: #f8fafc;
+}
+
+.warning-box {
+  border-color: rgba(180, 35, 24, 0.28);
+  background: #fff4f2;
+}
+
+.warning-box strong {
+  color: #8a1f14;
+}
+
+.warning-box p,
+.form-message {
+  margin: 0;
+  color: var(--color-ink);
+  line-height: 1.45;
+}
+
+.check-row {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  gap: 10px !important;
+}
+
+.check-row input {
+  width: 18px;
+  min-height: 18px;
+  height: 18px;
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .staff-form {
   display: grid;
   gap: 16px;
