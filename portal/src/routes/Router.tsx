@@ -9,6 +9,7 @@ import { ReferralsPage } from "../features/referrals/ReferralsPage";
 import { ReferralOperationsDetailPage, ReferralOperationsPage } from "../features/staff/ReferralOperationsPage";
 import { CertificatesPage } from "../features/certificates/CertificatesPage";
 import { EnquiriesPage } from "../features/staff/EnquiriesPage";
+import { StudentsPage } from "../features/staff/StudentsPage";
 import { AdmissionPage } from "../features/staff/AdmissionPage";
 import { CourseMasterPage } from "../features/staff/CourseMasterPage";
 import { DiscountApprovalsPage } from "../features/staff/DiscountApprovalsPage";
@@ -20,7 +21,7 @@ import { ShellHomePage } from "./ShellHomePage";
 import { AppShell } from "./AppShell";
 import type { AppRoute, RoutePath } from "./types";
 
-const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/referral-operations", "/app/courses", "/app/discount-approvals", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
+const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/students", "/app/referral-operations", "/app/courses", "/app/discount-approvals", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
 const staffRoles = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
 const courseAdminRoles = new Set(["owner", "admin", "system_admin"]);
 const discountApproverRoles = new Set(["owner"]);
@@ -40,6 +41,8 @@ export function Router() {
   const { isAuthenticated, isLoading, hasSessionError, refreshSession, session, sessionMessage, signOut } = useAuth();
   const [path, setPath] = useState<RoutePath>(() => normalizePath(window.location.pathname));
   const isStaff = Boolean(session?.accountRoles.some((role) => staffRoles.has(role)));
+  const canAccessEnquiries = canViewEnquiries(session?.accountRoles || []);
+  const canAccessStudents = canViewStudents(session?.accountRoles || []);
   const isCourseAdmin = Boolean(session?.accountRoles.some((role) => courseAdminRoles.has(role)));
   const isDiscountApprover = canAccessDiscountApprovals(session?.accountRoles || []);
   const navigation = navigationForRoles(session?.accountRoles || [], isStaff);
@@ -59,7 +62,13 @@ export function Router() {
   }, [hasSessionError, isAuthenticated, isLoading, path]);
 
   useEffect(() => {
-    if (!isLoading && isAuthenticated && (path === "/app/enquiries" || path === "/app/referral-operations" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/enquiries/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/students/") || path.startsWith("/app/enrolments/")) && !isStaff) {
+    if (!isLoading && isAuthenticated && (path === "/app/enquiries" || path.startsWith("/app/enquiries/")) && !canAccessEnquiries) {
+      navigate("/app", true);
+    }
+    if (!isLoading && isAuthenticated && (path === "/app/students" || path.startsWith("/app/students/")) && !canAccessStudents) {
+      navigate("/app", true);
+    }
+    if (!isLoading && isAuthenticated && (path === "/app/referral-operations" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/referral-operations/") || path.startsWith("/app/enrolments/")) && !isStaff) {
       navigate("/app", true);
     }
     if (!isLoading && isAuthenticated && path === "/app/courses" && !isCourseAdmin) {
@@ -68,7 +77,7 @@ export function Router() {
     if (!isLoading && isAuthenticated && path === "/app/discount-approvals" && !isDiscountApprover) {
       navigate("/app/enquiries", true);
     }
-  }, [isAuthenticated, isCourseAdmin, isDiscountApprover, isLoading, isStaff, path]);
+  }, [canAccessEnquiries, canAccessStudents, isAuthenticated, isCourseAdmin, isDiscountApprover, isLoading, isStaff, path]);
 
   const activeAppPath = useMemo<AppRoute>(
     () => (path.startsWith("/app") ? (path as AppRoute) : "/app"),
@@ -118,7 +127,8 @@ export function Router() {
   return (
     <AppShell activePath={activeAppPath} navigation={navigation} onNavigate={navigate} onSignOut={handleSignOut}>
       {activeAppPath === "/app" ? <ShellHomePage /> : null}
-      {activeAppPath === "/app/enquiries" && isStaff ? <EnquiriesPage /> : null}
+      {activeAppPath === "/app/enquiries" && canAccessEnquiries ? <EnquiriesPage /> : null}
+      {activeAppPath === "/app/students" && canAccessStudents ? <StudentsPage /> : null}
       {activeAppPath === "/app/referral-operations" && isStaff ? <ReferralOperationsPage onNavigate={navigate} /> : null}
       {activeAppPath === "/app/courses" && isStaff ? <CourseMasterPage /> : null}
       {activeAppPath === "/app/discount-approvals" && isDiscountApprover ? <DiscountApprovalsPage /> : null}
@@ -140,10 +150,20 @@ export function navigationForRoles(accountRoles: string[], isStaff = accountRole
   const isCourseAdmin = accountRoles.some((role) => courseAdminRoles.has(role));
   const isDiscountApprover = canAccessDiscountApprovals(accountRoles);
   return staffNavigation.filter((item) => {
+    if (item.path === "/app/enquiries") return canViewEnquiries(accountRoles);
+    if (item.path === "/app/students") return canViewStudents(accountRoles);
     if (item.path === "/app/courses") return isCourseAdmin;
     if (item.path === "/app/discount-approvals") return isDiscountApprover;
     return true;
   });
+}
+
+export function canViewEnquiries(accountRoles: string[]) {
+  return accountRoles.some((role) => staffRoles.has(role));
+}
+
+export function canViewStudents(accountRoles: string[]) {
+  return accountRoles.some((role) => staffRoles.has(role));
 }
 
 export function canAccessDiscountApprovals(accountRoles: string[]) {

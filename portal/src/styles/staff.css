@@ -693,6 +693,151 @@
   color: #0f766e;
 }
 
+.student-directory-card,
+.student-directory-list {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+}
+
+.student-directory-toolbar {
+  display: grid;
+  gap: 12px;
+  align-items: end;
+}
+
+.student-directory-toolbar label {
+  display: grid;
+  gap: 7px;
+  color: var(--color-navy);
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.student-directory-toolbar input {
+  min-height: 44px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 0 12px;
+  color: var(--color-ink);
+  background: #fff;
+  font: inherit;
+}
+
+.segmented-control {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.segmented-control__option {
+  min-height: 40px;
+  border: 1px solid var(--color-line);
+  background: #fff;
+  color: var(--color-muted);
+}
+
+.segmented-control__option--active {
+  border-color: var(--color-navy);
+  background: var(--color-navy);
+  color: #fff;
+}
+
+.student-directory-header,
+.student-directory-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(150px, 1.2fr) minmax(90px, 0.7fr) minmax(180px, 1.4fr) minmax(110px, 0.8fr) minmax(120px, 0.8fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.student-directory-header {
+  padding: 0 14px;
+  color: var(--color-muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.student-directory-row {
+  min-width: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: #fff;
+}
+
+.student-directory-row div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.student-directory-row small {
+  display: none;
+  color: var(--color-muted);
+  font-size: 0.75rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.student-directory-row strong,
+.student-directory-row span {
+  overflow-wrap: anywhere;
+}
+
+.student-directory-actions {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 8px !important;
+}
+
+.student-status-chip {
+  justify-self: start;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(71, 85, 105, 0.3);
+  border-radius: 999px;
+  padding: 0 10px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.student-status-chip--current {
+  border-color: rgba(13, 148, 136, 0.32);
+  background: #ecfdf5;
+  color: #0f766e;
+}
+
+.student-status-chip--alumni {
+  border-color: rgba(37, 99, 235, 0.28);
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.pagination-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+  color: var(--color-muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.empty-copy {
+  margin: 0;
+  color: var(--color-muted);
+  font-weight: 800;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -1020,6 +1165,10 @@
     grid-template-columns: minmax(160px, 0.5fr) minmax(220px, 1fr) auto;
   }
 
+  .student-directory-toolbar {
+    grid-template-columns: minmax(260px, auto) minmax(220px, 1fr) auto;
+  }
+
   .crm-card {
     grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.72fr);
   }
@@ -1069,6 +1218,22 @@
 
   .referral-ops-row--head {
     display: none;
+  }
+
+  .student-directory-header {
+    display: none;
+  }
+
+  .student-directory-row {
+    grid-template-columns: 1fr;
+  }
+
+  .student-directory-row small {
+    display: block;
+  }
+
+  .student-directory-actions {
+    justify-content: flex-start;
   }
 
   .referral-ops-row--item {

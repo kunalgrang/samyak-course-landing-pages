@@ -1,6 +1,7 @@
 export type AppRoute =
   | "/app"
   | "/app/enquiries"
+  | "/app/students"
   | `/app/enquiries/${string}`
   | `/app/enquiries/${string}/admission`
   | `/app/students/${string}`

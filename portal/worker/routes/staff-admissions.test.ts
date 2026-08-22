@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { registerStaffAdmissionRoutes } from "./staff-admissions";
 import * as admissionService from "../lib/admission-service";
@@ -14,7 +15,10 @@ vi.mock("../lib/auth-store", () => ({
   ORG_ID: "org_samyak",
   getSessionFromRequest: mocks.getSessionFromRequest,
   getAccountRoles: mocks.getAccountRoles,
+  mobileHash: vi.fn(),
 }));
+
+type SqlValue = string | number | bigint | Uint8Array | null;
 
 vi.mock("../lib/admission-service", () => ({
   confirmAdmission: vi.fn(),
@@ -140,3 +144,116 @@ describe("staff admission draft routes", () => {
     });
   });
 });
+
+describe("staff student directory routes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("denies unauthenticated direct student directory access", async () => {
+    const app = routeApp();
+    mocks.getSessionFromRequest.mockResolvedValue(null);
+
+    const response = await app.request("/api/staff/students");
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      error: { code: "forbidden" },
+    });
+  });
+
+  it("denies direct student profile reads outside staff branch scope", async () => {
+    const app = routeApp();
+    authenticateAs(["counsellor"]);
+    const db = studentProfileDb();
+
+    const response = await app.request("/api/staff/students/student_bandra", {}, { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" });
+
+    expect(response.status).toBe(404);
+  });
+
+  it("allows direct student profile reads inside staff branch scope", async () => {
+    const app = routeApp();
+    authenticateAs(["counsellor"]);
+    const db = studentProfileDb();
+
+    const response = await app.request("/api/staff/students/student_sion", {}, { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      student: {
+        id: "student_sion",
+        student_number: "SYK-SION-0001",
+      },
+      canMaintainContact: false,
+    });
+  });
+
+  it("denies archived Person direct student profile reads", async () => {
+    const app = routeApp();
+    authenticateAs(["counsellor"]);
+    const db = studentProfileDb();
+
+    const response = await app.request("/api/staff/students/student_archived", {}, { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" });
+
+    expect(response.status).toBe(404);
+  });
+});
+
+function studentProfileDb() {
+  const db = new DatabaseSync(":memory:");
+  installStudentProfileSchema(db);
+  db.exec(`
+    insert into roles values ('role_counsellor', 'org_samyak', 'counsellor', 'Counsellor', '2026-08-22T00:00:00.000Z');
+    insert into login_account_roles values ('acct_test', 'role_counsellor', 'branch_sion', '2026-08-22T00:00:00.000Z');
+    insert into people values ('person_sion', 'org_samyak', 'branch_sion', 'Sion Student', 'Sion Student', null, 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+    insert into students values ('student_sion', 'org_samyak', 'person_sion', 'branch_sion', 'SYK-SION-0001', 1, '2026-01-01', 'active', 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+    insert into people values ('person_bandra', 'org_samyak', 'branch_bandra', 'Band Stand Student', 'Band Student', null, 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+    insert into students values ('student_bandra', 'org_samyak', 'person_bandra', 'branch_bandra', 'SYK-BANDRA-0001', 1, '2026-01-01', 'active', 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+    insert into people values ('person_archived', 'org_samyak', 'branch_sion', 'Archived Student', 'Archived Student', null, 'archived', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+    insert into students values ('student_archived', 'org_samyak', 'person_archived', 'branch_sion', 'SYK-SION-ARCHIVED', 2, '2026-01-01', 'active', 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+  `);
+  return db;
+}
+
+function installStudentProfileSchema(db: DatabaseSync) {
+  db.exec(`
+    create table roles (id text primary key, organisation_id text, code text, name text, created_at text);
+    create table login_account_roles (login_account_id text, role_id text, branch_id text, created_at text);
+    create table people (id text primary key, organisation_id text, home_branch_id text, full_name text, public_name text, date_of_birth text, status text, created_at text, updated_at text);
+    create table students (id text primary key, organisation_id text, person_id text, home_branch_id text, student_number text, sequence_number integer, student_since text, current_status text, portal_status text, created_at text, updated_at text);
+    create table person_localities (id text primary key, person_id text, locality text, city text, status text, created_at text);
+    create table education_records (id text primary key, person_id text, qualification_level text, created_at text);
+    create table enrolments (id text primary key, student_id text, course_id text, enrolment_number text, joining_date text, created_at text);
+    create table courses (id text primary key, name text);
+    create table fee_agreements (id text primary key, enrolment_id text, final_agreed_fee_paise integer, payment_plan_type text);
+    create table nsdc_profiles (id text primary key, enrolment_id text, status text);
+    create table enquiries (id text primary key, person_id text, enquiry_number text, status text, created_at text);
+    create table person_contacts (id text primary key, person_id text, contact_type text, normalized_value text, display_value text, last_four text, is_primary integer, is_verified integer, verified_at text, created_at text, updated_at text);
+    create table person_contact_details (contact_id text primary key, belongs_to text, contact_label text, is_whatsapp integer, valid_from text, valid_until text, status text, created_at text, updated_at text);
+    create table person_contact_secrets (contact_id text primary key, value_ciphertext text, encryption_version text, created_at text, updated_at text);
+  `);
+}
+
+class D1Adapter {
+  constructor(private readonly db: DatabaseSync) {}
+  prepare(sql: string) {
+    return new D1Statement(this.db, sql);
+  }
+}
+
+class D1Statement {
+  private values: SqlValue[] = [];
+  constructor(private readonly db: DatabaseSync, private readonly sql: string) {}
+  bind(...values: SqlValue[]) {
+    this.values = values;
+    return this;
+  }
+  async first<T>() {
+    return (this.db.prepare(this.sql).get(...this.values) ?? null) as T | null;
+  }
+  async all<T>() {
+    return { results: this.db.prepare(this.sql).all(...this.values) } as T;
+  }
+}
