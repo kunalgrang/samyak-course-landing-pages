@@ -533,6 +533,24 @@ const staffReferralProspectContactSchema = z.object({
   callUrl: z.string().nullable(),
 });
 
+const staffReferralPayoutSchema = z.object({
+  id: z.string(),
+  amountPaise: z.number(),
+  paymentDate: z.string(),
+  paymentMode: z.string(),
+  status: z.literal("paid"),
+  createdAt: z.string(),
+});
+
+const staffReferralRewardSchema = z.object({
+  slabId: z.string(),
+  cashRewardPaise: z.number(),
+  courseCreditPaise: z.number(),
+  status: z.string(),
+  approvedAt: z.string().nullable(),
+  payout: staffReferralPayoutSchema.nullable(),
+});
+
 const staffReferralListItemSchema = z.object({
   referralId: z.string(),
   shortReference: z.string(),
@@ -560,7 +578,7 @@ const staffReferralListItemSchema = z.object({
   admissionStatus: z.string(),
   qualificationState: z.string(),
   rewardStatus: z.string(),
-  reward: z.object({ slabId: z.string(), cashRewardPaise: z.number(), courseCreditPaise: z.number() }).nullable(),
+  reward: staffReferralRewardSchema.nullable(),
 });
 
 const staffReferralListSchema = z.object({
@@ -568,6 +586,10 @@ const staffReferralListSchema = z.object({
   summary: z.object({
     totalReferrals: z.number(),
     admitted: z.number(),
+    awaitingPayment: z.number().default(0),
+    qualified: z.number().default(0),
+    approved: z.number().default(0),
+    paid: z.number().default(0),
     paymentDataUnavailable: z.number(),
     expired: z.number(),
   }),
@@ -597,8 +619,8 @@ const staffReferralDetailSchema = z.object({
       finalAgreedFeePaise: z.number(),
       minimumQualifyingPaymentPaise: z.number(),
       paymentPlanType: z.string(),
-      receivedAmountPaise: z.null(),
-      receivedAmountAvailable: z.literal(false),
+      receivedAmountPaise: z.number(),
+      receivedAmountAvailable: z.boolean(),
     }).nullable(),
     rewardSlabs: z.array(z.object({
       id: z.string(),
@@ -625,6 +647,15 @@ const staffReferralStatusResponseSchema = z.object({
   referralId: z.string(),
   status: z.string(),
   idempotent: z.boolean(),
+});
+
+const staffReferralRewardResponseSchema = z.object({
+  success: z.literal(true),
+  referralId: z.string(),
+  idempotent: z.boolean(),
+  qualificationState: z.string(),
+  reward: staffReferralRewardSchema.nullable(),
+  payout: staffReferralPayoutSchema.optional(),
 });
 
 const certificateListItemSchema = z.object({
@@ -955,6 +986,14 @@ export async function getStaffReferralDetail(referralId: string) {
 
 export async function updateStaffReferralStatus(referralId: string, status: string, note?: string) {
   return postJson(`/api/staff/referrals/${encodeURIComponent(referralId)}/status`, { status, note: note || undefined }, staffReferralStatusResponseSchema);
+}
+
+export async function approveStaffReferralReward(referralId: string) {
+  return postJson(`/api/staff/referrals/${encodeURIComponent(referralId)}/reward/approve`, {}, staffReferralRewardResponseSchema);
+}
+
+export async function recordStaffReferralRewardPayout(referralId: string, input: { paymentDate: string; paymentMode: "cash" | "upi" | "bank_transfer" | "other"; paymentReference?: string; notes?: string; idempotencyKey: string }) {
+  return postJson(`/api/staff/referrals/${encodeURIComponent(referralId)}/reward/payout`, input, staffReferralRewardResponseSchema);
 }
 
 export type CertificateQuery = {

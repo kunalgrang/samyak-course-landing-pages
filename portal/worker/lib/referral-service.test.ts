@@ -539,7 +539,7 @@ describe("native referral services", () => {
     const app = staffReferralRouteApp();
     const workerEnv = { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER };
     const firstPage = await app.request("https://portal.samyaksion.com/api/staff/referrals?limit=2&offset=0", { headers: { Cookie: sessionCookie } }, workerEnv);
-    const filtered = await app.request("https://portal.samyaksion.com/api/staff/referrals?status=converted&rewardStatus=payment_data_unavailable", { headers: { Cookie: sessionCookie } }, workerEnv);
+    const filtered = await app.request("https://portal.samyaksion.com/api/staff/referrals?status=converted&rewardStatus=approved", { headers: { Cookie: sessionCookie } }, workerEnv);
     fixture.sqlite.prepare("delete from login_account_roles where login_account_id = 'acct_student'").run();
     const denied = await app.request("https://portal.samyaksion.com/api/staff/referrals", { headers: { Cookie: sessionCookie } }, workerEnv);
 
@@ -568,7 +568,7 @@ describe("native referral services", () => {
     expect(filtered.status).toBe(200);
     const filteredBody = await filtered.json() as { referrals: Array<{ referralStatus: string; qualificationState: string; reward: unknown }> };
     expect(filteredBody.referrals.length).toBeGreaterThan(0);
-    expect(filteredBody.referrals.every((item) => item.referralStatus === "converted" && item.qualificationState === "admitted_payment_data_unavailable" && item.reward === null)).toBe(true);
+    expect(filteredBody.referrals.every((item) => item.referralStatus === "converted" && item.qualificationState === "approved" && item.reward !== null)).toBe(true);
     expect(denied.status).toBe(403);
     fixture.close();
   });
@@ -656,20 +656,106 @@ describe("native referral services", () => {
 
     expect(validAdmission.status).toBe(200);
     expect(lateAdmission.status).toBe(200);
-    const validBody = await validAdmission.json() as { referral: { validityState: string; admissionStatus: string; qualificationState: string; rewardStatus: string; fee: { finalAgreedFeePaise: number; receivedAmountPaise: null; receivedAmountAvailable: boolean } | null; reward: unknown; linkedEnrolment: { studentNumber: string; enrolmentNumber: string; admissionDate: string; joiningDate: string } | null } };
+    const validBody = await validAdmission.json() as { referral: { validityState: string; admissionStatus: string; qualificationState: string; rewardStatus: string; fee: { finalAgreedFeePaise: number; receivedAmountPaise: number; receivedAmountAvailable: boolean } | null; reward: unknown; linkedEnrolment: { studentNumber: string; enrolmentNumber: string; admissionDate: string; joiningDate: string } | null } };
     const lateBody = await lateAdmission.json() as { referral: { validityState: string; admissionStatus: string; qualificationState: string } };
     expect(validBody.referral.validityState).toBe("valid_admission");
     expect(validBody.referral.admissionStatus).toBe("done");
-    expect(validBody.referral.qualificationState).toBe("admitted_payment_data_unavailable");
-    expect(validBody.referral.rewardStatus).toBe("Payment data unavailable");
+    expect(validBody.referral.qualificationState).toBe("approved");
+    expect(validBody.referral.rewardStatus).toBe("Approved");
     expect(validBody.referral.linkedEnrolment).toMatchObject({ studentNumber: "STU-REWARD-00", enrolmentNumber: "ENR-00", admissionDate: "2025-03-12T10:00:00.000Z", joiningDate: "2025-03-12T10:00:00.000Z" });
-    expect(validBody.referral.fee).toMatchObject({ finalAgreedFeePaise: 900000, receivedAmountPaise: null, receivedAmountAvailable: false });
-    expect(validBody.referral.reward).toBeNull();
-    expect(JSON.stringify(validBody)).not.toContain('"receivedAmountPaise":0');
+    expect(validBody.referral.fee).toMatchObject({ finalAgreedFeePaise: 900000, receivedAmountPaise: 0, receivedAmountAvailable: true });
+    expect(validBody.referral.reward).toMatchObject({ cashRewardPaise: 10000, status: "approved" });
     expect(JSON.stringify(validBody)).not.toContain("qualified_pending_approval");
     expect(lateBody.referral.validityState).toBe("admission_after_expiry");
     expect(lateBody.referral.admissionStatus).toBe("outside_validity");
-    expect(lateBody.referral.qualificationState).toBe("expired");
+    expect(lateBody.referral.qualificationState).toBe("admission_outside_validity");
+    fixture.close();
+  });
+
+  it("approves and pays referral rewards from canonical admission, fee and receipt data", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
+    seedDashboardReferral(fixture.sqlite, 0, "converted");
+    seedDashboardReferral(fixture.sqlite, 1, "converted");
+    seedAdmittedOperationReferral(fixture.sqlite, 0, {
+      submittedAt: "2025-01-01T10:00:00.000Z",
+      validUntil: "2025-04-01T10:00:00.000Z",
+      admissionDate: "2025-03-12T10:00:00.000Z",
+    });
+    seedAdmittedOperationReferral(fixture.sqlite, 1, {
+      submittedAt: "2025-01-01T10:00:00.000Z",
+      validUntil: "2025-04-01T10:00:00.000Z",
+      admissionDate: "2025-03-12T10:00:00.000Z",
+    });
+    fixture.sqlite.prepare("update enrolments set status = 'confirmed' where id in ('enrolment_00', 'enrolment_01')").run();
+    addReceipt(fixture.sqlite, 0, 450000);
+    seedStaffRole(fixture.sqlite, "acct_student", "counsellor", "branch_sion");
+    const sessionCookie = await seedSession(fixture.sqlite, "acct_student", "person_student");
+    const app = staffReferralRouteApp();
+    const workerEnv = { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER };
+
+    const qualified = await app.request("https://portal.samyaksion.com/api/staff/referrals/referral_00", { headers: { Cookie: sessionCookie } }, workerEnv);
+    expect(qualified.status).toBe(200);
+    expect(await qualified.json()).toMatchObject({ referral: { qualificationState: "qualified", reward: { cashRewardPaise: 50000, courseCreditPaise: 75000 } } });
+
+    const denied = await app.request(
+      "https://portal.samyaksion.com/api/staff/referrals/referral_00/reward/approve",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie } },
+      workerEnv,
+    );
+    expect(denied.status).toBe(403);
+    fixture.sqlite.prepare("delete from login_account_roles where login_account_id = 'acct_student'").run();
+    seedStaffRole(fixture.sqlite, "acct_student", "owner");
+
+    const approval = await app.request(
+      "https://portal.samyaksion.com/api/staff/referrals/referral_00/reward/approve",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie } },
+      workerEnv,
+    );
+    const approvalReplay = await app.request(
+      "https://portal.samyaksion.com/api/staff/referrals/referral_00/reward/approve",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie } },
+      workerEnv,
+    );
+    expect(approval.status).toBe(200);
+    expect(await approval.json()).toMatchObject({ idempotent: false, qualificationState: "approved", reward: { cashRewardPaise: 50000, status: "approved" } });
+    expect(await approvalReplay.json()).toMatchObject({ idempotent: true, qualificationState: "approved" });
+    expect(count(fixture.sqlite, "referral_reward_snapshots")).toBe(1);
+    expect(count(fixture.sqlite, "audit_logs where action = 'referral_reward_approved'")).toBe(1);
+
+    const unapprovedPayout = await app.request(
+      "https://portal.samyaksion.com/api/staff/referrals/referral_01/reward/payout",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify({ paymentDate: "2025-03-15", paymentMode: "cash", idempotencyKey: "unapproved-cash-1" }) },
+      workerEnv,
+    );
+    expect(unapprovedPayout.status).toBe(409);
+
+    const payoutBody = { paymentDate: "2025-03-15", paymentMode: "upi", paymentReference: "UPI-123", notes: "paid privately", idempotencyKey: "reward-pay-1" };
+    const payout = await app.request(
+      "https://portal.samyaksion.com/api/staff/referrals/referral_00/reward/payout",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify(payoutBody) },
+      workerEnv,
+    );
+    const payoutReplay = await app.request(
+      "https://portal.samyaksion.com/api/staff/referrals/referral_00/reward/payout",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify(payoutBody) },
+      workerEnv,
+    );
+    const payoutConflict = await app.request(
+      "https://portal.samyaksion.com/api/staff/referrals/referral_00/reward/payout",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie, "Content-Type": "application/json" }, body: JSON.stringify({ ...payoutBody, paymentReference: "UPI-999" }) },
+      workerEnv,
+    );
+    expect(payout.status).toBe(200);
+    expect(await payout.json()).toMatchObject({ idempotent: false, qualificationState: "paid", payout: { amountPaise: 50000, paymentMode: "upi" } });
+    expect(await payoutReplay.json()).toMatchObject({ idempotent: true, qualificationState: "paid" });
+    expect(payoutConflict.status).toBe(409);
+    expect(count(fixture.sqlite, "referral_reward_payouts")).toBe(1);
+    const paidAudit = row(fixture.sqlite, "select metadata_json from audit_logs where action = 'referral_reward_paid' limit 1");
+    expect(String(paidAudit?.metadata_json || "")).toContain('"amountPaise":50000');
+    expect(String(paidAudit?.metadata_json || "")).not.toContain("UPI-123");
+    expect(String(paidAudit?.metadata_json || "")).not.toContain("paid privately");
     fixture.close();
   });
 
@@ -686,7 +772,7 @@ describe("native referral services", () => {
     const detail = await app.request("https://portal.samyaksion.com/api/staff/referrals/referral_00", { headers: { Cookie: sessionCookie } }, workerEnv);
     expect(detail.status).toBe(200);
     const detailBody = await detail.json() as { referral: { qualificationState: string; rewardSlabs: unknown[]; linkedEnquiry: unknown } };
-    expect(detailBody.referral.qualificationState).toBe("not_admitted");
+    expect(detailBody.referral.qualificationState).toBe("awaiting_admission");
     expect(detailBody.referral.rewardSlabs.length).toBe(4);
     expect(detailBody.referral.linkedEnquiry).toBeNull();
 
@@ -948,11 +1034,15 @@ describe("native referral services", () => {
     ).toThrow();
     expect(columns(fixture.sqlite, "referral_links")).not.toEqual(expect.arrayContaining(["token", "raw_token", "personal_link", "public_url"]));
     expect(columns(fixture.sqlite, "referrals")).toContain("prospect_name");
+    expect(columns(fixture.sqlite, "referral_reward_snapshots")).toEqual(expect.arrayContaining(["status", "approved_by_login_account_id", "approved_at"]));
+    expect(columns(fixture.sqlite, "referral_reward_payouts")).toEqual(expect.arrayContaining(["reward_snapshot_id", "amount_paise", "payment_date", "payment_mode", "idempotency_key", "payload_fingerprint"]));
     expect(all(fixture.sqlite, "pragma table_info(referrals)").find((item) => item.name === "prospect_name")).toMatchObject({ notnull: 1 });
     expect(indexes(fixture.sqlite)).toEqual(expect.arrayContaining([
       "referral_links_one_active_referrer_programme_unique",
       "referrals_active_duplicate_unique",
       "referrals_idempotency_payload_idx",
+      "referral_reward_payouts_reward_unique",
+      "referral_reward_payouts_idempotency_unique",
       "enquiries_organisation_mobile_idx",
       "person_contacts_type_value_idx",
     ]));
@@ -1198,6 +1288,33 @@ function seedAdmittedOperationReferral(db: DatabaseSync, index: number, dates: {
        payment_plan_type, number_of_instalments, initial_payment_expected_paise, status, created_at, updated_at)
      values (?, ?, 1000000, 900000, 100000, 0, 'single', 1, 900000, 'active', ?, ?)`,
   ).run(`fee_${suffix}`, `enrolment_${suffix}`, dates.admissionDate, dates.admissionDate);
+}
+
+function addReceipt(db: DatabaseSync, index: number, amountPaise: number, receivedAt = "2025-03-15T10:00:00.000Z") {
+  const suffix = String(index).padStart(2, "0");
+  db.prepare(
+    `insert into receipts
+      (id, organisation_id, branch_id, receipt_number, receipt_year, enquiry_id, admission_draft_id,
+       person_id, student_id, enrolment_id, fee_agreement_id, amount_paise, received_at, payment_mode,
+       payment_reference, notes, status, created_by_login_account_id, idempotency_key, payload_fingerprint,
+       created_at, updated_at)
+     values (?, 'org_samyak', 'branch_sion', ?, 2025, null, null,
+       ?, ?, ?, ?, ?, ?, 'cash',
+       null, null, 'recorded', 'acct_student', ?, ?, ?, ?)`,
+  ).run(
+    `receipt_${suffix}`,
+    `RCPT-${suffix}`,
+    `person_reward_${suffix}`,
+    `student_reward_${suffix}`,
+    `enrolment_${suffix}`,
+    `fee_${suffix}`,
+    amountPaise,
+    receivedAt,
+    `receipt-key-${suffix}`,
+    `receipt-fingerprint-${suffix}`,
+    receivedAt,
+    receivedAt,
+  );
 }
 
 async function mobileLookupHash(value: string) {

@@ -127,7 +127,7 @@ const studentHome: StudentHome = {
 
 const staffReferralList: StaffReferralList = {
   success: true,
-  summary: { totalReferrals: 1, admitted: 1, paymentDataUnavailable: 1, expired: 0 },
+  summary: { totalReferrals: 1, admitted: 1, awaitingPayment: 0, qualified: 0, approved: 0, paid: 0, paymentDataUnavailable: 1, expired: 0 },
   pagination: { limit: 20, offset: 0, total: 1, hasMore: false },
   filters: {},
   referrals: [
