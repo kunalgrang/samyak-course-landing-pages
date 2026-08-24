@@ -78,7 +78,7 @@ CREATE INDEX IF NOT EXISTS `referral_programme_referrer_types_type_idx` ON `refe
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `referral_programme_referrer_types_programme_idx` ON `referral_programme_referrer_types` (`referral_programme_id`);
 --> statement-breakpoint
-PRAGMA foreign_keys=OFF;
+PRAGMA defer_foreign_keys=ON;
 --> statement-breakpoint
 CREATE TABLE `referrer_profiles_0021` (
   `id` text PRIMARY KEY NOT NULL,
@@ -110,7 +110,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS `referrer_profiles_person_id_unique` ON `refer
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `referrer_profiles_organisation_id_idx` ON `referrer_profiles` (`organisation_id`);
 --> statement-breakpoint
-PRAGMA foreign_keys=ON;
+PRAGMA defer_foreign_keys=OFF;
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS `education_partner_referrer_profiles` (
   `education_partner_id` text NOT NULL,

@@ -209,7 +209,7 @@ describe("D1 referral foundation migration", () => {
     insertReferralLink(db, "link_fk", "hash_fk", "9999");
     insertReferral(db, "ref_fk", "link_fk", "enq_fk", "idem_fk");
 
-    expect(() => applyMigrationFile(db, "0021_education_partner_referrals_v1.sql")).not.toThrow();
+    expect(() => applyMigrationFileInTransaction(db, "0021_education_partner_referrals_v1.sql")).not.toThrow();
 
     expect(all(db, "pragma foreign_key_check")).toEqual([]);
     expect(row(db, "select referral_link_id, referrer_profile_id, education_partner_id from referrals where id = 'ref_fk'")).toMatchObject({
@@ -410,6 +410,19 @@ function applyMigrationFile(db: DatabaseSync, file: string) {
   const sql = readFileSync(join(process.cwd(), "migrations", file), "utf8");
   for (const statement of sql.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
     db.exec(statement);
+  }
+}
+
+function applyMigrationFileInTransaction(db: DatabaseSync, file: string) {
+  const sql = readFileSync(join(process.cwd(), "migrations", file), "utf8");
+  const statements = sql.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean);
+  db.exec("begin");
+  try {
+    for (const statement of statements) db.exec(statement);
+    db.exec("commit");
+  } catch (error) {
+    db.exec("rollback");
+    throw error;
   }
 }
 
