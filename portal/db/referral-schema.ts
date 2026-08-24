@@ -79,6 +79,7 @@ export const educationPartners = sqliteTable(
     check("education_partners_type_check", sql`${table.partnerType} in ('college', 'coaching_class', 'tuition_centre', 'training_institute', 'career_counsellor', 'placement_consultant', 'freelancer', 'other')`),
     check("education_partners_status_check", sql`${table.status} in ('active', 'inactive')`),
     check("education_partners_commission_bps_check", sql`${table.currentCommissionBasisPoints} between 0 and 10000`),
+    check("education_partners_active_commission_check", sql`${table.status} != 'active' or ${table.currentCommissionBasisPoints} > 0`),
   ],
 );
 
@@ -92,6 +93,7 @@ export const educationPartnerReferrerProfiles = sqliteTable(
   (table) => [
     primaryKey({ columns: [table.educationPartnerId, table.referrerProfileId] }),
     uniqueIndex("education_partner_referrer_profiles_profile_unique").on(table.referrerProfileId),
+    uniqueIndex("education_partner_referrer_profiles_partner_unique").on(table.educationPartnerId),
   ],
 );
 

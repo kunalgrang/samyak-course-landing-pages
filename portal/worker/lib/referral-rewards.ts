@@ -511,6 +511,7 @@ function qualificationFromRow(row: QualificationRow, slabs: RewardSlab[]): Refer
   const totalReceivedPaise = Number(row.total_received_paise || 0);
   const paymentThresholdMet = minimumQualifyingPaymentPaise !== null && totalReceivedPaise >= minimumQualifyingPaymentPaise;
   const rewardModelType = row.reward_model_type || null;
+  const modelReferrerCompatible = rewardModelType === "partner_percentage" ? Boolean(row.education_partner_id) : !row.education_partner_id;
   const rewardSlab = finalAgreedFeePaise === null || rewardModelType !== "fee_slab" ? null : selectRewardSlab(slabs, finalAgreedFeePaise);
   const partnerSnapshot = finalAgreedFeePaise !== null && rewardModelType === "partner_percentage" && row.referral_partner_commission_basis_points !== null && row.referral_gst_basis_points_applicable !== null
     ? calculateEducationPartnerCommissionSnapshot({
@@ -531,13 +532,14 @@ function qualificationFromRow(row: QualificationRow, slabs: RewardSlab[]): Refer
       && row.fee_agreement_status === "active"
       && admittedWithinValidityWindow
       && paymentThresholdMet
+      && modelReferrerCompatible
       && hasRewardAmount,
   );
   let status: ReferralRewardStatus = "awaiting_admission";
   if (snapshot && payout) status = "paid";
   else if (snapshot) status = "approved";
   else if (admitted && !admittedWithinValidityWindow) status = "admission_outside_validity";
-  else if (admitted && (!row.fee_agreement_id || finalAgreedFeePaise === null || minimumQualifyingPaymentPaise === null || !hasRewardAmount)) status = "payment_data_unavailable";
+  else if (admitted && (!row.fee_agreement_id || finalAgreedFeePaise === null || minimumQualifyingPaymentPaise === null || !modelReferrerCompatible || !hasRewardAmount)) status = "payment_data_unavailable";
   else if (admitted && !paymentThresholdMet) status = "awaiting_payment";
   else if (eligible) status = "qualified";
   else if (["rejected", "cancelled", "closed", "expired"].includes(row.referral_status)) status = "not_eligible";

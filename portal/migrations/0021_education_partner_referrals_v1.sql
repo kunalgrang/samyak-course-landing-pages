@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS `education_partners` (
   CONSTRAINT `education_partners_type_check` CHECK(`partner_type` in ('college', 'coaching_class', 'tuition_centre', 'training_institute', 'career_counsellor', 'placement_consultant', 'freelancer', 'other')),
   CONSTRAINT `education_partners_status_check` CHECK(`status` in ('active', 'inactive')),
   CONSTRAINT `education_partners_commission_bps_check` CHECK(`current_commission_basis_points` between 0 and 10000),
+  CONSTRAINT `education_partners_active_commission_check` CHECK(`status` != 'active' OR `current_commission_basis_points` > 0),
   CONSTRAINT `education_partners_name_check` CHECK(length(trim(`business_name`)) between 1 and 160),
   CONSTRAINT `education_partners_contact_name_check` CHECK(length(trim(`contact_person_name`)) between 1 and 120)
 );
@@ -52,17 +53,6 @@ ALTER TABLE `referral_reward_snapshots` ADD COLUMN `gst_basis_points_applicable`
 --> statement-breakpoint
 ALTER TABLE `referral_reward_snapshots` ADD COLUMN `pre_gst_final_fee_paise` integer;
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS `education_partner_referrer_profiles` (
-  `education_partner_id` text NOT NULL,
-  `referrer_profile_id` text NOT NULL,
-  `created_at` text NOT NULL,
-  PRIMARY KEY (`education_partner_id`, `referrer_profile_id`),
-  FOREIGN KEY (`education_partner_id`) REFERENCES `education_partners`(`id`) ON UPDATE no action ON DELETE no action,
-  FOREIGN KEY (`referrer_profile_id`) REFERENCES `referrer_profiles`(`id`) ON UPDATE no action ON DELETE no action
-);
---> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS `education_partner_referrer_profiles_profile_unique` ON `education_partner_referrer_profiles` (`referrer_profile_id`);
---> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `referrals_education_partner_submitted_idx` ON `referrals` (`education_partner_id`,`submitted_at`);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `referral_reward_snapshots_partner_idx` ON `referral_reward_snapshots` (`education_partner_id`);
@@ -87,6 +77,8 @@ ALTER TABLE `referral_programme_referrer_types_0021` RENAME TO `referral_program
 CREATE INDEX IF NOT EXISTS `referral_programme_referrer_types_type_idx` ON `referral_programme_referrer_types` (`referrer_type`);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `referral_programme_referrer_types_programme_idx` ON `referral_programme_referrer_types` (`referral_programme_id`);
+--> statement-breakpoint
+PRAGMA foreign_keys=OFF;
 --> statement-breakpoint
 CREATE TABLE `referrer_profiles_0021` (
   `id` text PRIMARY KEY NOT NULL,
@@ -117,6 +109,138 @@ CREATE UNIQUE INDEX IF NOT EXISTS `referrer_profiles_organisation_referral_token
 CREATE UNIQUE INDEX IF NOT EXISTS `referrer_profiles_person_id_unique` ON `referrer_profiles` (`person_id`) WHERE `person_id` IS NOT NULL;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `referrer_profiles_organisation_id_idx` ON `referrer_profiles` (`organisation_id`);
+--> statement-breakpoint
+PRAGMA foreign_keys=ON;
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `education_partner_referrer_profiles` (
+  `education_partner_id` text NOT NULL,
+  `referrer_profile_id` text NOT NULL,
+  `created_at` text NOT NULL,
+  PRIMARY KEY (`education_partner_id`, `referrer_profile_id`),
+  FOREIGN KEY (`education_partner_id`) REFERENCES `education_partners`(`id`) ON UPDATE no action ON DELETE no action,
+  FOREIGN KEY (`referrer_profile_id`) REFERENCES `referrer_profiles`(`id`) ON UPDATE no action ON DELETE no action
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS `education_partner_referrer_profiles_profile_unique` ON `education_partner_referrer_profiles` (`referrer_profile_id`);
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS `education_partner_referrer_profiles_partner_unique` ON `education_partner_referrer_profiles` (`education_partner_id`);
+--> statement-breakpoint
+CREATE TRIGGER IF NOT EXISTS `education_partner_bridge_personless_insert_check`
+BEFORE INSERT ON `education_partner_referrer_profiles`
+WHEN (SELECT `person_id` FROM `referrer_profiles` WHERE `id` = NEW.`referrer_profile_id`) IS NOT NULL
+BEGIN
+  SELECT RAISE(ABORT, 'education partner referrer profile must not have person_id');
+END;
+--> statement-breakpoint
+CREATE TRIGGER IF NOT EXISTS `referrer_profiles_partner_person_update_check`
+BEFORE UPDATE OF `person_id` ON `referrer_profiles`
+WHEN NEW.`person_id` IS NOT NULL
+  AND EXISTS (SELECT 1 FROM `education_partner_referrer_profiles` WHERE `referrer_profile_id` = NEW.`id`)
+BEGIN
+  SELECT RAISE(ABORT, 'education partner referrer profile must not have person_id');
+END;
+--> statement-breakpoint
+CREATE TRIGGER IF NOT EXISTS `referral_reward_rule_sets_model_insert_check`
+BEFORE INSERT ON `referral_reward_rule_sets`
+WHEN NEW.`reward_model_type` NOT IN ('fee_slab', 'partner_percentage')
+BEGIN
+  SELECT RAISE(ABORT, 'invalid reward model type');
+END;
+--> statement-breakpoint
+CREATE TRIGGER IF NOT EXISTS `referral_reward_rule_sets_model_update_check`
+BEFORE UPDATE OF `reward_model_type` ON `referral_reward_rule_sets`
+WHEN NEW.`reward_model_type` NOT IN ('fee_slab', 'partner_percentage')
+BEGIN
+  SELECT RAISE(ABORT, 'invalid reward model type');
+END;
+--> statement-breakpoint
+CREATE TRIGGER IF NOT EXISTS `referrals_partner_snapshot_insert_check`
+BEFORE INSERT ON `referrals`
+WHEN (
+    NEW.`education_partner_id` IS NULL
+    AND (NEW.`partner_commission_basis_points` IS NOT NULL OR NEW.`gst_basis_points_applicable` IS NOT NULL)
+  )
+  OR (
+    NEW.`education_partner_id` IS NOT NULL
+    AND (
+      NEW.`partner_commission_basis_points` IS NULL
+      OR NEW.`gst_basis_points_applicable` IS NULL
+      OR NEW.`partner_commission_basis_points` NOT BETWEEN 0 AND 10000
+      OR NEW.`gst_basis_points_applicable` < 0
+    )
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'invalid education partner referral snapshot');
+END;
+--> statement-breakpoint
+CREATE TRIGGER IF NOT EXISTS `referrals_partner_snapshot_update_check`
+BEFORE UPDATE OF `education_partner_id`, `partner_commission_basis_points`, `gst_basis_points_applicable` ON `referrals`
+WHEN OLD.`education_partner_id` IS NOT NEW.`education_partner_id`
+  OR OLD.`partner_commission_basis_points` IS NOT NEW.`partner_commission_basis_points`
+  OR OLD.`gst_basis_points_applicable` IS NOT NEW.`gst_basis_points_applicable`
+BEGIN
+  SELECT RAISE(ABORT, 'education partner referral snapshot is immutable');
+END;
+--> statement-breakpoint
+CREATE TRIGGER IF NOT EXISTS `referral_reward_snapshots_model_insert_check`
+BEFORE INSERT ON `referral_reward_snapshots`
+WHEN NEW.`reward_model_type` NOT IN ('fee_slab', 'partner_percentage')
+  OR (
+    NEW.`reward_model_type` = 'partner_percentage'
+    AND (
+      NEW.`education_partner_id` IS NULL
+      OR NEW.`partner_commission_basis_points` IS NULL
+      OR NEW.`gst_basis_points_applicable` IS NULL
+      OR NEW.`pre_gst_final_fee_paise` IS NULL
+      OR NEW.`slab_id` IS NOT NULL
+      OR NEW.`course_credit_paise` != 0
+      OR NEW.`partner_commission_basis_points` NOT BETWEEN 0 AND 10000
+      OR NEW.`gst_basis_points_applicable` < 0
+      OR NEW.`pre_gst_final_fee_paise` < 0
+    )
+  )
+  OR (
+    NEW.`reward_model_type` = 'fee_slab'
+    AND (
+      NEW.`education_partner_id` IS NOT NULL
+      OR NEW.`partner_commission_basis_points` IS NOT NULL
+      OR NEW.`gst_basis_points_applicable` IS NOT NULL
+      OR NEW.`pre_gst_final_fee_paise` IS NOT NULL
+    )
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'invalid reward snapshot model shape');
+END;
+--> statement-breakpoint
+CREATE TRIGGER IF NOT EXISTS `referral_reward_snapshots_model_update_check`
+BEFORE UPDATE OF `reward_model_type`, `education_partner_id`, `partner_commission_basis_points`, `gst_basis_points_applicable`, `pre_gst_final_fee_paise`, `slab_id`, `course_credit_paise` ON `referral_reward_snapshots`
+WHEN NEW.`reward_model_type` NOT IN ('fee_slab', 'partner_percentage')
+  OR (
+    NEW.`reward_model_type` = 'partner_percentage'
+    AND (
+      NEW.`education_partner_id` IS NULL
+      OR NEW.`partner_commission_basis_points` IS NULL
+      OR NEW.`gst_basis_points_applicable` IS NULL
+      OR NEW.`pre_gst_final_fee_paise` IS NULL
+      OR NEW.`slab_id` IS NOT NULL
+      OR NEW.`course_credit_paise` != 0
+      OR NEW.`partner_commission_basis_points` NOT BETWEEN 0 AND 10000
+      OR NEW.`gst_basis_points_applicable` < 0
+      OR NEW.`pre_gst_final_fee_paise` < 0
+    )
+  )
+  OR (
+    NEW.`reward_model_type` = 'fee_slab'
+    AND (
+      NEW.`education_partner_id` IS NOT NULL
+      OR NEW.`partner_commission_basis_points` IS NOT NULL
+      OR NEW.`gst_basis_points_applicable` IS NOT NULL
+      OR NEW.`pre_gst_final_fee_paise` IS NOT NULL
+    )
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'invalid reward snapshot model shape');
+END;
 --> statement-breakpoint
 UPDATE referral_reward_rule_sets
 SET reward_model_type = 'fee_slab'

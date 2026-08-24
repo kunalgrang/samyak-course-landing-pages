@@ -198,6 +198,28 @@ describe("D1 referral foundation migration", () => {
     expect(columns(db, "referral_reward_snapshots")).toEqual(expect.arrayContaining(["reward_model_type", "pre_gst_final_fee_paise"]));
     db.close();
   });
+
+  it("replays the education partner migration over existing referral rows with foreign keys enabled", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec("pragma foreign_keys = on");
+    applyMigrationsThrough(db, "0020_referral_reward_payout_v1.sql");
+    seedPersonAndReferrer(db);
+    seedCourse(db);
+    seedEnquiry(db, "enq_fk");
+    insertReferralLink(db, "link_fk", "hash_fk", "9999");
+    insertReferral(db, "ref_fk", "link_fk", "enq_fk", "idem_fk");
+
+    expect(() => applyMigrationFile(db, "0021_education_partner_referrals_v1.sql")).not.toThrow();
+
+    expect(all(db, "pragma foreign_key_check")).toEqual([]);
+    expect(row(db, "select referral_link_id, referrer_profile_id, education_partner_id from referrals where id = 'ref_fk'")).toMatchObject({
+      referral_link_id: "link_fk",
+      referrer_profile_id: "refprof_one",
+      education_partner_id: null,
+    });
+    expect(row(db, "select person_id from referrer_profiles where id = 'refprof_one'")).toMatchObject({ person_id: "person_referrer" });
+    db.close();
+  });
 });
 
 describe("referral domain helpers", () => {
@@ -370,6 +392,15 @@ function applyMigrations(db: DatabaseSync, throughFile?: string) {
 function applyAllMigrations(db: DatabaseSync) {
   const migrationsDir = join(process.cwd(), "migrations");
   for (const file of readdirSync(migrationsDir).filter((name) => /^\d{4}_.+\.sql$/.test(name)).sort()) {
+    if (file === "0012_d1_referral_foundation.sql") seedOrganisation(db, "org_samyak");
+    applyMigrationFile(db, file);
+  }
+}
+
+function applyMigrationsThrough(db: DatabaseSync, throughFile: string) {
+  const migrationsDir = join(process.cwd(), "migrations");
+  for (const file of readdirSync(migrationsDir).filter((name) => /^\d{4}_.+\.sql$/.test(name)).sort()) {
+    if (file > throughFile) break;
     if (file === "0012_d1_referral_foundation.sql") seedOrganisation(db, "org_samyak");
     applyMigrationFile(db, file);
   }
