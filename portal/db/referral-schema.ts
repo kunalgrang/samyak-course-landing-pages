@@ -47,7 +47,53 @@ export const referralProgrammeReferrerTypes = sqliteTable(
     primaryKey({ columns: [table.referralProgrammeId, table.referrerType] }),
     index("referral_programme_referrer_types_type_idx").on(table.referrerType),
     index("referral_programme_referrer_types_programme_idx").on(table.referralProgrammeId),
-    check("referral_programme_referrer_types_type_check", sql`${table.referrerType} in ('student', 'alumni')`),
+    check("referral_programme_referrer_types_type_check", sql`${table.referrerType} in ('student', 'alumni', 'education_partner')`),
+  ],
+);
+
+export const educationPartners = sqliteTable(
+  "education_partners",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id").notNull().references(() => organisations.id),
+    homeBranchId: text("home_branch_id").notNull().references(() => branches.id),
+    partnerType: text("partner_type").notNull(),
+    businessName: text("business_name").notNull(),
+    contactPersonName: text("contact_person_name").notNull(),
+    mobileHash: text("mobile_hash"),
+    mobileLastFour: text("mobile_last_four"),
+    mobileCiphertext: text("mobile_ciphertext"),
+    emailHash: text("email_hash"),
+    emailCiphertext: text("email_ciphertext"),
+    status: text("status").notNull().default("active"),
+    currentCommissionBasisPoints: integer("current_commission_basis_points").notNull(),
+    internalNotes: text("internal_notes"),
+    createdByLoginAccountId: text("created_by_login_account_id").references(() => loginAccounts.id),
+    ...timestamps,
+  },
+  (table) => [
+    index("education_partners_org_status_name_idx").on(table.organisationId, table.status, table.businessName),
+    index("education_partners_branch_status_idx").on(table.homeBranchId, table.status),
+    index("education_partners_mobile_hash_idx").on(table.organisationId, table.mobileHash),
+    index("education_partners_email_hash_idx").on(table.organisationId, table.emailHash),
+    check("education_partners_type_check", sql`${table.partnerType} in ('college', 'coaching_class', 'tuition_centre', 'training_institute', 'career_counsellor', 'placement_consultant', 'freelancer', 'other')`),
+    check("education_partners_status_check", sql`${table.status} in ('active', 'inactive')`),
+    check("education_partners_commission_bps_check", sql`${table.currentCommissionBasisPoints} between 0 and 10000`),
+    check("education_partners_active_commission_check", sql`${table.status} != 'active' or ${table.currentCommissionBasisPoints} > 0`),
+  ],
+);
+
+export const educationPartnerReferrerProfiles = sqliteTable(
+  "education_partner_referrer_profiles",
+  {
+    educationPartnerId: text("education_partner_id").notNull().references(() => educationPartners.id),
+    referrerProfileId: text("referrer_profile_id").notNull().references(() => referrerProfiles.id),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.educationPartnerId, table.referrerProfileId] }),
+    uniqueIndex("education_partner_referrer_profiles_profile_unique").on(table.referrerProfileId),
+    uniqueIndex("education_partner_referrer_profiles_partner_unique").on(table.educationPartnerId),
   ],
 );
 
@@ -145,6 +191,9 @@ export const referrals = sqliteTable(
     idempotencyKeyHash: text("idempotency_key_hash"),
     idempotencyPayloadHash: text("idempotency_payload_hash"),
     activeDuplicateKey: text("active_duplicate_key"),
+    educationPartnerId: text("education_partner_id").references(() => educationPartners.id),
+    partnerCommissionBasisPoints: integer("partner_commission_basis_points"),
+    gstBasisPointsApplicable: integer("gst_basis_points_applicable"),
     ...timestamps,
   },
   (table) => [
@@ -223,6 +272,7 @@ export const referralRewardRuleSets = sqliteTable(
     effectiveFrom: text("effective_from"),
     effectiveUntil: text("effective_until"),
     createdByLoginAccountId: text("created_by_login_account_id").references(() => loginAccounts.id),
+    rewardModelType: text("reward_model_type").notNull().default("fee_slab"),
     ...timestamps,
   },
   (table) => [
@@ -280,6 +330,11 @@ export const referralRewardSnapshots = sqliteTable(
     minimumQualifyingPaymentPaise: integer("minimum_qualifying_payment_paise").notNull(),
     cashRewardPaise: integer("cash_reward_paise").notNull(),
     courseCreditPaise: integer("course_credit_paise").notNull(),
+    rewardModelType: text("reward_model_type").notNull().default("fee_slab"),
+    educationPartnerId: text("education_partner_id").references(() => educationPartners.id),
+    partnerCommissionBasisPoints: integer("partner_commission_basis_points"),
+    gstBasisPointsApplicable: integer("gst_basis_points_applicable"),
+    preGstFinalFeePaise: integer("pre_gst_final_fee_paise"),
     snapshotVersion: integer("snapshot_version").notNull().default(1),
     snapshotJson: text("snapshot_json").notNull(),
     createdAt: text("created_at").notNull(),

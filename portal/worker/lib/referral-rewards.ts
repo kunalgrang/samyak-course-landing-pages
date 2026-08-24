@@ -2,10 +2,10 @@ import { z } from "zod";
 import type { AppContext } from "./http";
 import { ORG_ID } from "./auth-store";
 import { createOpaqueId, hmacHex } from "./crypto";
-import { calculateMinimumQualifyingPaymentPaise, selectRewardSlab, type RewardSlab } from "./referral-domain";
+import { calculateEducationPartnerCommissionSnapshot, calculateMinimumQualifyingPaymentPaise, selectRewardSlab, type RewardModelType, type RewardSlab } from "./referral-domain";
 import type { StaffContext } from "./staff-auth";
 
-const payoutModeSchema = z.enum(["cash", "upi", "bank_transfer", "other"]);
+const payoutModeSchema = z.enum(["cash", "upi", "bank_transfer", "cheque", "other"]);
 
 export const referralRewardPayoutSchema = z.object({
   paymentDate: z.string().trim().max(40),
@@ -41,6 +41,11 @@ export type ReferralQualification = {
   paymentThresholdMet: boolean;
   rewardEligible: boolean;
   rewardSlab: RewardSlab | null;
+  rewardModelType: RewardModelType | null;
+  educationPartnerId: string | null;
+  partnerCommissionBasisPoints: number | null;
+  gstBasisPointsApplicable: number | null;
+  preGstFinalFeePaise: number | null;
   rewardAmountPaise: number | null;
   courseCreditPaise: number | null;
   rewardSnapshot: RewardSnapshot | null;
@@ -59,6 +64,11 @@ export type RewardSnapshot = {
   minimumQualifyingPaymentPaise: number;
   cashRewardPaise: number;
   courseCreditPaise: number;
+  rewardModelType: RewardModelType;
+  educationPartnerId: string | null;
+  partnerCommissionBasisPoints: number | null;
+  gstBasisPointsApplicable: number | null;
+  preGstFinalFeePaise: number | null;
   status: string;
   approvedAt: string | null;
 };
@@ -89,6 +99,9 @@ type QualificationRow = {
   valid_until: string;
   referral_programme_id: string;
   referrer_profile_id: string;
+  education_partner_id: string | null;
+  referral_partner_commission_basis_points: number | null;
+  referral_gst_basis_points_applicable: number | null;
   validity_days: number;
   minimum_fee_percentage: number;
   enrolment_id: string | null;
@@ -100,10 +113,16 @@ type QualificationRow = {
   final_agreed_fee_paise: number | null;
   fee_agreement_status: string | null;
   reward_rule_set_id: string | null;
+  reward_model_type: RewardModelType | null;
   reward_snapshot_id: string | null;
   snapshot_slab_id: string | null;
   snapshot_cash_reward_paise: number | null;
   snapshot_course_credit_paise: number | null;
+  snapshot_reward_model_type: RewardModelType | null;
+  snapshot_education_partner_id: string | null;
+  snapshot_partner_commission_basis_points: number | null;
+  snapshot_gst_basis_points_applicable: number | null;
+  snapshot_pre_gst_final_fee_paise: number | null;
   snapshot_status: string | null;
   approved_at: string | null;
   payout_id: string | null;
@@ -145,7 +164,10 @@ export async function approveReferralReward(c: AppContext, staff: StaffContext, 
   if (existing?.rewardSnapshot) return { ok: true, qualification: existing, idempotent: true };
   const slabs = row.reward_rule_set_id ? await activeSlabs(c, row.reward_rule_set_id) : [];
   const qualification = qualificationFromRow(row, slabs);
-  if (!qualification.rewardEligible || !qualification.rewardSlab || !row.enrolment_id || !row.fee_agreement_id || !row.reward_rule_set_id) {
+  if (!qualification.rewardEligible || !row.enrolment_id || !row.fee_agreement_id || !row.reward_rule_set_id) {
+    return { ok: false, status: 409, code: "reward_not_qualified", message: "Referral reward is not qualified for approval." };
+  }
+  if (qualification.rewardModelType === "fee_slab" && !qualification.rewardSlab) {
     return { ok: false, status: 409, code: "reward_not_qualified", message: "Referral reward is not qualified for approval." };
   }
 
@@ -157,13 +179,18 @@ export async function approveReferralReward(c: AppContext, staff: StaffContext, 
     enrolmentId: row.enrolment_id,
     feeAgreementId: row.fee_agreement_id,
     rewardRuleSetId: row.reward_rule_set_id,
-    slabId: qualification.rewardSlab.id,
+    rewardModelType: qualification.rewardModelType,
+    slabId: qualification.rewardSlab?.id || null,
+    educationPartnerId: qualification.educationPartnerId,
     finalAgreedFeePaise: qualification.finalAgreedFeePaise,
+    gstBasisPoints: qualification.gstBasisPointsApplicable,
+    preGstFinalFeePaise: qualification.preGstFinalFeePaise,
+    partnerCommissionBasisPoints: qualification.partnerCommissionBasisPoints,
     minimumFeePercentage: qualification.minimumFeePercentage,
     minimumQualifyingPaymentPaise: qualification.minimumQualifyingPaymentPaise,
     totalReceivedPaiseAtApproval: qualification.totalReceivedPaise,
-    cashRewardPaise: qualification.rewardSlab.cashRewardPaise,
-    courseCreditPaise: qualification.rewardSlab.courseCreditPaise,
+    cashRewardPaise: qualification.rewardAmountPaise,
+    courseCreditPaise: qualification.courseCreditPaise,
     approvedAt: now,
   });
 
@@ -171,21 +198,28 @@ export async function approveReferralReward(c: AppContext, staff: StaffContext, 
     `insert or ignore into referral_reward_snapshots
         (id, referral_id, enrolment_id, fee_agreement_id, reward_rule_set_id, slab_id,
          final_agreed_fee_paise, minimum_fee_percentage, minimum_qualifying_payment_paise,
-         cash_reward_paise, course_credit_paise, snapshot_version, snapshot_json, status,
+         cash_reward_paise, course_credit_paise, reward_model_type, education_partner_id,
+         partner_commission_basis_points, gst_basis_points_applicable, pre_gst_final_fee_paise,
+         snapshot_version, snapshot_json, status,
          approved_by_login_account_id, approved_at, created_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'approved', ?, ?, ?)`,
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'approved', ?, ?, ?)`,
   ).bind(
     snapshotId,
     referralId,
     row.enrolment_id,
     row.fee_agreement_id,
     row.reward_rule_set_id,
-    qualification.rewardSlab.id,
+    qualification.rewardSlab?.id || null,
     qualification.finalAgreedFeePaise,
     qualification.minimumFeePercentage,
     qualification.minimumQualifyingPaymentPaise,
-    qualification.rewardSlab.cashRewardPaise,
-    qualification.rewardSlab.courseCreditPaise,
+    qualification.rewardAmountPaise,
+    qualification.courseCreditPaise || 0,
+    qualification.rewardModelType,
+    qualification.educationPartnerId,
+    qualification.partnerCommissionBasisPoints,
+    qualification.gstBasisPointsApplicable,
+    qualification.preGstFinalFeePaise,
     snapshotJson,
     staff.loginAccountId,
     now,
@@ -209,9 +243,14 @@ export async function approveReferralReward(c: AppContext, staff: StaffContext, 
       referralId,
       rewardSnapshotId: snapshotId,
       enrolmentId: row.enrolment_id,
-      slabId: qualification.rewardSlab.id,
-      cashRewardPaise: qualification.rewardSlab.cashRewardPaise,
-      courseCreditPaise: qualification.rewardSlab.courseCreditPaise,
+      rewardModelType: qualification.rewardModelType,
+      slabId: qualification.rewardSlab?.id || null,
+      educationPartnerId: qualification.educationPartnerId,
+      commissionBasisPoints: qualification.partnerCommissionBasisPoints,
+      gstBasisPoints: qualification.gstBasisPointsApplicable,
+      preGstFinalFeePaise: qualification.preGstFinalFeePaise,
+      cashRewardPaise: qualification.rewardAmountPaise,
+      courseCreditPaise: qualification.courseCreditPaise,
     }),
     now,
   ).run();
@@ -235,7 +274,7 @@ export async function recordReferralRewardPayout(
   }
   const reference = input.paymentReference?.trim() || "";
   const notes = input.notes?.trim() || "";
-  if (["upi", "bank_transfer"].includes(input.paymentMode) && !reference) {
+  if (["upi", "bank_transfer", "cheque"].includes(input.paymentMode) && !reference) {
     return { ok: false, status: 400, code: "payout_reference_required", message: "Payment reference is required for this payout mode.", fieldErrors: { paymentReference: ["Payment reference is required for this payout mode."] } };
   }
   if (input.paymentMode === "other" && !notes) {
@@ -339,6 +378,9 @@ async function qualificationRows(c: AppContext, referralIds: string[]) {
        referrals.valid_until,
        referrals.referral_programme_id,
        referrals.referrer_profile_id,
+       referrals.education_partner_id,
+       referrals.partner_commission_basis_points as referral_partner_commission_basis_points,
+       referrals.gst_basis_points_applicable as referral_gst_basis_points_applicable,
        referral_programmes.validity_days,
        referral_programmes.minimum_fee_percentage,
        enrolments.id as enrolment_id,
@@ -350,10 +392,16 @@ async function qualificationRows(c: AppContext, referralIds: string[]) {
        fee_agreements.final_agreed_fee_paise,
        fee_agreements.status as fee_agreement_status,
        referral_reward_rule_sets.id as reward_rule_set_id,
+       referral_reward_rule_sets.reward_model_type,
        referral_reward_snapshots.id as reward_snapshot_id,
        referral_reward_snapshots.slab_id as snapshot_slab_id,
        referral_reward_snapshots.cash_reward_paise as snapshot_cash_reward_paise,
        referral_reward_snapshots.course_credit_paise as snapshot_course_credit_paise,
+       referral_reward_snapshots.reward_model_type as snapshot_reward_model_type,
+       referral_reward_snapshots.education_partner_id as snapshot_education_partner_id,
+       referral_reward_snapshots.partner_commission_basis_points as snapshot_partner_commission_basis_points,
+       referral_reward_snapshots.gst_basis_points_applicable as snapshot_gst_basis_points_applicable,
+       referral_reward_snapshots.pre_gst_final_fee_paise as snapshot_pre_gst_final_fee_paise,
        referral_reward_snapshots.status as snapshot_status,
        referral_reward_snapshots.approved_at,
        referral_reward_payouts.id as payout_id,
@@ -462,9 +510,19 @@ function qualificationFromRow(row: QualificationRow, slabs: RewardSlab[]): Refer
     : calculateMinimumQualifyingPaymentPaise(finalAgreedFeePaise, minimumFeePercentage);
   const totalReceivedPaise = Number(row.total_received_paise || 0);
   const paymentThresholdMet = minimumQualifyingPaymentPaise !== null && totalReceivedPaise >= minimumQualifyingPaymentPaise;
-  const rewardSlab = finalAgreedFeePaise === null ? null : selectRewardSlab(slabs, finalAgreedFeePaise);
+  const rewardModelType = row.reward_model_type || null;
+  const modelReferrerCompatible = rewardModelType === "partner_percentage" ? Boolean(row.education_partner_id) : !row.education_partner_id;
+  const rewardSlab = finalAgreedFeePaise === null || rewardModelType !== "fee_slab" ? null : selectRewardSlab(slabs, finalAgreedFeePaise);
+  const partnerSnapshot = finalAgreedFeePaise !== null && rewardModelType === "partner_percentage" && row.referral_partner_commission_basis_points !== null && row.referral_gst_basis_points_applicable !== null
+    ? calculateEducationPartnerCommissionSnapshot({
+      finalAgreedFeePaise,
+      gstBasisPoints: Number(row.referral_gst_basis_points_applicable),
+      partnerCommissionBasisPoints: Number(row.referral_partner_commission_basis_points),
+    })
+    : null;
   const snapshot = snapshotFromRow(row);
   const payout = payoutFromRow(row);
+  const hasRewardAmount = rewardModelType === "partner_percentage" ? Boolean(partnerSnapshot) : Boolean(rewardSlab);
   const eligible = Boolean(
     admitted
       && row.enrolment_status === "confirmed"
@@ -474,13 +532,14 @@ function qualificationFromRow(row: QualificationRow, slabs: RewardSlab[]): Refer
       && row.fee_agreement_status === "active"
       && admittedWithinValidityWindow
       && paymentThresholdMet
-      && rewardSlab,
+      && modelReferrerCompatible
+      && hasRewardAmount,
   );
   let status: ReferralRewardStatus = "awaiting_admission";
   if (snapshot && payout) status = "paid";
   else if (snapshot) status = "approved";
   else if (admitted && !admittedWithinValidityWindow) status = "admission_outside_validity";
-  else if (admitted && (!row.fee_agreement_id || finalAgreedFeePaise === null || minimumQualifyingPaymentPaise === null || !rewardSlab)) status = "payment_data_unavailable";
+  else if (admitted && (!row.fee_agreement_id || finalAgreedFeePaise === null || minimumQualifyingPaymentPaise === null || !modelReferrerCompatible || !hasRewardAmount)) status = "payment_data_unavailable";
   else if (admitted && !paymentThresholdMet) status = "awaiting_payment";
   else if (eligible) status = "qualified";
   else if (["rejected", "cancelled", "closed", "expired"].includes(row.referral_status)) status = "not_eligible";
@@ -498,8 +557,13 @@ function qualificationFromRow(row: QualificationRow, slabs: RewardSlab[]): Refer
     paymentThresholdMet,
     rewardEligible: eligible,
     rewardSlab,
-    rewardAmountPaise: snapshot ? snapshot.cashRewardPaise : rewardSlab?.cashRewardPaise ?? null,
-    courseCreditPaise: snapshot ? snapshot.courseCreditPaise : rewardSlab?.courseCreditPaise ?? null,
+    rewardModelType,
+    educationPartnerId: snapshot ? snapshot.educationPartnerId : row.education_partner_id,
+    partnerCommissionBasisPoints: snapshot ? snapshot.partnerCommissionBasisPoints : row.referral_partner_commission_basis_points === null ? null : Number(row.referral_partner_commission_basis_points),
+    gstBasisPointsApplicable: snapshot ? snapshot.gstBasisPointsApplicable : row.referral_gst_basis_points_applicable === null ? null : Number(row.referral_gst_basis_points_applicable),
+    preGstFinalFeePaise: snapshot ? snapshot.preGstFinalFeePaise : partnerSnapshot?.preGstFinalFeePaise ?? null,
+    rewardAmountPaise: snapshot ? snapshot.cashRewardPaise : partnerSnapshot?.commissionPaise ?? rewardSlab?.cashRewardPaise ?? null,
+    courseCreditPaise: snapshot ? snapshot.courseCreditPaise : rewardSlab?.courseCreditPaise ?? 0,
     rewardSnapshot: snapshot,
     payout,
   };
@@ -519,6 +583,11 @@ function snapshotFromRow(row: QualificationRow): RewardSnapshot | null {
     minimumQualifyingPaymentPaise: calculateMinimumQualifyingPaymentPaise(Number(row.final_agreed_fee_paise || 0), Number(row.minimum_fee_percentage || 0)),
     cashRewardPaise: Number(row.snapshot_cash_reward_paise || 0),
     courseCreditPaise: Number(row.snapshot_course_credit_paise || 0),
+    rewardModelType: row.snapshot_reward_model_type || row.reward_model_type || "fee_slab",
+    educationPartnerId: row.snapshot_education_partner_id,
+    partnerCommissionBasisPoints: row.snapshot_partner_commission_basis_points === null ? null : Number(row.snapshot_partner_commission_basis_points),
+    gstBasisPointsApplicable: row.snapshot_gst_basis_points_applicable === null ? null : Number(row.snapshot_gst_basis_points_applicable),
+    preGstFinalFeePaise: row.snapshot_pre_gst_final_fee_paise === null ? null : Number(row.snapshot_pre_gst_final_fee_paise),
     status: row.snapshot_status || "approved",
     approvedAt: row.approved_at,
   };

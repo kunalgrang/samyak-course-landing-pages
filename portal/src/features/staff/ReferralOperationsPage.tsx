@@ -71,6 +71,7 @@ export function ReferralOperationsPage({ onNavigate }: { onNavigate: (path: Rout
             <option value="">All referrers</option>
             <option value="student">Student</option>
             <option value="alumni">Alumni</option>
+            <option value="education_partner">Education Partner</option>
           </select>
         </label>
         <label>
@@ -182,7 +183,7 @@ export function ReferralOperationsDetailPage({ referralId, onNavigate, isOwner }
   const [busy, setBusy] = useState(false);
   const [payout, setPayout] = useState({
     paymentDate: new Date().toISOString().slice(0, 10),
-    paymentMode: "cash" as "cash" | "upi" | "bank_transfer" | "other",
+    paymentMode: "cash" as "cash" | "upi" | "bank_transfer" | "cheque" | "other",
     paymentReference: "",
     notes: "",
     idempotencyKey: `rrp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
@@ -298,8 +299,9 @@ export function ReferralOperationsDetailPage({ referralId, onNavigate, isOwner }
         </div>
         <div className="detail-grid referral-fee-grid">
           <DetailField label="Current status" value={detail.rewardStatus} />
-          <DetailField label="Cash reward" value={detail.reward ? paise(detail.reward.cashRewardPaise) : rewardOption(detail.rewardSlabs, "cash")} />
-          <DetailField label="Course credit" value={detail.reward ? paise(detail.reward.courseCreditPaise) : rewardOption(detail.rewardSlabs, "credit")} />
+          <DetailField label={detail.referrer.type === "education_partner" ? "Commission amount" : "Cash reward"} value={detail.reward ? paise(detail.reward.cashRewardPaise) : rewardOption(detail.rewardSlabs, "cash")} />
+          {detail.referrer.type === "education_partner" ? <DetailField label="Commission %" value={detail.reward?.partnerCommissionBasisPoints ? `${detail.reward.partnerCommissionBasisPoints / 100}%` : "Snapshotted at referral"} /> : <DetailField label="Course credit" value={detail.reward ? paise(detail.reward.courseCreditPaise) : rewardOption(detail.rewardSlabs, "credit")} />}
+          {detail.referrer.type === "education_partner" ? <DetailField label="Pre-GST fee base" value={detail.reward?.preGstFinalFeePaise ? paise(detail.reward.preGstFinalFeePaise) : "Calculated at approval"} /> : null}
           <DetailField label="Approval" value={detail.reward?.approvedAt ? formatDateTime(detail.reward.approvedAt) : "Not approved"} />
           <DetailField label="Payout" value={detail.reward?.payout ? `${paise(detail.reward.payout.amountPaise)} on ${formatDate(detail.reward.payout.paymentDate)}` : "Not paid"} />
         </div>
@@ -319,6 +321,7 @@ export function ReferralOperationsDetailPage({ referralId, onNavigate, isOwner }
                 <option value="cash">Cash</option>
                 <option value="upi">UPI</option>
                 <option value="bank_transfer">Bank transfer</option>
+                <option value="cheque">Cheque</option>
                 <option value="other">Other</option>
               </select>
             </label>

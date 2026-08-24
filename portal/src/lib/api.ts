@@ -544,6 +544,11 @@ const staffReferralPayoutSchema = z.object({
 
 const staffReferralRewardSchema = z.object({
   slabId: z.string(),
+  rewardModelType: z.string().default("fee_slab"),
+  educationPartnerId: z.string().nullable().optional(),
+  partnerCommissionBasisPoints: z.number().nullable().optional(),
+  gstBasisPointsApplicable: z.number().nullable().optional(),
+  preGstFinalFeePaise: z.number().nullable().optional(),
   cashRewardPaise: z.number(),
   courseCreditPaise: z.number(),
   status: z.string(),
@@ -658,6 +663,59 @@ const staffReferralRewardResponseSchema = z.object({
   payout: staffReferralPayoutSchema.optional(),
 });
 
+const educationPartnerSchema = z.object({
+  id: z.string(),
+  homeBranchId: z.string(),
+  branchName: z.string(),
+  partnerType: z.string(),
+  businessName: z.string(),
+  contactPersonName: z.string(),
+  maskedMobile: z.string(),
+  status: z.string(),
+  currentCommissionBasisPoints: z.number(),
+  internalNotes: z.string(),
+  referrerProfileId: z.string(),
+  activeLink: z.object({ lastFour: z.string(), activatedAt: z.string().nullable() }).nullable(),
+  referralCount: z.number(),
+  admissionCount: z.number(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const educationPartnerListSchema = z.object({
+  success: z.literal(true),
+  pagination: z.object({ limit: z.number(), offset: z.number(), total: z.number(), hasMore: z.boolean() }),
+  partners: z.array(educationPartnerSchema),
+});
+
+const educationPartnerDetailSchema = z.object({
+  success: z.literal(true),
+  partner: educationPartnerSchema,
+  metrics: z.object({
+    totalReferrals: z.number(),
+    admissions: z.number(),
+    approved: z.number(),
+    paid: z.number(),
+    totalApprovedCommissionPaise: z.number(),
+    totalPaidCommissionPaise: z.number(),
+  }),
+});
+
+const educationPartnerMutationSchema = z.object({
+  success: z.literal(true),
+  partnerId: z.string(),
+  duplicateWarnings: z.array(z.object({ partnerId: z.string(), businessName: z.string() })),
+});
+
+const educationPartnerLinkSchema = z.object({
+  success: z.literal(true),
+  created: z.boolean(),
+  link: z.string().nullable(),
+  shownOnce: z.boolean(),
+  lastFour: z.string().nullable(),
+  activatedAt: z.string().nullable(),
+});
+
 const certificateListItemSchema = z.object({
   id: z.string(),
   certificate_number: z.string(),
@@ -751,6 +809,9 @@ export type PublicCertificateVerification = z.infer<typeof verifyCertificateSche
 export type StaffReferralList = z.infer<typeof staffReferralListSchema>;
 export type StaffReferralListItem = z.infer<typeof staffReferralListItemSchema>;
 export type StaffReferralDetail = z.infer<typeof staffReferralDetailSchema>["referral"];
+export type EducationPartnerList = z.infer<typeof educationPartnerListSchema>;
+export type EducationPartner = z.infer<typeof educationPartnerSchema>;
+export type EducationPartnerDetail = z.infer<typeof educationPartnerDetailSchema>;
 
 export class ApiError extends Error {
   code?: string;
@@ -992,8 +1053,40 @@ export async function approveStaffReferralReward(referralId: string) {
   return postJson(`/api/staff/referrals/${encodeURIComponent(referralId)}/reward/approve`, {}, staffReferralRewardResponseSchema);
 }
 
-export async function recordStaffReferralRewardPayout(referralId: string, input: { paymentDate: string; paymentMode: "cash" | "upi" | "bank_transfer" | "other"; paymentReference?: string; notes?: string; idempotencyKey: string }) {
+export async function recordStaffReferralRewardPayout(referralId: string, input: { paymentDate: string; paymentMode: "cash" | "upi" | "bank_transfer" | "cheque" | "other"; paymentReference?: string; notes?: string; idempotencyKey: string }) {
   return postJson(`/api/staff/referrals/${encodeURIComponent(referralId)}/reward/payout`, input, staffReferralRewardResponseSchema);
+}
+
+export type EducationPartnerInput = {
+  partnerType: string;
+  businessName: string;
+  contactPersonName: string;
+  mobile?: string;
+  email?: string;
+  homeBranchId: string;
+  commissionPercent: string;
+  status: "active" | "inactive";
+  internalNotes?: string;
+};
+
+export async function getEducationPartners(params: { q?: string; status?: string; limit?: number; offset?: number } = {}) {
+  return getJson(`/api/staff/education-partners${queryString(params)}`, educationPartnerListSchema);
+}
+
+export async function getEducationPartner(partnerId: string) {
+  return getJson(`/api/staff/education-partners/${encodeURIComponent(partnerId)}`, educationPartnerDetailSchema);
+}
+
+export async function createEducationPartner(input: EducationPartnerInput) {
+  return postJson("/api/staff/education-partners", input, educationPartnerMutationSchema);
+}
+
+export async function updateEducationPartner(partnerId: string, input: EducationPartnerInput) {
+  return patchJson(`/api/staff/education-partners/${encodeURIComponent(partnerId)}`, input, educationPartnerMutationSchema);
+}
+
+export async function issueEducationPartnerReferralLink(partnerId: string) {
+  return postJson(`/api/staff/education-partners/${encodeURIComponent(partnerId)}/referral-link`, {}, educationPartnerLinkSchema);
 }
 
 export type CertificateQuery = {

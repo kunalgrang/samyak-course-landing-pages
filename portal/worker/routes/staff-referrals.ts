@@ -56,6 +56,10 @@ type ReferralListRow = {
   referrer_name: string | null;
   referrer_public_name: string | null;
   referrer_type: string | null;
+  education_partner_id: string | null;
+  partner_commission_basis_points: number | null;
+  gst_basis_points_applicable: number | null;
+  pre_gst_final_fee_paise: number | null;
   course_name: string | null;
   enquiry_id: string | null;
   enquiry_number: string | null;
@@ -72,6 +76,7 @@ type ReferralListRow = {
   reward_snapshot_id: string | null;
   cash_reward_paise: number | null;
   course_credit_paise: number | null;
+  reward_model_type: string | null;
   slab_id: string | null;
 };
 
@@ -246,7 +251,7 @@ async function referralDetail(c: PortalContext, staff: StaffContext, referralId:
   )
     .bind(referralId)
     .all();
-  const rewardSlabs = await c.env.DB.prepare(
+  const rewardSlabs = row.reward_model_type === "partner_percentage" ? { results: [] } : await c.env.DB.prepare(
     `select referral_reward_slabs.id, min_final_fee_paise, max_final_fee_paise, cash_reward_paise, course_credit_paise, sort_order
      from referral_reward_slabs
      join referral_reward_rule_sets on referral_reward_rule_sets.id = referral_reward_slabs.reward_rule_set_id
@@ -344,9 +349,9 @@ function listSelectSql(extraColumns = "") {
          order by person_contacts.is_primary desc, person_contacts.created_at desc
          limit 1
        ) as prospect_contact_ciphertext,
-       referrer_people.full_name as referrer_name,
-       referrer_people.public_name as referrer_public_name,
-       referrer_roles.code as referrer_type,
+       coalesce(referrer_people.full_name, education_partners.business_name) as referrer_name,
+       coalesce(referrer_people.public_name, education_partners.business_name) as referrer_public_name,
+       coalesce(referrer_roles.code, case when education_partners.id is not null then 'education_partner' end) as referrer_type,
        courses.name as course_name,
        enquiries.id as enquiry_id,
        enquiries.enquiry_number,
@@ -363,7 +368,13 @@ function listSelectSql(extraColumns = "") {
        referral_reward_snapshots.id as reward_snapshot_id,
        referral_reward_snapshots.cash_reward_paise,
        referral_reward_snapshots.course_credit_paise,
+       coalesce(referral_reward_snapshots.reward_model_type, referral_reward_rule_sets.reward_model_type) as reward_model_type,
+       referral_reward_snapshots.pre_gst_final_fee_paise,
        referral_reward_snapshots.slab_id
+       ,
+       referrals.education_partner_id,
+       referrals.partner_commission_basis_points,
+       referrals.gst_basis_points_applicable
        ${extraColumns}
      ${listFromSql()}`;
 }
@@ -372,7 +383,10 @@ function listFromSql() {
   return `from referrals
      join referral_programmes on referral_programmes.id = referrals.referral_programme_id
      join referrer_profiles on referrer_profiles.id = referrals.referrer_profile_id
-     join people referrer_people on referrer_people.id = referrer_profiles.person_id
+     left join education_partner_referrer_profiles on education_partner_referrer_profiles.referrer_profile_id = referrer_profiles.id
+     left join education_partners on education_partners.id = education_partner_referrer_profiles.education_partner_id
+       and education_partners.organisation_id = referrals.organisation_id
+     left join people referrer_people on referrer_people.id = referrer_profiles.person_id
      left join person_roles on person_roles.person_id = referrer_profiles.person_id
      left join roles referrer_roles on referrer_roles.id = person_roles.role_id and referrer_roles.code in ('student', 'alumni')
      left join branches on branches.id = referrals.branch_id
@@ -384,6 +398,9 @@ function listFromSql() {
      left join students on students.id = enrolments.student_id
      left join courses enrolment_courses on enrolment_courses.id = enrolments.course_id
      left join fee_agreements on fee_agreements.enrolment_id = enrolments.id and fee_agreements.status = 'active'
+     left join referral_reward_rule_sets on referral_reward_rule_sets.referral_programme_id = referrals.referral_programme_id
+       and referral_reward_rule_sets.organisation_id = referrals.organisation_id
+       and referral_reward_rule_sets.status = 'active'
      left join referral_reward_snapshots on referral_reward_snapshots.referral_id = referrals.id
      left join referral_reward_payouts on referral_reward_payouts.reward_snapshot_id = referral_reward_snapshots.id`;
 }
@@ -394,7 +411,8 @@ async function listWhere(c: PortalContext, scope: BranchScope, filters: ReturnTy
   const params: Array<string | number> = [ORG_ID];
   if (filters.status) push(clauses, params, "referrals.status = ?", filters.status);
   if (filters.rewardStatus) pushRewardFilter(clauses, params, filters.rewardStatus, now);
-  if (filters.referrerType) push(clauses, params, "referrer_roles.code = ?", filters.referrerType);
+  if (filters.referrerType === "education_partner") clauses.push("referrals.education_partner_id is not null");
+  else if (filters.referrerType) push(clauses, params, "referrer_roles.code = ?", filters.referrerType);
   if (filters.courseId) push(clauses, params, "referrals.course_interest_id = ?", filters.courseId);
   if (filters.fromDate) push(clauses, params, "referrals.submitted_at >= ?", `${filters.fromDate}T00:00:00.000Z`);
   if (filters.toDate) push(clauses, params, "referrals.submitted_at <= ?", `${filters.toDate}T23:59:59.999Z`);
@@ -404,8 +422,8 @@ async function listWhere(c: PortalContext, scope: BranchScope, filters: ReturnTy
   if (filters.validity === "expired") push(clauses, params, "referrals.valid_until < ?", now);
   if (filters.q) {
     const q = `%${filters.q}%`;
-    clauses.push("(referrals.id like ? or referrals.prospect_name like ? or referrer_people.full_name like ? or enquiries.enquiry_number like ?)");
-    params.push(q, q, q, q);
+    clauses.push("(referrals.id like ? or referrals.prospect_name like ? or referrer_people.full_name like ? or education_partners.business_name like ? or enquiries.enquiry_number like ?)");
+    params.push(q, q, q, q, q);
   }
   const scoped = scopedWhere(scope, clauses, params, "referrals");
   await c.env.DB.prepare("select 1").first();
@@ -429,7 +447,7 @@ function pushRewardFilter(clauses: string[], params: Array<string | number>, rew
       and receipts.status = 'recorded'
   ), 0)`;
   const qualifyingMinimum = "((fee_agreements.final_agreed_fee_paise * referral_programmes.minimum_fee_percentage + 99) / 100)";
-  const hasMatchingSlab = `exists (
+  const hasMatchingReward = `(case when referral_reward_rule_sets.reward_model_type = 'partner_percentage' then referrals.education_partner_id is not null and referrals.partner_commission_basis_points is not null and referrals.gst_basis_points_applicable is not null else exists (
     select 1
     from referral_reward_slabs
     join referral_reward_rule_sets on referral_reward_rule_sets.id = referral_reward_slabs.reward_rule_set_id
@@ -438,10 +456,10 @@ function pushRewardFilter(clauses: string[], params: Array<string | number>, rew
       and referral_reward_rule_sets.status = 'active'
       and fee_agreements.final_agreed_fee_paise >= referral_reward_slabs.min_final_fee_paise
       and (referral_reward_slabs.max_final_fee_paise is null or fee_agreements.final_agreed_fee_paise <= referral_reward_slabs.max_final_fee_paise)
-  )`;
-  if (rewardStatus === "payment_data_unavailable") clauses.push(`${canonicalAdmission} and referral_reward_snapshots.id is null and (fee_agreements.id is null or not ${hasMatchingSlab})`);
-  if (rewardStatus === "awaiting_payment") clauses.push(`${canonicalAdmission} and enrolments.status = 'confirmed' and referral_reward_snapshots.id is null and fee_agreements.id is not null and ${hasMatchingSlab} and ${qualifyingReceiptTotal} < ${qualifyingMinimum}`);
-  if (rewardStatus === "qualified") clauses.push(`${canonicalAdmission} and enrolments.status = 'confirmed' and referral_reward_snapshots.id is null and fee_agreements.id is not null and ${hasMatchingSlab} and ${qualifyingReceiptTotal} >= ${qualifyingMinimum}`);
+  ) end)`;
+  if (rewardStatus === "payment_data_unavailable") clauses.push(`${canonicalAdmission} and referral_reward_snapshots.id is null and (fee_agreements.id is null or not ${hasMatchingReward})`);
+  if (rewardStatus === "awaiting_payment") clauses.push(`${canonicalAdmission} and enrolments.status = 'confirmed' and referral_reward_snapshots.id is null and fee_agreements.id is not null and ${hasMatchingReward} and ${qualifyingReceiptTotal} < ${qualifyingMinimum}`);
+  if (rewardStatus === "qualified") clauses.push(`${canonicalAdmission} and enrolments.status = 'confirmed' and referral_reward_snapshots.id is null and fee_agreements.id is not null and ${hasMatchingReward} and ${qualifyingReceiptTotal} >= ${qualifyingMinimum}`);
   if (rewardStatus === "approved") clauses.push("referral_reward_snapshots.id is not null and referral_reward_payouts.id is null");
   if (rewardStatus === "paid") clauses.push("referral_reward_payouts.id is not null");
   if (rewardStatus === "pending") clauses.push("enrolments.id is null and referrals.valid_until >= ?");
@@ -493,7 +511,7 @@ function listFilters(c: PortalContext) {
     q: clean(url.searchParams.get("q")),
     status: enumParam(url.searchParams.get("status"), ["submitted", "accepted", "rejected", "active", "converted", "expired", "cancelled", "closed"] as const),
     rewardStatus: enumParam(url.searchParams.get("rewardStatus"), ["pending", "payment_data_unavailable", "awaiting_payment", "qualified", "approved", "paid", "expired"] as const),
-    referrerType: enumParam(url.searchParams.get("referrerType"), ["student", "alumni"] as const),
+    referrerType: enumParam(url.searchParams.get("referrerType"), ["student", "alumni", "education_partner"] as const),
     courseId: clean(url.searchParams.get("courseId")),
     fromDate: dateParam(url.searchParams.get("fromDate")),
     toDate: dateParam(url.searchParams.get("toDate")),
@@ -521,7 +539,7 @@ async function toListItem(c: PortalContext, row: ReferralListRow, qualification?
     validityState: validityState(row),
     lastActivityAt: row.updated_at,
     referrerName: row.referrer_public_name || row.referrer_name || "",
-    referrerType: row.referrer_type || "",
+    referrerType: row.referrer_type || (row.education_partner_id ? "education_partner" : ""),
     prospectPublicName: publicProspectName(row.prospect_name),
     prospectContact: await prospectContact(c, row),
     courseInterested: row.course_name || "",
@@ -667,9 +685,14 @@ function nullableString(value: unknown) {
 }
 
 function rewardPayload(qualification: ReferralQualification | null | undefined) {
-  if (!qualification || (!qualification.rewardSlab && !qualification.rewardSnapshot)) return null;
+  if (!qualification || (!qualification.rewardSlab && !qualification.rewardSnapshot && qualification.rewardAmountPaise === null)) return null;
   return {
     slabId: qualification.rewardSnapshot?.slabId || qualification.rewardSlab?.id || "",
+    rewardModelType: qualification.rewardModelType || "fee_slab",
+    educationPartnerId: qualification.educationPartnerId,
+    partnerCommissionBasisPoints: qualification.partnerCommissionBasisPoints,
+    gstBasisPointsApplicable: qualification.gstBasisPointsApplicable,
+    preGstFinalFeePaise: qualification.preGstFinalFeePaise,
     cashRewardPaise: Number(qualification.rewardAmountPaise || 0),
     courseCreditPaise: Number(qualification.courseCreditPaise || 0),
     status: qualification.status,

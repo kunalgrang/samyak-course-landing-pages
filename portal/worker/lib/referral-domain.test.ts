@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertReferralStatusTransition,
   assertSnapshotJsonSafe,
+  calculateEducationPartnerCommissionSnapshot,
   calculateMinimumQualifyingPaymentPaise,
   calculateReferralValidUntil,
   canTransitionReferralStatus,
@@ -170,6 +171,55 @@ describe("D1 referral foundation migration", () => {
     ).toThrow();
     db.close();
   });
+
+  it("applies education partner referral migration without changing existing student programme rows", () => {
+    const db = new DatabaseSync(":memory:");
+    applyAllMigrations(db);
+
+    expect(row(db, "select code, name, validity_days, minimum_fee_percentage, status from referral_programmes where id = 'rprog_samyak_education_partners'")).toMatchObject({
+      code: "samyak_education_partners",
+      name: "Samyak Education Partner Programme",
+      validity_days: 90,
+      minimum_fee_percentage: 50,
+      status: "active",
+    });
+    expect(all(db, "select referrer_type from referral_programme_referrer_types where referral_programme_id = 'rprog_samyak_education_partners'")).toEqual([
+      { referrer_type: "education_partner" },
+    ]);
+    expect(row(db, "select reward_model_type from referral_reward_rule_sets where id = 'rrs_samyak_education_partners_v1'")).toMatchObject({
+      reward_model_type: "partner_percentage",
+    });
+    expect(all(db, "select referrer_type from referral_programme_referrer_types where referral_programme_id = 'rprog_samyak_skill_circle' order by referrer_type")).toEqual([
+      { referrer_type: "alumni" },
+      { referrer_type: "student" },
+    ]);
+    expect(columns(db, "education_partners")).toEqual(expect.arrayContaining(["current_commission_basis_points", "mobile_ciphertext"]));
+    expect(columns(db, "referrals")).toEqual(expect.arrayContaining(["education_partner_id", "partner_commission_basis_points", "gst_basis_points_applicable"]));
+    expect(columns(db, "referral_reward_snapshots")).toEqual(expect.arrayContaining(["reward_model_type", "pre_gst_final_fee_paise"]));
+    db.close();
+  });
+
+  it("replays the education partner migration over existing referral rows with foreign keys enabled", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec("pragma foreign_keys = on");
+    applyMigrationsThrough(db, "0020_referral_reward_payout_v1.sql");
+    seedPersonAndReferrer(db);
+    seedCourse(db);
+    seedEnquiry(db, "enq_fk");
+    insertReferralLink(db, "link_fk", "hash_fk", "9999");
+    insertReferral(db, "ref_fk", "link_fk", "enq_fk", "idem_fk");
+
+    expect(() => applyMigrationFile(db, "0021_education_partner_referrals_v1.sql")).not.toThrow();
+
+    expect(all(db, "pragma foreign_key_check")).toEqual([]);
+    expect(row(db, "select referral_link_id, referrer_profile_id, education_partner_id from referrals where id = 'ref_fk'")).toMatchObject({
+      referral_link_id: "link_fk",
+      referrer_profile_id: "refprof_one",
+      education_partner_id: null,
+    });
+    expect(row(db, "select person_id from referrer_profiles where id = 'refprof_one'")).toMatchObject({ person_id: "person_referrer" });
+    db.close();
+  });
 });
 
 describe("referral domain helpers", () => {
@@ -205,6 +255,33 @@ describe("referral domain helpers", () => {
   it("calculates the 50 percent minimum qualifying payment in paise", () => {
     expect(calculateMinimumQualifyingPaymentPaise(3500000, 50)).toBe(1750000);
     expect(calculateMinimumQualifyingPaymentPaise(1, 50)).toBe(1);
+  });
+
+  it("reverse-calculates GST-inclusive final fee and partner commission using integer paise", () => {
+    expect(calculateEducationPartnerCommissionSnapshot({
+      finalAgreedFeePaise: 2360000,
+      gstBasisPoints: 1800,
+      partnerCommissionBasisPoints: 1000,
+    })).toMatchObject({
+      preGstFinalFeePaise: 2000000,
+      commissionPaise: 200000,
+    });
+    expect(calculateEducationPartnerCommissionSnapshot({
+      finalAgreedFeePaise: 1180000,
+      gstBasisPoints: 1800,
+      partnerCommissionBasisPoints: 750,
+    })).toMatchObject({
+      preGstFinalFeePaise: 1000000,
+      commissionPaise: 75000,
+    });
+    expect(calculateEducationPartnerCommissionSnapshot({
+      finalAgreedFeePaise: 101,
+      gstBasisPoints: 1800,
+      partnerCommissionBasisPoints: 1225,
+    })).toMatchObject({
+      preGstFinalFeePaise: 86,
+      commissionPaise: 11,
+    });
   });
 
   it("rejects overlapping reward slabs at service level", () => {
@@ -304,9 +381,27 @@ function applyMigrations(db: DatabaseSync, throughFile?: string) {
       file === "0014_course_master_and_referral_courses.sql" ||
       file === "0015_add_spoken_english_course.sql" ||
       file === "0016_legacy_student_import_foundation.sql" ||
+      file === "0021_education_partner_referrals_v1.sql" ||
       file === "0020_referral_reward_payout_v1.sql"
     ) continue;
     if (throughFile && file > throughFile) continue;
+    applyMigrationFile(db, file);
+  }
+}
+
+function applyAllMigrations(db: DatabaseSync) {
+  const migrationsDir = join(process.cwd(), "migrations");
+  for (const file of readdirSync(migrationsDir).filter((name) => /^\d{4}_.+\.sql$/.test(name)).sort()) {
+    if (file === "0012_d1_referral_foundation.sql") seedOrganisation(db, "org_samyak");
+    applyMigrationFile(db, file);
+  }
+}
+
+function applyMigrationsThrough(db: DatabaseSync, throughFile: string) {
+  const migrationsDir = join(process.cwd(), "migrations");
+  for (const file of readdirSync(migrationsDir).filter((name) => /^\d{4}_.+\.sql$/.test(name)).sort()) {
+    if (file > throughFile) break;
+    if (file === "0012_d1_referral_foundation.sql") seedOrganisation(db, "org_samyak");
     applyMigrationFile(db, file);
   }
 }

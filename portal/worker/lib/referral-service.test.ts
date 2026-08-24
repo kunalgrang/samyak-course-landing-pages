@@ -1051,6 +1051,158 @@ describe("native referral services", () => {
     fixture.close();
   });
 
+  it("snapshots education partner commission and GST terms per referral submission", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedEducationPartner(fixture.sqlite, { commissionBps: 1000 });
+    seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
+    addPartnerProgrammeCourse(fixture.sqlite, "course_fsd");
+    const issued = await issueReferralLink(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_education_partners",
+      referrerProfileId: "refprof_partner",
+      loginAccountId: "acct_partner_owner",
+      now: "2026-08-24T10:00:00.000Z",
+    });
+    if (!issued.rawToken) throw new Error("Expected partner token");
+
+    const first = await submitReferralAndCreateEnquiry(fixture.env, validSubmission(issued.rawToken, {
+      rawReferralToken: issued.rawToken,
+      prospectMobile: "9876543210",
+      now: "2026-08-24T10:00:00.000Z",
+    }));
+    expect(first).toMatchObject({ ok: true });
+    fixture.sqlite.prepare("update education_partners set current_commission_basis_points = 1200, updated_at = ? where id = 'epartner_one'").run(NOW);
+    const second = await submitReferralAndCreateEnquiry(fixture.env, validSubmission(issued.rawToken, {
+      rawReferralToken: issued.rawToken,
+      prospectMobile: "9876543211",
+      now: "2026-08-24T10:01:00.000Z",
+    }));
+    expect(second).toMatchObject({ ok: true });
+
+    expect(all(fixture.sqlite, "select education_partner_id, partner_commission_basis_points, gst_basis_points_applicable from referrals order by submitted_at")).toEqual([
+      { education_partner_id: "epartner_one", partner_commission_basis_points: 1000, gst_basis_points_applicable: 1800 },
+      { education_partner_id: "epartner_one", partner_commission_basis_points: 1200, gst_basis_points_applicable: 1800 },
+    ]);
+
+    if (!first.ok) throw new Error("Expected first partner referral to succeed");
+    seedPartnerAdmissionForReferral(fixture.sqlite, first.referralId, 2360000, 1180000);
+    seedStaffRole(fixture.sqlite, "acct_student", "owner");
+    const sessionCookie = await seedSession(fixture.sqlite, "acct_student", "person_student");
+    const approval = await staffReferralRouteApp().request(
+      `https://portal.samyaksion.com/api/staff/referrals/${first.referralId}/reward/approve`,
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie } },
+      { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER },
+    );
+    expect(approval.status).toBe(200);
+    expect(await approval.json()).toMatchObject({
+      qualificationState: "approved",
+      reward: {
+        cashRewardPaise: 200000,
+        courseCreditPaise: 0,
+        rewardModelType: "partner_percentage",
+        partnerCommissionBasisPoints: 1000,
+        gstBasisPointsApplicable: 1800,
+        preGstFinalFeePaise: 2000000,
+      },
+    });
+    expect(row(fixture.sqlite, "select cash_reward_paise, course_credit_paise, partner_commission_basis_points, gst_basis_points_applicable, pre_gst_final_fee_paise from referral_reward_snapshots where referral_id = ?", first.referralId)).toMatchObject({
+      cash_reward_paise: 200000,
+      course_credit_paise: 0,
+      partner_commission_basis_points: 1000,
+      gst_basis_points_applicable: 1800,
+      pre_gst_final_fee_paise: 2000000,
+    });
+
+    fixture.sqlite.prepare("update education_partners set status = 'inactive' where id = 'epartner_one'").run();
+    expect(await submitReferralAndCreateEnquiry(fixture.env, validSubmission(issued.rawToken, {
+      rawReferralToken: issued.rawToken,
+      prospectMobile: "9876543212",
+      now: "2026-08-24T10:02:00.000Z",
+    }))).toEqual({ ok: false, code: "invalid_link" });
+    fixture.close();
+  });
+
+  it("enforces education partner financial invariants at the database boundary", () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedEducationPartner(fixture.sqlite, { commissionBps: 1000 });
+    seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
+    addPartnerProgrammeCourse(fixture.sqlite, "course_fsd");
+
+    expect(() =>
+      fixture.sqlite.prepare(
+        `insert into education_partners
+          (id, organisation_id, home_branch_id, partner_type, business_name, contact_person_name,
+           status, current_commission_basis_points, created_at, updated_at)
+         values ('epartner_zero', 'org_samyak', 'branch_sion', 'college', 'Zero Partner', 'Zero Owner',
+           'active', 0, ?, ?)`,
+      ).run(NOW, NOW),
+    ).toThrow();
+
+    fixture.sqlite.prepare(
+      `insert into referrer_profiles
+        (id, organisation_id, person_id, external_referrer_id, referral_token, personal_link, active, created_at, updated_at)
+       values ('refprof_partner_duplicate', 'org_samyak', null, 'education_partner:duplicate', 'partner-duplicate', '', 1, ?, ?)`,
+    ).run(NOW, NOW);
+    expect(() =>
+      fixture.sqlite.prepare("insert into education_partner_referrer_profiles (education_partner_id, referrer_profile_id, created_at) values ('epartner_one', 'refprof_partner_duplicate', ?)")
+        .run(NOW),
+    ).toThrow();
+
+    fixture.sqlite.prepare(
+      `insert into education_partners
+        (id, organisation_id, home_branch_id, partner_type, business_name, contact_person_name,
+         status, current_commission_basis_points, created_at, updated_at)
+       values ('epartner_two', 'org_samyak', 'branch_sion', 'college', 'Second Partner', 'Second Owner',
+         'active', 1000, ?, ?)`,
+    ).run(NOW, NOW);
+    expect(() =>
+      fixture.sqlite.prepare("insert into education_partner_referrer_profiles (education_partner_id, referrer_profile_id, created_at) values ('epartner_two', 'refprof_student', ?)")
+        .run(NOW),
+    ).toThrow();
+
+    expect(() =>
+      fixture.sqlite.prepare(
+        `insert into referral_reward_rule_sets
+          (id, organisation_id, referral_programme_id, version, name, status, created_at, updated_at, reward_model_type)
+         values ('rrs_bad_model', 'org_samyak', 'rprog_samyak_skill_circle', 99, 'Bad model', 'inactive', ?, ?, 'bad_model')`,
+      ).run(NOW, NOW),
+    ).toThrow();
+
+    expect(() =>
+      insertPartnerReferralRow(fixture.sqlite, "ref_bad_partner_snapshot", {
+        partnerCommissionBasisPoints: null,
+        gstBasisPointsApplicable: null,
+      }),
+    ).toThrow();
+
+    insertPartnerReferralRow(fixture.sqlite, "ref_good_partner_snapshot", {
+      partnerCommissionBasisPoints: 1000,
+      gstBasisPointsApplicable: 1800,
+    });
+    expect(() =>
+      fixture.sqlite.prepare("update referrals set partner_commission_basis_points = 1200 where id = 'ref_good_partner_snapshot'").run(),
+    ).toThrow();
+
+    seedPartnerAdmissionForReferral(fixture.sqlite, "ref_good_partner_snapshot", 2360000, 1180000, "shape");
+    expect(() =>
+      fixture.sqlite.prepare(
+        `insert into referral_reward_snapshots
+          (id, referral_id, enrolment_id, fee_agreement_id, reward_rule_set_id, slab_id,
+           final_agreed_fee_paise, minimum_fee_percentage, minimum_qualifying_payment_paise,
+           cash_reward_paise, course_credit_paise, reward_model_type, education_partner_id,
+           partner_commission_basis_points, gst_basis_points_applicable, pre_gst_final_fee_paise,
+           snapshot_version, snapshot_json, created_at)
+         values ('reward_bad_partner_shape', 'ref_good_partner_snapshot', 'enrolment_partner_shape', 'fee_partner_shape',
+           'rrs_samyak_education_partners_v1', 'slab_1', 2360000, 50, 1180000, 200000, 0,
+           'partner_percentage', 'epartner_one', 1000, 1800, 2000000, 1, '{}', ?)`,
+      ).run(NOW),
+    ).toThrow();
+
+    fixture.close();
+  });
+
   it("keeps idempotent retries stable and rejects the same key with a different payload", async () => {
     const fixture = testFixture();
     const rawToken = await issuedReadyLink(fixture);
@@ -1257,6 +1409,31 @@ function addProgrammeCourse(db: DatabaseSync, courseId: string, active = 1) {
     .run(courseId, active, NOW, NOW);
 }
 
+function addPartnerProgrammeCourse(db: DatabaseSync, courseId: string, active = 1) {
+  db.prepare("insert into referral_programme_courses (referral_programme_id, course_id, is_active, created_at, updated_at) values ('rprog_samyak_education_partners', ?, ?, ?, ?)")
+    .run(courseId, active, NOW, NOW);
+}
+
+function seedEducationPartner(db: DatabaseSync, options: { commissionBps: number }) {
+  db.prepare("insert into login_accounts (id, organisation_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, created_at, updated_at) values ('acct_partner_owner', 'org_samyak', 'acct_hash_partner_owner', 'acct_hash_partner_owner', '0000', 1, 'active', ?, ?)")
+    .run(NOW, NOW);
+  db.prepare(
+    `insert into education_partners
+      (id, organisation_id, home_branch_id, partner_type, business_name, contact_person_name,
+       mobile_hash, mobile_last_four, mobile_ciphertext, status, current_commission_basis_points,
+       created_by_login_account_id, created_at, updated_at)
+     values ('epartner_one', 'org_samyak', 'branch_sion', 'college', 'Partner College', 'Partner Owner',
+       'partner_mobile_hash', '4321', 'ciphertext', 'active', ?, 'acct_partner_owner', ?, ?)`,
+  ).run(options.commissionBps, NOW, NOW);
+  db.prepare(
+    `insert into referrer_profiles
+      (id, organisation_id, person_id, external_referrer_id, referral_token, personal_link, active, created_at, updated_at)
+     values ('refprof_partner', 'org_samyak', null, 'education_partner:epartner_one', 'partner-legacy', '', 1, ?, ?)`,
+  ).run(NOW, NOW);
+  db.prepare("insert into education_partner_referrer_profiles (education_partner_id, referrer_profile_id, created_at) values ('epartner_one', 'refprof_partner', ?)")
+    .run(NOW);
+}
+
 async function issuedReadyLink(fixture: ReturnType<typeof testFixture>) {
   seedReferrer(fixture.sqlite);
   seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
@@ -1421,6 +1598,77 @@ function addReceipt(db: DatabaseSync, index: number, amountPaise: number, receiv
     `receipt-fingerprint-${suffix}-${idSuffix}`,
     receivedAt,
     receivedAt,
+  );
+}
+
+function insertPartnerReferralRow(
+  db: DatabaseSync,
+  referralId: string,
+  options: { partnerCommissionBasisPoints: number | null; gstBasisPointsApplicable: number | null },
+) {
+  db.prepare(
+    `insert into referrals
+      (id, organisation_id, branch_id, referral_programme_id, referral_link_id, referrer_profile_id,
+       prospect_person_id, enquiry_id, course_interest_id, source, status, submitted_at, valid_until,
+       attributed_at, prospect_mobile_hash, prospect_mobile_last_four, prospect_name,
+       education_partner_id, partner_commission_basis_points, gst_basis_points_applicable, created_at, updated_at)
+     values (?, 'org_samyak', 'branch_sion', 'rprog_samyak_education_partners', null, 'refprof_partner',
+       null, null, 'course_fsd', 'personal_link', 'accepted', ?, '2026-12-31T10:00:00.000Z',
+       ?, ?, ?, ?, 'epartner_one', ?, ?, ?, ?)`,
+  ).run(
+    referralId,
+    NOW,
+    NOW,
+    `partner_mobile_${referralId}`,
+    referralId.slice(-4),
+    `Partner Prospect ${referralId}`,
+    options.partnerCommissionBasisPoints,
+    options.gstBasisPointsApplicable,
+    NOW,
+    NOW,
+  );
+}
+
+function seedPartnerAdmissionForReferral(db: DatabaseSync, referralId: string, finalFeePaise: number, receiptPaise: number, suffix = "one") {
+  db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values (?, 'org_samyak', 'branch_sion', ?, ?, 'active', ?, ?)")
+    .run(`person_partner_${suffix}`, `Partner Reward ${suffix}`, `Partner Reward ${suffix}`, NOW, NOW);
+  db.prepare("insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at) values (?, 'org_samyak', ?, 'branch_sion', ?, ?, ?, 'active', 'active', ?, ?)")
+    .run(`student_partner_${suffix}`, `person_partner_${suffix}`, `STU-PARTNER-${suffix}`, 3000 + suffix.length, NOW, NOW, NOW);
+  db.prepare(
+    `insert into enrolments
+      (id, student_id, branch_id, course_id, enquiry_id, enrolment_number, training_mode,
+       admission_date, joining_date, status, nsdc_preference, referrer_profile_id, referral_id, created_at, updated_at)
+     values (?, ?, 'branch_sion', 'course_fsd', null, ?, 'classroom',
+       ?, ?, 'confirmed', 'decide_later', 'refprof_partner', ?, ?, ?)`,
+  ).run(`enrolment_partner_${suffix}`, `student_partner_${suffix}`, `ENR-PARTNER-${suffix}`, NOW, NOW, referralId, NOW, NOW);
+  db.prepare(
+    `insert into fee_agreements
+      (id, enrolment_id, standard_fee_paise, final_agreed_fee_paise, discount_paise, gst_rate_basis_points,
+       payment_plan_type, number_of_instalments, initial_payment_expected_paise, status, created_at, updated_at)
+     values (?, ?, ?, ?, 0, 1800, 'single', 1, ?, 'active', ?, ?)`,
+  ).run(`fee_partner_${suffix}`, `enrolment_partner_${suffix}`, finalFeePaise, finalFeePaise, receiptPaise, NOW, NOW);
+  db.prepare(
+    `insert into receipts
+      (id, organisation_id, branch_id, receipt_number, receipt_year, enquiry_id, admission_draft_id,
+       person_id, student_id, enrolment_id, fee_agreement_id, amount_paise, received_at, payment_mode,
+       payment_reference, notes, status, created_by_login_account_id, idempotency_key, payload_fingerprint,
+       created_at, updated_at)
+     values (?, 'org_samyak', 'branch_sion', ?, 2026, null, null,
+       ?, ?, ?, ?, ?, ?, 'cash',
+       null, null, 'recorded', 'acct_student', ?, ?, ?, ?)`,
+  ).run(
+    `receipt_partner_${suffix}`,
+    `RCPT-PARTNER-${suffix}`,
+    `person_partner_${suffix}`,
+    `student_partner_${suffix}`,
+    `enrolment_partner_${suffix}`,
+    `fee_partner_${suffix}`,
+    receiptPaise,
+    NOW,
+    `receipt-key-partner-${suffix}`,
+    `receipt-fingerprint-partner-${suffix}`,
+    NOW,
+    NOW,
   );
 }
 

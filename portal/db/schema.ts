@@ -267,9 +267,7 @@ export const referrerProfiles = sqliteTable(
     organisationId: text("organisation_id")
       .notNull()
       .references(() => organisations.id),
-    personId: text("person_id")
-      .notNull()
-      .references(() => people.id),
+    personId: text("person_id").references(() => people.id),
     externalReferrerId: text("external_referrer_id").notNull(),
     referralToken: text("referral_token").notNull(),
     personalLink: text("personal_link").notNull(),
@@ -286,7 +284,7 @@ export const referrerProfiles = sqliteTable(
       table.organisationId,
       table.referralToken,
     ),
-    uniqueIndex("referrer_profiles_person_id_unique").on(table.personId),
+    uniqueIndex("referrer_profiles_person_id_unique").on(table.personId).where(sql`${table.personId} is not null`),
     index("referrer_profiles_organisation_id_idx").on(table.organisationId),
   ],
 );
