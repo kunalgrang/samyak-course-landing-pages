@@ -1,4 +1,5 @@
 import { hashReferralToken, referralTokenLastFour as referralTokenLastFourValue } from "./referral-token";
+import { calculatePartnerCommissionPaise, calculatePreGstAmountPaise } from "./course-fee";
 
 export const REFERRAL_STATUSES = ["submitted", "accepted", "rejected", "active", "converted", "expired", "cancelled", "closed"] as const;
 export type ReferralStatus = (typeof REFERRAL_STATUSES)[number];
@@ -27,6 +28,12 @@ export type RewardSlab = {
   courseCreditPaise: number;
   sortOrder: number;
 };
+
+export const REFERRER_TYPES = ["student", "alumni", "education_partner"] as const;
+export type ReferrerType = (typeof REFERRER_TYPES)[number];
+
+export const REWARD_MODEL_TYPES = ["fee_slab", "partner_percentage"] as const;
+export type RewardModelType = (typeof REWARD_MODEL_TYPES)[number];
 
 export const REFERRAL_STATUS_TRANSITIONS: Record<ReferralStatus, readonly ReferralStatus[]> = {
   submitted: ["accepted", "rejected"],
@@ -73,6 +80,22 @@ export function calculateMinimumQualifyingPaymentPaise(finalFeePaise: number, mi
   if (!Number.isInteger(finalFeePaise) || finalFeePaise < 0) throw new Error("Invalid final fee");
   if (!Number.isInteger(minimumFeePercentage) || minimumFeePercentage < 0 || minimumFeePercentage > 100) throw new Error("Invalid minimum fee percentage");
   return Math.ceil((finalFeePaise * minimumFeePercentage) / 100);
+}
+
+export function calculateEducationPartnerCommissionSnapshot(input: {
+  finalAgreedFeePaise: number;
+  gstBasisPoints: number;
+  partnerCommissionBasisPoints: number;
+}) {
+  const preGstFinalFeePaise = calculatePreGstAmountPaise(input.finalAgreedFeePaise, input.gstBasisPoints);
+  const commissionPaise = calculatePartnerCommissionPaise(preGstFinalFeePaise, input.partnerCommissionBasisPoints);
+  return {
+    finalAgreedFeePaise: input.finalAgreedFeePaise,
+    gstBasisPoints: input.gstBasisPoints,
+    preGstFinalFeePaise,
+    partnerCommissionBasisPoints: input.partnerCommissionBasisPoints,
+    commissionPaise,
+  };
 }
 
 export function validateRewardSlabNonOverlap(slabs: readonly RewardSlab[]) {

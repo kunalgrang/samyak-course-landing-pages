@@ -1051,6 +1051,48 @@ describe("native referral services", () => {
     fixture.close();
   });
 
+  it("snapshots education partner commission and GST terms per referral submission", async () => {
+    const fixture = testFixture();
+    seedEducationPartner(fixture.sqlite, { commissionBps: 1000 });
+    seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
+    addPartnerProgrammeCourse(fixture.sqlite, "course_fsd");
+    const issued = await issueReferralLink(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_education_partners",
+      referrerProfileId: "refprof_partner",
+      loginAccountId: "acct_partner_owner",
+      now: "2026-08-24T10:00:00.000Z",
+    });
+    if (!issued.rawToken) throw new Error("Expected partner token");
+
+    const first = await submitReferralAndCreateEnquiry(fixture.env, validSubmission(issued.rawToken, {
+      rawReferralToken: issued.rawToken,
+      prospectMobile: "9876543210",
+      now: "2026-08-24T10:00:00.000Z",
+    }));
+    expect(first).toMatchObject({ ok: true });
+    fixture.sqlite.prepare("update education_partners set current_commission_basis_points = 1200, updated_at = ? where id = 'epartner_one'").run(NOW);
+    const second = await submitReferralAndCreateEnquiry(fixture.env, validSubmission(issued.rawToken, {
+      rawReferralToken: issued.rawToken,
+      prospectMobile: "9876543211",
+      now: "2026-08-24T10:01:00.000Z",
+    }));
+    expect(second).toMatchObject({ ok: true });
+
+    expect(all(fixture.sqlite, "select education_partner_id, partner_commission_basis_points, gst_basis_points_applicable from referrals order by submitted_at")).toEqual([
+      { education_partner_id: "epartner_one", partner_commission_basis_points: 1000, gst_basis_points_applicable: 1800 },
+      { education_partner_id: "epartner_one", partner_commission_basis_points: 1200, gst_basis_points_applicable: 1800 },
+    ]);
+
+    fixture.sqlite.prepare("update education_partners set status = 'inactive' where id = 'epartner_one'").run();
+    expect(await submitReferralAndCreateEnquiry(fixture.env, validSubmission(issued.rawToken, {
+      rawReferralToken: issued.rawToken,
+      prospectMobile: "9876543212",
+      now: "2026-08-24T10:02:00.000Z",
+    }))).toEqual({ ok: false, code: "invalid_link" });
+    fixture.close();
+  });
+
   it("keeps idempotent retries stable and rejects the same key with a different payload", async () => {
     const fixture = testFixture();
     const rawToken = await issuedReadyLink(fixture);
@@ -1255,6 +1297,31 @@ function seedCourse(db: DatabaseSync, id: string, code: string, name: string, st
 function addProgrammeCourse(db: DatabaseSync, courseId: string, active = 1) {
   db.prepare("insert into referral_programme_courses (referral_programme_id, course_id, is_active, created_at, updated_at) values ('rprog_samyak_skill_circle', ?, ?, ?, ?)")
     .run(courseId, active, NOW, NOW);
+}
+
+function addPartnerProgrammeCourse(db: DatabaseSync, courseId: string, active = 1) {
+  db.prepare("insert into referral_programme_courses (referral_programme_id, course_id, is_active, created_at, updated_at) values ('rprog_samyak_education_partners', ?, ?, ?, ?)")
+    .run(courseId, active, NOW, NOW);
+}
+
+function seedEducationPartner(db: DatabaseSync, options: { commissionBps: number }) {
+  db.prepare("insert into login_accounts (id, organisation_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, created_at, updated_at) values ('acct_partner_owner', 'org_samyak', 'acct_hash_partner_owner', 'acct_hash_partner_owner', '0000', 1, 'active', ?, ?)")
+    .run(NOW, NOW);
+  db.prepare(
+    `insert into education_partners
+      (id, organisation_id, home_branch_id, partner_type, business_name, contact_person_name,
+       mobile_hash, mobile_last_four, mobile_ciphertext, status, current_commission_basis_points,
+       created_by_login_account_id, created_at, updated_at)
+     values ('epartner_one', 'org_samyak', 'branch_sion', 'college', 'Partner College', 'Partner Owner',
+       'partner_mobile_hash', '4321', 'ciphertext', 'active', ?, 'acct_partner_owner', ?, ?)`,
+  ).run(options.commissionBps, NOW, NOW);
+  db.prepare(
+    `insert into referrer_profiles
+      (id, organisation_id, person_id, external_referrer_id, referral_token, personal_link, active, created_at, updated_at)
+     values ('refprof_partner', 'org_samyak', null, 'education_partner:epartner_one', 'partner-legacy', '', 1, ?, ?)`,
+  ).run(NOW, NOW);
+  db.prepare("insert into education_partner_referrer_profiles (education_partner_id, referrer_profile_id, created_at) values ('epartner_one', 'refprof_partner', ?)")
+    .run(NOW);
 }
 
 async function issuedReadyLink(fixture: ReturnType<typeof testFixture>) {

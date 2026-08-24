@@ -21,12 +21,16 @@ export type ProgrammeRecord = {
 export type ReferrerProfileRecord = {
   id: string;
   organisation_id: string;
-  person_id: string;
+  person_id: string | null;
   public_name: string | null;
-  full_name: string;
-  person_status: string;
+  full_name: string | null;
+  person_status: string | null;
   active: number;
   eligible: number;
+  referrer_type: "student" | "alumni" | "education_partner" | null;
+  education_partner_id: string | null;
+  partner_status: string | null;
+  current_commission_basis_points: number | null;
 };
 
 export type ReferralLinkRecord = {
@@ -48,12 +52,16 @@ export type ReferralLinkRecord = {
   programme_status: string;
   programme_starts_at: string | null;
   programme_ends_at: string | null;
-  referrer_person_id: string;
+  referrer_person_id: string | null;
   referrer_public_name: string | null;
-  referrer_full_name: string;
-  referrer_person_status: string;
+  referrer_full_name: string | null;
+  referrer_person_status: string | null;
   referrer_active: number;
   referrer_eligible: number;
+  referrer_type: "student" | "alumni" | "education_partner" | null;
+  education_partner_id: string | null;
+  partner_status: string | null;
+  partner_commission_basis_points: number | null;
 };
 
 export type EligibleCourseRecord = {
@@ -98,6 +106,9 @@ export type CreateReferralRowsInput = ActorIdentity & {
   validUntil: string;
   idempotencyKeyHash?: string | null;
   idempotencyPayloadHash?: string | null;
+  educationPartnerId?: string | null;
+  partnerCommissionBasisPoints?: number | null;
+  gstBasisPointsApplicable?: number | null;
 };
 
 export class ReferralRepository {
@@ -133,7 +144,18 @@ export class ReferralRepository {
          people.full_name,
          people.status as person_status,
          referrer_profiles.active,
-         exists(
+         case when education_partners.id is not null then 'education_partner' else roles.code end as referrer_type,
+         education_partners.id as education_partner_id,
+         education_partners.status as partner_status,
+         education_partners.current_commission_basis_points,
+         case
+           when education_partners.id is not null then exists(
+             select 1
+             from referral_programme_referrer_types
+             where referral_programme_referrer_types.referral_programme_id = ?
+               and referral_programme_referrer_types.referrer_type = 'education_partner'
+           )
+           else exists(
            select 1
            from referral_programme_referrer_types
            join person_roles on person_roles.person_id = people.id
@@ -141,19 +163,29 @@ export class ReferralRepository {
              and roles.organisation_id = referrer_profiles.organisation_id
              and roles.code = referral_programme_referrer_types.referrer_type
            where referral_programme_referrer_types.referral_programme_id = ?
-         ) as eligible
+           )
+         end as eligible
        from referrer_profiles
-       join people on people.id = referrer_profiles.person_id
+       left join education_partner_referrer_profiles on education_partner_referrer_profiles.referrer_profile_id = referrer_profiles.id
+       left join education_partners on education_partners.id = education_partner_referrer_profiles.education_partner_id
+         and education_partners.organisation_id = referrer_profiles.organisation_id
+       left join people on people.id = referrer_profiles.person_id
          and people.organisation_id = referrer_profiles.organisation_id
+       left join person_roles on person_roles.person_id = people.id
+       left join roles on roles.id = person_roles.role_id
+         and roles.organisation_id = referrer_profiles.organisation_id
+         and roles.code in ('student', 'alumni')
        where referrer_profiles.id = ?
          and referrer_profiles.organisation_id = ?`,
     )
-      .bind(referralProgrammeId, referrerProfileId, organisationId)
+      .bind(referralProgrammeId, referralProgrammeId, referrerProfileId, organisationId)
       .first<ReferrerProfileRecord>();
   }
 
   async actorCanUseReferrerProfile(actor: ActorIdentity | undefined, profile: ReferrerProfileRecord) {
     if (!actor?.loginAccountId && !actor?.personId) return true;
+    if (profile.education_partner_id) return Boolean(actor.loginAccountId);
+    if (!profile.person_id) return false;
     if (actor.personId && actor.personId !== profile.person_id) return false;
     if (!actor.loginAccountId) return true;
     const linked = await this.db.prepare(
@@ -307,11 +339,22 @@ export class ReferralRepository {
          referral_programmes.starts_at as programme_starts_at,
          referral_programmes.ends_at as programme_ends_at,
          referrer_profiles.person_id as referrer_person_id,
-         people.public_name as referrer_public_name,
-         people.full_name as referrer_full_name,
+         coalesce(people.public_name, education_partners.business_name) as referrer_public_name,
+         coalesce(people.full_name, education_partners.business_name) as referrer_full_name,
          people.status as referrer_person_status,
          referrer_profiles.active as referrer_active,
-         exists(
+         case when education_partners.id is not null then 'education_partner' else roles.code end as referrer_type,
+         education_partners.id as education_partner_id,
+         education_partners.status as partner_status,
+         education_partners.current_commission_basis_points as partner_commission_basis_points,
+         case
+           when education_partners.id is not null then exists(
+             select 1
+             from referral_programme_referrer_types
+             where referral_programme_referrer_types.referral_programme_id = referral_links.referral_programme_id
+               and referral_programme_referrer_types.referrer_type = 'education_partner'
+           )
+           else exists(
            select 1
            from referral_programme_referrer_types
            join person_roles on person_roles.person_id = people.id
@@ -319,14 +362,22 @@ export class ReferralRepository {
              and roles.organisation_id = referral_links.organisation_id
              and roles.code = referral_programme_referrer_types.referrer_type
            where referral_programme_referrer_types.referral_programme_id = referral_links.referral_programme_id
-         ) as referrer_eligible
+           )
+         end as referrer_eligible
        from referral_links
        join referral_programmes on referral_programmes.id = referral_links.referral_programme_id
          and referral_programmes.organisation_id = referral_links.organisation_id
        join referrer_profiles on referrer_profiles.id = referral_links.referrer_profile_id
          and referrer_profiles.organisation_id = referral_links.organisation_id
-       join people on people.id = referrer_profiles.person_id
+       left join education_partner_referrer_profiles on education_partner_referrer_profiles.referrer_profile_id = referrer_profiles.id
+       left join education_partners on education_partners.id = education_partner_referrer_profiles.education_partner_id
+         and education_partners.organisation_id = referral_links.organisation_id
+       left join people on people.id = referrer_profiles.person_id
          and people.organisation_id = referral_links.organisation_id
+       left join person_roles on person_roles.person_id = people.id
+       left join roles on roles.id = person_roles.role_id
+         and roles.organisation_id = referral_links.organisation_id
+         and roles.code in ('student', 'alumni')
        where referral_links.organisation_id = ?
          and referral_links.token_hash = ?
        limit 1`,
@@ -503,8 +554,9 @@ export class ReferralRepository {
            prospect_person_id, enquiry_id, course_interest_id, source, status, submitted_at, valid_until,
            attributed_at, prospect_name, prospect_mobile_hash, prospect_mobile_last_four, prospect_mobile_ciphertext,
            prospect_email_ciphertext, consent_recorded_at, idempotency_key_hash, idempotency_payload_hash,
-           active_duplicate_key, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, null, ?, ?, 'personal_link', 'accepted', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           active_duplicate_key, education_partner_id, partner_commission_basis_points, gst_basis_points_applicable,
+           created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, null, ?, ?, 'personal_link', 'accepted', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
         referralId,
         input.organisationId,
@@ -526,6 +578,9 @@ export class ReferralRepository {
         input.idempotencyKeyHash || null,
         input.idempotencyPayloadHash || null,
         activeDuplicateKey,
+        input.educationPartnerId || null,
+        input.partnerCommissionBasisPoints ?? null,
+        input.gstBasisPointsApplicable ?? null,
         input.submittedAt,
         input.submittedAt,
       ),

@@ -2,6 +2,7 @@ import { calculateReferralValidUntil } from "./referral-domain";
 import { ReferralRepository, type ActorIdentity, type EligibleCourseRecord, type ReferralDb, type ReferralLinkRecord } from "./referral-repository";
 import { generateReferralToken, hashReferralToken, referralTokenLastFour, validateReferralTokenFormat } from "./referral-token";
 import { encryptText, hmacHex } from "./crypto";
+import { getCourseFeeGstBasisPoints } from "./course-fee";
 import { normalizeIndianMobile } from "./mobile";
 
 export type ReferralServiceEnv = {
@@ -230,7 +231,7 @@ export async function resolveReferralLink(env: ReferralServiceEnv, input: { orga
     },
     referrer: {
       profileId: resolved.link.referrer_profile_id,
-      publicDisplayName: resolved.link.referrer_public_name || resolved.link.referrer_full_name,
+      publicDisplayName: resolved.link.referrer_public_name || resolved.link.referrer_full_name || "Samyak education partner",
     },
     link: {
       id: resolved.link.id,
@@ -332,6 +333,9 @@ export async function submitReferralAndCreateEnquiry(env: ReferralServiceEnv, in
       validUntil,
       idempotencyKeyHash,
       idempotencyPayloadHash,
+      educationPartnerId: resolved.link.education_partner_id,
+      partnerCommissionBasisPoints: resolved.link.education_partner_id ? Number(resolved.link.partner_commission_basis_points) : null,
+      gstBasisPointsApplicable: resolved.link.education_partner_id ? getCourseFeeGstBasisPoints() : null,
     });
     return { ok: true, ...created, idempotent: false };
   } catch (error) {
@@ -360,7 +364,9 @@ async function assertOrganisationProgrammeAndReferrer(
   const programme = await repo.findCurrentProgramme(organisationId, referralProgrammeId, nowIso);
   if (!programme) throw new ReferralServiceError("inactive_programme", "Referral programme is not active.");
   const profile = await repo.findReferrerProfileForProgramme(organisationId, referralProgrammeId, referrerProfileId);
-  if (!profile || profile.active !== 1 || profile.person_status !== "active" || profile.eligible !== 1) {
+  const partnerEligible = profile?.education_partner_id && profile.partner_status === "active";
+  const personEligible = profile?.person_id && profile.person_status === "active";
+  if (!profile || profile.active !== 1 || (!partnerEligible && !personEligible) || profile.eligible !== 1) {
     throw new ReferralServiceError("invalid_referrer", "Referrer is not eligible for this programme.");
   }
   const actorAllowed = await repo.actorCanUseReferrerProfile(actor, profile);
@@ -377,7 +383,9 @@ async function resolveReferralLinkInternal(repo: ReferralRepository, organisatio
   if (link.programme_status !== "active" || (link.programme_starts_at && link.programme_starts_at > nowIso) || (link.programme_ends_at && link.programme_ends_at < nowIso)) {
     return { ok: false, code: "inactive_programme" };
   }
-  if (link.referrer_active !== 1 || link.referrer_person_status !== "active" || link.referrer_eligible !== 1) return { ok: false, code: "invalid_link" };
+  const partnerEligible = link.education_partner_id && link.partner_status === "active";
+  const personEligible = link.referrer_person_id && link.referrer_person_status === "active";
+  if (link.referrer_active !== 1 || (!partnerEligible && !personEligible) || link.referrer_eligible !== 1) return { ok: false, code: "invalid_link" };
   return { ok: true, link };
 }
 

@@ -155,7 +155,7 @@ describe("staff enquiry CRM route contact exposure", () => {
     const app = routeApp();
     const db = crmDb([
       enquiry({ id: "enq_hot_urgent", pipeline_stage: "admission_ready", status: "admission_pending" }),
-      enquiry({ id: "enq_hot", source: "referral", created_at: "2026-08-16T09:00:00.000Z" }),
+      enquiry({ id: "enq_hot", source: "referral", created_at: "2026-08-22T09:00:00.000Z" }),
       enquiry({ id: "enq_warm", source: "Google Ads", created_at: "2026-08-19T09:00:00.000Z" }),
     ]);
 
