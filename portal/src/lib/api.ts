@@ -691,6 +691,9 @@ const educationPartnerListSchema = z.object({
 const educationPartnerDetailSchema = z.object({
   success: z.literal(true),
   partner: educationPartnerSchema,
+  commercialTerms: z.object({
+    currentGstBasisPoints: z.number(),
+  }),
   metrics: z.object({
     totalReferrals: z.number(),
     admissions: z.number(),
