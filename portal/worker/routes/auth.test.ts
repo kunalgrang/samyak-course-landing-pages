@@ -419,8 +419,8 @@ class FakeD1 {
       return 1;
     }
     if (sql.startsWith("insert into user_sessions")) {
-      const [id, loginAccountId, activePersonId, tokenHash, createdAt, expiresAt, lastSeenAt, ipHash, userAgentHash] = values;
-      this.userSessions.push({ id, login_account_id: loginAccountId, active_person_id: activePersonId, token_hash: tokenHash, created_at: createdAt, expires_at: expiresAt, last_seen_at: lastSeenAt, revoked_at: null, ip_hash: ipHash, user_agent_hash: userAgentHash });
+      const [id, loginAccountId, activePersonId, activeEducationPartnerId, tokenHash, createdAt, expiresAt, lastSeenAt, ipHash, userAgentHash] = values;
+      this.userSessions.push({ id, login_account_id: loginAccountId, active_person_id: activePersonId, active_education_partner_id: activeEducationPartnerId, token_hash: tokenHash, created_at: createdAt, expires_at: expiresAt, last_seen_at: lastSeenAt, revoked_at: null, ip_hash: ipHash, user_agent_hash: userAgentHash });
       return 1;
     }
     if (sql.startsWith("update user_sessions set active_person_id = ?")) {

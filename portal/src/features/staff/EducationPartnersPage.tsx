@@ -163,6 +163,7 @@ export function EducationPartnerDetailPage({ partnerId, onNavigate, isOwner }: {
         <button type="button" className="secondary-button" onClick={() => onNavigate("/app/education-partners")}>Back</button>
         <h1>{partner.businessName}</h1>
         <p>{label(partner.partnerType)} · {label(partner.status)} · {bpsToPercent(partner.currentCommissionBasisPoints)} commission</p>
+        {isOwner ? <button type="button" className="secondary-button" onClick={() => onNavigate(`/app/education-partners/${partner.id}/preview`)}>Preview Partner Portal</button> : null}
       </header>
 
       <section className="metric-grid">

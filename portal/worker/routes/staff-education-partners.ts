@@ -10,6 +10,7 @@ import { requireReferralTokenPepper } from "../lib/referral-token";
 import { getRecoverableReferralLink, issueReferralLink, rotateReferralLink, type ReferralServiceEnv } from "../lib/referral-service";
 import { requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import { getCourseFeeGstBasisPoints } from "../lib/course-fee";
+import { buildPartnerPortalView } from "../lib/partner-portal";
 
 type PortalHono = Hono<{ Bindings: WorkerBindings; Variables: WorkerVariables }>;
 type PortalContext = Context<{ Bindings: WorkerBindings; Variables: WorkerVariables }>;
@@ -79,6 +80,14 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     });
   });
 
+  app.get("/api/staff/education-partners/:partnerId/portal-preview", async (c) => {
+    const staff = await requireStaffRoles(c, ["owner"]);
+    if (!staff) return forbiddenOwner(c);
+    const view = await buildPartnerPortalView(c, c.req.param("partnerId"), paginationFromUrl(c.req.url));
+    if (!view) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
+    return jsonPlain(c, { ...view, preview: true });
+  });
+
   app.post("/api/staff/education-partners", async (c) => {
     const sameOriginError = requireSameOrigin(c);
     if (sameOriginError) return sameOriginError;
@@ -126,6 +135,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     const parsed = await parsePartnerBody(c);
     if (!parsed.ok) return parsed.response;
     const contact = await secureContact(c, existing.id, parsed.data.mobile || "", parsed.data.email || "");
+    const mobileChanged = (existing.mobile_hash || null) !== (contact.mobileHash || null);
     const now = new Date().toISOString();
     await c.env.DB.batch([
       c.env.DB.prepare(
@@ -141,6 +151,10 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
         `update referral_links set status = 'revoked', revoked_at = coalesce(revoked_at, ?), updated_at = ?
          where organisation_id = ? and referrer_profile_id = ? and status = 'active'`,
       ).bind(now, now, ORG_ID, existing.referrer_profile_id)] : []),
+      ...(mobileChanged || parsed.data.status === "inactive" ? [
+        c.env.DB.prepare("delete from login_account_education_partners where education_partner_id = ?").bind(existing.id),
+        c.env.DB.prepare("update user_sessions set active_education_partner_id = null where active_education_partner_id = ?").bind(existing.id),
+      ] : []),
       auditStatement(c, staff, parsed.data.homeBranchId, parsed.data.status === "inactive" && existing.status !== "inactive" ? "education_partner_deactivated" : "education_partner_updated", "education_partner", existing.id, {
         partnerId: existing.id,
         commissionBasisPoints: parsed.data.commissionBps,
@@ -206,6 +220,7 @@ type PartnerRow = {
   business_name: string;
   contact_person_name: string;
   mobile_last_four: string | null;
+  mobile_hash: string | null;
   status: string;
   current_commission_basis_points: number;
   internal_notes: string | null;
@@ -398,6 +413,14 @@ function clampInteger(value: string | null, fallback: number, min: number, max: 
   const parsed = Number(value);
   if (!Number.isInteger(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
+}
+
+function paginationFromUrl(urlValue: string) {
+  const url = new URL(urlValue);
+  return {
+    limit: clampInteger(url.searchParams.get("limit"), 20, 1, 50),
+    offset: clampInteger(url.searchParams.get("offset"), 0, 0, 5000),
+  };
 }
 
 function safeJson(bodyText: string) {

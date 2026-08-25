@@ -4,6 +4,8 @@ import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import { useAuth } from "../features/auth/AuthContext";
 import { LoginPage } from "../features/auth/LoginPage";
+import { PartnerLoginPage } from "../features/partner/PartnerLoginPage";
+import { PartnerPortalPage } from "../features/partner/PartnerPortalPage";
 import { ProfilePage } from "../features/profile/ProfilePage";
 import { ReferralsPage } from "../features/referrals/ReferralsPage";
 import { ReferralOperationsDetailPage, ReferralOperationsPage } from "../features/staff/ReferralOperationsPage";
@@ -29,11 +31,13 @@ const discountApproverRoles = new Set(["owner"]);
 
 function normalizePath(pathname: string): RoutePath {
   if (pathname === "/login") return "/login";
+  if (pathname === "/partner/login" || pathname === "/partner/dashboard") return pathname;
   if (appRoutes.has(pathname as RoutePath)) return pathname as RoutePath;
   if (/^\/app\/enquiries\/[^/]+\/admission$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/enquiries\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/referral-operations\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/students\/[^/]+$/.test(pathname)) return pathname as RoutePath;
+  if (/^\/app\/education-partners\/[^/]+\/preview$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/education-partners\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/enrolments\/[^/]+\/payments$/.test(pathname)) return pathname as RoutePath;
   return "/login";
@@ -73,6 +77,9 @@ export function Router() {
     if (!isLoading && isAuthenticated && (path === "/app/education-partners" || path === "/app/referral-operations" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/education-partners/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/enrolments/")) && !isStaff) {
       navigate("/app", true);
     }
+    if (!isLoading && isAuthenticated && /^\/app\/education-partners\/[^/]+\/preview$/.test(path) && !isDiscountApprover) {
+      navigate("/app", true);
+    }
     if (!isLoading && isAuthenticated && path === "/app/courses" && !isCourseAdmin) {
       navigate("/app/enquiries", true);
     }
@@ -89,6 +96,7 @@ export function Router() {
   const enquiryDetailMatch = activeAppPath.match(/^\/app\/enquiries\/([^/]+)$/);
   const referralOperationsMatch = activeAppPath.match(/^\/app\/referral-operations\/([^/]+)$/);
   const studentProfileMatch = activeAppPath.match(/^\/app\/students\/([^/]+)$/);
+  const educationPartnerPreviewMatch = activeAppPath.match(/^\/app\/education-partners\/([^/]+)\/preview$/);
   const educationPartnerMatch = activeAppPath.match(/^\/app\/education-partners\/([^/]+)$/);
   const paymentsMatch = activeAppPath.match(/^\/app\/enrolments\/([^/]+)\/payments$/);
 
@@ -124,7 +132,20 @@ export function Router() {
   }
 
   if (path === "/login" || !isAuthenticated) {
+    if (path === "/partner/login") {
+      return <PartnerLoginPage sessionMessage={sessionMessage} onAuthenticated={() => navigate("/partner/dashboard", true)} />;
+    }
+    if (path === "/partner/dashboard") {
+      return <PartnerPortalPage mode="self" onNavigate={navigate} />;
+    }
     return <LoginPage sessionMessage={sessionMessage} onAuthenticated={() => navigate("/app", true)} />;
+  }
+
+  if (path === "/partner/login") {
+    return <PartnerLoginPage sessionMessage={sessionMessage} onAuthenticated={() => navigate("/partner/dashboard", true)} />;
+  }
+  if (path === "/partner/dashboard") {
+    return <PartnerPortalPage mode="self" onNavigate={navigate} />;
   }
 
   return (
@@ -141,6 +162,7 @@ export function Router() {
       {enquiryAdmissionMatch && isStaff ? <AdmissionPage enquiryId={enquiryAdmissionMatch[1]} /> : null}
       {referralOperationsMatch && isStaff ? <ReferralOperationsDetailPage referralId={referralOperationsMatch[1]} onNavigate={navigate} isOwner={isDiscountApprover} /> : null}
       {studentProfileMatch && isStaff ? <StudentProfilePage studentId={studentProfileMatch[1]} /> : null}
+      {educationPartnerPreviewMatch && isDiscountApprover ? <PartnerPortalPage mode="preview" partnerId={educationPartnerPreviewMatch[1]} onNavigate={navigate} /> : null}
       {educationPartnerMatch && isStaff ? <EducationPartnerDetailPage partnerId={educationPartnerMatch[1]} onNavigate={navigate} isOwner={isDiscountApprover} /> : null}
       {paymentsMatch && isStaff ? <PaymentsLedgerPage enrolmentId={paymentsMatch[1]} /> : null}
       {activeAppPath === "/app/referrals" ? <ReferralsPage /> : null}
