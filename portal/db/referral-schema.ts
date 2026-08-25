@@ -159,7 +159,7 @@ export const referralLinkSecrets = sqliteTable(
   {
     referralLinkId: text("referral_link_id")
       .primaryKey()
-      .references(() => referralLinks.id, { onDelete: "cascade" }),
+      .references(() => referralLinks.id),
     tokenCiphertext: text("token_ciphertext").notNull(),
     encryptionVersion: text("encryption_version").notNull().default("v1"),
     ...timestamps,

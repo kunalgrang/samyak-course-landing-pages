@@ -113,7 +113,7 @@ describe("native referral services", () => {
     fixture.close();
   });
 
-  it("fails active-link recovery safely when the encrypted secret is missing or mismatched", async () => {
+  it("fails active-link recovery safely when the encrypted secret is missing, mismatched, or context-swapped", async () => {
     const fixture = testFixture();
     seedReferrer(fixture.sqlite);
     const issued = await issueReferralLink(fixture.env, {
@@ -135,6 +135,13 @@ describe("native referral services", () => {
     fixture.sqlite.prepare(
       "insert into referral_link_secrets (referral_link_id, token_ciphertext, encryption_version, created_at, updated_at) values (?, ?, 'v1', ?, ?)",
     ).run(issued.link.id, wrongCiphertext, NOW, NOW);
+    await expect(getRecoverableReferralLink(fixture.env, {
+      link: { id: issued.link.id, organisation_id: "org_samyak", token_hash: String(stored?.token_hash) },
+      publicOrigin: "https://go.samyaksion.com",
+    })).resolves.toEqual({ recoverable: false, reason: "invalid_secret" });
+
+    const wrongContextCiphertext = await encryptText(SESSION_PEPPER, "referral-link-token:rlink_other", issued.rawToken);
+    fixture.sqlite.prepare("update referral_link_secrets set token_ciphertext = ? where referral_link_id = ?").run(wrongContextCiphertext, issued.link.id);
     await expect(getRecoverableReferralLink(fixture.env, {
       link: { id: issued.link.id, organisation_id: "org_samyak", token_hash: String(stored?.token_hash) },
       publicOrigin: "https://go.samyaksion.com",
