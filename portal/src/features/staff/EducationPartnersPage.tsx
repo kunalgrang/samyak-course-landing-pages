@@ -105,12 +105,19 @@ export function EducationPartnerDetailPage({ partnerId, onNavigate, isOwner }: {
   const [copied, setCopied] = useState(false);
   const [actionError, setActionError] = useState("");
 
+  useEffect(() => {
+    setLink("");
+    setCopied(false);
+    setActionError("");
+  }, [partnerId]);
+
   async function issueLink() {
     setActionError("");
     setCopied(false);
     try {
       const result = await issueEducationPartnerReferralLink(partnerId);
       if (result.link) setLink(publicReferralUrl(result.link));
+      if (!result.link && result.lastFour) setActionError("An active referral link already exists. Full link is shown only when generated.");
       await refresh();
     } catch (caught) {
       setActionError(errorMessage(caught));
@@ -126,7 +133,8 @@ export function EducationPartnerDetailPage({ partnerId, onNavigate, isOwner }: {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1800);
     } catch (caught) {
-      setActionError(errorMessage(caught));
+      setCopied(false);
+      setActionError("Couldn't copy - select the link manually.");
     }
   }
 
@@ -183,6 +191,7 @@ export function EducationPartnerDetailPage({ partnerId, onNavigate, isOwner }: {
           <article className="staff-card">
             <h2>Referral Link</h2>
             <DetailField label="Active link" value={partner.activeLink ? `Active · last four ${partner.activeLink.lastFour}` : "No active link"} />
+            {partner.activeLink && !link ? <p className="staff-empty">Full link is shown only when generated.</p> : null}
             {link ? (
               <div className="partner-link-panel">
                 <span className="field-label">New referral link</span>
@@ -199,7 +208,7 @@ export function EducationPartnerDetailPage({ partnerId, onNavigate, isOwner }: {
               </div>
             ) : null}
             {actionError ? <p className="form-error">{actionError}</p> : null}
-            {isOwner && !link ? <button type="button" className="primary-button referral-inline-action" onClick={issueLink}>Generate Referral Link</button> : null}
+            {isOwner && !link && !partner.activeLink ? <button type="button" className="primary-button referral-inline-action" onClick={issueLink}>Generate Referral Link</button> : null}
           </article>
         </section>
       )}
@@ -403,22 +412,30 @@ function publicReferralUrl(link: string) {
 
 export async function copyTextToClipboard(text: string, clipboard?: Pick<Clipboard, "writeText">) {
   const targetClipboard = clipboard || (typeof navigator !== "undefined" ? navigator.clipboard : undefined);
+  let clipboardError: unknown;
   if (targetClipboard?.writeText) {
-    await targetClipboard.writeText(text);
-    return;
+    try {
+      await targetClipboard.writeText(text);
+      return;
+    } catch (error) {
+      clipboardError = error;
+    }
   }
-  if (typeof document === "undefined") throw new Error("Clipboard is not available.");
+  if (typeof document === "undefined") throw clipboardError instanceof Error ? clipboardError : new Error("Clipboard is not available.");
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.setAttribute("readonly", "");
+  textarea.setAttribute("aria-hidden", "true");
   textarea.style.position = "fixed";
   textarea.style.left = "-9999px";
   document.body.appendChild(textarea);
   textarea.select();
   try {
-    if (!document.execCommand("copy")) throw new Error("Copy command was not available.");
+    if (typeof document.execCommand !== "function" || !document.execCommand("copy")) throw new Error("Copy command was not available.");
   } finally {
     textarea.remove();
+    previousFocus?.focus();
   }
 }
 

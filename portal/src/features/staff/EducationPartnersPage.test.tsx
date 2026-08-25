@@ -72,6 +72,13 @@ describe("EducationPartnerDetailPage", () => {
     expect(container.textContent).toContain("Commission changes apply to new referrals only.");
   });
 
+  it("formats non-18 GST basis points without frontend hardcoding", async () => {
+    apiMocks.getEducationPartner.mockResolvedValue(partnerDetail({}, { currentGstBasisPoints: 1225 }));
+    await renderDetail();
+
+    expect(container.textContent).toContain("Current GST: 12.25%");
+  });
+
   it("shows Generate Referral Link when there is no active link", async () => {
     apiMocks.getEducationPartner.mockResolvedValue(partnerDetail({ activeLink: null }));
     await renderDetail();
@@ -82,7 +89,19 @@ describe("EducationPartnerDetailPage", () => {
     expect(container.querySelector("a[href^='https://go.samyaksion.com/r/']")).toBeNull();
   });
 
+  it("does not invent a full URL for an existing active link after reload", async () => {
+    await renderDetail();
+
+    expect(container.textContent).toContain("Active · last four 7890");
+    expect(container.textContent).toContain("Full link is shown only when generated.");
+    expect(buttonText()).not.toContain("Generate Referral Link");
+    expect(container.textContent).not.toContain("https://go.samyaksion.com/r/");
+    expect(container.textContent).not.toContain("/r/");
+    expect(container.querySelector("a.partner-link-open")).toBeNull();
+  });
+
   it("exposes generated public referral links with copy and open actions", async () => {
+    apiMocks.getEducationPartner.mockResolvedValue(partnerDetail({ activeLink: null }));
     await renderDetail();
     clickButton("Generate Referral Link");
     await act(async () => {});
@@ -114,6 +133,7 @@ describe("EducationPartnerDetailPage", () => {
   });
 
   it("keeps the long generated link inside a truncating display container", async () => {
+    apiMocks.getEducationPartner.mockResolvedValue(partnerDetail({ activeLink: null }));
     await renderDetail();
     clickButton("Generate Referral Link");
     await act(async () => {});
@@ -124,9 +144,59 @@ describe("EducationPartnerDetailPage", () => {
     expect(linkValue?.getAttribute("title")).toBe("https://go.samyaksion.com/r/PARTNER-LINK-1234567890");
   });
 
-  async function renderDetail() {
+  it("falls back to textarea copy when clipboard writeText rejects", async () => {
+    const clipboard = { writeText: vi.fn().mockRejectedValue(new Error("denied")) };
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+
+    await copyTextToClipboard("https://go.samyaksion.com/r/FALLBACK-LINK-1234567890", clipboard);
+
+    expect(clipboard.writeText).toHaveBeenCalledWith("https://go.samyaksion.com/r/FALLBACK-LINK-1234567890");
+    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(document.querySelector("textarea")).toBeNull();
+  });
+
+  it("reports copy failure honestly when clipboard and fallback both fail", async () => {
+    apiMocks.getEducationPartner.mockResolvedValue(partnerDetail({ activeLink: null }));
+    Object.defineProperty(windowRef.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn().mockReturnValue(false) });
+    await renderDetail();
+    clickButton("Generate Referral Link");
+    await act(async () => {});
+
+    clickButton("Copy Link");
+    await act(async () => {});
+
+    expect(container.textContent).toContain("Couldn't copy - select the link manually.");
+    expect(container.textContent).not.toContain("Referral link copied.");
+  });
+
+  it("clears generated link and copied state when switching partners", async () => {
+    apiMocks.getEducationPartner
+      .mockResolvedValueOnce(partnerDetail({ activeLink: null }))
+      .mockResolvedValueOnce(partnerDetail({ activeLink: { lastFour: "7890", activatedAt: "2026-08-25T00:00:00.000Z" } }))
+      .mockResolvedValueOnce(partnerDetail({ id: "epartner_2", businessName: "Second Partner", activeLink: null }));
+    await renderDetail("epartner_1");
+    clickButton("Generate Referral Link");
+    await act(async () => {});
+    clickButton("Copy Link");
+    await act(async () => {});
+
+    await renderDetail("epartner_2");
+    await act(async () => {});
+
+    expect(container.textContent).toContain("Second Partner");
+    expect(container.textContent).not.toContain("https://go.samyaksion.com/r/PARTNER-LINK-1234567890");
+    expect(container.textContent).not.toContain("Copied");
+    expect(buttonText()).toContain("Generate Referral Link");
+  });
+
+  async function renderDetail(id = "epartner_1") {
     await act(async () => {
-      root.render(<EducationPartnerDetailPage partnerId="epartner_1" onNavigate={() => undefined} isOwner={true} />);
+      root.render(<EducationPartnerDetailPage partnerId={id} onNavigate={() => undefined} isOwner={true} />);
     });
     await act(async () => {});
   }
@@ -144,7 +214,10 @@ describe("EducationPartnerDetailPage", () => {
   }
 });
 
-function partnerDetail(overrides: Partial<EducationPartnerDetail["partner"]> = {}): EducationPartnerDetail {
+function partnerDetail(
+  overrides: Partial<EducationPartnerDetail["partner"]> = {},
+  commercialTerms: Partial<EducationPartnerDetail["commercialTerms"]> = {},
+): EducationPartnerDetail {
   return {
     success: true,
     partner: {
@@ -168,6 +241,7 @@ function partnerDetail(overrides: Partial<EducationPartnerDetail["partner"]> = {
     },
     commercialTerms: {
       currentGstBasisPoints: 1800,
+      ...commercialTerms,
     },
     metrics: {
       totalReferrals: 0,
