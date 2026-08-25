@@ -7,10 +7,20 @@ const migrationsDir = join(root, "migrations");
 const workRoot = join(root, ".tmp", "d1-0021-local-check");
 const databaseName = "samyak-student-portal";
 const wranglerBin = join(root, "node_modules", "wrangler", "bin", "wrangler.js");
-const migration0021 = readFileSync(join(migrationsDir, "0021_education_partner_referrals_v1.sql"), "utf8");
+const migration0021Path = join(migrationsDir, "0021_education_partner_referrals_v1.sql");
+const migration0021 = readFileSync(migration0021Path, "utf8");
+const migrationDiagnostics = inspectMigrationFile(migration0021Path, migration0021);
 const oldMigration0021 = migration0021
   .replace("PRAGMA defer_foreign_keys=ON;", "PRAGMA foreign_keys=OFF;")
   .replace("PRAGMA defer_foreign_keys=OFF;", "PRAGMA foreign_keys=ON;");
+
+console.log(`Wrangler version: ${wranglerVersion()}`);
+console.log(
+  `0021 migration line endings: ${migrationDiagnostics.lineEndingType} ` +
+    `(CRLF=${migrationDiagnostics.crlf}, bare LF=${migrationDiagnostics.bareLf})`,
+);
+console.log(`0021 trigger count: ${migrationDiagnostics.triggerCount}`);
+console.log("REMOTE D1 PARSER COMPATIBILITY REQUIRES LF MIGRATION FILE");
 
 const productionShapeSeed = `
 insert into organisations (id, name, slug, status, created_at, updated_at) values ('org_samyak', 'Samyak', 'samyak', 'active', '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z');
@@ -270,4 +280,35 @@ function keyValues(results) {
 
 function assertEqual(actual, expected, label) {
   if (actual !== expected) throw new Error(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+}
+
+function inspectMigrationFile(file, contents) {
+  const bytes = readFileSync(file);
+  let crlf = 0;
+  let bareLf = 0;
+
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] !== 0x0a) continue;
+    if (index > 0 && bytes[index - 1] === 0x0d) crlf += 1;
+    else bareLf += 1;
+  }
+
+  return {
+    crlf,
+    bareLf,
+    lineEndingType: crlf === 0 ? "LF only" : bareLf === 0 ? "CRLF" : "mixed",
+    triggerCount: (contents.match(/\bCREATE\s+TRIGGER\b/gi) || []).length,
+  };
+}
+
+function wranglerVersion() {
+  try {
+    return execFileSync(process.execPath, [wranglerBin, "--version"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch (error) {
+    return `unavailable (${error.message})`;
+  }
 }
