@@ -1,7 +1,7 @@
 import { calculateReferralValidUntil } from "./referral-domain";
 import { ReferralRepository, type ActorIdentity, type EligibleCourseRecord, type ReferralDb, type ReferralLinkRecord } from "./referral-repository";
 import { generateReferralToken, hashReferralToken, referralTokenLastFour, validateReferralTokenFormat } from "./referral-token";
-import { encryptText, hmacHex } from "./crypto";
+import { createOpaqueId, decryptText, encryptText, hmacHex } from "./crypto";
 import { getCourseFeeGstBasisPoints } from "./course-fee";
 import { normalizeIndianMobile } from "./mobile";
 
@@ -92,6 +92,10 @@ export type ResolveReferralLinkResult =
     }
   | { valid: false; reason: "invalid_link" };
 
+export type RecoverableReferralLinkResult =
+  | { recoverable: true; publicUrl: string; rawToken: string }
+  | { recoverable: false; reason: "missing_secret" | "invalid_secret" };
+
 export type SubmitReferralInput = {
   organisationId: string;
   rawReferralToken: string;
@@ -136,10 +140,13 @@ export async function issueReferralLink(env: ReferralServiceEnv, input: IssueRef
   if (existing) return issuedLinkResult(false, null, existing);
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    const linkId = createOpaqueId("rlink");
     const rawToken = generateReferralToken();
     const tokenHash = await hashReferralToken(rawToken, tokenPepper);
+    const tokenCiphertext = await encryptReferralLinkToken(env, linkId, rawToken);
     try {
-      const linkId = await repo.insertReferralLink({
+      await repo.insertReferralLink({
+        linkId,
         organisationId: input.organisationId,
         referralProgrammeId: input.referralProgrammeId,
         referrerProfileId: input.referrerProfileId,
@@ -148,6 +155,7 @@ export async function issueReferralLink(env: ReferralServiceEnv, input: IssueRef
         linkVersion: 1,
         activatedAt: nowIso,
         expiresAt: input.expiresAt || null,
+        tokenCiphertext,
         actor: input,
       });
       return {
@@ -181,10 +189,13 @@ export async function rotateReferralLink(env: ReferralServiceEnv, input: RotateR
   await assertOrganisationProgrammeAndReferrer(repo, input.organisationId, input.referralProgrammeId, input.referrerProfileId, nowIso, input);
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    const linkId = createOpaqueId("rlink");
     const rawToken = generateReferralToken();
     const tokenHash = await hashReferralToken(rawToken, tokenPepper);
+    const tokenCiphertext = await encryptReferralLinkToken(env, linkId, rawToken);
     try {
       const rotated = await repo.rotateReferralLink({
+        linkId,
         organisationId: input.organisationId,
         referralProgrammeId: input.referralProgrammeId,
         referrerProfileId: input.referrerProfileId,
@@ -192,6 +203,7 @@ export async function rotateReferralLink(env: ReferralServiceEnv, input: RotateR
         tokenLastFour: referralTokenLastFour(rawToken),
         rotatedAt: nowIso,
         expiresAt: input.expiresAt || null,
+        tokenCiphertext,
         actor: input,
       });
       return {
@@ -213,6 +225,26 @@ export async function rotateReferralLink(env: ReferralServiceEnv, input: RotateR
     }
   }
   throw new ReferralServiceError("configuration_error", "Referral link could not be rotated.");
+}
+
+export async function getRecoverableReferralLink(env: ReferralServiceEnv, input: { link: Pick<ReferralLinkRecord, "id" | "organisation_id" | "token_hash">; publicOrigin: string; tokenPepper?: string }): Promise<RecoverableReferralLinkResult> {
+  const repo = new ReferralRepository(env.DB);
+  const secret = await repo.findReferralLinkSecret(input.link.id);
+  if (!secret) return { recoverable: false, reason: "missing_secret" };
+  let rawToken: string;
+  try {
+    rawToken = await decryptReferralLinkToken(env, input.link.id, secret.token_ciphertext);
+  } catch {
+    return { recoverable: false, reason: "invalid_secret" };
+  }
+  let tokenHash: string;
+  try {
+    tokenHash = await hashReferralToken(rawToken, input.tokenPepper || env.referralTokenPepper);
+  } catch {
+    return { recoverable: false, reason: "invalid_secret" };
+  }
+  if (tokenHash !== input.link.token_hash) return { recoverable: false, reason: "invalid_secret" };
+  return { recoverable: true, rawToken, publicUrl: buildPublicReferralUrl(input.publicOrigin, rawToken) };
 }
 
 export async function resolveReferralLink(env: ReferralServiceEnv, input: { organisationId: string; rawToken: string; now?: Date | string; tokenPepper?: string }): Promise<ResolveReferralLinkResult> {
@@ -404,6 +436,22 @@ function issuedLinkResult(issued: boolean, rawToken: string | null, link: Referr
       expiresAt: link.expires_at,
     },
   };
+}
+
+function referralLinkTokenContext(referralLinkId: string) {
+  return `referral-link-token:${referralLinkId}`;
+}
+
+function encryptReferralLinkToken(env: ReferralServiceEnv, referralLinkId: string, rawToken: string) {
+  return encryptText(env.SESSION_PEPPER, referralLinkTokenContext(referralLinkId), rawToken);
+}
+
+function decryptReferralLinkToken(env: ReferralServiceEnv, referralLinkId: string, ciphertext: string) {
+  return decryptText(env.SESSION_PEPPER, referralLinkTokenContext(referralLinkId), ciphertext);
+}
+
+function buildPublicReferralUrl(publicOrigin: string, rawToken: string) {
+  return `${publicOrigin.replace(/\/+$/u, "")}/r/${encodeURIComponent(rawToken)}`;
 }
 
 function validateSubmissionInput(input: SubmitReferralInput): ReferralRejectionCode | null {

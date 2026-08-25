@@ -8,6 +8,7 @@ import {
   getEducationPartners,
   getEnquiryOptions,
   issueEducationPartnerReferralLink,
+  replaceEducationPartnerReferralLink,
   updateEducationPartner,
   type EducationPartner,
   type EducationPartnerInput,
@@ -16,7 +17,6 @@ import type { RoutePath } from "../../routes/types";
 import { formatIndianCurrency } from "../referrals/referralUtils";
 
 const PAGE_SIZE = 20;
-const PUBLIC_REFERRAL_ORIGIN = "https://go.samyaksion.com";
 const partnerTypes = ["college", "coaching_class", "tuition_centre", "training_institute", "career_counsellor", "placement_consultant", "freelancer", "other"];
 
 export function EducationPartnersPage({ onNavigate, isOwner }: { onNavigate: (path: RoutePath) => void; isOwner: boolean }) {
@@ -116,8 +116,21 @@ export function EducationPartnerDetailPage({ partnerId, onNavigate, isOwner }: {
     setCopied(false);
     try {
       const result = await issueEducationPartnerReferralLink(partnerId);
-      if (result.link) setLink(publicReferralUrl(result.link));
-      if (!result.link && result.lastFour) setActionError("An active referral link already exists. Full link is shown only when generated.");
+      if (result.link) setLink(result.link);
+      await refresh();
+    } catch (caught) {
+      setActionError(errorMessage(caught));
+    }
+  }
+
+  async function replaceLink() {
+    const confirmed = window.confirm("Replacing this referral link will deactivate the current link. Anyone using the old link will no longer be able to submit a referral. Continue?");
+    if (!confirmed) return;
+    setActionError("");
+    setCopied(false);
+    try {
+      const result = await replaceEducationPartnerReferralLink(partnerId);
+      if (result.link) setLink(result.link);
       await refresh();
     } catch (caught) {
       setActionError(errorMessage(caught));
@@ -125,7 +138,7 @@ export function EducationPartnerDetailPage({ partnerId, onNavigate, isOwner }: {
   }
 
   async function copyLink() {
-    const shareableLink = link;
+    const shareableLink = currentLink;
     if (!shareableLink) return;
     setActionError("");
     try {
@@ -141,6 +154,8 @@ export function EducationPartnerDetailPage({ partnerId, onNavigate, isOwner }: {
   if (error) return <ErrorState title="Could not load education partner" message="This partner may be outside your staff scope." />;
   if (!detail) return <LoadingState label="Loading education partner" />;
   const partner = detail.partner;
+  const currentLink = link || partner.activeLink?.publicUrl || "";
+  const hasLegacyActiveLink = Boolean(partner.activeLink && !partner.activeLink.recoverable);
 
   return (
     <div className="content-stack staff-enquiries-page referral-ops-page">
@@ -191,24 +206,26 @@ export function EducationPartnerDetailPage({ partnerId, onNavigate, isOwner }: {
           <article className="staff-card">
             <h2>Referral Link</h2>
             <DetailField label="Active link" value={partner.activeLink ? `Active · last four ${partner.activeLink.lastFour}` : "No active link"} />
-            {partner.activeLink && !link ? <p className="staff-empty">Full link is shown only when generated.</p> : null}
-            {link ? (
+            {hasLegacyActiveLink ? <p className="staff-empty">This link was created before secure link recovery was enabled.</p> : null}
+            {currentLink ? (
               <div className="partner-link-panel">
-                <span className="field-label">New referral link</span>
-                <p className="partner-link-value" title={link} aria-label="Generated public referral URL">{link}</p>
+                <span className="field-label">Referral Link</span>
+                <p className="partner-link-value" title={currentLink} aria-label="Current public referral URL">{currentLink}</p>
                 <div className="referral-contact-actions">
-                  <button type="button" className="primary-button" onClick={() => void copyLink()} aria-label="Copy generated referral link">
+                  <button type="button" className="primary-button" onClick={() => void copyLink()} aria-label="Copy current referral link">
                     {copied ? "Copied" : "Copy Link"}
                   </button>
-                  <a className="secondary-button partner-link-open" href={link} target="_blank" rel="noopener noreferrer" aria-label="Open generated referral link in a new tab">
+                  <a className="secondary-button partner-link-open" href={currentLink} target="_blank" rel="noopener noreferrer" aria-label="Open current referral link in a new tab">
                     Open Link
                   </a>
+                  {isOwner && partner.activeLink ? <button type="button" className="secondary-button" onClick={() => void replaceLink()}>Replace Referral Link</button> : null}
                 </div>
                 <p className="copy-feedback" aria-live="polite">{copied ? "Referral link copied." : ""}</p>
               </div>
             ) : null}
             {actionError ? <p className="form-error">{actionError}</p> : null}
-            {isOwner && !link && !partner.activeLink ? <button type="button" className="primary-button referral-inline-action" onClick={issueLink}>Generate Referral Link</button> : null}
+            {isOwner && !currentLink && partner.activeLink ? <button type="button" className="primary-button referral-inline-action" onClick={() => void replaceLink()}>Replace Referral Link</button> : null}
+            {isOwner && !currentLink && !partner.activeLink ? <button type="button" className="primary-button referral-inline-action" onClick={issueLink}>Generate Referral Link</button> : null}
           </article>
         </section>
       )}
@@ -404,10 +421,6 @@ function label(value: string) {
 
 function bpsToPercent(bps: number) {
   return `${(bps / 100).toLocaleString("en-IN", { maximumFractionDigits: 2 })}%`;
-}
-
-function publicReferralUrl(link: string) {
-  return new URL(link, PUBLIC_REFERRAL_ORIGIN).toString();
 }
 
 export async function copyTextToClipboard(text: string, clipboard?: Pick<Clipboard, "writeText">) {

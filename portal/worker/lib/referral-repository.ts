@@ -64,6 +64,14 @@ export type ReferralLinkRecord = {
   partner_commission_basis_points: number | null;
 };
 
+export type ReferralLinkSecretRecord = {
+  referral_link_id: string;
+  token_ciphertext: string;
+  encryption_version: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type EligibleCourseRecord = {
   id: string;
   code: string;
@@ -221,6 +229,7 @@ export class ReferralRepository {
   }
 
   async insertReferralLink(input: {
+    linkId?: string;
     organisationId: string;
     referralProgrammeId: string;
     referrerProfileId: string;
@@ -229,10 +238,11 @@ export class ReferralRepository {
     linkVersion: number;
     activatedAt: string;
     expiresAt?: string | null;
+    tokenCiphertext?: string | null;
     actor?: ActorIdentity;
   }) {
-    const linkId = createOpaqueId("rlink");
-    await this.db.batch([
+    const linkId = input.linkId || createOpaqueId("rlink");
+    const statements = [
       this.db.prepare(
         `insert into referral_links
           (id, organisation_id, referral_programme_id, referrer_profile_id, token_hash, token_last_four, link_version,
@@ -251,6 +261,11 @@ export class ReferralRepository {
         input.activatedAt,
         input.activatedAt,
       ),
+      ...(input.tokenCiphertext ? [this.db.prepare(
+        `insert into referral_link_secrets
+          (referral_link_id, token_ciphertext, encryption_version, created_at, updated_at)
+         values (?, ?, 'v1', ?, ?)`,
+      ).bind(linkId, input.tokenCiphertext, input.activatedAt, input.activatedAt)] : []),
       this.db.prepare(
         `insert into audit_logs
           (id, organisation_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
@@ -264,11 +279,13 @@ export class ReferralRepository {
         JSON.stringify({ linkVersion: input.linkVersion, tokenLastFour: input.tokenLastFour }),
         input.activatedAt,
       ),
-    ]);
+    ];
+    await this.db.batch(statements);
     return linkId;
   }
 
   async rotateReferralLink(input: {
+    linkId?: string;
     organisationId: string;
     referralProgrammeId: string;
     referrerProfileId: string;
@@ -276,12 +293,13 @@ export class ReferralRepository {
     tokenLastFour: string;
     rotatedAt: string;
     expiresAt?: string | null;
+    tokenCiphertext?: string | null;
     actor?: ActorIdentity;
   }) {
     const active = await this.findActiveReferralLink(input.organisationId, input.referralProgrammeId, input.referrerProfileId, input.rotatedAt);
-    const linkId = createOpaqueId("rlink");
+    const linkId = input.linkId || createOpaqueId("rlink");
     const nextVersion = Math.max(1, Number(active?.link_version || 0) + 1);
-    await this.db.batch([
+    const statements = [
       this.db.prepare(
         `update referral_links
          set status = 'revoked',
@@ -311,6 +329,11 @@ export class ReferralRepository {
         input.rotatedAt,
         input.rotatedAt,
       ),
+      ...(input.tokenCiphertext ? [this.db.prepare(
+        `insert into referral_link_secrets
+          (referral_link_id, token_ciphertext, encryption_version, created_at, updated_at)
+         values (?, ?, 'v1', ?, ?)`,
+      ).bind(linkId, input.tokenCiphertext, input.rotatedAt, input.rotatedAt)] : []),
       this.db.prepare(
         `insert into audit_logs
           (id, organisation_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
@@ -324,8 +347,20 @@ export class ReferralRepository {
         JSON.stringify({ previousLinkId: active?.id || null, linkVersion: nextVersion, tokenLastFour: input.tokenLastFour }),
         input.rotatedAt,
       ),
-    ]);
+    ];
+    await this.db.batch(statements);
     return { linkId, linkVersion: nextVersion, previousLinkId: active?.id || null };
+  }
+
+  findReferralLinkSecret(referralLinkId: string) {
+    return this.db.prepare(
+      `select referral_link_id, token_ciphertext, encryption_version, created_at, updated_at
+       from referral_link_secrets
+       where referral_link_id = ?
+       limit 1`,
+    )
+      .bind(referralLinkId)
+      .first<ReferralLinkSecretRecord>();
   }
 
   findLinkByTokenHash(organisationId: string, tokenHash: string) {

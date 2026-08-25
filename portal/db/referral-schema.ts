@@ -154,6 +154,21 @@ export const referralLinks = sqliteTable(
   ],
 );
 
+export const referralLinkSecrets = sqliteTable(
+  "referral_link_secrets",
+  {
+    referralLinkId: text("referral_link_id")
+      .primaryKey()
+      .references(() => referralLinks.id),
+    tokenCiphertext: text("token_ciphertext").notNull(),
+    encryptionVersion: text("encryption_version").notNull().default("v1"),
+    ...timestamps,
+  },
+  (table) => [
+    check("referral_link_secrets_ciphertext_check", sql`${table.tokenCiphertext} like 'v1:%'`),
+  ],
+);
+
 export const referrals = sqliteTable(
   "referrals",
   {

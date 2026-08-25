@@ -7,7 +7,7 @@ import { requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
 import { requireReferralTokenPepper } from "../lib/referral-token";
-import { issueReferralLink } from "../lib/referral-service";
+import { getRecoverableReferralLink, issueReferralLink, rotateReferralLink, type ReferralServiceEnv } from "../lib/referral-service";
 import { requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import { getCourseFeeGstBasisPoints } from "../lib/course-fee";
 
@@ -15,6 +15,7 @@ type PortalHono = Hono<{ Bindings: WorkerBindings; Variables: WorkerVariables }>
 type PortalContext = Context<{ Bindings: WorkerBindings; Variables: WorkerVariables }>;
 
 const PARTNER_PROGRAMME_ID = "rprog_samyak_education_partners";
+const REFERRAL_PUBLIC_ORIGIN = "https://go.samyaksion.com";
 const MAX_BODY_BYTES = 8192;
 
 const partnerTypes = ["college", "coaching_class", "tuition_centre", "training_institute", "career_counsellor", "placement_consultant", "freelancer", "other"] as const;
@@ -58,7 +59,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     return jsonPlain(c, {
       success: true,
       pagination: { limit, offset, total: Number(total?.count || 0), hasMore: (rows.results || []).length > limit },
-      partners: pageRows.map(partnerPayload),
+      partners: pageRows.map((partner) => partnerPayload(partner)),
     });
   });
 
@@ -67,9 +68,10 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     if (!staff) return forbidden(c);
     const partner = await findPartner(c, c.req.param("partnerId"));
     if (!partner) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
+    const canShareFullLink = staff.roles.includes("owner");
     return jsonPlain(c, {
       success: true,
-      partner: partnerPayload(partner),
+      partner: partnerPayload(partner, canShareFullLink ? await recoverPartnerLink(c, partner) : null),
       commercialTerms: {
         currentGstBasisPoints: getCourseFeeGstBasisPoints(),
       },
@@ -156,19 +158,43 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     const partner = await findPartner(c, c.req.param("partnerId"));
     if (!partner) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
     if (partner.status !== "active") return jsonError(c, { status: 409, code: "partner_inactive", message: "Activate the partner before issuing a referral link." });
-    const issued = await issueReferralLink({
-      DB: c.env.DB,
-      SESSION_PEPPER: c.env.SESSION_PEPPER,
-      referralTokenPepper: requireReferralTokenPepper(String(c.env.REFERRAL_TOKEN_PEPPER || "")),
-    }, {
+    const issued = await issueReferralLink(referralEnv(c), {
       organisationId: ORG_ID,
       referralProgrammeId: PARTNER_PROGRAMME_ID,
       referrerProfileId: partner.referrer_profile_id,
       loginAccountId: staff.loginAccountId,
       now: new Date().toISOString(),
     });
-    const publicLink = issued.rawToken ? `/r/${issued.rawToken}` : null;
+    const recovered = issued.rawToken ? { recoverable: true as const, publicUrl: buildPublicReferralUrl(issued.rawToken) } : await recoverPartnerLink(c, partner);
+    const publicLink = recovered?.recoverable ? recovered.publicUrl : null;
     return jsonPlain(c, { success: true, created: issued.issued, link: publicLink, shownOnce: Boolean(publicLink), lastFour: issued.link.tokenLastFour, activatedAt: issued.link.activatedAt });
+  });
+
+  app.post("/api/staff/education-partners/:partnerId/referral-link/replace", async (c) => {
+    const sameOriginError = requireSameOrigin(c);
+    if (sameOriginError) return sameOriginError;
+    const staff = await requireStaffRoles(c, ["owner"]);
+    if (!staff) return forbiddenOwner(c);
+    const partner = await findPartner(c, c.req.param("partnerId"));
+    if (!partner) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
+    if (partner.status !== "active") return jsonError(c, { status: 409, code: "partner_inactive", message: "Activate the partner before replacing a referral link." });
+    const rotated = await rotateReferralLink(referralEnv(c), {
+      organisationId: ORG_ID,
+      referralProgrammeId: PARTNER_PROGRAMME_ID,
+      referrerProfileId: partner.referrer_profile_id,
+      loginAccountId: staff.loginAccountId,
+      now: new Date().toISOString(),
+    });
+    return jsonPlain(c, {
+      success: true,
+      created: true,
+      replaced: true,
+      link: buildPublicReferralUrl(rotated.rawToken),
+      shownOnce: true,
+      lastFour: rotated.link.tokenLastFour,
+      activatedAt: rotated.link.activatedAt,
+      previousLinkId: rotated.previousLinkId,
+    }, { status: 201 });
   });
 }
 
@@ -184,6 +210,8 @@ type PartnerRow = {
   current_commission_basis_points: number;
   internal_notes: string | null;
   referrer_profile_id: string;
+  active_link_id: string | null;
+  active_link_token_hash: string | null;
   active_link_last_four: string | null;
   active_link_activated_at: string | null;
   referral_count: number;
@@ -196,6 +224,8 @@ function partnerSelectSql() {
   return `select education_partners.*,
        branches.name as branch_name,
        education_partner_referrer_profiles.referrer_profile_id,
+       active_links.id as active_link_id,
+       active_links.token_hash as active_link_token_hash,
        active_links.token_last_four as active_link_last_four,
        active_links.activated_at as active_link_activated_at,
        (select count(*) from referrals where referrals.education_partner_id = education_partners.id) as referral_count,
@@ -239,7 +269,9 @@ async function partnerMetrics(c: PortalContext, partnerId: string) {
   };
 }
 
-function partnerPayload(row: PartnerRow) {
+type RecoverablePartnerLink = { recoverable: true; publicUrl: string } | { recoverable: false; reason: string } | null;
+
+function partnerPayload(row: PartnerRow, recoveredLink?: RecoverablePartnerLink) {
   return {
     id: row.id,
     homeBranchId: row.home_branch_id,
@@ -252,12 +284,37 @@ function partnerPayload(row: PartnerRow) {
     currentCommissionBasisPoints: Number(row.current_commission_basis_points),
     internalNotes: row.internal_notes || "",
     referrerProfileId: row.referrer_profile_id,
-    activeLink: row.active_link_last_four ? { lastFour: row.active_link_last_four, activatedAt: row.active_link_activated_at } : null,
+    activeLink: row.active_link_last_four ? {
+      lastFour: row.active_link_last_four,
+      activatedAt: row.active_link_activated_at,
+      publicUrl: recoveredLink?.recoverable ? recoveredLink.publicUrl : null,
+      recoverable: Boolean(recoveredLink?.recoverable),
+    } : null,
     referralCount: Number(row.referral_count || 0),
     admissionCount: Number(row.admission_count || 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+async function recoverPartnerLink(c: PortalContext, partner: PartnerRow): Promise<RecoverablePartnerLink> {
+  if (!partner.active_link_id || !partner.active_link_token_hash) return null;
+  return getRecoverableReferralLink(referralEnv(c), {
+    link: { id: partner.active_link_id, organisation_id: ORG_ID, token_hash: partner.active_link_token_hash },
+    publicOrigin: REFERRAL_PUBLIC_ORIGIN,
+  });
+}
+
+function referralEnv(c: PortalContext): ReferralServiceEnv {
+  return {
+    DB: c.env.DB,
+    SESSION_PEPPER: c.env.SESSION_PEPPER,
+    referralTokenPepper: requireReferralTokenPepper(String(c.env.REFERRAL_TOKEN_PEPPER || "")),
+  };
+}
+
+function buildPublicReferralUrl(rawToken: string) {
+  return `${REFERRAL_PUBLIC_ORIGIN}/r/${encodeURIComponent(rawToken)}`;
 }
 
 async function parsePartnerBody(c: PortalContext): Promise<{ ok: true; data: z.infer<typeof partnerSchema> & { commissionBps: number } } | { ok: false; response: Response }> {

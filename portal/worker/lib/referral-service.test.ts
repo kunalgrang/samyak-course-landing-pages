@@ -6,15 +6,17 @@ import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import { encryptText, hmacHex } from "./crypto";
 import { normalizeIndianMobile } from "./mobile";
-import { issueReferralLink, listEligibleReferralCourses, normalizeSubmittedReferralName, resolveReferralLink, rotateReferralLink, submitReferralAndCreateEnquiry, type ReferralServiceEnv } from "./referral-service";
+import { getRecoverableReferralLink, issueReferralLink, listEligibleReferralCourses, normalizeSubmittedReferralName, resolveReferralLink, rotateReferralLink, submitReferralAndCreateEnquiry, type ReferralServiceEnv } from "./referral-service";
 import { hashReferralToken } from "./referral-token";
 import type { ReferralDb } from "./referral-repository";
 import { groupEligibleCourses, registerPublicReferralRoutes } from "../routes/public-referrals";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { registerStudentRoutes } from "../routes/student";
 import { registerStaffReferralRoutes } from "../routes/staff-referrals";
+import { registerStaffEducationPartnerRoutes } from "../routes/staff-education-partners";
 
 const NOW = "2026-08-06T10:00:00.000Z";
+const PARTNER_NOW = "2026-08-25T10:00:00.000Z";
 const SESSION_PEPPER = "session-pepper-for-referral-tests";
 const TEST_REFERRAL_TOKEN_PEPPER = "referral-token-pepper-for-tests";
 const RESOLVE_LIMIT_WINDOW_SECONDS = 60;
@@ -66,7 +68,7 @@ const WORKBOOK_COURSES = [
 ] as const;
 
 describe("native referral services", () => {
-  it("issues a strong one-time referral token and stores only hash plus last four", async () => {
+  it("issues a strong referral token and stores hash plus encrypted recovery secret", async () => {
     const fixture = testFixture();
     seedReferrer(fixture.sqlite);
 
@@ -95,8 +97,55 @@ describe("native referral services", () => {
     expect(stored?.token_hash).toBe(await hashReferralToken(issued.rawToken!, TEST_REFERRAL_TOKEN_PEPPER));
     expect(stored?.token_hash).not.toContain(issued.rawToken);
     expect(stored?.token_last_four).toBe(issued.rawToken!.slice(-4));
+    const secret = row(fixture.sqlite, "select token_ciphertext from referral_link_secrets where referral_link_id = ?", issued.link.id);
+    expect(String(secret?.token_ciphertext)).toMatch(/^v1:/);
+    expect(String(secret?.token_ciphertext)).not.toContain(issued.rawToken);
+    expect(String(secret?.token_ciphertext)).not.toContain("/r/");
     expect(JSON.stringify(all(fixture.sqlite, "select * from referral_links"))).not.toContain(issued.rawToken);
+    expect(JSON.stringify(all(fixture.sqlite, "select * from referral_link_secrets"))).not.toContain(issued.rawToken);
     expect(JSON.stringify(all(fixture.sqlite, "select * from audit_logs"))).not.toContain(issued.rawToken);
+    const recovered = await getRecoverableReferralLink(fixture.env, {
+      link: { id: issued.link.id, organisation_id: "org_samyak", token_hash: String(stored?.token_hash) },
+      publicOrigin: "https://go.samyaksion.com",
+    });
+    expect(recovered).toMatchObject({ recoverable: true, publicUrl: `https://go.samyaksion.com/r/${issued.rawToken}` });
+    expect(await resolveReferralLink(fixture.env, { organisationId: "org_samyak", rawToken: issued.rawToken!, now: NOW })).toMatchObject({ valid: true });
+    fixture.close();
+  });
+
+  it("fails active-link recovery safely when the encrypted secret is missing, mismatched, or context-swapped", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    const issued = await issueReferralLink(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_skill_circle",
+      referrerProfileId: "refprof_student",
+      now: NOW,
+    });
+    if (!issued.rawToken) throw new Error("Expected raw token");
+    const stored = row(fixture.sqlite, "select token_hash from referral_links where id = ?", issued.link.id);
+
+    fixture.sqlite.prepare("delete from referral_link_secrets where referral_link_id = ?").run(issued.link.id);
+    await expect(getRecoverableReferralLink(fixture.env, {
+      link: { id: issued.link.id, organisation_id: "org_samyak", token_hash: String(stored?.token_hash) },
+      publicOrigin: "https://go.samyaksion.com",
+    })).resolves.toEqual({ recoverable: false, reason: "missing_secret" });
+
+    const wrongCiphertext = await encryptText(SESSION_PEPPER, `referral-link-token:${issued.link.id}`, "WRONG-TOKEN-VALUE-1234567890");
+    fixture.sqlite.prepare(
+      "insert into referral_link_secrets (referral_link_id, token_ciphertext, encryption_version, created_at, updated_at) values (?, ?, 'v1', ?, ?)",
+    ).run(issued.link.id, wrongCiphertext, NOW, NOW);
+    await expect(getRecoverableReferralLink(fixture.env, {
+      link: { id: issued.link.id, organisation_id: "org_samyak", token_hash: String(stored?.token_hash) },
+      publicOrigin: "https://go.samyaksion.com",
+    })).resolves.toEqual({ recoverable: false, reason: "invalid_secret" });
+
+    const wrongContextCiphertext = await encryptText(SESSION_PEPPER, "referral-link-token:rlink_other", issued.rawToken);
+    fixture.sqlite.prepare("update referral_link_secrets set token_ciphertext = ? where referral_link_id = ?").run(wrongContextCiphertext, issued.link.id);
+    await expect(getRecoverableReferralLink(fixture.env, {
+      link: { id: issued.link.id, organisation_id: "org_samyak", token_hash: String(stored?.token_hash) },
+      publicOrigin: "https://go.samyaksion.com",
+    })).resolves.toEqual({ recoverable: false, reason: "invalid_secret" });
     fixture.close();
   });
 
@@ -1009,6 +1058,125 @@ describe("native referral services", () => {
     fixture.close();
   });
 
+  it("returns recoverable education partner active links to owners after reload", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedStaffRole(fixture.sqlite, "acct_student", "owner");
+    seedEducationPartner(fixture.sqlite, { commissionBps: 1000 });
+    const issued = await issueReferralLink(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_education_partners",
+      referrerProfileId: "refprof_partner",
+      loginAccountId: "acct_student",
+      now: PARTNER_NOW,
+    });
+    if (!issued.rawToken) throw new Error("Expected partner token");
+    const sessionCookie = await seedSession(fixture.sqlite, "acct_student", "person_student");
+    const app = staffEducationPartnerRouteApp();
+
+    const response = await app.request(
+      "https://portal.samyaksion.com/api/staff/education-partners/epartner_one",
+      { headers: { Cookie: sessionCookie } },
+      { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as { partner: { activeLink: { publicUrl: string; recoverable: boolean; lastFour: string } } };
+
+    expect(body.partner.activeLink).toMatchObject({
+      publicUrl: `https://go.samyaksion.com/r/${issued.rawToken}`,
+      recoverable: true,
+      lastFour: issued.rawToken.slice(-4),
+    });
+    expect(JSON.stringify(body)).not.toContain("token_hash");
+    expect(JSON.stringify(body)).not.toContain("token_ciphertext");
+    fixture.close();
+  });
+
+  it("keeps education partner full links owner-only and legacy links replacement-only", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedReferrer(fixture.sqlite, { suffix: "staff" });
+    seedStaffRole(fixture.sqlite, "acct_staff", "counsellor");
+    seedEducationPartner(fixture.sqlite, { commissionBps: 1000 });
+    const legacyToken = "LEGACY-PARTNER-TOKEN-1234567890ABCDE";
+    const legacyHash = await hashReferralToken(legacyToken, TEST_REFERRAL_TOKEN_PEPPER);
+    fixture.sqlite.prepare(
+      `insert into referral_links
+        (id, organisation_id, referral_programme_id, referrer_profile_id, token_hash, token_last_four,
+         link_version, status, activated_at, created_at, updated_at)
+       values ('rlink_legacy_partner', 'org_samyak', 'rprog_samyak_education_partners',
+        'refprof_partner', ?, 'OKEN', 1, 'active', ?, ?, ?)`,
+    ).run(legacyHash, PARTNER_NOW, PARTNER_NOW, PARTNER_NOW);
+    const staffCookie = await seedSession(fixture.sqlite, "acct_staff", "person_staff", "sess_staff", "staff-session-token");
+    const app = staffEducationPartnerRouteApp();
+
+    const staffResponse = await app.request(
+      "https://portal.samyaksion.com/api/staff/education-partners/epartner_one",
+      { headers: { Cookie: staffCookie } },
+      { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER },
+    );
+    expect(staffResponse.status).toBe(200);
+    const staffBody = await staffResponse.json() as { partner: { activeLink: { publicUrl: string | null; recoverable: boolean; lastFour: string } } };
+    expect(staffBody.partner.activeLink).toMatchObject({ publicUrl: null, recoverable: false, lastFour: "OKEN" });
+
+    seedStaffRole(fixture.sqlite, "acct_student", "owner");
+    const ownerCookie = await seedSession(fixture.sqlite, "acct_student", "person_student", "sess_owner", "owner-session-token");
+    const ownerResponse = await app.request(
+      "https://portal.samyaksion.com/api/staff/education-partners/epartner_one",
+      { headers: { Cookie: ownerCookie } },
+      { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER },
+    );
+    expect(ownerResponse.status).toBe(200);
+    const ownerBody = await ownerResponse.json() as { partner: { activeLink: { publicUrl: string | null; recoverable: boolean; lastFour: string } } };
+    expect(ownerBody.partner.activeLink).toMatchObject({ publicUrl: null, recoverable: false, lastFour: "OKEN" });
+    expect(JSON.stringify(ownerBody)).not.toContain("legacy-partner-token");
+    fixture.close();
+  });
+
+  it("replaces education partner links by revoking the old link and preserving historical referrals", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedStaffRole(fixture.sqlite, "acct_student", "owner");
+    seedEducationPartner(fixture.sqlite, { commissionBps: 1000 });
+    seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
+    addPartnerProgrammeCourse(fixture.sqlite, "course_fsd");
+    const issued = await issueReferralLink(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_education_partners",
+      referrerProfileId: "refprof_partner",
+      loginAccountId: "acct_student",
+      now: PARTNER_NOW,
+    });
+    if (!issued.rawToken) throw new Error("Expected partner token");
+    const historical = await submitReferralAndCreateEnquiry(fixture.env, validSubmission(issued.rawToken, {
+      rawReferralToken: issued.rawToken,
+      prospectMobile: "9876543200",
+      now: PARTNER_NOW,
+    }));
+    if (!historical.ok) throw new Error("Expected historical referral");
+    const sessionCookie = await seedSession(fixture.sqlite, "acct_student", "person_student");
+    const app = staffEducationPartnerRouteApp();
+
+    const replaced = await app.request(
+      "https://portal.samyaksion.com/api/staff/education-partners/epartner_one/referral-link/replace",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie } },
+      { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER },
+    );
+    expect(replaced.status).toBe(201);
+    const replacedBody = await replaced.json() as { link: string; previousLinkId: string };
+    const newToken = replacedBody.link.split("/").at(-1)!;
+
+    expect(replacedBody.previousLinkId).toBe(issued.link.id);
+    expect(await resolveReferralLink(fixture.env, { organisationId: "org_samyak", rawToken: issued.rawToken, now: PARTNER_NOW })).toEqual({ valid: false, reason: "invalid_link" });
+    expect(await resolveReferralLink(fixture.env, { organisationId: "org_samyak", rawToken: newToken, now: PARTNER_NOW })).toMatchObject({ valid: true });
+    expect(row(fixture.sqlite, "select referral_link_id from referrals where id = ?", historical.referralId)).toMatchObject({ referral_link_id: issued.link.id });
+    expect(count(fixture.sqlite, "referral_links where status = 'active' and referrer_profile_id = 'refprof_partner'")).toBe(1);
+    expect(count(fixture.sqlite, "referral_links where status = 'revoked' and id = '" + issued.link.id + "'")).toBe(1);
+    expect(count(fixture.sqlite, "referral_link_secrets")).toBe(2);
+    expect(JSON.stringify(all(fixture.sqlite, "select action, metadata_json from audit_logs"))).not.toContain(newToken);
+    fixture.close();
+  });
+
   it("creates a referral, enquiry, initial event, immutable attribution, and safe audit metadata atomically", async () => {
     const fixture = testFixture();
     const rawToken = await issuedReadyLink(fixture);
@@ -1335,15 +1503,20 @@ function staffReferralRouteApp() {
   return app;
 }
 
-async function seedSession(db: DatabaseSync, loginAccountId: string, activePersonId: string) {
-  const token = "test-session-token";
+function staffEducationPartnerRouteApp() {
+  const app = new Hono<{ Bindings: WorkerBindings; Variables: WorkerVariables }>();
+  registerStaffEducationPartnerRoutes(app);
+  return app;
+}
+
+async function seedSession(db: DatabaseSync, loginAccountId: string, activePersonId: string, sessionId = "sess_student", token = "test-session-token") {
   const tokenHash = await hmacHex(SESSION_PEPPER, "session", token);
   const lastSeenAt = new Date().toISOString();
   db.prepare(
     `insert into user_sessions
       (id, login_account_id, active_person_id, token_hash, created_at, expires_at, last_seen_at, revoked_at, ip_hash, user_agent_hash)
-     values ('sess_student', ?, ?, ?, ?, '2999-01-01T00:00:00.000Z', ?, null, 'ip_hash', 'ua_hash')`,
-  ).run(loginAccountId, activePersonId, tokenHash, NOW, lastSeenAt);
+     values (?, ?, ?, ?, ?, '2999-01-01T00:00:00.000Z', ?, null, 'ip_hash', 'ua_hash')`,
+  ).run(sessionId, loginAccountId, activePersonId, tokenHash, NOW, lastSeenAt);
   return `__Host-samyak_session=${token}`;
 }
 
