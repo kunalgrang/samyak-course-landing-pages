@@ -12,3 +12,17 @@ CREATE TABLE IF NOT EXISTS `login_account_education_partners` (
 );
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `login_account_education_partners_partner_idx` ON `login_account_education_partners` (`education_partner_id`);
+--> statement-breakpoint
+CREATE TRIGGER IF NOT EXISTS `user_sessions_partner_person_insert_check`
+BEFORE INSERT ON `user_sessions`
+WHEN NEW.`active_person_id` IS NOT NULL AND NEW.`active_education_partner_id` IS NOT NULL
+BEGIN
+  SELECT RAISE(ABORT, 'session cannot have both person and education partner subjects');
+END;
+--> statement-breakpoint
+CREATE TRIGGER IF NOT EXISTS `user_sessions_partner_person_update_check`
+BEFORE UPDATE OF `active_person_id`, `active_education_partner_id` ON `user_sessions`
+WHEN NEW.`active_person_id` IS NOT NULL AND NEW.`active_education_partner_id` IS NOT NULL
+BEGIN
+  SELECT RAISE(ABORT, 'session cannot have both person and education partner subjects');
+END;

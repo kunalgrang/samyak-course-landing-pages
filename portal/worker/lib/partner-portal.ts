@@ -87,6 +87,18 @@ type ReferralRow = {
   enrolment_id: string | null;
 };
 
+type SummaryRow = {
+  total_referrals: number;
+  admissions: number | null;
+  awaiting_admission: number | null;
+  in_progress: number | null;
+  qualified: number | null;
+  approved: number | null;
+  paid: number | null;
+  total_approved_paise: number | null;
+  total_paid_paise: number | null;
+};
+
 export async function buildPartnerPortalView(c: AppContext, educationPartnerId: string, pagination: { limit?: number; offset?: number } = {}): Promise<PartnerPortalView | null> {
   const partner = await findPartnerForPortal(c, educationPartnerId);
   if (!partner) return null;
@@ -112,17 +124,65 @@ export async function buildPartnerPortalView(c: AppContext, educationPartnerId: 
     .bind(ORG_ID, educationPartnerId, limit + 1, offset)
     .all<ReferralRow>();
   const pageRows = (referralsResult.results || []).slice(0, limit);
-  const total = await c.env.DB.prepare(
-    "select count(*) as count from referrals where organisation_id = ? and education_partner_id = ?",
+  const summary = await c.env.DB.prepare(
+    `select
+       count(referrals.id) as total_referrals,
+       sum(case when enrolments.id is not null then 1 else 0 end) as admissions,
+       sum(case when enrolments.id is null and referrals.status not in ('rejected', 'cancelled', 'closed', 'expired') then 1 else 0 end) as awaiting_admission,
+       sum(case
+         when enrolments.id is not null
+           and referral_reward_snapshots.id is null
+           and referrals.status not in ('rejected', 'cancelled', 'closed', 'expired')
+           and enrolments.status = 'confirmed'
+           and enrolments.admission_date <= referrals.valid_until
+           and fee_agreements.id is not null
+           and fee_agreements.status = 'active'
+           and coalesce((
+             select sum(receipts.amount_paise)
+             from receipts
+             where receipts.organisation_id = referrals.organisation_id
+               and receipts.enrolment_id = enrolments.id
+               and receipts.fee_agreement_id = fee_agreements.id
+               and receipts.branch_id = referrals.branch_id
+               and receipts.status = 'recorded'
+           ), 0) < ((fee_agreements.final_agreed_fee_paise * referral_programmes.minimum_fee_percentage + 99) / 100)
+         then 1 else 0 end) as in_progress,
+       sum(case
+         when enrolments.id is not null
+           and referral_reward_snapshots.id is null
+           and enrolments.status = 'confirmed'
+           and enrolments.admission_date <= referrals.valid_until
+           and fee_agreements.id is not null
+           and fee_agreements.status = 'active'
+           and coalesce((
+             select sum(receipts.amount_paise)
+             from receipts
+             where receipts.organisation_id = referrals.organisation_id
+               and receipts.enrolment_id = enrolments.id
+               and receipts.fee_agreement_id = fee_agreements.id
+               and receipts.branch_id = referrals.branch_id
+               and receipts.status = 'recorded'
+           ), 0) >= ((fee_agreements.final_agreed_fee_paise * referral_programmes.minimum_fee_percentage + 99) / 100)
+         then 1 else 0 end) as qualified,
+       sum(case when referral_reward_snapshots.id is not null and referral_reward_payouts.id is null then 1 else 0 end) as approved,
+       sum(case when referral_reward_payouts.id is not null then 1 else 0 end) as paid,
+       coalesce(sum(referral_reward_snapshots.cash_reward_paise), 0) as total_approved_paise,
+       coalesce(sum(referral_reward_payouts.amount_paise), 0) as total_paid_paise
+     from referrals
+     join referral_programmes on referral_programmes.id = referrals.referral_programme_id
+       and referral_programmes.organisation_id = referrals.organisation_id
+     left join enrolments on enrolments.referral_id = referrals.id
+       and enrolments.referrer_profile_id = referrals.referrer_profile_id
+     left join fee_agreements on fee_agreements.enrolment_id = enrolments.id
+       and fee_agreements.status = 'active'
+     left join referral_reward_snapshots on referral_reward_snapshots.referral_id = referrals.id
+       and referral_reward_snapshots.enrolment_id = enrolments.id
+     left join referral_reward_payouts on referral_reward_payouts.reward_snapshot_id = referral_reward_snapshots.id
+     where referrals.organisation_id = ?
+       and referrals.education_partner_id = ?`,
   )
     .bind(ORG_ID, educationPartnerId)
-    .first<{ count: number }>();
-  const allReferralIds = await c.env.DB.prepare(
-    "select id from referrals where organisation_id = ? and education_partner_id = ?",
-  )
-    .bind(ORG_ID, educationPartnerId)
-    .all<{ id: string }>();
-  const allQualifications = await getReferralQualifications(c, (allReferralIds.results || []).map((row) => row.id));
+    .first<SummaryRow>();
   const pageQualifications = await getReferralQualifications(c, pageRows.map((row) => row.referral_id));
   const link = await recoverPartnerReferralLink(c, partner);
   return {
@@ -149,11 +209,11 @@ export async function buildPartnerPortalView(c: AppContext, educationPartnerId: 
           : "Your active referral link could not be recovered. Please contact Samyak."
         : "No active referral link is available. Please contact Samyak.",
     },
-    summary: summarize(allQualifications),
+    summary: summarize(summary),
     pagination: {
       limit,
       offset,
-      total: Number(total?.count || 0),
+      total: Number(summary?.total_referrals || 0),
       hasMore: (referralsResult.results || []).length > limit,
     },
     referrals: pageRows.map((row) => referralPayload(row, pageQualifications.get(row.referral_id))),
@@ -191,29 +251,18 @@ async function recoverPartnerReferralLink(c: AppContext, partner: PartnerPortalR
   });
 }
 
-function summarize(qualifications: Map<string, ReferralQualification>) {
-  const summary = {
-    totalReferrals: qualifications.size,
-    admissions: 0,
-    awaitingAdmission: 0,
-    awaitingPayment: 0,
-    qualified: 0,
-    approved: 0,
-    paid: 0,
-    totalApprovedCommissionPaise: 0,
-    totalPaidCommissionPaise: 0,
+function summarize(row: SummaryRow | null | undefined) {
+  return {
+    totalReferrals: Number(row?.total_referrals || 0),
+    admissions: Number(row?.admissions || 0),
+    awaitingAdmission: Number(row?.awaiting_admission || 0),
+    awaitingPayment: Number(row?.in_progress || 0),
+    qualified: Number(row?.qualified || 0),
+    approved: Number(row?.approved || 0),
+    paid: Number(row?.paid || 0),
+    totalApprovedCommissionPaise: Number(row?.total_approved_paise || 0),
+    totalPaidCommissionPaise: Number(row?.total_paid_paise || 0),
   };
-  for (const qualification of qualifications.values()) {
-    if (qualification.admitted) summary.admissions += 1;
-    if (qualification.status === "awaiting_admission") summary.awaitingAdmission += 1;
-    if (qualification.status === "awaiting_payment") summary.awaitingPayment += 1;
-    if (qualification.status === "qualified") summary.qualified += 1;
-    if (qualification.status === "approved") summary.approved += 1;
-    if (qualification.status === "paid") summary.paid += 1;
-    if (qualification.rewardSnapshot) summary.totalApprovedCommissionPaise += qualification.rewardSnapshot.cashRewardPaise;
-    if (qualification.payout) summary.totalPaidCommissionPaise += qualification.payout.amountPaise;
-  }
-  return summary;
 }
 
 function referralPayload(row: ReferralRow, qualification?: ReferralQualification): PartnerPortalReferral {
