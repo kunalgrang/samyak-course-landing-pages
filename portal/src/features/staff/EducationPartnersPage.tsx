@@ -16,6 +16,7 @@ import type { RoutePath } from "../../routes/types";
 import { formatIndianCurrency } from "../referrals/referralUtils";
 
 const PAGE_SIZE = 20;
+const PUBLIC_REFERRAL_ORIGIN = "https://go.samyaksion.com";
 const partnerTypes = ["college", "coaching_class", "tuition_centre", "training_institute", "career_counsellor", "placement_consultant", "freelancer", "other"];
 
 export function EducationPartnersPage({ onNavigate, isOwner }: { onNavigate: (path: RoutePath) => void; isOwner: boolean }) {
@@ -101,16 +102,39 @@ export function EducationPartnerDetailPage({ partnerId, onNavigate, isOwner }: {
   const { detail, error, refresh } = usePartnerDetail(partnerId);
   const [editing, setEditing] = useState(false);
   const [link, setLink] = useState("");
+  const [copied, setCopied] = useState(false);
   const [actionError, setActionError] = useState("");
+
+  useEffect(() => {
+    setLink("");
+    setCopied(false);
+    setActionError("");
+  }, [partnerId]);
 
   async function issueLink() {
     setActionError("");
+    setCopied(false);
     try {
       const result = await issueEducationPartnerReferralLink(partnerId);
-      if (result.link) setLink(result.link);
+      if (result.link) setLink(publicReferralUrl(result.link));
+      if (!result.link && result.lastFour) setActionError("An active referral link already exists. Full link is shown only when generated.");
       await refresh();
     } catch (caught) {
       setActionError(errorMessage(caught));
+    }
+  }
+
+  async function copyLink() {
+    const shareableLink = link;
+    if (!shareableLink) return;
+    setActionError("");
+    try {
+      await copyTextToClipboard(shareableLink);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch (caught) {
+      setCopied(false);
+      setActionError("Couldn't copy - select the link manually.");
     }
   }
 
@@ -156,21 +180,35 @@ export function EducationPartnerDetailPage({ partnerId, onNavigate, isOwner }: {
             <DetailField label="Branch" value={partner.branchName || partner.homeBranchId} />
             <DetailField label="Status" value={label(partner.status)} />
             <DetailField label="Commission" value={bpsToPercent(partner.currentCommissionBasisPoints)} />
-            <p className="staff-empty">Commission changes apply to new referrals only.</p>
+            <div className="partner-commission-helper" aria-label="Commission basis">
+              <p>Calculated on course fee before GST.</p>
+              <p>Current GST: {bpsToPercent(detail.commercialTerms.currentGstBasisPoints)}</p>
+              <p>Commission changes apply to new referrals only.</p>
+            </div>
             {isOwner ? <button type="button" className="primary-button referral-inline-action" onClick={() => setEditing(true)}>Edit Partner</button> : null}
           </article>
 
           <article className="staff-card">
             <h2>Referral Link</h2>
             <DetailField label="Active link" value={partner.activeLink ? `Active · last four ${partner.activeLink.lastFour}` : "No active link"} />
+            {partner.activeLink && !link ? <p className="staff-empty">Full link is shown only when generated.</p> : null}
             {link ? (
-              <label>
-                New referral link
-                <input readOnly value={link} onFocus={(event) => event.currentTarget.select()} />
-              </label>
+              <div className="partner-link-panel">
+                <span className="field-label">New referral link</span>
+                <p className="partner-link-value" title={link} aria-label="Generated public referral URL">{link}</p>
+                <div className="referral-contact-actions">
+                  <button type="button" className="primary-button" onClick={() => void copyLink()} aria-label="Copy generated referral link">
+                    {copied ? "Copied" : "Copy Link"}
+                  </button>
+                  <a className="secondary-button partner-link-open" href={link} target="_blank" rel="noopener noreferrer" aria-label="Open generated referral link in a new tab">
+                    Open Link
+                  </a>
+                </div>
+                <p className="copy-feedback" aria-live="polite">{copied ? "Referral link copied." : ""}</p>
+              </div>
             ) : null}
             {actionError ? <p className="form-error">{actionError}</p> : null}
-            {isOwner ? <button type="button" className="primary-button referral-inline-action" onClick={issueLink}>Referral Link</button> : null}
+            {isOwner && !link && !partner.activeLink ? <button type="button" className="primary-button referral-inline-action" onClick={issueLink}>Generate Referral Link</button> : null}
           </article>
         </section>
       )}
@@ -366,6 +404,39 @@ function label(value: string) {
 
 function bpsToPercent(bps: number) {
   return `${(bps / 100).toLocaleString("en-IN", { maximumFractionDigits: 2 })}%`;
+}
+
+function publicReferralUrl(link: string) {
+  return new URL(link, PUBLIC_REFERRAL_ORIGIN).toString();
+}
+
+export async function copyTextToClipboard(text: string, clipboard?: Pick<Clipboard, "writeText">) {
+  const targetClipboard = clipboard || (typeof navigator !== "undefined" ? navigator.clipboard : undefined);
+  let clipboardError: unknown;
+  if (targetClipboard?.writeText) {
+    try {
+      await targetClipboard.writeText(text);
+      return;
+    } catch (error) {
+      clipboardError = error;
+    }
+  }
+  if (typeof document === "undefined") throw clipboardError instanceof Error ? clipboardError : new Error("Clipboard is not available.");
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.setAttribute("aria-hidden", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    if (typeof document.execCommand !== "function" || !document.execCommand("copy")) throw new Error("Copy command was not available.");
+  } finally {
+    textarea.remove();
+    previousFocus?.focus();
+  }
 }
 
 function paise(value: number) {

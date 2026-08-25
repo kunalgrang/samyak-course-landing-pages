@@ -1111,6 +1111,50 @@
   margin-top: 10px;
 }
 
+.partner-commission-helper {
+  display: grid;
+  gap: 5px;
+  margin: -2px 0 2px;
+  color: var(--color-muted);
+  font-size: 0.86rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.partner-commission-helper p,
+.partner-link-panel p {
+  margin: 0;
+}
+
+.partner-link-panel {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+}
+
+.partner-link-value {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  color: var(--color-navy);
+  background: #f8fafc;
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.partner-link-open {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
 .referral-detail-hero {
   display: grid;
   gap: 14px;

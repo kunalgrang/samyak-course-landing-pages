@@ -9,6 +9,7 @@ import { normalizeIndianMobile } from "../lib/mobile";
 import { requireReferralTokenPepper } from "../lib/referral-token";
 import { issueReferralLink } from "../lib/referral-service";
 import { requireStaffRoles, type StaffContext } from "../lib/staff-auth";
+import { getCourseFeeGstBasisPoints } from "../lib/course-fee";
 
 type PortalHono = Hono<{ Bindings: WorkerBindings; Variables: WorkerVariables }>;
 type PortalContext = Context<{ Bindings: WorkerBindings; Variables: WorkerVariables }>;
@@ -66,7 +67,14 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     if (!staff) return forbidden(c);
     const partner = await findPartner(c, c.req.param("partnerId"));
     if (!partner) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
-    return jsonPlain(c, { success: true, partner: partnerPayload(partner), metrics: await partnerMetrics(c, partner.id) });
+    return jsonPlain(c, {
+      success: true,
+      partner: partnerPayload(partner),
+      commercialTerms: {
+        currentGstBasisPoints: getCourseFeeGstBasisPoints(),
+      },
+      metrics: await partnerMetrics(c, partner.id),
+    });
   });
 
   app.post("/api/staff/education-partners", async (c) => {
