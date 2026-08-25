@@ -675,7 +675,12 @@ const educationPartnerSchema = z.object({
   currentCommissionBasisPoints: z.number(),
   internalNotes: z.string(),
   referrerProfileId: z.string(),
-  activeLink: z.object({ lastFour: z.string(), activatedAt: z.string().nullable() }).nullable(),
+  activeLink: z.object({
+    lastFour: z.string(),
+    activatedAt: z.string().nullable(),
+    publicUrl: z.string().nullable().optional(),
+    recoverable: z.boolean().optional(),
+  }).nullable(),
   referralCount: z.number(),
   admissionCount: z.number(),
   createdAt: z.string(),
@@ -713,10 +718,12 @@ const educationPartnerMutationSchema = z.object({
 const educationPartnerLinkSchema = z.object({
   success: z.literal(true),
   created: z.boolean(),
+  replaced: z.boolean().optional(),
   link: z.string().nullable(),
   shownOnce: z.boolean(),
   lastFour: z.string().nullable(),
   activatedAt: z.string().nullable(),
+  previousLinkId: z.string().nullable().optional(),
 });
 
 const certificateListItemSchema = z.object({
@@ -1090,6 +1097,10 @@ export async function updateEducationPartner(partnerId: string, input: Education
 
 export async function issueEducationPartnerReferralLink(partnerId: string) {
   return postJson(`/api/staff/education-partners/${encodeURIComponent(partnerId)}/referral-link`, {}, educationPartnerLinkSchema);
+}
+
+export async function replaceEducationPartnerReferralLink(partnerId: string) {
+  return postJson(`/api/staff/education-partners/${encodeURIComponent(partnerId)}/referral-link/replace`, {}, educationPartnerLinkSchema);
 }
 
 export type CertificateQuery = {

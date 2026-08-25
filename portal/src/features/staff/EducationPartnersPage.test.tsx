@@ -7,6 +7,7 @@ import type { EducationPartnerDetail } from "../../lib/api";
 const apiMocks = vi.hoisted(() => ({
   getEducationPartner: vi.fn(),
   issueEducationPartnerReferralLink: vi.fn(),
+  replaceEducationPartnerReferralLink: vi.fn(),
 }));
 
 vi.mock("../../lib/api", async (importOriginal) => {
@@ -15,6 +16,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     ...actual,
     getEducationPartner: apiMocks.getEducationPartner,
     issueEducationPartnerReferralLink: apiMocks.issueEducationPartnerReferralLink,
+    replaceEducationPartnerReferralLink: apiMocks.replaceEducationPartnerReferralLink,
   };
 });
 
@@ -34,6 +36,7 @@ describe("EducationPartnerDetailPage", () => {
     vi.stubGlobal("MouseEvent", windowRef.MouseEvent);
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     windowRef.setTimeout = vi.fn() as unknown as typeof windowRef.setTimeout;
+    Object.defineProperty(windowRef, "confirm", { configurable: true, value: vi.fn(() => true) });
     Object.defineProperty(windowRef.navigator, "clipboard", {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -45,10 +48,20 @@ describe("EducationPartnerDetailPage", () => {
     apiMocks.issueEducationPartnerReferralLink.mockResolvedValue({
       success: true,
       created: true,
-      link: "/r/PARTNER-LINK-1234567890",
+      link: "https://go.samyaksion.com/r/PARTNER-LINK-1234567890",
       shownOnce: true,
       lastFour: "7890",
       activatedAt: "2026-08-25T00:00:00.000Z",
+    });
+    apiMocks.replaceEducationPartnerReferralLink.mockResolvedValue({
+      success: true,
+      created: true,
+      replaced: true,
+      link: "https://go.samyaksion.com/r/REPLACED-LINK-1234567890",
+      shownOnce: true,
+      lastFour: "7890",
+      activatedAt: "2026-08-25T00:00:00.000Z",
+      previousLinkId: "rlink_existing",
     });
   });
 
@@ -89,14 +102,34 @@ describe("EducationPartnerDetailPage", () => {
     expect(container.querySelector("a[href^='https://go.samyaksion.com/r/']")).toBeNull();
   });
 
-  it("does not invent a full URL for an existing active link after reload", async () => {
+  it("shows the recoverable current active referral link after reload", async () => {
+    await renderDetail();
+
+    const expectedUrl = "https://go.samyaksion.com/r/CURRENT-LINK-1234567890";
+    expect(container.textContent).toContain("Active · last four 7890");
+    expect(container.textContent).toContain(expectedUrl);
+    expect(container.textContent).toContain("Copy Link");
+    expect(container.textContent).toContain("Open Link");
+    expect(container.textContent).toContain("Replace Referral Link");
+    expect(buttonText()).not.toContain("Generate Referral Link");
+    const openLink = container.querySelector<HTMLAnchorElement>("a.partner-link-open");
+    expect(openLink?.href).toBe(expectedUrl);
+
+    clickButton("Copy Link");
+    await act(async () => {});
+
+    expect(windowRef.navigator.clipboard.writeText).toHaveBeenCalledWith(expectedUrl);
+  });
+
+  it("shows replacement-only messaging for unrecoverable legacy active links", async () => {
+    apiMocks.getEducationPartner.mockResolvedValue(partnerDetail({ activeLink: legacyActiveLink() }));
     await renderDetail();
 
     expect(container.textContent).toContain("Active · last four 7890");
-    expect(container.textContent).toContain("Full link is shown only when generated.");
+    expect(container.textContent).toContain("This link was created before secure link recovery was enabled.");
+    expect(buttonText()).toContain("Replace Referral Link");
     expect(buttonText()).not.toContain("Generate Referral Link");
     expect(container.textContent).not.toContain("https://go.samyaksion.com/r/");
-    expect(container.textContent).not.toContain("/r/");
     expect(container.querySelector("a.partner-link-open")).toBeNull();
   });
 
@@ -140,7 +173,7 @@ describe("EducationPartnerDetailPage", () => {
 
     const linkValue = container.querySelector<HTMLElement>(".partner-link-value");
     expect(linkValue?.className).toContain("partner-link-value");
-    expect(linkValue?.getAttribute("aria-label")).toBe("Generated public referral URL");
+    expect(linkValue?.getAttribute("aria-label")).toBe("Current public referral URL");
     expect(linkValue?.getAttribute("title")).toBe("https://go.samyaksion.com/r/PARTNER-LINK-1234567890");
   });
 
@@ -177,7 +210,7 @@ describe("EducationPartnerDetailPage", () => {
   it("clears generated link and copied state when switching partners", async () => {
     apiMocks.getEducationPartner
       .mockResolvedValueOnce(partnerDetail({ activeLink: null }))
-      .mockResolvedValueOnce(partnerDetail({ activeLink: { lastFour: "7890", activatedAt: "2026-08-25T00:00:00.000Z" } }))
+      .mockResolvedValueOnce(partnerDetail({ activeLink: recoverableActiveLink() }))
       .mockResolvedValueOnce(partnerDetail({ id: "epartner_2", businessName: "Second Partner", activeLink: null }));
     await renderDetail("epartner_1");
     clickButton("Generate Referral Link");
@@ -192,6 +225,22 @@ describe("EducationPartnerDetailPage", () => {
     expect(container.textContent).not.toContain("https://go.samyaksion.com/r/PARTNER-LINK-1234567890");
     expect(container.textContent).not.toContain("Copied");
     expect(buttonText()).toContain("Generate Referral Link");
+  });
+
+  it("confirms and replaces existing active links with a new shareable URL", async () => {
+    apiMocks.getEducationPartner
+      .mockResolvedValueOnce(partnerDetail({ activeLink: legacyActiveLink() }))
+      .mockResolvedValueOnce(partnerDetail({ activeLink: recoverableActiveLink({ publicUrl: "https://go.samyaksion.com/r/REPLACED-LINK-1234567890" }) }));
+    await renderDetail();
+
+    clickButton("Replace Referral Link");
+    await act(async () => {});
+
+    expect((windowRef as unknown as { confirm: ReturnType<typeof vi.fn> }).confirm).toHaveBeenCalledWith("Replacing this referral link will deactivate the current link. Anyone using the old link will no longer be able to submit a referral. Continue?");
+    expect(apiMocks.replaceEducationPartnerReferralLink).toHaveBeenCalledWith("epartner_1");
+    expect(container.textContent).toContain("https://go.samyaksion.com/r/REPLACED-LINK-1234567890");
+    expect(container.textContent).toContain("Copy Link");
+    expect(container.textContent).toContain("Open Link");
   });
 
   async function renderDetail(id = "epartner_1") {
@@ -232,7 +281,7 @@ function partnerDetail(
       currentCommissionBasisPoints: 750,
       internalNotes: "",
       referrerProfileId: "refprof_partner",
-      activeLink: { lastFour: "7890", activatedAt: "2026-08-25T00:00:00.000Z" },
+      activeLink: recoverableActiveLink(),
       referralCount: 0,
       admissionCount: 0,
       createdAt: "2026-08-25T00:00:00.000Z",
@@ -251,5 +300,24 @@ function partnerDetail(
       totalApprovedCommissionPaise: 0,
       totalPaidCommissionPaise: 0,
     },
+  };
+}
+
+function recoverableActiveLink(overrides: Partial<NonNullable<EducationPartnerDetail["partner"]["activeLink"]>> = {}) {
+  return {
+    lastFour: "7890",
+    activatedAt: "2026-08-25T00:00:00.000Z",
+    publicUrl: "https://go.samyaksion.com/r/CURRENT-LINK-1234567890",
+    recoverable: true,
+    ...overrides,
+  };
+}
+
+function legacyActiveLink() {
+  return {
+    lastFour: "7890",
+    activatedAt: "2026-08-25T00:00:00.000Z",
+    publicUrl: null,
+    recoverable: false,
   };
 }
