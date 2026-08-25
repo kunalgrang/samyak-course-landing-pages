@@ -119,6 +119,26 @@ export type CreateReferralRowsInput = ActorIdentity & {
   gstBasisPointsApplicable?: number | null;
 };
 
+const eligibleReferralCourseFromWhere = `
+       from referral_programmes
+       join courses on courses.organisation_id = referral_programmes.organisation_id
+       left join referral_programme_courses on referral_programme_courses.referral_programme_id = referral_programmes.id
+         and referral_programme_courses.course_id = courses.id
+       join course_categories on course_categories.id = courses.category_id
+         and course_categories.organisation_id = courses.organisation_id
+       where referral_programmes.id = ?
+         and referral_programmes.organisation_id = ?
+         and referral_programmes.status = 'active'
+         and (referral_programmes.starts_at is null or referral_programmes.starts_at <= ?)
+         and (referral_programmes.ends_at is null or referral_programmes.ends_at >= ?)
+         and courses.status = 'active'
+         and courses.admission_configuration_complete = 1
+         and (
+           referral_programme_courses.is_active = 1
+           or referral_programmes.code = 'samyak_education_partners'
+         )
+         and course_categories.is_active = 1`;
+
 export class ReferralRepository {
   constructor(private readonly db: ReferralDb) {}
 
@@ -433,23 +453,7 @@ export class ReferralRepository {
          course_categories.code as category_code,
          course_categories.name as category_name,
          course_categories.sort_order as category_sort_order
-       from referral_programmes
-       join courses on courses.organisation_id = referral_programmes.organisation_id
-       left join referral_programme_courses on referral_programme_courses.referral_programme_id = referral_programmes.id
-         and referral_programme_courses.course_id = courses.id
-       join course_categories on course_categories.id = courses.category_id
-         and course_categories.organisation_id = courses.organisation_id
-       where referral_programmes.id = ?
-         and referral_programmes.organisation_id = ?
-         and referral_programmes.status = 'active'
-         and (referral_programmes.starts_at is null or referral_programmes.starts_at <= ?)
-         and (referral_programmes.ends_at is null or referral_programmes.ends_at >= ?)
-         and courses.status = 'active'
-         and (
-           referral_programme_courses.is_active = 1
-           or (referral_programmes.code = 'samyak_education_partners' and courses.admission_configuration_complete = 1)
-         )
-         and course_categories.is_active = 1
+       ${eligibleReferralCourseFromWhere}
        order by course_categories.sort_order, courses.code`,
     )
       .bind(referralProgrammeId, organisationId, nowIso, nowIso)
@@ -467,21 +471,8 @@ export class ReferralRepository {
   findEligibleCourse(organisationId: string, referralProgrammeId: string, courseId: string, nowIso: string) {
     return this.db.prepare(
       `select courses.id
-       from referral_programmes
-       join courses on courses.organisation_id = referral_programmes.organisation_id
-       left join referral_programme_courses on referral_programme_courses.referral_programme_id = referral_programmes.id
-         and referral_programme_courses.course_id = courses.id
-       where referral_programmes.id = ?
-         and referral_programmes.organisation_id = ?
-         and referral_programmes.status = 'active'
-         and (referral_programmes.starts_at is null or referral_programmes.starts_at <= ?)
-         and (referral_programmes.ends_at is null or referral_programmes.ends_at >= ?)
+       ${eligibleReferralCourseFromWhere}
          and courses.id = ?
-         and courses.status = 'active'
-         and (
-           referral_programme_courses.is_active = 1
-           or (referral_programmes.code = 'samyak_education_partners' and courses.admission_configuration_complete = 1)
-         )
        limit 1`,
     )
       .bind(referralProgrammeId, organisationId, nowIso, nowIso, courseId)

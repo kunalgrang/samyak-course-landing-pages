@@ -360,9 +360,15 @@ describe("native referral services", () => {
     });
     if (!issued.rawToken) throw new Error("Expected partner token");
 
+    fixture.sqlite.prepare(
+      "insert into course_categories (id, organisation_id, code, name, sort_order, is_active, created_at, updated_at) values ('ccat_inactive_partner', 'org_samyak', 'INACTIVE-PARTNER', 'Inactive Partner Category', 999, 0, ?, ?)",
+    ).run(NOW, NOW);
     seedCourse(fixture.sqlite, "course_partner_new", "PARTNER-NEW", "New Partner Course", "active", "ccat_wdd");
+    addPartnerProgrammeCourse(fixture.sqlite, "course_partner_new");
+    seedCourse(fixture.sqlite, "course_partner_auto", "PARTNER-AUTO", "Automatic Partner Course", "active", "ccat_wdd");
     seedCourse(fixture.sqlite, "course_partner_inactive", "PARTNER-INACTIVE", "Inactive Partner Course", "inactive", "ccat_wdd");
     seedCourse(fixture.sqlite, "course_partner_incomplete", "PARTNER-INCOMPLETE", "Incomplete Partner Course", "active", "ccat_wdd");
+    seedCourse(fixture.sqlite, "course_partner_inactive_category", "PARTNER-INACTIVE-CAT", "Inactive Category Partner Course", "active", "ccat_inactive_partner");
     seedCourse(fixture.sqlite, "course_partner_other_org", "PARTNER-OTHER", "Other Org Partner Course", "active", "ccat_wdd", "org_other");
     fixture.sqlite.prepare("update courses set admission_configuration_complete = 0 where id = 'course_partner_incomplete'").run();
 
@@ -371,11 +377,14 @@ describe("native referral services", () => {
       referralProgrammeId: "rprog_samyak_education_partners",
       now: PARTNER_NOW,
     })).map((course) => course.code);
-    expect(eligibleCodes).toHaveLength(43);
+    expect(eligibleCodes).toHaveLength(44);
     expect(eligibleCodes).toContain("SYK-WDD-001");
     expect(eligibleCodes).toContain("PARTNER-NEW");
+    expect(eligibleCodes).toContain("PARTNER-AUTO");
+    expect(eligibleCodes.filter((code) => code === "PARTNER-NEW")).toHaveLength(1);
     expect(eligibleCodes).not.toContain("PARTNER-INACTIVE");
     expect(eligibleCodes).not.toContain("PARTNER-INCOMPLETE");
+    expect(eligibleCodes).not.toContain("PARTNER-INACTIVE-CAT");
     expect(eligibleCodes).not.toContain("PARTNER-OTHER");
 
     const app = publicReferralApp();
@@ -387,18 +396,54 @@ describe("native referral services", () => {
     expect(response.status).toBe(200);
     const body = await response.json() as { categories: Array<{ courses: Array<{ id: string; code: string }> }> };
     const publicCourses = body.categories.flatMap((category) => category.courses);
-    expect(publicCourses).toHaveLength(43);
+    expect(publicCourses).toHaveLength(44);
     expect(publicCourses.map((course) => course.id)).toContain("course_partner_new");
+    expect(publicCourses.map((course) => course.id)).toContain("course_partner_auto");
     expect(JSON.stringify(body)).not.toContain("default_fee_paise");
     expect(JSON.stringify(body)).not.toContain("partner_commission_basis_points");
 
     const submitted = await submitReferralAndCreateEnquiry(fixture.env, validSubmission(issued.rawToken, {
       rawReferralToken: issued.rawToken,
-      courseId: "course_partner_new",
+      courseId: "course_partner_auto",
       prospectMobile: "9876543299",
       now: PARTNER_NOW,
     }));
     expect(submitted).toMatchObject({ ok: true });
+
+    expect(await submitReferralAndCreateEnquiry(fixture.env, validSubmission(issued.rawToken, {
+      rawReferralToken: issued.rawToken,
+      courseId: "course_partner_inactive_category",
+      prospectMobile: "9876543298",
+      now: PARTNER_NOW,
+    }))).toEqual({ ok: false, code: "ineligible_course" });
+
+    fixture.sqlite.prepare("update courses set status = 'inactive' where id = 'course_partner_auto'").run();
+    expect((await listEligibleReferralCourses(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_education_partners",
+      now: PARTNER_NOW,
+    })).map((course) => course.code)).not.toContain("PARTNER-AUTO");
+
+    fixture.sqlite.prepare("update courses set status = 'active', admission_configuration_complete = 0 where id = 'course_partner_auto'").run();
+    expect((await listEligibleReferralCourses(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_education_partners",
+      now: PARTNER_NOW,
+    })).map((course) => course.code)).not.toContain("PARTNER-AUTO");
+
+    fixture.sqlite.prepare("update courses set admission_configuration_complete = 0 where id = 'course_partner_new'").run();
+    expect((await listEligibleReferralCourses(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_education_partners",
+      now: PARTNER_NOW,
+    })).map((course) => course.code)).not.toContain("PARTNER-NEW");
+
+    fixture.sqlite.prepare("update referral_programme_courses set is_active = 0 where referral_programme_id = 'rprog_samyak_education_partners' and course_id = 'course_partner_new'").run();
+    expect((await listEligibleReferralCourses(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_education_partners",
+      now: PARTNER_NOW,
+    })).map((course) => course.code)).not.toContain("PARTNER-NEW");
     fixture.close();
   });
 
@@ -1626,7 +1671,7 @@ function seedStaffRole(db: DatabaseSync, loginAccountId = "acct_student", role =
     .run(loginAccountId, roleId, branchId, NOW);
 }
 
-function seedCourse(db: DatabaseSync, id: string, code: string, name: string, status: string, categoryId: string | null = null, organisationId = "org_samyak") {
+function seedCourse(db: DatabaseSync, id: string, code: string, name: string, status: string, categoryId: string | null = "ccat_wdd", organisationId = "org_samyak") {
   db.prepare(
     `insert into courses
       (id, organisation_id, category_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
