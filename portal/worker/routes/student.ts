@@ -14,7 +14,7 @@ import {
 } from "../lib/auth-store";
 import { getClientIp, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
-import { issueReferralLink, rotateReferralLink, ReferralServiceError, type ReferralServiceEnv } from "../lib/referral-service";
+import { issueReferralLink, ReferralServiceError, type ReferralServiceEnv } from "../lib/referral-service";
 import { requireReferralTokenPepper } from "../lib/referral-token";
 import { hmacHex } from "../lib/crypto";
 
@@ -93,7 +93,7 @@ export function registerStudentRoutes(app: PortalHono) {
           lastFour: issued.link.tokenLastFour,
           activatedAt: issued.link.activatedAt,
           expiresAt: issued.link.expiresAt,
-          message: "Your active referral link cannot be displayed again. Rotate it to create a new link.",
+          message: "Your account already has an active referral link. Open the referrals dashboard to copy it, or contact Samyak if you need a replacement.",
         });
       }
       return jsonPlain(c, {
@@ -112,28 +112,12 @@ export function registerStudentRoutes(app: PortalHono) {
     if (originError) return originError;
     const context = await authenticatedReferrerContext(c);
     if (context instanceof Response) return context;
-    const limited = await enforceLinkActionLimit(c, context.session.record.login_account_id, "referral_link_rotate", 1, 10);
-    if (limited) return limited;
-    try {
-      const rotated = await rotateReferralLink(referralEnv(c), {
-        organisationId: ORG_ID,
-        referralProgrammeId: REFERRAL_PROGRAMME_ID,
-        referrerProfileId: context.referrer.id,
-        loginAccountId: context.session.record.login_account_id,
-        personId: context.view.activeProfile?.personId || null,
-      });
-      await recordAuthEvent(c, "referral_link_rotate", "ROTATED", { loginAccountId: context.session.record.login_account_id, ipHash: await ipHash(c) });
-      return jsonPlain(c, {
-        created: true,
-        rotated: true,
-        link: buildPublicReferralUrl(rotated.rawToken),
-        shownOnce: true,
-        lastFour: rotated.link.tokenLastFour,
-        previousLinkId: rotated.previousLinkId,
-      }, { status: 201 });
-    } catch (error) {
-      return linkServiceError(c, error);
-    }
+    await recordAuthEvent(c, "referral_link_rotate", "DENIED_SELF_SERVICE", { loginAccountId: context.session.record.login_account_id, ipHash: await ipHash(c) });
+    return jsonError(c, {
+      status: 403,
+      code: "self_rotation_disabled",
+      message: "Contact Samyak if your active referral link needs to be replaced.",
+    });
   });
 }
 

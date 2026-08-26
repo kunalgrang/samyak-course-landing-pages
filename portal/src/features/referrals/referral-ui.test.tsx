@@ -34,9 +34,11 @@ const dashboard: ReferralDashboard = {
     lastFour: "A123",
     activatedAt: "2026-07-01",
     expiresAt: null,
+    publicUrl: "https://go.samyaksion.com/r/RECOVERED123",
+    recoverable: true,
     canGenerate: false,
-    canRotate: true,
-    message: "Your active referral link cannot be displayed again. Rotate it to create a new link.",
+    canRotate: false,
+    message: "Your referral link is ready to copy or open.",
   },
   summary: {
     totalReferrals: 3,
@@ -319,25 +321,51 @@ describe("student referral portal UI", () => {
         dashboard={dashboard}
         oneTimeLink="https://go.samyaksion.com/r/NEW123"
         copied={true}
-        canShare={true}
         onCopy={() => undefined}
-        onNativeShare={() => undefined}
       />,
     );
     expect(html).toContain("Copied");
-    expect(html).toContain("Share on WhatsApp");
+    expect(html).toContain("Open Link");
     expect(html).toContain("Referral link copied.");
     expect(html).toContain("https://go.samyaksion.com/r/NEW123");
     expect(html).not.toContain("https://portal.samyaksion.com/r/ASHA123");
+    expect(html).not.toContain("Share on WhatsApp");
+    expect(html).not.toContain("Rotate referral link");
   });
 
-  it("renders active-link metadata without reconstructing the raw token", () => {
+  it("renders recovered active-link copy and open controls without self-service rotation", () => {
     const html = renderToStaticMarkup(
-      <ReferralsContent dashboard={dashboard} copied={false} canShare={false} onCopy={() => undefined} onNativeShare={() => undefined} />,
+      <ReferralsContent dashboard={dashboard} copied={false} onCopy={() => undefined} />,
+    );
+    expect(html).toContain("https://go.samyaksion.com/r/RECOVERED123");
+    expect(html).toContain("Copy Link");
+    expect(html).toContain("Open Link");
+    expect(html).not.toContain("Rotate referral link");
+    expect(html).not.toContain("Share on WhatsApp");
+    expect(html).not.toContain("https://portal.samyaksion.com/r/ASHA123");
+  });
+
+  it("renders legacy active-link metadata without self-service replacement", () => {
+    const html = renderToStaticMarkup(
+      <ReferralsContent
+        dashboard={{
+          ...dashboard,
+          linkStatus: {
+            ...dashboard.linkStatus,
+            publicUrl: null,
+            recoverable: false,
+            message: "This link was created before secure link recovery was enabled. Contact Samyak if you need a replacement.",
+          },
+        }}
+        copied={false}
+        onCopy={() => undefined}
+      />,
     );
     expect(html).toContain("Active link ending ...A123");
-    expect(html).toContain("Rotate referral link");
-    expect(html).not.toContain("https://portal.samyaksion.com/r/ASHA123");
+    expect(html).toContain("Contact Samyak");
+    expect(html).not.toContain("Copy Link");
+    expect(html).not.toContain("Open Link");
+    expect(html).not.toContain("Rotate referral link");
   });
 
   it("renders generate controls when no active referral link exists", () => {
@@ -350,15 +378,15 @@ describe("student referral portal UI", () => {
             lastFour: null,
             activatedAt: null,
             expiresAt: null,
+            publicUrl: null,
+            recoverable: false,
             canGenerate: true,
             canRotate: false,
             message: "Generate a referral link to share with friends.",
           },
         }}
         copied={false}
-        canShare={false}
         onCopy={() => undefined}
-        onNativeShare={() => undefined}
       />,
     );
     expect(html).toContain("No active referral link");

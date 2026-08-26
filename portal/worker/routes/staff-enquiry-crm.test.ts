@@ -1,8 +1,10 @@
 import { DatabaseSync } from "node:sqlite";
 import { Hono } from "hono";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerStaffEnquiryCrmRoutes } from "./staff-enquiry-crm";
 import type { EnquiryCrmRow } from "../lib/enquiry-crm";
+
+const TEST_NOW = "2026-08-24T10:00:00.000Z";
 
 const mocks = vi.hoisted(() => ({
   getSessionFromRequest: vi.fn(),
@@ -38,6 +40,8 @@ function authenticateAs(roles: string[]) {
 
 describe("staff enquiry CRM route contact exposure", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(TEST_NOW));
     vi.clearAllMocks();
     authenticateAs(["owner"]);
     mocks.mobileHash.mockImplementation(async (_c: unknown, mobile: string) => `hash_${mobile}`);
@@ -47,6 +51,10 @@ describe("staff enquiry CRM route contact exposure", () => {
       if (context === "contact:contact_person_bina") return "9123456789";
       return null;
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("exposes only the operational mobile object for unlinked referral enquiries", async () => {

@@ -14,6 +14,7 @@ import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { registerStudentRoutes } from "../routes/student";
 import { registerStaffReferralRoutes } from "../routes/staff-referrals";
 import { registerStaffEducationPartnerRoutes } from "../routes/staff-education-partners";
+import { registerStaffAdmissionRoutes } from "../routes/staff-admissions";
 
 const NOW = "2026-08-06T10:00:00.000Z";
 const PARTNER_NOW = "2026-08-25T10:00:00.000Z";
@@ -1083,7 +1084,7 @@ describe("native referral services", () => {
     fixture.close();
   });
 
-  it("serves authenticated referral-link generation, metadata-only reload, rotation, CSRF, and replay limits", async () => {
+  it("serves authenticated referral-link generation, encrypted recovery reload, and denies self-service rotation", async () => {
     const fixture = testFixture();
     seedReferrer(fixture.sqlite);
     const sessionCookie = await seedSession(fixture.sqlite, "acct_student", "person_student");
@@ -1105,6 +1106,7 @@ describe("native referral services", () => {
       token_last_four: generatedBody.lastFour,
     });
     expect(JSON.stringify(all(fixture.sqlite, "select * from referral_links"))).not.toContain(oldToken);
+    expect(count(fixture.sqlite, "referral_link_secrets")).toBe(1);
 
     const existing = await app.request(
       "https://portal.samyaksion.com/api/referrals/link",
@@ -1120,10 +1122,17 @@ describe("native referral services", () => {
       workerEnv,
     );
     expect(dashboard.status).toBe(200);
-    const dashboardBody = await dashboard.json() as { linkStatus: { hasActiveLink: boolean; lastFour: string }; profile: { personalLink: string } };
-    expect(dashboardBody.linkStatus).toMatchObject({ hasActiveLink: true, lastFour: generatedBody.lastFour });
+    const dashboardBody = await dashboard.json() as { linkStatus: { hasActiveLink: boolean; lastFour: string; publicUrl: string; recoverable: boolean; canRotate: boolean }; profile: { personalLink: string } };
+    expect(dashboardBody.linkStatus).toMatchObject({
+      hasActiveLink: true,
+      lastFour: generatedBody.lastFour,
+      publicUrl: generatedBody.link,
+      recoverable: true,
+      canRotate: false,
+    });
     expect(dashboardBody.profile.personalLink).toBe("");
-    expect(JSON.stringify(dashboardBody)).not.toContain(oldToken);
+    expect(JSON.stringify(dashboardBody)).not.toContain("token_hash");
+    expect(JSON.stringify(dashboardBody)).not.toContain("token_ciphertext");
 
     const csrf = await app.request(
       "https://portal.samyaksion.com/api/referrals/link/rotate",
@@ -1132,31 +1141,225 @@ describe("native referral services", () => {
     );
     expect(csrf.status).toBe(403);
 
-    const rotated = await app.request(
+    const denied = await app.request(
       "https://portal.samyaksion.com/api/referrals/link/rotate",
       { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie } },
       workerEnv,
     );
-    expect(rotated.status).toBe(201);
-    const rotatedBody = await rotated.json() as { link: string; lastFour: string; previousLinkId: string };
-    const newToken = rotatedBody.link.split("/").at(-1)!;
-    expect(newToken).not.toBe(oldToken);
-    expect(await resolveReferralLink(fixture.env, { organisationId: "org_samyak", rawToken: oldToken, now: NOW })).toEqual({ valid: false, reason: "invalid_link" });
-    expect(await resolveReferralLink(fixture.env, { organisationId: "org_samyak", rawToken: newToken, now: NOW })).toMatchObject({ valid: true });
+    expect(denied.status).toBe(403);
+    await expect(denied.json()).resolves.toMatchObject({ success: false, error: { code: "self_rotation_disabled" } });
+    expect(await resolveReferralLink(fixture.env, { organisationId: "org_samyak", rawToken: oldToken, now: NOW })).toMatchObject({ valid: true });
     expect(count(fixture.sqlite, "referral_links where status = 'active'")).toBe(1);
-    expect(count(fixture.sqlite, "referral_links where status = 'revoked'")).toBe(1);
-
-    const doubleClick = await app.request(
-      "https://portal.samyaksion.com/api/referrals/link/rotate",
-      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie } },
-      workerEnv,
-    );
-    expect(doubleClick.status).toBe(429);
-    expect(doubleClick.headers.get("Retry-After")).toBe("10");
+    expect(count(fixture.sqlite, "referral_links where status = 'revoked'")).toBe(0);
     const auditJson = JSON.stringify(all(fixture.sqlite, "select action, metadata_json from audit_logs"));
     expect(auditJson).not.toContain(oldToken);
-    expect(auditJson).not.toContain(newToken);
     expect(auditJson).not.toContain("/r/");
+    fixture.close();
+  });
+
+  it("denies alumni self-service rotation for active referral links", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite, { suffix: "alumni", roleId: "role_alumni" });
+    const issued = await issueReferralLink(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_skill_circle",
+      referrerProfileId: "refprof_alumni",
+      loginAccountId: "acct_alumni",
+      personId: "person_alumni",
+      now: NOW,
+    });
+    if (!issued.rawToken) throw new Error("Expected alumni token");
+    const sessionCookie = await seedSession(fixture.sqlite, "acct_alumni", "person_alumni", "sess_alumni", "alumni-session-token");
+    const app = studentRouteApp();
+
+    const denied = await app.request(
+      "https://portal.samyaksion.com/api/referrals/link/rotate",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: sessionCookie } },
+      { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER },
+    );
+
+    expect(denied.status).toBe(403);
+    await expect(denied.json()).resolves.toMatchObject({ success: false, error: { code: "self_rotation_disabled" } });
+    expect(await resolveReferralLink(fixture.env, { organisationId: "org_samyak", rawToken: issued.rawToken, now: NOW })).toMatchObject({ valid: true });
+    expect(count(fixture.sqlite, "referral_links where referrer_profile_id = 'refprof_alumni' and status = 'active'")).toBe(1);
+    expect(count(fixture.sqlite, "referral_links where referrer_profile_id = 'refprof_alumni' and status = 'revoked'")).toBe(0);
+    fixture.close();
+  });
+
+  it("isolates recovered links to the active shared-mobile profile", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedReferrer(fixture.sqlite, { suffix: "family", loginAccessType: "shared_family" });
+    fixture.sqlite.prepare(
+      "insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at) values ('acct_student', 'person_family', 'shared_family', 0, 1, ?)",
+    ).run(NOW);
+    const studentIssued = await issueReferralLink(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_skill_circle",
+      referrerProfileId: "refprof_student",
+      loginAccountId: "acct_student",
+      personId: "person_student",
+      now: NOW,
+    });
+    const familyIssued = await issueReferralLink(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_skill_circle",
+      referrerProfileId: "refprof_family",
+      personId: "person_family",
+      now: NOW,
+    });
+    if (!studentIssued.rawToken || !familyIssued.rawToken) throw new Error("Expected shared profile tokens");
+    const app = studentRouteApp();
+    const workerEnv = { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER };
+    const studentCookie = await seedSession(fixture.sqlite, "acct_student", "person_student", "sess_shared_student", "shared-student-token");
+    const familyCookie = await seedSession(fixture.sqlite, "acct_student", "person_family", "sess_shared_family", "shared-family-token");
+
+    const studentDashboard = await app.request("https://portal.samyaksion.com/api/student/referrals", { headers: { Cookie: studentCookie } }, workerEnv);
+    const familyDashboard = await app.request("https://portal.samyaksion.com/api/student/referrals", { headers: { Cookie: familyCookie } }, workerEnv);
+    expect(studentDashboard.status).toBe(200);
+    expect(familyDashboard.status).toBe(200);
+    const studentBody = await studentDashboard.json() as { linkStatus: { publicUrl: string } };
+    const familyBody = await familyDashboard.json() as { linkStatus: { publicUrl: string } };
+
+    expect(studentBody.linkStatus.publicUrl).toBe(`https://go.samyaksion.com/r/${studentIssued.rawToken}`);
+    expect(studentBody.linkStatus.publicUrl).not.toBe(`https://go.samyaksion.com/r/${familyIssued.rawToken}`);
+    expect(familyBody.linkStatus.publicUrl).toBe(`https://go.samyaksion.com/r/${familyIssued.rawToken}`);
+    expect(familyBody.linkStatus.publicUrl).not.toBe(`https://go.samyaksion.com/r/${studentIssued.rawToken}`);
+    fixture.close();
+  });
+
+  it("lets owners replace student/alumni referral links while denying non-owner staff", async () => {
+    const fixture = testFixture();
+    seedReferrer(fixture.sqlite);
+    seedReferrer(fixture.sqlite, { suffix: "alumni", roleId: "role_alumni" });
+    seedCourse(fixture.sqlite, "course_fsd", "FSD", "Full Stack", "active");
+    addProgrammeCourse(fixture.sqlite, "course_fsd");
+    fixture.sqlite.prepare(
+      `insert into students
+        (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since,
+         current_status, portal_status, created_at, updated_at)
+       values ('student_route_owner', 'org_samyak', 'person_student', 'branch_sion', 'SYK-SION-9999', 9999,
+        '2026-01-01', 'active', 'active', ?, ?)`,
+    ).run(NOW, NOW);
+    fixture.sqlite.prepare(
+      `insert into students
+        (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since,
+         current_status, portal_status, created_at, updated_at)
+       values ('student_route_alumni', 'org_samyak', 'person_alumni', 'branch_sion', 'SYK-SION-8888', 8888,
+        '2024-01-01', 'alumni', 'active', ?, ?)`,
+    ).run(NOW, NOW);
+    const issued = await issueReferralLink(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_skill_circle",
+      referrerProfileId: "refprof_student",
+      loginAccountId: "acct_student",
+      personId: "person_student",
+      now: NOW,
+    });
+    if (!issued.rawToken) throw new Error("Expected student token");
+    const alumniIssued = await issueReferralLink(fixture.env, {
+      organisationId: "org_samyak",
+      referralProgrammeId: "rprog_samyak_skill_circle",
+      referrerProfileId: "refprof_alumni",
+      loginAccountId: "acct_alumni",
+      personId: "person_alumni",
+      now: NOW,
+    });
+    if (!alumniIssued.rawToken) throw new Error("Expected alumni token");
+    const historical = await submitReferralAndCreateEnquiry(fixture.env, validSubmission(issued.rawToken, {
+      rawReferralToken: issued.rawToken,
+      courseId: "course_fsd",
+      prospectMobile: "9876543201",
+      now: NOW,
+    }));
+    if (!historical.ok) throw new Error("Expected historical referral");
+    seedReferrer(fixture.sqlite, { suffix: "staff" });
+    seedStaffRole(fixture.sqlite, "acct_staff", "counsellor", "branch_sion");
+    const staffCookie = await seedSession(fixture.sqlite, "acct_staff", "person_staff", "sess_staff_owner_route", "staff-owner-route-token");
+    const app = staffAdmissionRouteApp();
+    const workerEnv = { ...fixture.env, REFERRAL_TOKEN_PEPPER: TEST_REFERRAL_TOKEN_PEPPER };
+
+    const denied = await app.request(
+      "https://portal.samyaksion.com/api/staff/students/student_route_owner/referral-link/replace",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: staffCookie } },
+      workerEnv,
+    );
+    expect(denied.status).toBe(403);
+    const staffProfile = await app.request(
+      "https://portal.samyaksion.com/api/staff/students/student_route_owner",
+      { headers: { Cookie: staffCookie } },
+      workerEnv,
+    );
+    expect(staffProfile.status).toBe(200);
+    await expect(staffProfile.json()).resolves.toMatchObject({
+      canReplaceReferralLink: false,
+      referralLink: {
+        hasActiveLink: true,
+        publicUrl: null,
+        recoverable: false,
+      },
+    });
+
+    seedStaffRole(fixture.sqlite, "acct_student", "owner", "branch_sion");
+    const ownerCookie = await seedSession(fixture.sqlite, "acct_student", "person_student", "sess_owner_route", "owner-route-token");
+    const replaced = await app.request(
+      "https://portal.samyaksion.com/api/staff/students/student_route_owner/referral-link/replace",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: ownerCookie } },
+      workerEnv,
+    );
+    expect(replaced.status).toBe(201);
+    const replacedBody = await replaced.json() as { link: string; previousLinkId: string };
+    const newToken = replacedBody.link.split("/").at(-1)!;
+    expect(replacedBody.previousLinkId).toBe(issued.link.id);
+    expect(await resolveReferralLink(fixture.env, { organisationId: "org_samyak", rawToken: issued.rawToken, now: NOW })).toEqual({ valid: false, reason: "invalid_link" });
+    expect(await resolveReferralLink(fixture.env, { organisationId: "org_samyak", rawToken: newToken, now: NOW })).toMatchObject({ valid: true });
+    expect(row(fixture.sqlite, "select referral_link_id from referrals where id = ?", historical.referralId)).toMatchObject({ referral_link_id: issued.link.id });
+    expect(count(fixture.sqlite, "referrals")).toBe(1);
+    expect(count(fixture.sqlite, "enquiries")).toBe(1);
+    expect(count(fixture.sqlite, "referral_links where referrer_profile_id = 'refprof_student' and status = 'active'")).toBe(1);
+    expect(count(fixture.sqlite, "referral_links where referrer_profile_id = 'refprof_student' and status = 'revoked'")).toBe(1);
+    expect(count(fixture.sqlite, "referral_link_secrets")).toBe(3);
+
+    const secondReplace = await app.request(
+      "https://portal.samyaksion.com/api/staff/students/student_route_owner/referral-link/replace",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: ownerCookie } },
+      workerEnv,
+    );
+    expect(secondReplace.status).toBe(201);
+    expect(count(fixture.sqlite, "referral_links where referrer_profile_id = 'refprof_student' and status = 'active'")).toBe(1);
+    expect(count(fixture.sqlite, "referral_links where referrer_profile_id = 'refprof_student' and status = 'revoked'")).toBe(2);
+    expect(row(fixture.sqlite, "select referral_link_id from referrals where id = ?", historical.referralId)).toMatchObject({ referral_link_id: issued.link.id });
+
+    const alumniReplaced = await app.request(
+      "https://portal.samyaksion.com/api/staff/students/student_route_alumni/referral-link/replace",
+      { method: "POST", headers: { Origin: "https://portal.samyaksion.com", Cookie: ownerCookie } },
+      workerEnv,
+    );
+    expect(alumniReplaced.status).toBe(201);
+    const alumniBody = await alumniReplaced.json() as { link: string; previousLinkId: string };
+    const newAlumniToken = alumniBody.link.split("/").at(-1)!;
+    expect(alumniBody.previousLinkId).toBe(alumniIssued.link.id);
+    expect(await resolveReferralLink(fixture.env, { organisationId: "org_samyak", rawToken: alumniIssued.rawToken, now: NOW })).toEqual({ valid: false, reason: "invalid_link" });
+    expect(await resolveReferralLink(fixture.env, { organisationId: "org_samyak", rawToken: newAlumniToken, now: NOW })).toMatchObject({ valid: true });
+    expect(count(fixture.sqlite, "referral_links where referrer_profile_id = 'refprof_alumni' and status = 'active'")).toBe(1);
+    expect(count(fixture.sqlite, "referral_links where referrer_profile_id = 'refprof_alumni' and status = 'revoked'")).toBe(1);
+    expect(count(fixture.sqlite, "referral_links where status = 'active'")).toBe(2);
+    expect(count(fixture.sqlite, "referral_links where status = 'revoked'")).toBe(3);
+    expect(count(fixture.sqlite, "referral_link_secrets")).toBe(5);
+    const profile = await app.request(
+      "https://portal.samyaksion.com/api/staff/students/student_route_owner",
+      { headers: { Cookie: ownerCookie } },
+      workerEnv,
+    );
+    expect(profile.status).toBe(200);
+    await expect(profile.json()).resolves.toMatchObject({
+      canReplaceReferralLink: true,
+      referralLink: {
+        hasActiveLink: true,
+        publicUrl: expect.stringMatching(/^https:\/\/go\.samyaksion\.com\/r\/[A-Za-z0-9_-]{43}$/),
+        recoverable: true,
+      },
+    });
     fixture.close();
   });
 
@@ -1608,6 +1811,12 @@ function staffReferralRouteApp() {
 function staffEducationPartnerRouteApp() {
   const app = new Hono<{ Bindings: WorkerBindings; Variables: WorkerVariables }>();
   registerStaffEducationPartnerRoutes(app);
+  return app;
+}
+
+function staffAdmissionRouteApp() {
+  const app = new Hono<{ Bindings: WorkerBindings; Variables: WorkerVariables }>();
+  registerStaffAdmissionRoutes(app);
   return app;
 }
 

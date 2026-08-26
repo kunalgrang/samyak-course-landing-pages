@@ -24,6 +24,8 @@ import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
 import { changeStudentPrimaryMobile, getStudentContactHistory, getStudentContactVersion } from "../lib/owner-student-maintenance";
 import { addMobileIfMissing } from "../lib/person-contact";
+import { getRecoverableReferralLink, rotateReferralLink, type ReferralServiceEnv } from "../lib/referral-service";
+import { requireReferralTokenPepper } from "../lib/referral-token";
 import { listStaffStudents } from "../lib/student-directory";
 
 type PortalHono = Hono<{
@@ -31,6 +33,9 @@ type PortalHono = Hono<{
   Variables: WorkerVariables;
 }>;
 type PortalContext = Parameters<typeof getAdmissionDraft>[0];
+
+const REFERRAL_PROGRAMME_ID = "rprog_samyak_skill_circle";
+const REFERRAL_PUBLIC_ORIGIN = "https://go.samyaksion.com";
 
 const baseCourseSchema = z.object({
   code: z.string().trim().min(2).max(30).regex(/^[A-Za-z0-9_-]+$/),
@@ -340,6 +345,42 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     }
     return jsonPlain(c, { success: true, ...result });
   });
+
+  app.post("/api/staff/students/:studentId/referral-link/replace", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
+    const staff = await requireStaffRoles(c, ["owner"]);
+    if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Only owner accounts can replace student referral links." });
+    const student = await findStudentReferralTarget(c, c.req.param("studentId"));
+    if (!student) return jsonError(c, { status: 404, code: "student_not_found", message: "Student was not found." });
+    if (!(await hasOwnerMaintenanceAccessForBranch(c, staff, student.home_branch_id))) {
+      return jsonError(c, { status: 403, code: "forbidden", message: "Only owner accounts can replace student referral links." });
+    }
+    if (!student.referrer_profile_id) {
+      return jsonError(c, { status: 409, code: "referrer_not_eligible", message: "This student does not have an active referral profile." });
+    }
+    const active = await activeStudentReferralLink(c, student.referrer_profile_id);
+    if (!active) {
+      return jsonError(c, { status: 409, code: "referral_link_missing", message: "This student does not have an active referral link yet." });
+    }
+    const rotated = await rotateReferralLink(referralEnv(c), {
+      organisationId: ORG_ID,
+      referralProgrammeId: REFERRAL_PROGRAMME_ID,
+      referrerProfileId: student.referrer_profile_id,
+      loginAccountId: staff.loginAccountId,
+      personId: staff.activePersonId,
+      ownerAuthorized: true,
+      now: new Date().toISOString(),
+    });
+    return jsonPlain(c, {
+      created: true,
+      rotated: true,
+      link: buildPublicReferralUrl(rotated.rawToken),
+      shownOnce: true,
+      lastFour: rotated.link.tokenLastFour,
+      previousLinkId: rotated.previousLinkId,
+    }, { status: 201 });
+  });
 }
 
 async function getEnquiryDetail(c: Parameters<typeof getAdmissionDraft>[0], enquiryId: string) {
@@ -600,11 +641,14 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], sta
   ]);
   const primaryMobile = await fullPrimaryMobile(c, String(student.person_id));
   const canMaintainContact = await hasOwnerMaintenanceAccessForBranch(c, staff, String(student.home_branch_id));
+  const referralLink = await studentReferralLinkPayload(c, String(student.person_id), canMaintainContact);
   return {
     student,
     primaryMobile: null,
     mobileDisplay: primaryMobile ? maskMobile(primaryMobile) : null,
     canMaintainContact,
+    canReplaceReferralLink: canMaintainContact,
+    referralLink,
     contactVersion: canMaintainContact ? await getStudentContactVersion(c, String(student.person_id)) : null,
     contactHistory: canMaintainContact ? await getStudentContactHistory(c, String(student.person_id)) : [],
     locality: localities.results?.[0] || null,
@@ -612,6 +656,93 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], sta
     enrolments: enrolments.results || [],
     enquiries: enquiries.results || [],
   };
+}
+
+async function studentReferralLinkPayload(c: PortalContext, personId: string, canRecoverFullUrl: boolean) {
+  const referrer = await c.env.DB.prepare(
+    `select id
+     from referrer_profiles
+     where organisation_id = ? and person_id = ? and active = 1
+     limit 1`,
+  )
+    .bind(ORG_ID, personId)
+    .first<{ id: string }>();
+  if (!referrer) return null;
+  const active = await activeStudentReferralLink(c, referrer.id);
+  if (!active) return {
+    hasActiveLink: false,
+    lastFour: null,
+    activatedAt: null,
+    publicUrl: null,
+    recoverable: false,
+    message: "No active referral link.",
+  };
+  const recovered = canRecoverFullUrl
+    ? await getRecoverableReferralLink(referralEnv(c), {
+        link: { id: active.id, organisation_id: active.organisation_id, token_hash: active.token_hash },
+        publicOrigin: REFERRAL_PUBLIC_ORIGIN,
+      })
+    : null;
+  return {
+    hasActiveLink: true,
+    lastFour: active.token_last_four,
+    activatedAt: active.activated_at,
+    publicUrl: recovered?.recoverable ? recovered.publicUrl : null,
+    recoverable: Boolean(recovered?.recoverable),
+    message: recovered?.recoverable
+      ? "Referral link is ready to copy or open."
+      : canRecoverFullUrl
+        ? "This link was created before secure link recovery was enabled. Replace it only when needed."
+        : "Referral link is active. Full URL is owner-only.",
+  };
+}
+
+async function findStudentReferralTarget(c: PortalContext, studentId: string) {
+  return c.env.DB.prepare(
+    `select students.id, students.person_id, students.home_branch_id, referrer_profiles.id as referrer_profile_id
+     from students
+     join people on people.id = students.person_id
+       and people.organisation_id = students.organisation_id
+     left join referrer_profiles on referrer_profiles.person_id = students.person_id
+       and referrer_profiles.organisation_id = students.organisation_id
+       and referrer_profiles.active = 1
+     where students.id = ?
+       and students.organisation_id = ?
+       and people.status != 'archived'
+     limit 1`,
+  )
+    .bind(studentId, ORG_ID)
+    .first<{ id: string; person_id: string; home_branch_id: string; referrer_profile_id: string | null }>();
+}
+
+async function activeStudentReferralLink(c: PortalContext, referrerProfileId: string) {
+  const now = new Date().toISOString();
+  return c.env.DB.prepare(
+    `select id, organisation_id, token_hash, token_last_four, activated_at
+     from referral_links
+     where organisation_id = ?
+       and referral_programme_id = ?
+       and referrer_profile_id = ?
+       and status = 'active'
+       and revoked_at is null
+       and (expires_at is null or expires_at > ?)
+     order by activated_at desc, id desc
+     limit 1`,
+  )
+    .bind(ORG_ID, REFERRAL_PROGRAMME_ID, referrerProfileId, now)
+    .first<{ id: string; organisation_id: string; token_hash: string; token_last_four: string | null; activated_at: string | null }>();
+}
+
+function referralEnv(c: PortalContext): ReferralServiceEnv {
+  return {
+    DB: c.env.DB,
+    SESSION_PEPPER: c.env.SESSION_PEPPER,
+    referralTokenPepper: requireReferralTokenPepper(String(c.env.REFERRAL_TOKEN_PEPPER || "")),
+  };
+}
+
+function buildPublicReferralUrl(rawToken: string) {
+  return `${REFERRAL_PUBLIC_ORIGIN}/r/${encodeURIComponent(rawToken)}`;
 }
 
 async function fullPrimaryMobile(c: Parameters<typeof getAdmissionDraft>[0], personId: string) {
