@@ -1,9 +1,12 @@
 import type { AppContext } from "./http";
 import { createOpaqueId, createSessionToken, daysFromNow, decryptText, encryptText, hmacHex, secondsFromNow } from "./crypto";
+import { getRecoverableReferralLink, type ReferralServiceEnv } from "./referral-service";
+import { requireReferralTokenPepper } from "./referral-token";
 
 export const ORG_ID = "org_samyak";
 export const OTP_MAX_ATTEMPTS = 5;
 export const OTP_EXPIRY_SECONDS = 10 * 60;
+const REFERRAL_PUBLIC_ORIGIN = "https://go.samyaksion.com";
 
 const PRODUCTION_SESSION_COOKIE = "__Host-samyak_session";
 const LOCAL_DEVELOPMENT_SESSION_COOKIE = "samyak_session";
@@ -139,6 +142,8 @@ export type PortalDashboard = {
     lastFour: string | null;
     activatedAt: string | null;
     expiresAt: string | null;
+    publicUrl: string | null;
+    recoverable: boolean;
     canGenerate: boolean;
     canRotate: boolean;
     message: string;
@@ -656,6 +661,7 @@ export async function fetchDashboardForActiveProfile(c: AppContext, personId: st
   const limit = pagination.limit || 25;
   const offset = pagination.offset || 0;
   const activeLink = await activeReferralLinkForProfile(c, referrer.id);
+  const recoveredLink = activeLink ? await recoverActiveReferralLink(c, activeLink) : null;
   const summary = await c.env.DB.prepare(
     `select
        count(*) as total_referrals,
@@ -741,15 +747,21 @@ export async function fetchDashboardForActiveProfile(c: AppContext, personId: st
           lastFour: activeLink.token_last_four,
           activatedAt: activeLink.activated_at,
           expiresAt: activeLink.expires_at,
+          publicUrl: recoveredLink?.recoverable ? recoveredLink.publicUrl : null,
+          recoverable: Boolean(recoveredLink?.recoverable),
           canGenerate: false,
-          canRotate: true,
-          message: "Your active referral link cannot be displayed again. Rotate it to create a new link.",
+          canRotate: false,
+          message: recoveredLink?.recoverable
+            ? "Your referral link is ready to copy or open."
+            : "This link was created before secure link recovery was enabled. Contact Samyak if you need a replacement.",
         }
       : {
           hasActiveLink: false,
           lastFour: null,
           activatedAt: null,
           expiresAt: null,
+          publicUrl: null,
+          recoverable: false,
           canGenerate: Boolean(referrer.active),
           canRotate: false,
           message: "Generate a referral link to share with friends.",
@@ -883,7 +895,7 @@ export async function fetchStudentHomeForActiveProfile(c: AppContext, personId: 
 async function activeReferralLinkForProfile(c: AppContext, referrerProfileId: string) {
   const now = new Date().toISOString();
   return c.env.DB.prepare(
-    `select id, token_last_four, activated_at, expires_at
+    `select id, organisation_id, token_hash, token_last_four, activated_at, expires_at
      from referral_links
      where organisation_id = ?
        and referrer_profile_id = ?
@@ -894,7 +906,25 @@ async function activeReferralLinkForProfile(c: AppContext, referrerProfileId: st
      limit 1`,
   )
     .bind(ORG_ID, referrerProfileId, now)
-    .first<{ id: string; token_last_four: string | null; activated_at: string | null; expires_at: string | null }>();
+    .first<{ id: string; organisation_id: string; token_hash: string; token_last_four: string | null; activated_at: string | null; expires_at: string | null }>();
+}
+
+async function recoverActiveReferralLink(
+  c: AppContext,
+  link: { id: string; organisation_id: string; token_hash: string },
+) {
+  return getRecoverableReferralLink(referralEnv(c), {
+    link,
+    publicOrigin: REFERRAL_PUBLIC_ORIGIN,
+  });
+}
+
+function referralEnv(c: AppContext): ReferralServiceEnv {
+  return {
+    DB: c.env.DB,
+    SESSION_PEPPER: c.env.SESSION_PEPPER,
+    referralTokenPepper: requireReferralTokenPepper(String(c.env.REFERRAL_TOKEN_PEPPER || "")),
+  };
 }
 
 export async function lookupPortalProfilesByMobile(c: AppContext, mobile: string): Promise<PortalLookup> {

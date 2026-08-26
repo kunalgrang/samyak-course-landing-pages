@@ -1,38 +1,24 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
-import { generateReferralLink, rotateReferralLink, type ReferralDashboard } from "../../lib/api";
-import { buildWhatsAppShareUrl, copyReferralLink, formatIndianCurrency } from "./referralUtils";
+import { generateReferralLink, type ReferralDashboard } from "../../lib/api";
+import { copyReferralLink, formatIndianCurrency } from "./referralUtils";
 import { useReferralDashboard } from "./useReferralDashboard";
 
 export function ReferralsPage() {
   const { dashboard, error } = useReferralDashboard();
   const [copied, setCopied] = useState(false);
-  const [canShare, setCanShare] = useState(false);
   const [oneTimeLink, setOneTimeLink] = useState<string>("");
   const [linkMessage, setLinkMessage] = useState<string>("");
   const [linkBusy, setLinkBusy] = useState(false);
   const [linkError, setLinkError] = useState("");
-
-  useEffect(() => {
-    setCanShare(typeof navigator !== "undefined" && typeof navigator.share === "function");
-  }, []);
 
   async function handleCopy(personalLink: string) {
     if (!personalLink) return;
     await copyReferralLink(personalLink);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
-  }
-
-  async function handleNativeShare(nextDashboard: ReferralDashboard) {
-    if (!navigator.share || !oneTimeLink) return;
-    await navigator.share({
-      title: "Samyak Skill Circle",
-      text: "Refer your friends to Samyak Computer Classes.",
-      url: oneTimeLink,
-    });
   }
 
   async function handleGenerate() {
@@ -42,29 +28,13 @@ export function ReferralsPage() {
       const result = await generateReferralLink();
       if (result.created) {
         setOneTimeLink(result.link);
-        setLinkMessage("Copy or share this link now. For security, it will not be displayed again.");
+        setLinkMessage("Your referral link is ready to copy or open.");
       } else {
         setOneTimeLink("");
         setLinkMessage(result.message);
       }
     } catch (reason) {
       setLinkError(reason instanceof Error ? reason.message : "Could not generate referral link.");
-    } finally {
-      setLinkBusy(false);
-    }
-  }
-
-  async function handleRotate() {
-    setLinkBusy(true);
-    setLinkError("");
-    try {
-      const result = await rotateReferralLink();
-      if (result.created) {
-        setOneTimeLink(result.link);
-        setLinkMessage("Copy or share this link now. The previous referral link is invalid.");
-      }
-    } catch (reason) {
-      setLinkError(reason instanceof Error ? reason.message : "Could not rotate referral link.");
     } finally {
       setLinkBusy(false);
     }
@@ -82,15 +52,12 @@ export function ReferralsPage() {
     <ReferralsContent
       dashboard={dashboard}
       copied={copied}
-      canShare={canShare}
-      onCopy={() => void handleCopy(oneTimeLink)}
-      onNativeShare={() => void handleNativeShare(dashboard)}
+      onCopy={(link) => void handleCopy(link)}
       oneTimeLink={oneTimeLink}
       linkMessage={linkMessage}
       linkBusy={linkBusy}
       linkError={linkError}
       onGenerate={() => void handleGenerate()}
-      onRotate={() => void handleRotate()}
     />
   );
 }
@@ -98,31 +65,24 @@ export function ReferralsPage() {
 export function ReferralsContent({
   dashboard,
   copied,
-  canShare,
   onCopy,
-  onNativeShare,
   oneTimeLink = "",
   linkMessage = "",
   linkBusy = false,
   linkError = "",
   onGenerate,
-  onRotate,
 }: {
   dashboard: ReferralDashboard;
   copied: boolean;
-  canShare: boolean;
-  onCopy: () => void;
-  onNativeShare: () => void;
+  onCopy: (link: string) => void;
   oneTimeLink?: string;
   linkMessage?: string;
   linkBusy?: boolean;
   linkError?: string;
   onGenerate?: () => void;
-  onRotate?: () => void;
 }) {
-  const shareableLink = oneTimeLink;
-  const whatsAppUrl = shareableLink ? buildWhatsAppShareUrl(shareableLink) : "";
   const linkStatus = dashboard.linkStatus;
+  const shareableLink = oneTimeLink || linkStatus.publicUrl || "";
 
   return (
     <div className="content-stack">
@@ -131,13 +91,13 @@ export function ReferralsContent({
         <p>Track your friends' enquiries, admissions and referral rewards.</p>
       </header>
 
-      <section className="link-panel" aria-label="Personal referral link">
+      <section className="link-panel" aria-label="Your Referral Link">
         <div>
-          <span className="field-label">Personal referral link</span>
+          <span className="field-label">Your Referral Link</span>
           {shareableLink ? (
             <>
               <strong>{shareableLink}</strong>
-              <p>{linkMessage || "Copy or share this link now. For security, it will not be displayed again."}</p>
+              <p>{linkMessage || linkStatus.message}</p>
             </>
           ) : linkStatus.hasActiveLink ? (
             <>
@@ -153,19 +113,13 @@ export function ReferralsContent({
           {linkError ? <p className="form-alert">{linkError}</p> : null}
         </div>
         <div className="link-actions">
-          {shareableLink ? <button type="button" onClick={onCopy}>
+          {shareableLink ? <button type="button" onClick={() => onCopy(shareableLink)}>
             {copied ? "Copied" : "Copy Link"}
           </button> : null}
-          {canShare && shareableLink ? (
-            <button type="button" className="button-secondary" onClick={onNativeShare}>
-              Share
-            </button>
-          ) : null}
-          {shareableLink ? <a className="button-link" href={whatsAppUrl} target="_blank" rel="noreferrer">
-            Share on WhatsApp
+          {shareableLink ? <a className="button-link" href={shareableLink} target="_blank" rel="noreferrer">
+            Open Link
           </a> : null}
           {!shareableLink && linkStatus.canGenerate ? <button type="button" disabled={linkBusy} onClick={onGenerate}>{linkBusy ? "Generating..." : "Generate referral link"}</button> : null}
-          {!shareableLink && linkStatus.canRotate ? <button type="button" className="button-secondary" disabled={linkBusy} onClick={onRotate}>{linkBusy ? "Rotating..." : "Rotate referral link"}</button> : null}
         </div>
         <p className="copy-feedback" aria-live="polite">
           {copied ? "Referral link copied." : ""}

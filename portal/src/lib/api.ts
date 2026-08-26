@@ -113,6 +113,8 @@ const dashboardSchema = z.object({
     lastFour: z.string().nullable(),
     activatedAt: z.string().nullable(),
     expiresAt: z.string().nullable(),
+    publicUrl: z.string().nullable(),
+    recoverable: z.boolean(),
     canGenerate: z.boolean(),
     canRotate: z.boolean(),
     message: z.string(),
@@ -466,6 +468,15 @@ const studentProfileSchema = z.object({
   primaryMobile: z.string().nullable(),
   mobileDisplay: z.string().nullable(),
   canMaintainContact: z.boolean().default(false),
+  canReplaceReferralLink: z.boolean().default(false),
+  referralLink: z.object({
+    hasActiveLink: z.boolean(),
+    lastFour: z.string().nullable(),
+    activatedAt: z.string().nullable(),
+    publicUrl: z.string().nullable(),
+    recoverable: z.boolean(),
+    message: z.string(),
+  }).nullable().default(null),
   contactVersion: z.string().nullable().default(null),
   contactHistory: z.array(z.object({
     mobileDisplay: z.string(),
@@ -1127,6 +1138,10 @@ export async function getStaffStudents(params: StaffStudentDirectoryQuery = {}) 
 
 export async function changeStaffStudentPrimaryMobile(studentId: string, input: { newMobile: string; confirmSharedMobile?: boolean; reason?: string; expectedContactVersion: string }) {
   return patchJson(`/api/staff/students/${encodeURIComponent(studentId)}/contact/mobile`, input, studentMobileChangeResponseSchema);
+}
+
+export async function replaceStaffStudentReferralLink(studentId: string) {
+  return postJson(`/api/staff/students/${encodeURIComponent(studentId)}/referral-link/replace`, {}, referralLinkResponseSchema);
 }
 
 export async function requestDiscountApproval(enquiryId: string) {

@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
-import { ApiError, changeStaffStudentPrimaryMobile, getStaffStudentProfile, type SharedMobileMatch, type StaffStudentProfile } from "../../lib/api";
+import { ApiError, changeStaffStudentPrimaryMobile, getStaffStudentProfile, replaceStaffStudentReferralLink, type SharedMobileMatch, type StaffStudentProfile } from "../../lib/api";
 
 export function StudentProfilePage({ studentId }: { studentId: string }) {
   const [profile, setProfile] = useState<StaffStudentProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editingContact, setEditingContact] = useState(false);
+  const [referralBusy, setReferralBusy] = useState(false);
+  const [referralMessage, setReferralMessage] = useState<string | null>(null);
 
   useEffect(() => {
     void getStaffStudentProfile(studentId)
@@ -17,6 +19,28 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
   if (error) return <ErrorState title="Could not load student" message={error} />;
   if (!profile) return <LoadingState label="Loading student profile" />;
   const student = profile.student;
+
+  async function replaceReferralLink() {
+    if (!window.confirm("Replacing this referral link will deactivate the current link. Anyone using the old link will no longer be able to submit a referral. Continue?")) return;
+    setReferralBusy(true);
+    setReferralMessage(null);
+    try {
+      const replaced = await replaceStaffStudentReferralLink(studentId);
+      const nextProfile = await getStaffStudentProfile(studentId);
+      setProfile(nextProfile);
+      setReferralMessage(replaced.created ? "Referral link replaced." : "Referral link was not replaced.");
+    } catch (cause) {
+      setReferralMessage(cause instanceof Error ? cause.message : "Referral link could not be replaced.");
+    } finally {
+      setReferralBusy(false);
+    }
+  }
+
+  async function copyReferralLink(link: string) {
+    if (!navigator.clipboard) return;
+    await navigator.clipboard.writeText(link);
+    setReferralMessage("Referral link copied.");
+  }
 
   return (
     <div className="content-stack staff-enquiries-page">
@@ -47,6 +71,14 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
           }}
         />
       ) : null}
+
+      <ReferralLinkPanel
+        profile={profile}
+        busy={referralBusy}
+        message={referralMessage}
+        onCopy={(link) => void copyReferralLink(link)}
+        onReplace={() => void replaceReferralLink()}
+      />
 
       {profile.canMaintainContact && profile.contactHistory.length > 0 ? (
         <section className="staff-card">
@@ -84,6 +116,46 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
         ))}
       </section>
     </div>
+  );
+}
+
+function ReferralLinkPanel({
+  profile,
+  busy,
+  message,
+  onCopy,
+  onReplace,
+}: {
+  profile: StaffStudentProfile;
+  busy: boolean;
+  message: string | null;
+  onCopy: (link: string) => void;
+  onReplace: () => void;
+}) {
+  const link = profile.referralLink;
+  if (!link) return null;
+  return (
+    <section className="staff-card">
+      <div className="section-heading"><h2>Referral Link</h2>{link.lastFour ? <span>...{link.lastFour}</span> : null}</div>
+      {link.publicUrl ? (
+        <div className="confirmation-box">
+          <small>Your Referral Link</small>
+          <strong>{link.publicUrl}</strong>
+          <small>Activated</small>
+          <strong>{link.activatedAt ? link.activatedAt.slice(0, 10) : "Active"}</strong>
+        </div>
+      ) : (
+        <p>{link.message}</p>
+      )}
+      <div className="form-actions">
+        {link.publicUrl ? <button type="button" onClick={() => onCopy(link.publicUrl || "")}>Copy Link</button> : null}
+        {link.publicUrl ? <a className="button-link" href={link.publicUrl} target="_blank" rel="noreferrer">Open Link</a> : null}
+        {profile.canReplaceReferralLink && link.hasActiveLink ? (
+          <button type="button" className="button-secondary" disabled={busy} onClick={onReplace}>{busy ? "Replacing..." : "Replace Referral Link"}</button>
+        ) : null}
+      </div>
+      {message ? <p className="form-message">{message}</p> : null}
+    </section>
   );
 }
 
