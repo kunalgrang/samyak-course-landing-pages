@@ -369,6 +369,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
       referrerProfileId: student.referrer_profile_id,
       loginAccountId: staff.loginAccountId,
       personId: staff.activePersonId,
+      ownerAuthorized: true,
       now: new Date().toISOString(),
     });
     return jsonPlain(c, {
@@ -640,7 +641,7 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], sta
   ]);
   const primaryMobile = await fullPrimaryMobile(c, String(student.person_id));
   const canMaintainContact = await hasOwnerMaintenanceAccessForBranch(c, staff, String(student.home_branch_id));
-  const referralLink = await studentReferralLinkPayload(c, String(student.person_id));
+  const referralLink = await studentReferralLinkPayload(c, String(student.person_id), canMaintainContact);
   return {
     student,
     primaryMobile: null,
@@ -657,7 +658,7 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], sta
   };
 }
 
-async function studentReferralLinkPayload(c: PortalContext, personId: string) {
+async function studentReferralLinkPayload(c: PortalContext, personId: string, canRecoverFullUrl: boolean) {
   const referrer = await c.env.DB.prepare(
     `select id
      from referrer_profiles
@@ -676,19 +677,23 @@ async function studentReferralLinkPayload(c: PortalContext, personId: string) {
     recoverable: false,
     message: "No active referral link.",
   };
-  const recovered = await getRecoverableReferralLink(referralEnv(c), {
-    link: { id: active.id, organisation_id: active.organisation_id, token_hash: active.token_hash },
-    publicOrigin: REFERRAL_PUBLIC_ORIGIN,
-  });
+  const recovered = canRecoverFullUrl
+    ? await getRecoverableReferralLink(referralEnv(c), {
+        link: { id: active.id, organisation_id: active.organisation_id, token_hash: active.token_hash },
+        publicOrigin: REFERRAL_PUBLIC_ORIGIN,
+      })
+    : null;
   return {
     hasActiveLink: true,
     lastFour: active.token_last_four,
     activatedAt: active.activated_at,
-    publicUrl: recovered.recoverable ? recovered.publicUrl : null,
-    recoverable: recovered.recoverable,
-    message: recovered.recoverable
+    publicUrl: recovered?.recoverable ? recovered.publicUrl : null,
+    recoverable: Boolean(recovered?.recoverable),
+    message: recovered?.recoverable
       ? "Referral link is ready to copy or open."
-      : "This link was created before secure link recovery was enabled. Replace it only when needed.",
+      : canRecoverFullUrl
+        ? "This link was created before secure link recovery was enabled. Replace it only when needed."
+        : "Referral link is active. Full URL is owner-only.",
   };
 }
 

@@ -34,7 +34,11 @@ export class ReferralServiceError extends Error {
   }
 }
 
-export type IssueReferralLinkInput = ActorIdentity & {
+type ReferralLinkActor = ActorIdentity & {
+  ownerAuthorized?: boolean;
+};
+
+export type IssueReferralLinkInput = ReferralLinkActor & {
   organisationId: string;
   referralProgrammeId: string;
   referrerProfileId: string;
@@ -58,7 +62,7 @@ export type IssueReferralLinkResult = {
   };
 };
 
-export type RotateReferralLinkInput = ActorIdentity & {
+export type RotateReferralLinkInput = ReferralLinkActor & {
   organisationId: string;
   referralProgrammeId: string;
   referrerProfileId: string;
@@ -389,7 +393,7 @@ async function assertOrganisationProgrammeAndReferrer(
   referralProgrammeId: string,
   referrerProfileId: string,
   nowIso: string,
-  actor: ActorIdentity,
+  actor: ReferralLinkActor,
 ) {
   const organisation = await repo.findActiveOrganisation(organisationId);
   if (!organisation) throw new ReferralServiceError("invalid_organisation", "Organisation is not active.");
@@ -401,7 +405,7 @@ async function assertOrganisationProgrammeAndReferrer(
   if (!profile || profile.active !== 1 || (!partnerEligible && !personEligible) || profile.eligible !== 1) {
     throw new ReferralServiceError("invalid_referrer", "Referrer is not eligible for this programme.");
   }
-  const actorAllowed = await repo.actorCanUseReferrerProfile(actor, profile);
+  const actorAllowed = actor.ownerAuthorized || await repo.actorCanUseReferrerProfile(actor, profile);
   if (!actorAllowed) throw new ReferralServiceError("invalid_referrer", "Actor cannot use this referrer profile.");
   return { organisation, programme, profile };
 }
