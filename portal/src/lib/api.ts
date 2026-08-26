@@ -67,6 +67,35 @@ const verifyOtpResponseSchema = z.object({
 
 export type VerifyOtpResponse = z.infer<typeof verifyOtpResponseSchema>;
 
+const partnerProfileSchema = z.object({
+  educationPartnerId: z.string(),
+  businessName: z.string(),
+  partnerType: z.string(),
+  branchName: z.string(),
+  status: z.string(),
+});
+
+const partnerSessionSchema = z.object({
+  authenticated: z.boolean(),
+  activePartner: partnerProfileSchema.nullable(),
+  partners: z.array(partnerProfileSchema),
+  mobileLastFour: z.string().optional(),
+  code: z.string().optional(),
+  message: z.string().optional(),
+  requestId: z.string().optional(),
+});
+
+const verifyPartnerOtpResponseSchema = z.object({
+  success: z.boolean(),
+  code: z.string().optional(),
+  message: z.string().optional(),
+  session: partnerSessionSchema.optional(),
+  requestId: z.string(),
+});
+
+export type PartnerSessionResponse = z.infer<typeof partnerSessionSchema>;
+export type VerifyPartnerOtpResponse = z.infer<typeof verifyPartnerOtpResponseSchema>;
+
 const dashboardSchema = z.object({
   success: z.literal(true),
   profile: z.object({
@@ -726,6 +755,56 @@ const educationPartnerLinkSchema = z.object({
   previousLinkId: z.string().nullable().optional(),
 });
 
+const partnerPortalReferralSchema = z.object({
+  reference: z.string(),
+  prospectPublicName: z.string(),
+  courseInterested: z.string(),
+  submittedAt: z.string(),
+  publicStatus: z.string(),
+  admissionStatus: z.string(),
+  commissionStatus: z.string(),
+  approvedCommissionPaise: z.number(),
+  paidCommissionPaise: z.number(),
+  paidAt: z.string().nullable(),
+  paymentMode: z.string().nullable(),
+});
+
+const partnerPortalSchema = z.object({
+  success: z.literal(true),
+  preview: z.boolean().optional(),
+  partner: z.object({
+    businessName: z.string(),
+    contactPersonName: z.string(),
+    partnerType: z.string(),
+    branchName: z.string(),
+    status: z.string(),
+    currentCommissionBasisPoints: z.number(),
+    gstBasisPoints: z.number(),
+    memberSince: z.string(),
+  }),
+  referralLink: z.object({
+    hasActiveLink: z.boolean(),
+    lastFour: z.string().nullable(),
+    activatedAt: z.string().nullable(),
+    publicUrl: z.string().nullable(),
+    recoverable: z.boolean(),
+    message: z.string(),
+  }),
+  summary: z.object({
+    totalReferrals: z.number(),
+    admissions: z.number(),
+    awaitingAdmission: z.number(),
+    awaitingPayment: z.number(),
+    qualified: z.number(),
+    approved: z.number(),
+    paid: z.number(),
+    totalApprovedCommissionPaise: z.number(),
+    totalPaidCommissionPaise: z.number(),
+  }),
+  pagination: z.object({ limit: z.number(), offset: z.number(), total: z.number(), hasMore: z.boolean() }),
+  referrals: z.array(partnerPortalReferralSchema),
+});
+
 const certificateListItemSchema = z.object({
   id: z.string(),
   certificate_number: z.string(),
@@ -822,6 +901,7 @@ export type StaffReferralDetail = z.infer<typeof staffReferralDetailSchema>["ref
 export type EducationPartnerList = z.infer<typeof educationPartnerListSchema>;
 export type EducationPartner = z.infer<typeof educationPartnerSchema>;
 export type EducationPartnerDetail = z.infer<typeof educationPartnerDetailSchema>;
+export type PartnerPortal = z.infer<typeof partnerPortalSchema>;
 
 export class ApiError extends Error {
   code?: string;
@@ -876,6 +956,34 @@ export async function selectProfile(personId: string) {
 
 export async function logout() {
   return postJson("/api/auth/logout", {}, z.object({ success: z.boolean(), requestId: z.string() }));
+}
+
+export async function getPartnerSession() {
+  return getJson("/api/partner/session", partnerSessionSchema);
+}
+
+export async function requestPartnerOtp(mobile: string, turnstileToken: string) {
+  return postJson("/api/partner/auth/request-otp", { mobile, turnstileToken }, requestOtpResponseSchema);
+}
+
+export async function resendPartnerOtp(challengeId: string) {
+  return postJson("/api/partner/auth/resend-otp", { challengeId }, requestOtpResponseSchema);
+}
+
+export async function verifyPartnerOtp(challengeId: string, otp: string) {
+  return postJson("/api/partner/auth/verify-otp", { challengeId, otp }, verifyPartnerOtpResponseSchema);
+}
+
+export async function selectPartnerProfile(educationPartnerId: string) {
+  return postJson("/api/partner/auth/select-profile", { educationPartnerId }, verifyPartnerOtpResponseSchema);
+}
+
+export async function logoutPartner() {
+  return postJson("/api/partner/auth/logout", {}, z.object({ success: z.boolean(), requestId: z.string() }));
+}
+
+export async function getPartnerPortal(params: { limit?: number; offset?: number } = {}) {
+  return getJson(`/api/partner/me${queryString(params)}`, partnerPortalSchema);
 }
 
 export async function getReferralDashboard() {
@@ -1101,6 +1209,10 @@ export async function issueEducationPartnerReferralLink(partnerId: string) {
 
 export async function replaceEducationPartnerReferralLink(partnerId: string) {
   return postJson(`/api/staff/education-partners/${encodeURIComponent(partnerId)}/referral-link/replace`, {}, educationPartnerLinkSchema);
+}
+
+export async function getEducationPartnerPortalPreview(partnerId: string, params: { limit?: number; offset?: number } = {}) {
+  return getJson(`/api/staff/education-partners/${encodeURIComponent(partnerId)}/portal-preview${queryString(params)}`, partnerPortalSchema);
 }
 
 export type CertificateQuery = {

@@ -7,6 +7,7 @@ export type AppRoute =
   | `/app/enquiries/${string}/admission`
   | `/app/students/${string}`
   | `/app/education-partners/${string}`
+  | `/app/education-partners/${string}/preview`
   | `/app/enrolments/${string}/payments`
   | "/app/referral-operations"
   | `/app/referral-operations/${string}`
@@ -16,5 +17,6 @@ export type AppRoute =
   | "/app/referrals"
   | "/app/rules"
   | "/app/profile";
+export type PartnerRoute = "/partner/login" | "/partner/dashboard";
 
-export type RoutePath = "/login" | AppRoute;
+export type RoutePath = "/login" | PartnerRoute | AppRoute;

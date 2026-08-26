@@ -18,6 +18,7 @@ export type StaffContext = {
 export async function requireStaffRoles(c: AppContext, allowedRoles: readonly string[]): Promise<StaffContext | null> {
   const session = await getSessionFromRequest(c);
   if (!session) return null;
+  if (session.record.active_education_partner_id) return null;
   const roles = await getAccountRoles(c, session.record.login_account_id);
   if (!roles.some((role) => allowedRoles.includes(role))) return null;
   return {

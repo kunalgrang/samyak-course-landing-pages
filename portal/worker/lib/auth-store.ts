@@ -26,6 +26,23 @@ export type SessionView = {
   accountRoles?: string[];
 };
 
+export type PartnerProfileChoice = {
+  educationPartnerId: string;
+  businessName: string;
+  partnerType: string;
+  branchName: string;
+  status: string;
+};
+
+export type PartnerSessionView = {
+  authenticated: boolean;
+  activePartner: PartnerProfileChoice | null;
+  partners: PartnerProfileChoice[];
+  mobileLastFour?: string;
+  code?: string;
+  message?: string;
+};
+
 export type AuthenticatedSession = {
   record: SessionRecord;
   tokenHash: string;
@@ -57,6 +74,7 @@ type SessionRecord = {
   id: string;
   login_account_id: string;
   active_person_id: string | null;
+  active_education_partner_id: string | null;
   expires_at: string;
   last_seen_at: string;
   revoked_at: string | null;
@@ -105,6 +123,12 @@ export type PortalLookup = {
   success: true;
   eligible: boolean;
   profiles: PortalProfile[];
+};
+
+export type PartnerPortalLookup = {
+  success: true;
+  eligible: boolean;
+  partners: PartnerProfileChoice[];
 };
 
 export type PortalDashboard = {
@@ -403,16 +427,16 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
   return account.id;
 }
 
-export async function createSession(c: AppContext, loginAccountId: string, activePersonId: string | null) {
+export async function createSession(c: AppContext, loginAccountId: string, activePersonId: string | null, activeEducationPartnerId: string | null = null) {
   const token = createSessionToken();
   const tokenHash = await hmacHex(sessionPepper(c), "session", token);
   const now = new Date().toISOString();
   const fingerprint = await requestFingerprint(c);
   await c.env.DB.prepare(
-    `insert into user_sessions (id, login_account_id, active_person_id, token_hash, created_at, expires_at, last_seen_at, ip_hash, user_agent_hash)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `insert into user_sessions (id, login_account_id, active_person_id, active_education_partner_id, token_hash, created_at, expires_at, last_seen_at, ip_hash, user_agent_hash)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(createOpaqueId("sess"), loginAccountId, activePersonId, tokenHash, now, daysFromNow(30), now, fingerprint.ipHash, fingerprint.userAgentHash)
+    .bind(createOpaqueId("sess"), loginAccountId, activePersonId, activeEducationPartnerId, tokenHash, now, daysFromNow(30), now, fingerprint.ipHash, fingerprint.userAgentHash)
     .run();
   return token;
 }
@@ -468,6 +492,11 @@ export async function getSessionValidationResult(c: AppContext): Promise<Session
   if (record.active_person_id && !(await isLinkedProfileAvailable(c, record.login_account_id, record.active_person_id))) {
     await c.env.DB.prepare("update user_sessions set active_person_id = null where id = ?").bind(record.id).run();
     currentRecord = { ...record, active_person_id: null };
+    await recordSessionResult(c, "SESSION_PROFILE_CLEARED", record.login_account_id);
+  }
+  if (currentRecord.active_education_partner_id && !(await isLinkedPartnerAvailable(c, currentRecord.login_account_id, currentRecord.active_education_partner_id))) {
+    await c.env.DB.prepare("update user_sessions set active_education_partner_id = null where id = ?").bind(currentRecord.id).run();
+    currentRecord = { ...currentRecord, active_education_partner_id: null };
     await recordSessionResult(c, "SESSION_PROFILE_CLEARED", record.login_account_id);
   }
   if (Date.parse(record.last_seen_at) <= now - 6 * 60 * 60_000) {
@@ -592,8 +621,17 @@ export async function requireActiveProfileRole(c: AppContext, allowedRoles: stri
 export async function selectLinkedProfile(c: AppContext, sessionId: string, loginAccountId: string, personId: string) {
   const linked = await isLinkedProfileAvailable(c, loginAccountId, personId);
   if (!linked) return false;
-  await c.env.DB.prepare("update user_sessions set active_person_id = ?, last_seen_at = ? where id = ?")
+  await c.env.DB.prepare("update user_sessions set active_person_id = ?, active_education_partner_id = null, last_seen_at = ? where id = ?")
     .bind(personId, new Date().toISOString(), sessionId)
+    .run();
+  return true;
+}
+
+export async function selectLinkedPartner(c: AppContext, sessionId: string, loginAccountId: string, educationPartnerId: string) {
+  const linked = await isLinkedPartnerAvailable(c, loginAccountId, educationPartnerId);
+  if (!linked) return false;
+  await c.env.DB.prepare("update user_sessions set active_person_id = null, active_education_partner_id = ?, last_seen_at = ? where id = ?")
+    .bind(educationPartnerId, new Date().toISOString(), sessionId)
     .run();
   return true;
 }
@@ -945,6 +983,138 @@ export async function lookupPortalProfilesByMobile(c: AppContext, mobile: string
   return { success: true, eligible: profiles.length > 0, profiles };
 }
 
+export async function educationPartnerMobileHash(c: AppContext, mobile: string) {
+  return hmacHex(sessionPepper(c), "education-partner-mobile", mobile);
+}
+
+export async function lookupEducationPartnersByMobile(c: AppContext, mobile: string): Promise<PartnerPortalLookup> {
+  const hash = await educationPartnerMobileHash(c, mobile);
+  const rows = await c.env.DB.prepare(
+    `select
+       education_partners.id as education_partner_id,
+       education_partners.business_name,
+       education_partners.partner_type,
+       education_partners.status,
+       branches.name as branch_name
+     from education_partners
+     left join branches on branches.id = education_partners.home_branch_id
+     where education_partners.organisation_id = ?
+       and education_partners.mobile_hash = ?
+       and education_partners.status = 'active'
+     order by education_partners.business_name, education_partners.id`,
+  )
+    .bind(ORG_ID, hash)
+    .all<{ education_partner_id: string; business_name: string; partner_type: string; status: string; branch_name: string | null }>();
+  const partners = (rows.results || []).map((row) => ({
+    educationPartnerId: row.education_partner_id,
+    businessName: row.business_name,
+    partnerType: row.partner_type,
+    branchName: row.branch_name || "",
+    status: row.status,
+  }));
+  return { success: true, eligible: partners.length > 0, partners };
+}
+
+export async function bootstrapPartnerAccount(c: AppContext, mobile: string, lookup: PartnerPortalLookup) {
+  const now = new Date().toISOString();
+  const accountHash = await mobileHash(c, mobile);
+  const accountId = createOpaqueId("acct");
+  await c.env.DB.prepare(
+    `insert into login_accounts (
+      id, organisation_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status,
+      last_login_at, created_at, updated_at
+    ) values (?, ?, ?, ?, ?, 1, 'active', ?, ?, ?)
+    on conflict(organisation_id, mobile_normalized) do update set
+      mobile_hash = excluded.mobile_hash,
+      mobile_last_four = excluded.mobile_last_four,
+      last_login_at = excluded.last_login_at,
+      updated_at = excluded.updated_at`,
+  )
+    .bind(accountId, ORG_ID, accountHash, accountHash, mobile.slice(-4), now, now, now)
+    .run();
+  const account = await c.env.DB.prepare("select id from login_accounts where organisation_id = ? and mobile_normalized = ?")
+    .bind(ORG_ID, accountHash)
+    .first<{ id: string }>();
+  if (!account) throw new Error("Partner account bootstrap failed");
+
+  const returnedPartnerIds = new Set(lookup.partners.map((partner) => partner.educationPartnerId));
+  if (returnedPartnerIds.size === 0) throw new Error("Partner account bootstrap requires existing linked partners");
+
+  for (const partnerId of returnedPartnerIds) {
+    await c.env.DB.prepare(
+      `insert into login_account_education_partners (login_account_id, education_partner_id, created_at)
+       values (?, ?, ?)
+       on conflict(login_account_id, education_partner_id) do nothing`,
+    )
+      .bind(account.id, partnerId, now)
+      .run();
+  }
+
+  const existingLinks = await c.env.DB.prepare(
+    `select education_partner_id
+     from login_account_education_partners
+     where login_account_id = ?`,
+  )
+    .bind(account.id)
+    .all<{ education_partner_id: string }>();
+  for (const previous of existingLinks.results || []) {
+    if (returnedPartnerIds.has(previous.education_partner_id)) continue;
+    await c.env.DB.prepare("delete from login_account_education_partners where login_account_id = ? and education_partner_id = ?")
+      .bind(account.id, previous.education_partner_id)
+      .run();
+    await c.env.DB.prepare("update user_sessions set active_education_partner_id = null where login_account_id = ? and active_education_partner_id = ?")
+      .bind(account.id, previous.education_partner_id)
+      .run();
+  }
+
+  return account.id;
+}
+
+export async function partnerSessionView(c: AppContext, loginAccountId: string, activeEducationPartnerId: string | null): Promise<PartnerSessionView> {
+  const account = await c.env.DB.prepare("select mobile_last_four from login_accounts where id = ?")
+    .bind(loginAccountId)
+    .first<{ mobile_last_four: string | null }>();
+  const rows = await c.env.DB.prepare(
+    `select
+       education_partners.id as education_partner_id,
+       education_partners.business_name,
+       education_partners.partner_type,
+       education_partners.status,
+       branches.name as branch_name
+     from login_account_education_partners
+     join education_partners on education_partners.id = login_account_education_partners.education_partner_id
+       and education_partners.organisation_id = ?
+       and education_partners.status = 'active'
+     left join branches on branches.id = education_partners.home_branch_id
+     where login_account_education_partners.login_account_id = ?
+     order by education_partners.business_name, education_partners.id`,
+  )
+    .bind(ORG_ID, loginAccountId)
+    .all<{ education_partner_id: string; business_name: string; partner_type: string; status: string; branch_name: string | null }>();
+  const partners = (rows.results || []).map((row) => ({
+    educationPartnerId: row.education_partner_id,
+    businessName: row.business_name,
+    partnerType: row.partner_type,
+    branchName: row.branch_name || "",
+    status: row.status,
+  }));
+  return {
+    authenticated: true,
+    activePartner: partners.find((partner) => partner.educationPartnerId === activeEducationPartnerId) || null,
+    partners,
+    mobileLastFour: account?.mobile_last_four || undefined,
+  };
+}
+
+export async function requireAuthenticatedPartner(c: AppContext) {
+  const session = await getSessionFromRequest(c);
+  if (!session?.record.active_education_partner_id) return null;
+  if (!(await isLinkedPartnerAvailable(c, session.record.login_account_id, session.record.active_education_partner_id))) return null;
+  const view = await partnerSessionView(c, session.record.login_account_id, session.record.active_education_partner_id);
+  if (!view.activePartner) return null;
+  return { session, view, activePartner: view.activePartner };
+}
+
 function studentLifecycleStatus(studentStatus: string, enrolmentStatuses: string[] = []): "CURRENT" | "ALUMNI" {
   if (enrolmentStatuses.some((status) => ["active", "on_hold", "confirmed", "not_started"].includes(status))) return "CURRENT";
   return ["active", "on_hold", "suspended"].includes(studentStatus) ? "CURRENT" : "ALUMNI";
@@ -1095,6 +1265,22 @@ async function isLinkedProfileAvailable(c: AppContext, loginAccountId: string, p
        and people.status = 'active'`,
   )
     .bind(loginAccountId, personId)
+    .first<{ ok: number }>();
+  return Boolean(linked);
+}
+
+async function isLinkedPartnerAvailable(c: AppContext, loginAccountId: string, educationPartnerId: string) {
+  const linked = await c.env.DB.prepare(
+    `select 1 as ok
+     from login_account_education_partners
+     join education_partners on education_partners.id = login_account_education_partners.education_partner_id
+     where login_account_education_partners.login_account_id = ?
+       and login_account_education_partners.education_partner_id = ?
+       and education_partners.organisation_id = ?
+       and education_partners.status = 'active'
+       and education_partners.mobile_hash is not null`,
+  )
+    .bind(loginAccountId, educationPartnerId, ORG_ID)
     .first<{ ok: number }>();
   return Boolean(linked);
 }
