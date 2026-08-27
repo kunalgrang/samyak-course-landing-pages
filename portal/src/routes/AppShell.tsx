@@ -1,15 +1,15 @@
 import { BrandMark } from "../components/BrandMark";
 import { TrustFooter } from "../components/TrustFooter";
 import type { NavigationItem } from "../app/navigation";
-import type { AppRoute } from "./types";
+import type { RoutePath } from "./types";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 
 type AppShellProps = {
-  activePath: AppRoute;
+  activePath: RoutePath;
   navigation: NavigationItem[];
   children: ReactNode;
-  onNavigate: (path: AppRoute) => void;
+  onNavigate: (path: RoutePath) => void;
   onSignOut: () => void;
 };
 
@@ -26,7 +26,7 @@ export function AppShell({ activePath, navigation, children, onNavigate, onSignO
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [drawerOpen]);
 
-  function navigateAndClose(path: AppRoute) {
+  function navigateAndClose(path: RoutePath) {
     onNavigate(path);
     setDrawerOpen(false);
   }

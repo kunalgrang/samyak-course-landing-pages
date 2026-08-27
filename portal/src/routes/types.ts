@@ -17,6 +17,12 @@ export type AppRoute =
   | "/app/referrals"
   | "/app/rules"
   | "/app/profile";
+export type StudentRoute =
+  | "/student/dashboard"
+  | "/student/certificates"
+  | "/student/referrals"
+  | "/student/rules"
+  | "/student/profile";
 export type PartnerRoute = "/partner/login" | "/partner/dashboard";
 
-export type RoutePath = "/login" | PartnerRoute | AppRoute;
+export type RoutePath = "/login" | "/student/login" | PartnerRoute | AppRoute | StudentRoute;

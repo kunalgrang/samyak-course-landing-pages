@@ -9,6 +9,8 @@ import { useAuth } from "./AuthContext";
 type LoginPageProps = {
   sessionMessage?: string | null;
   onAuthenticated: () => void;
+  title?: string;
+  description?: string;
 };
 
 export const OTP_LENGTH = 4;
@@ -22,7 +24,12 @@ export function isCompleteOtp(value: string) {
   return new RegExp(`^\\d{${OTP_LENGTH}}$`).test(value);
 }
 
-export function LoginPage({ sessionMessage, onAuthenticated }: LoginPageProps) {
+export function LoginPage({
+  sessionMessage,
+  onAuthenticated,
+  title = "Student access",
+  description = "Sign in with the mobile number registered for your Samyak referral profile.",
+}: LoginPageProps) {
   const { setAuthenticatedSession } = useAuth();
   const [mobile, setMobile] = useState("");
   const [otp, setOtp] = useState("");
@@ -210,8 +217,8 @@ export function LoginPage({ sessionMessage, onAuthenticated }: LoginPageProps) {
       <section className="login-shell" aria-labelledby="login-title">
         <BrandMark />
         <div className="login-shell__content">
-          <h1 id="login-title">Student access</h1>
-          <p>Sign in with the mobile number registered for your Samyak referral profile.</p>
+          <h1 id="login-title">{title}</h1>
+          <p>{description}</p>
         </div>
 
         {step === "mobile" ? (

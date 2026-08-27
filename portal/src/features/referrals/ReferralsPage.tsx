@@ -6,7 +6,7 @@ import { generateReferralLink, type ReferralDashboard } from "../../lib/api";
 import { copyReferralLink, formatIndianCurrency } from "./referralUtils";
 import { useReferralDashboard } from "./useReferralDashboard";
 
-export function ReferralsPage() {
+export function ReferralsPage({ rulesPath = "/app/rules" }: { rulesPath?: string }) {
   const { dashboard, error } = useReferralDashboard();
   const [copied, setCopied] = useState(false);
   const [oneTimeLink, setOneTimeLink] = useState<string>("");
@@ -58,6 +58,7 @@ export function ReferralsPage() {
       linkBusy={linkBusy}
       linkError={linkError}
       onGenerate={() => void handleGenerate()}
+      rulesPath={rulesPath}
     />
   );
 }
@@ -71,6 +72,7 @@ export function ReferralsContent({
   linkBusy = false,
   linkError = "",
   onGenerate,
+  rulesPath = "/app/rules",
 }: {
   dashboard: ReferralDashboard;
   copied: boolean;
@@ -80,6 +82,7 @@ export function ReferralsContent({
   linkBusy?: boolean;
   linkError?: string;
   onGenerate?: () => void;
+  rulesPath?: string;
 }) {
   const linkStatus = dashboard.linkStatus;
   const shareableLink = oneTimeLink || linkStatus.publicUrl || "";
@@ -136,7 +139,7 @@ export function ReferralsContent({
       <section className="content-stack" aria-labelledby="referral-list-title">
         <div className="section-heading">
           <h2 id="referral-list-title">Referral status</h2>
-          <a href="/app/rules">Rewards & Benefits</a>
+          <a href={rulesPath}>Rewards & Benefits</a>
         </div>
         {dashboard.referrals.length === 0 ? (
           <EmptyState title="No referrals yet" message="Share your personal link with a friend who may benefit from learning a new skill." />

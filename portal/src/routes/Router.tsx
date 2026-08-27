@@ -22,16 +22,19 @@ import { PaymentsLedgerPage } from "../features/staff/PaymentsLedgerPage";
 import { RulesPage } from "./RulesPage";
 import { ShellHomePage } from "./ShellHomePage";
 import { AppShell } from "./AppShell";
-import type { AppRoute, RoutePath } from "./types";
+import type { AppRoute, RoutePath, StudentRoute } from "./types";
 
 const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/students", "/app/education-partners", "/app/referral-operations", "/app/courses", "/app/discount-approvals", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
+const studentRoutes = new Set<RoutePath>(["/student/dashboard", "/student/certificates", "/student/referrals", "/student/rules", "/student/profile"]);
+const staffBlockedSelfServiceRoutes = new Set<RoutePath>(["/app", "/app/referrals", "/app/rules", "/app/profile"]);
 const staffRoles = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
 const courseAdminRoles = new Set(["owner", "admin", "system_admin"]);
 const discountApproverRoles = new Set(["owner"]);
 
-function normalizePath(pathname: string): RoutePath {
-  if (pathname === "/login") return "/login";
+export function normalizePath(pathname: string): RoutePath {
+  if (pathname === "/login" || pathname === "/student/login") return pathname;
   if (pathname === "/partner/login" || pathname === "/partner/dashboard") return pathname;
+  if (studentRoutes.has(pathname as RoutePath)) return pathname as RoutePath;
   if (appRoutes.has(pathname as RoutePath)) return pathname as RoutePath;
   if (/^\/app\/enquiries\/[^/]+\/admission$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/enquiries\/[^/]+$/.test(pathname)) return pathname as RoutePath;
@@ -52,6 +55,7 @@ export function Router() {
   const isCourseAdmin = Boolean(session?.accountRoles.some((role) => courseAdminRoles.has(role)));
   const isDiscountApprover = canAccessDiscountApprovals(session?.accountRoles || []);
   const navigation = navigationForRoles(session?.accountRoles || [], isStaff);
+  const isStudentPath = path === "/student/login" || path.startsWith("/student/");
 
   useEffect(() => {
     function handlePopState() {
@@ -62,12 +66,21 @@ export function Router() {
   }, []);
 
   useEffect(() => {
-    if (!isLoading && !hasSessionError && path.startsWith("/app") && !isAuthenticated) {
-      navigate("/login", true);
+    if (!isLoading && !hasSessionError && (path.startsWith("/app") || path.startsWith("/student/")) && !isAuthenticated) {
+      navigate(path.startsWith("/student/") ? "/student/login" : "/login", true);
     }
   }, [hasSessionError, isAuthenticated, isLoading, path]);
 
   useEffect(() => {
+    if (!isLoading && isAuthenticated && path === "/student/login") {
+      navigate("/student/dashboard", true);
+    }
+    if (!isLoading && isAuthenticated && isStaff && path.startsWith("/student/")) {
+      navigate("/app/enquiries", true);
+    }
+    if (!isLoading && isAuthenticated && isStaff && staffBlockedSelfServiceRoutes.has(path)) {
+      navigate("/app/enquiries", true);
+    }
     if (!isLoading && isAuthenticated && (path === "/app/enquiries" || path.startsWith("/app/enquiries/")) && !canAccessEnquiries) {
       navigate("/app", true);
     }
@@ -90,6 +103,10 @@ export function Router() {
 
   const activeAppPath = useMemo<AppRoute>(
     () => (path.startsWith("/app") ? (path as AppRoute) : "/app"),
+    [path],
+  );
+  const activeStudentPath = useMemo<StudentRoute>(
+    () => (path.startsWith("/student/") && path !== "/student/login" ? (path as StudentRoute) : "/student/dashboard"),
     [path],
   );
   const enquiryAdmissionMatch = activeAppPath.match(/^\/app\/enquiries\/([^/]+)\/admission$/);
@@ -132,6 +149,9 @@ export function Router() {
   }
 
   if (path === "/login" || !isAuthenticated) {
+    if (path === "/student/login" || isStudentPath) {
+      return <LoginPage sessionMessage={sessionMessage} onAuthenticated={() => navigate("/student/dashboard", true)} />;
+    }
     if (path === "/partner/login") {
       return <PartnerLoginPage sessionMessage={sessionMessage} onAuthenticated={() => navigate("/partner/dashboard", true)} />;
     }
@@ -146,6 +166,18 @@ export function Router() {
   }
   if (path === "/partner/dashboard") {
     return <PartnerPortalPage mode="self" onNavigate={navigate} />;
+  }
+
+  if (path.startsWith("/student/") && !isStaff) {
+    return (
+      <AppShell activePath={activeStudentPath} navigation={studentNavigation} onNavigate={navigate} onSignOut={handleSignOut}>
+        {activeStudentPath === "/student/dashboard" ? <ShellHomePage referralPath="/student/referrals" profilePath="/student/profile" /> : null}
+        {activeStudentPath === "/student/certificates" ? <CertificatesPage /> : null}
+        {activeStudentPath === "/student/referrals" ? <ReferralsPage rulesPath="/student/rules" /> : null}
+        {activeStudentPath === "/student/rules" ? <RulesPage /> : null}
+        {activeStudentPath === "/student/profile" ? <ProfilePage /> : null}
+      </AppShell>
+    );
   }
 
   return (
