@@ -6,13 +6,13 @@ import { firstName } from "../features/referrals/referralUtils";
 import { useStudentHome } from "../features/student/useStudentHome";
 import type { StudentHome } from "../lib/api";
 
-export function ShellHomePage() {
+export function ShellHomePage({ referralPath = "/app/referrals", profilePath = "/app/profile" }: { referralPath?: string; profilePath?: string }) {
   const { session } = useAuth();
   const hasStudentProfile = session?.activeProfile?.hasStudentProfile ?? true;
   const { home, error } = useStudentHome(0, hasStudentProfile);
 
   if (!hasStudentProfile) {
-    return <ReferralOnlyHome publicName={session?.activeProfile?.publicName || "there"} />;
+    return <ReferralOnlyHome publicName={session?.activeProfile?.publicName || "there"} referralPath={referralPath} />;
   }
 
   if (error) {
@@ -23,10 +23,10 @@ export function ShellHomePage() {
     return <LoadingState label="Loading your student dashboard" />;
   }
 
-  return <OverviewContent home={home} />;
+  return <OverviewContent home={home} referralPath={referralPath} profilePath={profilePath} />;
 }
 
-function ReferralOnlyHome({ publicName }: { publicName: string }) {
+function ReferralOnlyHome({ publicName, referralPath }: { publicName: string; referralPath: string }) {
   return (
     <div className="content-stack">
       <header className="overview-hero">
@@ -34,7 +34,7 @@ function ReferralOnlyHome({ publicName }: { publicName: string }) {
           <h1>Hi, {firstName(publicName)}</h1>
           <p>Welcome back to Samyak Skill Circle.</p>
         </div>
-        <a className="button-link button-link--primary" href="/app/referrals">
+        <a className="button-link button-link--primary" href={referralPath}>
           My Referrals
         </a>
       </header>
@@ -46,7 +46,7 @@ function ReferralOnlyHome({ publicName }: { publicName: string }) {
           <p>Your referral tools and activity are available in My Referrals.</p>
         </div>
         <div className="link-actions">
-          <a className="button-link" href="/app/referrals">
+          <a className="button-link" href={referralPath}>
             Open Referrals
           </a>
         </div>
@@ -55,7 +55,7 @@ function ReferralOnlyHome({ publicName }: { publicName: string }) {
   );
 }
 
-export function OverviewContent({ home }: { home: StudentHome }) {
+export function OverviewContent({ home, referralPath = home.skillCircle.referralDashboardPath, profilePath = "/app/profile" }: { home: StudentHome; referralPath?: string; profilePath?: string }) {
   const recentCourses = home.courseHistory.slice(0, 3);
   const currentCourses = home.courseHistory.filter((course) => ["active", "on_hold", "confirmed", "not_started"].includes(course.status)).length;
 
@@ -68,7 +68,7 @@ export function OverviewContent({ home }: { home: StudentHome }) {
             {home.identity.studentId} - {studentStatusLabel(home.identity.lifecycleStatus, home.identity.studentStatus)}
           </p>
         </div>
-        <a className="button-link button-link--primary" href="/app/referrals">
+        <a className="button-link button-link--primary" href={referralPath}>
           My Referrals
         </a>
       </header>
@@ -87,7 +87,7 @@ export function OverviewContent({ home }: { home: StudentHome }) {
           <p>{home.skillCircle.message}</p>
         </div>
         <div className="link-actions">
-          <a className="button-link" href={home.skillCircle.referralDashboardPath}>
+          <a className="button-link" href={referralPath}>
             Open Referrals
           </a>
         </div>
@@ -96,7 +96,7 @@ export function OverviewContent({ home }: { home: StudentHome }) {
       <section className="content-stack" aria-labelledby="course-history-title">
         <div className="section-heading">
           <h2 id="course-history-title">Course history</h2>
-          <a href="/app/profile">Profile</a>
+          <a href={profilePath}>Profile</a>
         </div>
         {recentCourses.length === 0 ? (
           <EmptyState title="No courses found" message="Your imported course history will appear here after it is available." />

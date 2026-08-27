@@ -5,6 +5,7 @@ import {
   CrmContactLine,
   EnquirySuccessNotice,
   assignedCounsellorLabel,
+  buildFollowUpPayload,
   buildCreateEnquiryInput,
   canLogCrmFollowUp,
   createEnquirySuccessMessage,
@@ -22,6 +23,8 @@ import {
   isTerminalPipelineStage,
   queueOptions,
   sanitizeLogForm,
+  validateLogForm,
+  followUpErrorMessage,
   toIsoDateTime,
   toIstDateTimeLocal,
   type EnquiryPageState,
@@ -29,7 +32,7 @@ import {
 } from "./EnquiriesPage";
 import { StaffAssigneeOptions, StaffCrmContactPanel, staffDisplayLabel } from "./EnquiryDetailPage";
 import { NotificationToast, nextNotification } from "../../components/NotificationToast";
-import type { CreateEnquiryResponse, CrmEnquiryItem, EnquiryOptions, StudentSearchResult } from "../../lib/api";
+import { ApiError, type CreateEnquiryResponse, type CrmEnquiryItem, type EnquiryOptions, type StudentSearchResult } from "../../lib/api";
 
 const singleBranchOptions: EnquiryOptions = {
   branches: [{ id: "branch_sion", code: "SION", name: "Sion" }],
@@ -313,6 +316,53 @@ describe("CRM queue and converted enquiry navigation", () => {
 });
 
 describe("CRM follow-up form state", () => {
+  it("serializes the production follow-up scenario with IST conversion and blank expected joining as null", () => {
+    expect(buildFollowUpPayload({
+      channel: "call",
+      outcome: "call_connected",
+      pipelineStage: "engaged",
+      nextFollowUpAt: "2026-09-04T15:00",
+      expectedJoiningDate: "",
+      closedReason: "",
+      note: "Internal note",
+    })).toEqual({
+      channel: "call",
+      outcome: "call_connected",
+      note: "Internal note",
+      pipelineStage: "engaged",
+      nextFollowUpAt: "2026-09-04T09:30:00.000Z",
+      expectedJoiningDate: null,
+      closedReason: null,
+    });
+  });
+
+  it("aligns deferred joining with Deferred stage and requires both deferred dates before POST", () => {
+    const productionSelection = sanitizeLogForm({
+      channel: "call",
+      outcome: "deferred_joining",
+      pipelineStage: "engaged",
+      nextFollowUpAt: "2026-09-04T15:00",
+      expectedJoiningDate: "",
+      closedReason: "",
+      note: "Internal note",
+    });
+
+    expect(productionSelection.pipelineStage).toBe("deferred");
+    expect(validateLogForm(productionSelection)).toBe("Expected joining date is required for Deferred Joining.");
+    expect(validateLogForm({ ...productionSelection, expectedJoiningDate: "2026-09-20", nextFollowUpAt: "" })).toBe("Next follow-up is required for Deferred Joining.");
+    expect(buildFollowUpPayload({ ...productionSelection, expectedJoiningDate: "2026-09-20" })).toMatchObject({
+      outcome: "deferred_joining",
+      pipelineStage: "deferred",
+      nextFollowUpAt: "2026-09-04T09:30:00.000Z",
+      expectedJoiningDate: "2026-09-20",
+    });
+  });
+
+  it("surfaces safe backend follow-up validation messages", () => {
+    expect(followUpErrorMessage(new ApiError("Deferred joining must use the Deferred pipeline stage.", undefined, "invalid_pipeline"))).toBe("Deferred joining must use the Deferred pipeline stage.");
+    expect(followUpErrorMessage(new Error("network"))).toBe("Could not save follow-up. Please try again.");
+  });
+
   it("clears hidden lost reason when stage changes away from lost", () => {
     expect(sanitizeLogForm({
       channel: "call",

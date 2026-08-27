@@ -965,6 +965,10 @@ a:focus-visible {
     width: min(100%, 1240px);
   }
 
+  .page-content:has(.partner-portal-page) {
+    width: min(100%, 1240px);
+  }
+
   .mobile-drawer,
   .mobile-drawer-backdrop {
     display: none;

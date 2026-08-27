@@ -234,9 +234,8 @@ export function validatePipelineUpdate(input: {
   if (input.nextFollowUpAt && Date.parse(input.nextFollowUpAt) <= Date.parse(nowIso)) return "Next follow-up must be in the future.";
   if (input.preferredJoiningDate && !isValidDateOnly(input.preferredJoiningDate)) return "Expected joining date is invalid.";
   if (input.preferredJoiningDate && !hasFutureDate(input.preferredJoiningDate, nowIso)) return "Expected joining date cannot be in the past.";
-  if (input.nextStage === "deferred" && (!input.preferredJoiningDate || !input.nextFollowUpAt)) {
-    return "Deferred enquiries require expected joining and next follow-up dates.";
-  }
+  if (input.nextStage === "deferred" && !input.preferredJoiningDate) return "Expected joining date is required for Deferred Joining.";
+  if (input.nextStage === "deferred" && !input.nextFollowUpAt) return "Next follow-up is required for Deferred Joining.";
   if (input.nextStage === "lost" && !input.closedReason) return "Lost enquiries require a closed reason.";
   if (["not_interested", "joined_elsewhere"].includes(input.outcome || "") && input.nextStage !== "lost") return "This outcome must close the enquiry as Lost.";
   if (input.outcome === "invalid_contact" && input.nextStage !== "invalid") return "Invalid contact must use the Invalid pipeline stage.";

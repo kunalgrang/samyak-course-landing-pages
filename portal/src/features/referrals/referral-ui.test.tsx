@@ -240,6 +240,16 @@ describe("student referral portal UI", () => {
 
   it("uses student-facing navigation labels", () => {
     expect(appNavigation.map((item) => item.label)).toEqual(["Overview", "My Referrals", "Rewards & Benefits", "My Profile"]);
+    expect(studentNavigation.map((item) => item.path)).toEqual([
+      "/student/dashboard",
+      "/student/certificates",
+      "/student/referrals",
+      "/student/rules",
+      "/student/profile",
+    ]);
+    expect(staffNavigation.map((item) => item.label)).not.toContain("My Referrals");
+    expect(staffNavigation.map((item) => item.label)).not.toContain("Rewards & Benefits");
+    expect(staffNavigation.map((item) => item.label)).not.toContain("My Profile");
   });
 
   it("keeps staff mobile navigation in a drawer instead of the bottom tab row", () => {
