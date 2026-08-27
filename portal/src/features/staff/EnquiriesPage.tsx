@@ -4,6 +4,7 @@ import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
 import { NotificationToast, nextNotification, type AppNotification } from "../../components/NotificationToast";
 import {
+  ApiError,
   createEnquiry,
   getEnquiryOptions,
   getCrmEnquiries,
@@ -185,33 +186,22 @@ export function EnquiriesPage() {
     event.preventDefault();
     if (loggingFollowUpId) return;
     const sanitized = sanitizeLogForm(logForm);
-    if (sanitized.pipelineStage === "lost" && !sanitized.closedReason) {
-      showNotification("error", "Lost reason is required.");
+    const validationMessage = validateLogForm(sanitized);
+    if (validationMessage) {
+      showNotification("error", validationMessage);
       setLogForm(sanitized);
       return;
     }
-    if (sanitized.nextFollowUpAt && !isQuarterHourLocalInput(sanitized.nextFollowUpAt)) {
-      showNotification("error", "Next follow-up must use 15-minute increments.");
-      setLogForm(sanitized);
-      return;
-    }
+    const payload = buildFollowUpPayload(sanitized);
     setLoggingFollowUpId(enquiry.enquiry.id);
     try {
-      await recordEnquiryFollowUp(enquiry.enquiry.id, {
-        channel: sanitized.channel,
-        outcome: sanitized.outcome,
-        note: sanitized.note || null,
-        pipelineStage: sanitized.pipelineStage,
-        nextFollowUpAt: toIsoDateTime(sanitized.nextFollowUpAt),
-        expectedJoiningDate: sanitized.expectedJoiningDate || null,
-        closedReason: sanitized.pipelineStage === "lost" ? sanitized.closedReason || null : null,
-      });
+      await recordEnquiryFollowUp(enquiry.enquiry.id, payload);
       setActiveLogId(null);
       setLogForm(initialLogForm());
       await loadCrmQueue();
-      showNotification("success", sanitized.nextFollowUpAt ? `Follow-up saved. Next follow-up scheduled for ${formatDateTime(toIsoDateTime(sanitized.nextFollowUpAt))}.` : "Follow-up saved.");
+      showNotification("success", payload.nextFollowUpAt ? `Follow-up saved. Next follow-up scheduled for ${formatDateTime(payload.nextFollowUpAt)}.` : "Follow-up saved.");
     } catch (reason) {
-      showNotification("error", "Could not save follow-up. Please try again.");
+      showNotification("error", followUpErrorMessage(reason));
     } finally {
       setLoggingFollowUpId(null);
     }
@@ -312,7 +302,7 @@ export function EnquiriesPage() {
                 {activeLogId === item.enquiry.id ? (
                   <form className="staff-form crm-log-form" onSubmit={(event) => void handleLogFollowUp(event, item)}>
                     <label>Channel<select value={logForm.channel} onChange={(event) => setLogForm((current) => ({ ...current, channel: event.target.value }))}><option value="call">Call</option><option value="whatsapp">WhatsApp</option><option value="in_person">In person</option><option value="email">Email</option><option value="other">Other</option></select></label>
-                    <label>Outcome<select value={logForm.outcome} onChange={(event) => setLogForm((current) => ({ ...current, outcome: event.target.value }))}>{followUpOutcomes.map((outcome) => <option key={outcome} value={outcome}>{formatLabel(outcome)}</option>)}</select></label>
+                    <label>Outcome<select value={logForm.outcome} onChange={(event) => setLogForm((current) => sanitizeLogForm({ ...current, outcome: event.target.value }))}>{followUpOutcomes.map((outcome) => <option key={outcome} value={outcome}>{formatLabel(outcome)}</option>)}</select></label>
                     <label>Pipeline<select value={logForm.pipelineStage} onChange={(event) => setLogForm((current) => sanitizeLogForm({ ...current, pipelineStage: event.target.value }))}>{pipelineStages.map((stage) => <option key={stage} value={stage}>{formatLabel(stage)}</option>)}</select></label>
                     {isTerminalPipelineStage(logForm.pipelineStage) ? <p className="crm-terminal-note">No active next follow-up for terminal stages.</p> : <label>Next follow-up<input type="datetime-local" step={900} value={logForm.nextFollowUpAt} onChange={(event) => setLogForm((current) => ({ ...current, nextFollowUpAt: event.target.value }))} /></label>}
                     <label>Expected joining<input type="date" value={logForm.expectedJoiningDate} onChange={(event) => setLogForm((current) => ({ ...current, expectedJoiningDate: event.target.value }))} /></label>
@@ -514,12 +504,55 @@ function initialLogForm() {
 type LogFormState = ReturnType<typeof initialLogForm>;
 
 export function sanitizeLogForm(form: LogFormState): LogFormState {
-  const terminal = isTerminalPipelineStage(form.pipelineStage);
+  const pipelineStage = pipelineStageForOutcome(form.outcome, form.pipelineStage);
+  const terminal = isTerminalPipelineStage(pipelineStage);
   return {
     ...form,
+    pipelineStage,
     nextFollowUpAt: terminal ? "" : form.nextFollowUpAt,
-    closedReason: form.pipelineStage === "lost" ? form.closedReason : "",
+    closedReason: pipelineStage === "lost" ? form.closedReason || lostReasonForOutcome(form.outcome) : "",
   };
+}
+
+export function buildFollowUpPayload(form: LogFormState) {
+  const sanitized = sanitizeLogForm(form);
+  return {
+    channel: sanitized.channel,
+    outcome: sanitized.outcome,
+    note: sanitized.note || null,
+    pipelineStage: sanitized.pipelineStage,
+    nextFollowUpAt: toIsoDateTime(sanitized.nextFollowUpAt),
+    expectedJoiningDate: sanitized.expectedJoiningDate || null,
+    closedReason: sanitized.pipelineStage === "lost" ? sanitized.closedReason || null : null,
+  };
+}
+
+export function validateLogForm(form: LogFormState) {
+  const sanitized = sanitizeLogForm(form);
+  if (sanitized.pipelineStage === "lost" && !sanitized.closedReason) return "Lost reason is required.";
+  if (sanitized.pipelineStage === "deferred" && (!sanitized.expectedJoiningDate || !sanitized.nextFollowUpAt)) {
+    return "Deferred joining requires expected joining and next follow-up dates.";
+  }
+  if (sanitized.nextFollowUpAt && !isQuarterHourLocalInput(sanitized.nextFollowUpAt)) {
+    return "Next follow-up must use 15-minute increments.";
+  }
+  return null;
+}
+
+export function followUpErrorMessage(reason: unknown) {
+  if (reason instanceof ApiError && reason.message) return reason.message;
+  return "Could not save follow-up. Please try again.";
+}
+
+function pipelineStageForOutcome(outcome: string, currentStage: string) {
+  if (outcome === "deferred_joining") return "deferred";
+  if (outcome === "not_interested" || outcome === "joined_elsewhere") return "lost";
+  if (outcome === "invalid_contact") return "invalid";
+  return currentStage;
+}
+
+function lostReasonForOutcome(outcome: string) {
+  return outcome === "not_interested" || outcome === "joined_elsewhere" ? outcome : "";
 }
 
 export function isTerminalPipelineStage(stage: string) {

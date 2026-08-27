@@ -267,6 +267,55 @@ describe("staff enquiry CRM route contact exposure", () => {
     expect(body.items[0].admission).toMatchObject({ convertedEnrolmentId: null, paymentLedgerAvailable: false, studentId: null });
   });
 
+  it("returns the clear backend validation error for the exact production follow-up mismatch", async () => {
+    const app = routeApp();
+    const db = crmDb([enquiry({ id: "enq_prod", pipeline_stage: "new", preferred_joining_date: null })]);
+    const response = await app.request("http://localhost/api/staff/enquiries/enq_prod/follow-ups", {
+      method: "POST",
+      headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        channel: "call",
+        outcome: "deferred_joining",
+        pipelineStage: "engaged",
+        nextFollowUpAt: "2026-09-04T09:30:00.000Z",
+        expectedJoiningDate: null,
+        note: "Internal note",
+        closedReason: null,
+      }),
+    }, env(db));
+    const body = await response.json() as { error: { code: string; message: string } };
+
+    expect(response.status).toBe(400);
+    expect(body.error).toMatchObject({
+      code: "invalid_pipeline",
+      message: "Deferred joining must use the Deferred pipeline stage.",
+    });
+  });
+
+  it("accepts Deferred Joining follow-ups when expected joining and next follow-up are aligned", async () => {
+    const app = routeApp();
+    const db = crmDb([enquiry({ id: "enq_prod", pipeline_stage: "new", preferred_joining_date: null })]);
+    const response = await app.request("http://localhost/api/staff/enquiries/enq_prod/follow-ups", {
+      method: "POST",
+      headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        channel: "call",
+        outcome: "deferred_joining",
+        pipelineStage: "deferred",
+        nextFollowUpAt: "2026-09-04T09:30:00.000Z",
+        expectedJoiningDate: "2026-09-20",
+        note: "Internal note",
+        closedReason: null,
+      }),
+    }, env(db));
+    const body = await response.json() as { success: boolean; enquiryId: string; eventId: string };
+
+    expect(response.status).toBe(201);
+    expect(body).toMatchObject({ success: true, enquiryId: "enq_prod", eventId: "enqevt_test" });
+    expect(db.batchSql.some((sql) => sql.includes("insert into enquiry_follow_up_events"))).toBe(true);
+    expect(db.batchSql.some((sql) => sql.includes("update enquiries"))).toBe(true);
+  });
+
   it("executes the generated CRM SELECT against production-shaped admission tables", async () => {
     const app = routeApp();
     const db = productionShapeCrmDb();
@@ -432,9 +481,14 @@ function productionShapeCrmDb() {
 function crmDb(rows: EnquiryCrmRow[]) {
   return {
     seenSql: [] as string[],
+    batchSql: [] as string[],
     prepare(sql: string) {
       this.seenSql.push(sql);
       return statement(sql, rows);
+    },
+    async batch(statements: Array<{ sql?: string; run: () => Promise<unknown> }>) {
+      this.batchSql.push(...statements.map((statement) => statement.sql || ""));
+      return Promise.all(statements.map((statement) => statement.run()));
     },
   };
 }
@@ -442,6 +496,7 @@ function crmDb(rows: EnquiryCrmRow[]) {
 function statement(sql: string, rows: EnquiryCrmRow[]) {
   let values: unknown[] = [];
   return {
+    sql,
     bind(...params: unknown[]) {
       values = params;
       return this;
