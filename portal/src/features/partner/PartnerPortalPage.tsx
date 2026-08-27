@@ -56,6 +56,45 @@ export function PartnerPortalPage({
   if (error || !data) return <ErrorState title="Could not load partner portal" message={mode === "preview" ? "This preview may be unavailable to your account." : "Please sign in again."} />;
 
   return (
+    <PartnerPortalContent
+      data={data}
+      mode={mode}
+      partnerId={partnerId}
+      copied={copied}
+      actionError={actionError}
+      onCopyLink={() => void copyLink()}
+      onSignOut={() => void signOut()}
+      onNavigate={onNavigate}
+      onPage={(nextOffset) => setOffset(nextOffset)}
+      onRefresh={() => void refresh()}
+    />
+  );
+}
+
+export function PartnerPortalContent({
+  data,
+  mode,
+  partnerId,
+  copied,
+  actionError,
+  onCopyLink,
+  onSignOut,
+  onNavigate,
+  onPage,
+  onRefresh,
+}: {
+  data: PartnerPortal;
+  mode: "self" | "preview";
+  partnerId?: string;
+  copied: boolean;
+  actionError?: string;
+  onCopyLink: () => void;
+  onSignOut: () => void;
+  onNavigate: (path: RoutePath) => void;
+  onPage: (offset: number) => void;
+  onRefresh: () => void;
+}) {
+  return (
     <div className="content-stack partner-portal-page">
       {mode === "preview" ? (
         <section className="preview-banner" aria-label="Partner portal preview">
@@ -72,7 +111,7 @@ export function PartnerPortalPage({
           <h1>{data.partner.businessName}</h1>
           <p>{label(data.partner.partnerType)} · {data.partner.branchName || "Samyak"} · {label(data.partner.status)}</p>
         </div>
-        {mode === "self" ? <button type="button" className="secondary-button" onClick={() => void signOut()}>Sign Out</button> : null}
+        {mode === "self" ? <button type="button" className="secondary-button" onClick={onSignOut}>Sign Out</button> : null}
       </header>
 
       <section className="metric-grid" aria-label="Partner summary">
@@ -90,13 +129,13 @@ export function PartnerPortalPage({
         <article className="staff-card partner-link-card">
           <div className="section-heading">
             <h2>Referral Link</h2>
-            <span>{data.referralLink.hasActiveLink ? "Active" : "Unavailable"}</span>
+            <span className="partner-status-chip">{data.referralLink.hasActiveLink ? "Active" : "Unavailable"}</span>
           </div>
           {data.referralLink.publicUrl ? (
             <div className="partner-link-panel">
               <p className="partner-link-value" title={data.referralLink.publicUrl} aria-label="Current public referral URL">{data.referralLink.publicUrl}</p>
               <div className="referral-contact-actions">
-                <button type="button" className="primary-button" onClick={() => void copyLink()}>{copied ? "Copied" : "Copy Link"}</button>
+                <button type="button" className="primary-button" onClick={onCopyLink}>{copied ? "Copied" : "Copy Link"}</button>
                 <a className="secondary-button partner-link-open" href={data.referralLink.publicUrl} target="_blank" rel="noopener noreferrer">Open Link</a>
               </div>
               <p className="copy-feedback" aria-live="polite">{copied ? "Referral link copied." : ""}</p>
@@ -104,16 +143,20 @@ export function PartnerPortalPage({
           ) : (
             <p className="staff-empty">{data.referralLink.message}</p>
           )}
-          {data.referralLink.lastFour ? <DetailField label="Last four" value={data.referralLink.lastFour} /> : null}
-          {data.referralLink.activatedAt ? <DetailField label="Activated" value={formatDate(data.referralLink.activatedAt)} /> : null}
+          <div className="partner-link-meta" aria-label="Referral link metadata">
+            {data.referralLink.lastFour ? <DetailField label="Last four" value={data.referralLink.lastFour} /> : null}
+            {data.referralLink.activatedAt ? <DetailField label="Activated" value={formatDate(data.referralLink.activatedAt)} /> : null}
+          </div>
           {actionError ? <p className="form-error">{actionError}</p> : null}
         </article>
 
-        <article className="staff-card">
+        <article className="staff-card partner-terms-card">
           <h2>Commercial Terms</h2>
-          <DetailField label="Commission" value={bpsToPercent(data.partner.currentCommissionBasisPoints)} />
-          <DetailField label="GST basis" value={bpsToPercent(data.partner.gstBasisPoints)} />
-          <DetailField label="Member since" value={formatDate(data.partner.memberSince)} />
+          <div className="partner-terms-list">
+            <DetailField label="Commission" value={bpsToPercent(data.partner.currentCommissionBasisPoints)} />
+            <DetailField label="GST basis" value={bpsToPercent(data.partner.gstBasisPoints)} />
+            <DetailField label="Member since" value={formatDate(data.partner.memberSince)} />
+          </div>
           <p className="partner-commission-helper">Commission is calculated on course fee before GST. Changes made by Samyak apply to new referrals only.</p>
         </article>
       </section>
@@ -145,12 +188,14 @@ export function PartnerPortalPage({
             ))}
           </div>
         )}
-        <div className="certificate-pagination">
-          <button type="button" className="secondary-button" disabled={data.pagination.offset === 0} onClick={() => setOffset((value) => Math.max(0, value - PAGE_SIZE))}>Previous</button>
-          <span>{data.pagination.offset + 1}-{data.pagination.offset + data.referrals.length}</span>
-          <button type="button" className="secondary-button" disabled={!data.pagination.hasMore} onClick={() => setOffset((value) => value + PAGE_SIZE)}>Next</button>
-          <button type="button" className="secondary-button" onClick={() => void refresh()}>Refresh</button>
-        </div>
+        {data.pagination.total > PAGE_SIZE ? (
+          <div className="certificate-pagination">
+            <button type="button" className="secondary-button" disabled={data.pagination.offset === 0} onClick={() => onPage(Math.max(0, data.pagination.offset - PAGE_SIZE))}>Previous</button>
+            <span>{data.pagination.offset + 1}-{data.pagination.offset + data.referrals.length}</span>
+            <button type="button" className="secondary-button" disabled={!data.pagination.hasMore} onClick={() => onPage(data.pagination.offset + PAGE_SIZE)}>Next</button>
+            <button type="button" className="secondary-button" onClick={onRefresh}>Refresh</button>
+          </div>
+        ) : null}
       </section>
     </div>
   );
