@@ -31,6 +31,18 @@ const staffRoles = new Set(["owner", "admin", "system_admin", "counsellor", "adm
 const courseAdminRoles = new Set(["owner", "admin", "system_admin"]);
 const discountApproverRoles = new Set(["owner"]);
 
+type RedirectState = {
+  path: RoutePath;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  hasSessionError: boolean;
+  isStaff: boolean;
+  canAccessEnquiries: boolean;
+  canAccessStudents: boolean;
+  isCourseAdmin: boolean;
+  isDiscountApprover: boolean;
+};
+
 export function normalizePath(pathname: string): RoutePath {
   if (pathname === "/login" || pathname === "/student/login") return pathname;
   if (pathname === "/partner/login" || pathname === "/partner/dashboard") return pathname;
@@ -66,40 +78,19 @@ export function Router() {
   }, []);
 
   useEffect(() => {
-    if (!isLoading && !hasSessionError && (path.startsWith("/app") || path.startsWith("/student/")) && !isAuthenticated) {
-      navigate(path.startsWith("/student/") ? "/student/login" : "/login", true);
-    }
-  }, [hasSessionError, isAuthenticated, isLoading, path]);
-
-  useEffect(() => {
-    if (!isLoading && isAuthenticated && path === "/student/login") {
-      navigate("/student/dashboard", true);
-    }
-    if (!isLoading && isAuthenticated && isStaff && path.startsWith("/student/")) {
-      navigate("/app/enquiries", true);
-    }
-    if (!isLoading && isAuthenticated && isStaff && staffBlockedSelfServiceRoutes.has(path)) {
-      navigate("/app/enquiries", true);
-    }
-    if (!isLoading && isAuthenticated && (path === "/app/enquiries" || path.startsWith("/app/enquiries/")) && !canAccessEnquiries) {
-      navigate("/app", true);
-    }
-    if (!isLoading && isAuthenticated && (path === "/app/students" || path.startsWith("/app/students/")) && !canAccessStudents) {
-      navigate("/app", true);
-    }
-    if (!isLoading && isAuthenticated && (path === "/app/education-partners" || path === "/app/referral-operations" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/education-partners/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/enrolments/")) && !isStaff) {
-      navigate("/app", true);
-    }
-    if (!isLoading && isAuthenticated && /^\/app\/education-partners\/[^/]+\/preview$/.test(path) && !isDiscountApprover) {
-      navigate("/app", true);
-    }
-    if (!isLoading && isAuthenticated && path === "/app/courses" && !isCourseAdmin) {
-      navigate("/app/enquiries", true);
-    }
-    if (!isLoading && isAuthenticated && path === "/app/discount-approvals" && !isDiscountApprover) {
-      navigate("/app/enquiries", true);
-    }
-  }, [canAccessEnquiries, canAccessStudents, isAuthenticated, isCourseAdmin, isDiscountApprover, isLoading, isStaff, path]);
+    const redirect = redirectForRouteState({
+      path,
+      isAuthenticated,
+      isLoading,
+      hasSessionError,
+      isStaff,
+      canAccessEnquiries,
+      canAccessStudents,
+      isCourseAdmin,
+      isDiscountApprover,
+    });
+    if (redirect && redirect !== path) navigate(redirect, true);
+  }, [canAccessEnquiries, canAccessStudents, hasSessionError, isAuthenticated, isCourseAdmin, isDiscountApprover, isLoading, isStaff, path]);
 
   const activeAppPath = useMemo<AppRoute>(
     () => (path.startsWith("/app") ? (path as AppRoute) : "/app"),
@@ -127,6 +118,11 @@ export function Router() {
   async function handleSignOut() {
     await signOut();
     navigate("/login", true);
+  }
+
+  async function handleStudentSignOut() {
+    await signOut();
+    navigate("/student/login", true);
   }
 
   if (isLoading) {
@@ -170,7 +166,7 @@ export function Router() {
 
   if (path.startsWith("/student/") && !isStaff) {
     return (
-      <AppShell activePath={activeStudentPath} navigation={studentNavigation} onNavigate={navigate} onSignOut={handleSignOut}>
+      <AppShell activePath={activeStudentPath} navigation={studentNavigation} onNavigate={navigate} onSignOut={handleStudentSignOut}>
         {activeStudentPath === "/student/dashboard" ? <ShellHomePage referralPath="/student/referrals" profilePath="/student/profile" /> : null}
         {activeStudentPath === "/student/certificates" ? <CertificatesPage /> : null}
         {activeStudentPath === "/student/referrals" ? <ReferralsPage rulesPath="/student/rules" /> : null}
@@ -215,6 +211,48 @@ export function navigationForRoles(accountRoles: string[], isStaff = accountRole
     if (item.path === "/app/discount-approvals") return isDiscountApprover;
     return true;
   });
+}
+
+export function redirectForRouteState({
+  path,
+  isAuthenticated,
+  isLoading,
+  hasSessionError,
+  isStaff,
+  canAccessEnquiries,
+  canAccessStudents,
+  isCourseAdmin,
+  isDiscountApprover,
+}: RedirectState): RoutePath | null {
+  if (isLoading) return null;
+  if (!hasSessionError && !isAuthenticated && (path.startsWith("/app") || path.startsWith("/student/"))) {
+    return path.startsWith("/student/") ? "/student/login" : "/login";
+  }
+  if (!isAuthenticated) return null;
+  if (path === "/login" || path === "/student/login") return isStaff ? "/app/enquiries" : "/student/dashboard";
+  if (isStaff && path.startsWith("/student/")) return "/app/enquiries";
+  if (isStaff && staffBlockedSelfServiceRoutes.has(path)) return "/app/enquiries";
+
+  const studentRoute = legacyStudentRouteFor(path);
+  if (!isStaff && studentRoute) return studentRoute;
+  if ((path === "/app/enquiries" || path.startsWith("/app/enquiries/")) && !canAccessEnquiries) return isStaff ? "/app" : "/student/dashboard";
+  if ((path === "/app/students" || path.startsWith("/app/students/")) && !canAccessStudents) return isStaff ? "/app" : "/student/dashboard";
+  if ((path === "/app/education-partners" || path === "/app/referral-operations" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/education-partners/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/enrolments/")) && !isStaff) {
+    return "/student/dashboard";
+  }
+  if (/^\/app\/education-partners\/[^/]+\/preview$/.test(path) && !isDiscountApprover) return isStaff ? "/app" : "/student/dashboard";
+  if (path === "/app/courses" && !isCourseAdmin) return "/app/enquiries";
+  if (path === "/app/discount-approvals" && !isDiscountApprover) return "/app/enquiries";
+  return null;
+}
+
+function legacyStudentRouteFor(path: RoutePath): StudentRoute | null {
+  if (path === "/app") return "/student/dashboard";
+  if (path === "/app/certificates") return "/student/certificates";
+  if (path === "/app/referrals") return "/student/referrals";
+  if (path === "/app/rules") return "/student/rules";
+  if (path === "/app/profile") return "/student/profile";
+  return null;
 }
 
 export function canViewEnquiries(accountRoles: string[]) {

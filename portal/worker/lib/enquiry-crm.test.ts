@@ -75,7 +75,12 @@ describe("enquiry CRM lead temperature", () => {
 describe("enquiry CRM pipeline validation", () => {
   it("keeps conversion admission-derived and requires deferred dates", () => {
     expect(validatePipelineUpdate(update({ nextStage: "converted" }))).toMatch("admission-derived");
-    expect(validatePipelineUpdate(update({ nextStage: "deferred", outcome: "deferred_joining" }))).toMatch("Deferred enquiries require");
+    expect(validatePipelineUpdate(update({ nextStage: "deferred", outcome: "deferred_joining" }))).toBe("Expected joining date is required for Deferred Joining.");
+    expect(validatePipelineUpdate(update({
+      nextStage: "deferred",
+      outcome: "deferred_joining",
+      preferredJoiningDate: "2026-09-10",
+    }))).toBe("Next follow-up is required for Deferred Joining.");
     expect(validatePipelineUpdate(update({
       nextStage: "deferred",
       outcome: "deferred_joining",

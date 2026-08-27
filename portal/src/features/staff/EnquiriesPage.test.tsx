@@ -348,7 +348,8 @@ describe("CRM follow-up form state", () => {
     });
 
     expect(productionSelection.pipelineStage).toBe("deferred");
-    expect(validateLogForm(productionSelection)).toBe("Deferred joining requires expected joining and next follow-up dates.");
+    expect(validateLogForm(productionSelection)).toBe("Expected joining date is required for Deferred Joining.");
+    expect(validateLogForm({ ...productionSelection, expectedJoiningDate: "2026-09-20", nextFollowUpAt: "" })).toBe("Next follow-up is required for Deferred Joining.");
     expect(buildFollowUpPayload({ ...productionSelection, expectedJoiningDate: "2026-09-20" })).toMatchObject({
       outcome: "deferred_joining",
       pipelineStage: "deferred",

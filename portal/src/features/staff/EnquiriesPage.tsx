@@ -530,9 +530,8 @@ export function buildFollowUpPayload(form: LogFormState) {
 export function validateLogForm(form: LogFormState) {
   const sanitized = sanitizeLogForm(form);
   if (sanitized.pipelineStage === "lost" && !sanitized.closedReason) return "Lost reason is required.";
-  if (sanitized.pipelineStage === "deferred" && (!sanitized.expectedJoiningDate || !sanitized.nextFollowUpAt)) {
-    return "Deferred joining requires expected joining and next follow-up dates.";
-  }
+  if (sanitized.pipelineStage === "deferred" && !sanitized.expectedJoiningDate) return "Expected joining date is required for Deferred Joining.";
+  if (sanitized.pipelineStage === "deferred" && !sanitized.nextFollowUpAt) return "Next follow-up is required for Deferred Joining.";
   if (sanitized.nextFollowUpAt && !isQuarterHourLocalInput(sanitized.nextFollowUpAt)) {
     return "Next follow-up must use 15-minute increments.";
   }
