@@ -128,10 +128,15 @@ export async function getBatchDetail(c: AppContext, staff: StaffContext, batchId
      join enrolments on enrolments.id = batch_memberships.enrolment_id
      join students on students.id = enrolments.student_id
      join people on people.id = students.person_id
-     where batch_memberships.batch_id = ? and batch_memberships.status = 'active' and batch_memberships.left_at is null
-     order by people.full_name collate nocase`,
+     where batch_memberships.batch_id = ?
+       and batch_memberships.organisation_id = ?
+       and students.organisation_id = ?
+       and batch_memberships.status = 'active'
+       and batch_memberships.left_at is null
+     order by people.full_name collate nocase
+     limit 200`,
   )
-    .bind(batchId)
+    .bind(batchId, ORG_ID, ORG_ID)
     .all<Record<string, unknown>>();
   return { ok: true as const, batch: await decorateBatch(c, batch), roster: roster.results || [] };
 }
@@ -155,6 +160,8 @@ export async function createBatch(c: AppContext, staff: StaffContext, input: z.i
 export async function updateBatch(c: AppContext, staff: StaffContext, batchId: string, patch: z.infer<typeof batchPatchSchema>) {
   const current = await loadBatch(c, batchId);
   if (!current) return { ok: false as const, status: 404, code: "batch_not_found", message: "Batch not found." };
+  const currentAccess = await hasBranchAccess(c, staff, current.branch_id);
+  if (!currentAccess) return { ok: false as const, status: 403, code: "forbidden", message: "You do not have access to this batch." };
   const merged = {
     name: patch.name ?? current.name,
     branchId: patch.branchId ?? current.branch_id,
@@ -166,6 +173,19 @@ export async function updateBatch(c: AppContext, staff: StaffContext, batchId: s
     capacity: patch.capacity === undefined ? current.capacity : patch.capacity,
     status: (patch.status ?? current.status) as BatchStatus,
   };
+  const hasHistory = await batchHasMembershipHistory(c, batchId);
+  if (hasHistory && (merged.branchId !== current.branch_id || merged.courseId !== current.course_id)) {
+    return {
+      ok: false as const,
+      status: 409,
+      code: "batch_identity_locked",
+      message: "Batch branch and course cannot change after students have been assigned.",
+      fieldErrors: {
+        branchId: ["Branch is locked after batch membership history exists."],
+        courseId: ["Course is locked after batch membership history exists."],
+      },
+    };
+  }
   const validated = await validateBatchInput(c, staff, merged);
   if (!validated.ok) return validated;
   const now = new Date().toISOString();
@@ -189,6 +209,8 @@ export async function listTrainers(c: AppContext, staff: StaffContext, branchId?
     if (!access) return { ok: false as const, status: 403, code: "forbidden", message: "You do not have access to this branch." };
     where += " and (person_roles.branch_id is null or person_roles.branch_id = ?)";
     bindings.push(branchId);
+  } else {
+    where += branchScopeSql(staff, "coalesce(person_roles.branch_id, people.home_branch_id)", bindings);
   }
   const rows = await c.env.DB.prepare(
     `select distinct people.id, coalesce(people.public_name, people.full_name) as name, people.home_branch_id
@@ -210,10 +232,15 @@ export async function listEligibleEnrolments(c: AppContext, staff: StaffContext,
   if (!access) return { ok: false as const, status: 403, code: "forbidden", message: "You do not have access to this batch." };
   const rows = await c.env.DB.prepare(
     `select enrolments.id, enrolments.enrolment_number, enrolments.status, students.student_number,
-            coalesce(people.public_name, people.full_name) as student_name
+            coalesce(people.public_name, people.full_name) as student_name,
+            primary_mobile.last_four as mobile_last_four
      from enrolments
      join students on students.id = enrolments.student_id
      join people on people.id = students.person_id and people.organisation_id = ?
+     left join person_contacts primary_mobile
+       on primary_mobile.person_id = people.id
+      and primary_mobile.contact_type = 'mobile'
+      and primary_mobile.is_primary = 1
      left join batch_memberships active_membership
        on active_membership.enrolment_id = enrolments.id
       and active_membership.status = 'active'
@@ -222,11 +249,11 @@ export async function listEligibleEnrolments(c: AppContext, staff: StaffContext,
        and enrolments.course_id = ?
        and enrolments.status in ('confirmed', 'not_started', 'active', 'on_hold')
        and active_membership.id is null
-       and (? = '' or people.full_name like ? or students.student_number like ? or enrolments.enrolment_number like ?)
+       and (? = '' or people.full_name like ? or students.student_number like ? or enrolments.enrolment_number like ? or primary_mobile.normalized_value like ? or primary_mobile.display_value like ? or primary_mobile.last_four like ?)
      order by people.full_name collate nocase
      limit 50`,
   )
-    .bind(ORG_ID, batch.branch_id, batch.course_id, q, `%${q}%`, `%${q}%`, `%${q}%`)
+    .bind(ORG_ID, batch.branch_id, batch.course_id, q, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`)
     .all<Record<string, unknown>>();
   return { ok: true as const, enrolments: rows.results || [] };
 }
@@ -282,9 +309,14 @@ export async function assignEnrolmentToBatch(c: AppContext, staff: StaffContext,
   return { ok: true as const, membershipId };
 }
 
-export async function transferBatchMembership(c: AppContext, staff: StaffContext, membershipId: string, targetBatchId: string) {
+export async function transferBatchMembership(c: AppContext, staff: StaffContext, sourceBatchId: string, membershipId: string, targetBatchId: string) {
   const current = await activeMembership(c, membershipId);
   if (!current) return { ok: false as const, status: 404, code: "membership_not_found", message: "Active batch membership not found." };
+  if (current.batch_id !== sourceBatchId) return { ok: false as const, status: 404, code: "membership_not_found", message: "Active batch membership not found for this batch." };
+  const source = await loadBatch(c, sourceBatchId);
+  if (!source) return { ok: false as const, status: 404, code: "batch_not_found", message: "Batch not found." };
+  const sourceAccess = await hasBranchAccess(c, staff, source.branch_id);
+  if (!sourceAccess) return { ok: false as const, status: 403, code: "forbidden", message: "You do not have access to this batch." };
   const target = await loadBatch(c, targetBatchId);
   if (!target) return { ok: false as const, status: 404, code: "batch_not_found", message: "Target batch not found." };
   const validation = await validateAssignment(c, staff, target, current.enrolment_id, true);
@@ -316,6 +348,12 @@ export async function removeBatchMembership(c: AppContext, staff: StaffContext, 
     .run();
   await writeAudit(c, staff, batch.branch_id, "batch_membership_removed", "batch_membership", membershipId, current, { enrolmentId: current.enrolment_id });
   return { ok: true as const, membershipId };
+}
+
+export async function removeBatchMembershipFromBatch(c: AppContext, staff: StaffContext, batchId: string, membershipId: string) {
+  const current = await activeMembership(c, membershipId);
+  if (!current || current.batch_id !== batchId) return { ok: false as const, status: 404, code: "membership_not_found", message: "Active batch membership not found for this batch." };
+  return removeBatchMembership(c, staff, membershipId);
 }
 
 export async function assignBatchOnAdmissionConfirmation(c: AppContext, staff: StaffContext, snapshot: { branchId: string; courseId: string; batchId?: string | null }, enrolmentId: string, now: string) {
@@ -477,6 +515,13 @@ async function currentMembershipForEnrolment(c: AppContext, enrolmentId: string)
   return c.env.DB.prepare("select id, batch_id from batch_memberships where enrolment_id = ? and organisation_id = ? and status = 'active' and left_at is null")
     .bind(enrolmentId, ORG_ID)
     .first<{ id: string; batch_id: string }>();
+}
+
+async function batchHasMembershipHistory(c: AppContext, batchId: string) {
+  const row = await c.env.DB.prepare("select 1 as found from batch_memberships where batch_id = ? and organisation_id = ? limit 1")
+    .bind(batchId, ORG_ID)
+    .first<{ found: number }>();
+  return Boolean(row);
 }
 
 async function writeAudit(c: AppContext, staff: StaffContext, branchId: string, action: string, entityType: string, entityId: string, oldValues: unknown, newValues: unknown) {

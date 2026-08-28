@@ -64,6 +64,28 @@ describe("staff batch routes", () => {
     expect(mocks.listBatches).not.toHaveBeenCalled();
   });
 
+  it("does not grant batch management to trainer role alone", async () => {
+    const app = routeApp();
+    authenticateAs(["trainer"]);
+
+    const response = await app.request("http://portal.test/api/staff/batches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://portal.test" },
+      body: JSON.stringify({
+        name: "Trainer Owned",
+        branchId: "branch_sion",
+        courseId: "course_fsd",
+        daysOfWeek: ["mon"],
+        startTime: "08:00",
+        endTime: "10:00",
+        status: "active",
+      }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(mocks.createBatch).not.toHaveBeenCalled();
+  });
+
   it("allows managers to create batches from same-origin requests", async () => {
     const app = routeApp();
     authenticateAs(["admission_admin"]);

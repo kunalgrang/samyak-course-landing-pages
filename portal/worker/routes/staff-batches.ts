@@ -14,7 +14,7 @@ import {
   listBatches,
   listEligibleEnrolments,
   listTrainers,
-  removeBatchMembership,
+  removeBatchMembershipFromBatch,
   transferBatchMembership,
   assignEnrolmentToBatch,
   updateBatch,
@@ -124,7 +124,7 @@ export function registerStaffBatchRoutes(app: PortalHono) {
     if (!staff) return forbidden(c);
     const body = await readJsonBody(c, batchTransferSchema);
     if (isResponse(body)) return body;
-    const result = await transferBatchMembership(c, staff, c.req.param("membershipId"), body.targetBatchId);
+    const result = await transferBatchMembership(c, staff, c.req.param("batchId"), c.req.param("membershipId"), body.targetBatchId);
     if (!result.ok) return batchError(c, result);
     return jsonPlain(c, { success: true, membershipId: result.membershipId });
   });
@@ -134,7 +134,7 @@ export function registerStaffBatchRoutes(app: PortalHono) {
     if (originError) return originError;
     const staff = await requireStaffRoles(c, BATCH_MANAGE_ROLES);
     if (!staff) return forbidden(c);
-    const result = await removeBatchMembership(c, staff, c.req.param("membershipId"));
+    const result = await removeBatchMembershipFromBatch(c, staff, c.req.param("batchId"), c.req.param("membershipId"));
     if (!result.ok) return batchError(c, result);
     return jsonPlain(c, { success: true, membershipId: result.membershipId });
   });

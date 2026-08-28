@@ -137,27 +137,43 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
 
   async function assignStudent() {
     if (!selectedBatchId || !selectedEnrolmentId) return;
-    await assignEnrolmentToStaffBatch(selectedBatchId, selectedEnrolmentId);
-    setSelectedEnrolmentId("");
-    setMessage("Student assigned.");
-    await loadDetail(selectedBatchId);
-    await load();
+    try {
+      await assignEnrolmentToStaffBatch(selectedBatchId, selectedEnrolmentId);
+      setSelectedEnrolmentId("");
+      setMessage("Student assigned.");
+      setError(null);
+      await loadDetail(selectedBatchId);
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Student could not be assigned.");
+    }
   }
 
   async function removeMembership(membershipId: string) {
     if (!selectedBatchId) return;
-    await removeStaffBatchMembership(selectedBatchId, membershipId);
-    setMessage("Student removed from batch.");
-    await loadDetail(selectedBatchId);
-    await load();
+    if (!window.confirm("Remove this student from the batch? Batch history will be preserved.")) return;
+    try {
+      await removeStaffBatchMembership(selectedBatchId, membershipId);
+      setMessage("Student removed from batch.");
+      setError(null);
+      await loadDetail(selectedBatchId);
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Student could not be removed from this batch.");
+    }
   }
 
   async function transferMembership(membershipId: string) {
     if (!selectedBatchId || !targetBatchId) return;
-    await transferStaffBatchMembership(selectedBatchId, membershipId, targetBatchId);
-    setMessage("Student transferred.");
-    await loadDetail(selectedBatchId);
-    await load();
+    try {
+      await transferStaffBatchMembership(selectedBatchId, membershipId, targetBatchId);
+      setMessage("Student transferred.");
+      setError(null);
+      await loadDetail(selectedBatchId);
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Student could not be transferred.");
+    }
   }
 
   function editBatch(batch: StaffBatch) {

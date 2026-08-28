@@ -11,6 +11,7 @@ import {
   normalizeDaysOfWeek,
   removeBatchMembership,
   transferBatchMembership,
+  updateBatch,
   validateAdmissionBatchSelection,
   validateBatchTimes,
 } from "./batch-management";
@@ -120,7 +121,7 @@ describe("Batch Management V1 service", () => {
     expect(assigned.ok).toBe(true);
     if (!assigned.ok) return;
 
-    const transferred = await transferBatchMembership(c, staff, assigned.membershipId, "batch_two");
+    const transferred = await transferBatchMembership(c, staff, "batch_one", assigned.membershipId, "batch_two");
     expect(transferred).toMatchObject({ ok: true });
     const rowsAfterTransfer = c.env.DB.database.prepare("select batch_id, status, left_at from batch_memberships order by created_at").all() as any[];
     expect(rowsAfterTransfer.map((row) => row.status)).toEqual(["transferred", "active"]);
@@ -130,6 +131,67 @@ describe("Batch Management V1 service", () => {
     await removeBatchMembership(c, staff, transferred.membershipId);
     const activeCount = c.env.DB.database.prepare("select count(*) as count from batch_memberships where status = 'active'").get() as any;
     expect(activeCount.count).toBe(0);
+  });
+
+  it("rejects transfer when membership does not belong to the source batch path", async () => {
+    const { c, staff } = setup();
+    await seedBatch(c, "batch_one", "branch_sion", "course_fsd");
+    await seedBatch(c, "batch_two", "branch_sion", "course_fsd");
+    const assigned = await assignEnrolmentToBatch(c, staff, "batch_one", "enrol_one");
+    expect(assigned.ok).toBe(true);
+    if (!assigned.ok) return;
+
+    await expect(transferBatchMembership(c, staff, "batch_two", assigned.membershipId, "batch_two")).resolves.toMatchObject({ ok: false, code: "membership_not_found" });
+    const row = c.env.DB.database.prepare("select status, left_at from batch_memberships where id = ?").get(assigned.membershipId) as any;
+    expect(row).toMatchObject({ status: "active", left_at: null });
+  });
+
+  it("enforces the active membership invariant at the database layer", async () => {
+    const { c, staff } = setup();
+    await seedBatch(c, "batch_one", "branch_sion", "course_fsd");
+    await seedBatch(c, "batch_two", "branch_sion", "course_fsd");
+    await assignEnrolmentToBatch(c, staff, "batch_one", "enrol_one");
+
+    expect(() => {
+      c.env.DB.database.prepare(
+        "insert into batch_memberships (id, organisation_id, batch_id, enrolment_id, joined_at, status, assigned_by_login_account_id, created_at) values ('forced_second', 'org_samyak', 'batch_two', 'enrol_one', ?, 'active', 'acct_admin', ?)",
+      ).run(NOW, NOW);
+    }).toThrow();
+
+    c.env.DB.database.prepare("update batch_memberships set status = 'removed', left_at = ? where enrolment_id = 'enrol_one'").run(NOW);
+    c.env.DB.database.prepare(
+      "insert into batch_memberships (id, organisation_id, batch_id, enrolment_id, joined_at, status, assigned_by_login_account_id, created_at) values ('after_close', 'org_samyak', 'batch_two', 'enrol_one', ?, 'active', 'acct_admin', ?)",
+    ).run(NOW, NOW);
+    const active = c.env.DB.database.prepare("select count(*) as count from batch_memberships where enrolment_id = 'enrol_one' and status = 'active'").get() as any;
+    expect(active.count).toBe(1);
+  });
+
+  it("locks batch course and branch once membership history exists while allowing trainer/status changes", async () => {
+    const { c, staff } = setup();
+    await seedBatch(c, "batch_one", "branch_sion", "course_fsd");
+    await assignEnrolmentToBatch(c, staff, "batch_one", "enrol_one");
+
+    await expect(updateBatch(c, staff, "batch_one", { courseId: "course_other" })).resolves.toMatchObject({ ok: false, code: "batch_identity_locked" });
+    await expect(updateBatch(c, staff, "batch_one", { branchId: "branch_dadar" })).resolves.toMatchObject({ ok: false, code: "batch_identity_locked" });
+    await expect(updateBatch(c, staff, "batch_one", { trainerPersonId: null, status: "inactive" })).resolves.toMatchObject({ ok: true });
+  });
+
+  it("blocks incoming assignments to inactive or completed batches but permits transfer out and removal", async () => {
+    const { c, staff } = setup();
+    await seedBatch(c, "batch_one", "branch_sion", "course_fsd");
+    await seedBatch(c, "batch_two", "branch_sion", "course_fsd");
+    const assigned = await assignEnrolmentToBatch(c, staff, "batch_one", "enrol_one");
+    expect(assigned.ok).toBe(true);
+    await updateBatch(c, staff, "batch_one", { status: "inactive" });
+
+    await expect(assignEnrolmentToBatch(c, staff, "batch_one", "enrol_second")).resolves.toMatchObject({ ok: false, code: "inactive_batch" });
+    if (!assigned.ok) return;
+    const transferred = await transferBatchMembership(c, staff, "batch_one", assigned.membershipId, "batch_two");
+    expect(transferred).toMatchObject({ ok: true });
+
+    await updateBatch(c, staff, "batch_two", { status: "completed" });
+    if (!transferred.ok) return;
+    await expect(removeBatchMembership(c, staff, transferred.membershipId)).resolves.toMatchObject({ ok: true });
   });
 
   it("assigns admission batch idempotently and keeps assign later as a no-op", async () => {
@@ -200,6 +262,7 @@ function seedBase(db: DatabaseSync) {
   db.prepare("insert into people values ('person_trainer', 'org_samyak', 'branch_sion', 'Trainer User', 'Trainer', null, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into people values ('person_inactive_trainer', 'org_samyak', 'branch_sion', 'Inactive Trainer', 'Inactive', null, 'inactive', ?, ?)").run(NOW, NOW);
   db.prepare("insert into people values ('person_student', 'org_samyak', 'branch_sion', 'Asha Student', 'Asha', null, 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into people values ('person_second_student', 'org_samyak', 'branch_sion', 'Second Student', 'Second', null, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into people values ('person_other_student', 'org_samyak', 'branch_dadar', 'Dadar Student', 'Dadar Student', null, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into login_accounts values ('acct_admin', 'org_samyak', '+919876543210', '3210', 1, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into login_account_roles values ('acct_admin', 'role_admin', 'branch_sion', ?)").run(NOW);
@@ -208,7 +271,9 @@ function seedBase(db: DatabaseSync) {
   db.prepare("insert into courses values ('course_fsd', 'org_samyak', 'FSD', 'Full Stack', '6 months', 6, 5000000, 4000000, 1, 1, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into courses values ('course_other', 'org_samyak', 'DS', 'Data Science', '6 months', 6, 5000000, 4000000, 1, 1, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into students values ('student_one', 'org_samyak', 'person_student', 'branch_sion', 'SYK-SION-0001', 1, '2026-08-28', 'active', 'not_invited', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into students values ('student_second', 'org_samyak', 'person_second_student', 'branch_sion', 'SYK-SION-0002', 2, '2026-08-28', 'active', 'not_invited', ?, ?)").run(NOW, NOW);
   db.prepare("insert into students values ('student_other_branch', 'org_samyak', 'person_other_student', 'branch_dadar', 'SYK-DDR-0001', 1, '2026-08-28', 'active', 'not_invited', ?, ?)").run(NOW, NOW);
   db.prepare("insert into enrolments values ('enrol_one', 'student_one', 'branch_sion', 'course_fsd', 'enq_one', 'ENR-SION-2026-0001', 'classroom', null, '2026-08-28', '2026-08-28', null, null, 'confirmed', 'no', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into enrolments values ('enrol_second', 'student_second', 'branch_sion', 'course_fsd', 'enq_second', 'ENR-SION-2026-0002', 'classroom', null, '2026-08-28', '2026-08-28', null, null, 'confirmed', 'no', ?, ?)").run(NOW, NOW);
   db.prepare("insert into enrolments values ('enrol_other_branch', 'student_other_branch', 'branch_dadar', 'course_fsd', 'enq_two', 'ENR-DDR-2026-0001', 'classroom', null, '2026-08-28', '2026-08-28', null, null, 'confirmed', 'no', ?, ?)").run(NOW, NOW);
 }

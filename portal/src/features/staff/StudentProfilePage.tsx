@@ -272,8 +272,21 @@ function formatMoney(paise: number) {
 }
 
 function currentBatchLabel(enrolment: Record<string, unknown>) {
-  if (!enrolment.current_batch_id) return "Assign later";
+  if (!enrolment.current_batch_id) return "Not assigned";
+  const days = formatBatchDays(enrolment.current_batch_days_of_week_json);
+  const dayLabel = days ? ` · ${days}` : "";
   const timing = enrolment.current_batch_start_time && enrolment.current_batch_end_time ? ` ${String(enrolment.current_batch_start_time)}-${String(enrolment.current_batch_end_time)}` : "";
   const trainer = enrolment.current_batch_trainer_name ? ` · ${String(enrolment.current_batch_trainer_name)}` : "";
-  return `${String(enrolment.current_batch_name || "Current batch")}${timing}${trainer}`;
+  return `${String(enrolment.current_batch_name || "Current batch")}${dayLabel}${timing}${trainer}`;
+}
+
+function formatBatchDays(value: unknown) {
+  if (typeof value !== "string") return "";
+  try {
+    const days = JSON.parse(value);
+    if (!Array.isArray(days)) return "";
+    return days.map((day) => String(day).slice(0, 3).toUpperCase()).join("/");
+  } catch {
+    return "";
+  }
 }
