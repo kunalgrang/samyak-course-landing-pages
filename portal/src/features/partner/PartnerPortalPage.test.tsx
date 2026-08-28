@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { PartnerPortal } from "../../lib/api";
 import { PartnerPortalContent } from "./PartnerPortalPage";
@@ -72,6 +73,28 @@ describe("PartnerPortalContent", () => {
 
     expect(html).toContain("Previous");
     expect(html).toContain("Next");
+  });
+
+  it("keeps the portal root as the centered page shell hook", () => {
+    const html = renderToStaticMarkup(<Content />);
+
+    expect(html).toContain('class="content-stack partner-portal-page"');
+    expect(html).toContain('class="page-header partner-portal-header"');
+    expect(html).toContain('class="partner-portal-grid"');
+  });
+
+  it("defines a centered shell, responsive gutters, and stable metric grids in CSS", () => {
+    const staffCss = readFileSync(new URL("../../styles/staff.css", import.meta.url), "utf8");
+    const globalCss = readFileSync(new URL("../../styles/global.css", import.meta.url), "utf8");
+
+    expect(staffCss).toContain("--partner-page-gutter: clamp(16px, 3vw, 32px);");
+    expect(staffCss).toContain("--partner-page-max-width: 1240px;");
+    expect(staffCss).toContain("width: min(calc(100% - (var(--partner-page-gutter) * 2)), var(--partner-page-max-width));");
+    expect(staffCss).toContain("margin-inline: auto;");
+    expect(staffCss).toContain("grid-template-columns: repeat(4, minmax(0, 1fr));");
+    expect(staffCss).toContain("grid-template-columns: repeat(2, minmax(0, 1fr));");
+    expect(globalCss).toContain(".page-content:has(.partner-portal-page)");
+    expect(globalCss).toContain("padding: 0;");
   });
 });
 

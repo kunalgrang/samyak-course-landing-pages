@@ -1156,7 +1156,13 @@
 }
 
 .partner-portal-page {
+  --partner-page-gutter: clamp(16px, 3vw, 32px);
+  --partner-page-max-width: 1240px;
   --staff-card-padding: 18px;
+  box-sizing: border-box;
+  width: min(calc(100% - (var(--partner-page-gutter) * 2)), var(--partner-page-max-width));
+  margin-inline: auto;
+  padding-block: 28px;
   min-width: 0;
   gap: 18px;
 }
@@ -1466,6 +1472,7 @@
 
   .partner-portal-page {
     --staff-card-padding: 20px;
+    padding-block: 42px;
     gap: 18px;
   }
 

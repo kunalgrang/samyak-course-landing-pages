@@ -292,6 +292,12 @@ a:focus-visible {
   padding: 28px 18px;
 }
 
+.page-content:has(.partner-portal-page) {
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+}
+
 .content-stack {
   display: grid;
   gap: 20px;
@@ -962,10 +968,6 @@ a:focus-visible {
   }
 
   .page-content:has(.referral-ops-page) {
-    width: min(100%, 1240px);
-  }
-
-  .page-content:has(.partner-portal-page) {
     width: min(100%, 1240px);
   }
 
