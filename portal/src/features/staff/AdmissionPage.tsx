@@ -6,6 +6,7 @@ import {
   confirmAdmission,
   ApiError,
   getAdmissionDraft,
+  getAdmissionBatchOptions,
   getAdmissionConfiguration,
   getEnquiryDetail,
   getActiveCourses,
@@ -16,6 +17,7 @@ import {
   searchStudentByMobile,
   type AdmissionConfiguration,
   type AdmissionConfirmation,
+  type AdmissionBatchOption,
   type AdmissionFinancialSummary,
   type EnquiryDetail,
   type FieldErrors,
@@ -57,6 +59,7 @@ export const ADMISSION_FIELD_LABELS: Record<string, string> = {
   "education.occupationStatus": "Occupation status",
   "course.courseId": "Configured active course",
   "course.trainingMode": "Training mode",
+  "course.batchId": "Batch assignment",
   "course.admissionDate": "Admission date",
   "course.joiningDate": "Joining date",
   "fee.finalAgreedFeePaise": "Final agreed fee",
@@ -94,6 +97,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const [approvalStatus, setApprovalStatus] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<AdmissionConfirmation | null>(null);
   const [financialSummary, setFinancialSummary] = useState<AdmissionFinancialSummary | null>(null);
+  const [admissionBatchOptions, setAdmissionBatchOptions] = useState<AdmissionBatchOption[]>([]);
   const [receiptInput, setReceiptInput] = useState(() => defaultReceiptInput());
   const [isRecordingReceipt, setIsRecordingReceipt] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
@@ -150,6 +154,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const tokenReceipt = financialSummary?.tokenReceipt || null;
   const commercialLocked = Boolean(tokenReceipt) || isLocked;
   const needsPersonLink = !detail?.enquiry.person_id;
+  const selectedAdmissionBatch = admissionBatchOptions.find((batch) => batch.id === payload.course.batchId);
 
   useEffect(() => {
     if (!focusSummaryRequestedRef.current) return;
@@ -168,6 +173,26 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       },
     }));
   }, [isLocked, selectedCourse]);
+
+  useEffect(() => {
+    const branchId = String(payload.course.branchId || "");
+    const courseId = String(payload.course.courseId || "");
+    if (!branchId || !courseId) {
+      setAdmissionBatchOptions([]);
+      return;
+    }
+    void getAdmissionBatchOptions(branchId, courseId)
+      .then((data) => {
+        setAdmissionBatchOptions(data.batches);
+        setPayload((current) => {
+          const batchId = String(current.course.batchId || "");
+          return !batchId || data.batches.some((batch) => batch.id === batchId)
+            ? current
+            : { ...current, course: { ...current.course, batchId: "" } };
+        });
+      })
+      .catch(() => setAdmissionBatchOptions([]));
+  }, [payload.course.branchId, payload.course.courseId]);
 
   function requestSummaryFocus(errors: FieldErrors) {
     if (Object.keys(errors).length) focusSummaryRequestedRef.current = true;
@@ -490,6 +515,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
           onCustomLabelChange={(value) => setSection("course", "batchPreference", value)}
           error={errorFor("course.batchPreferenceCode") || errorFor("course.batchPreference")}
         />
+        <label>Batch assignment<select {...controlProps("course.batchId")} value={String(payload.course.batchId || "")} onChange={(e) => setSection("course", "batchId", e.target.value)}><option value="">Assign later</option>{admissionBatchOptions.map((batch) => <option key={batch.id} value={batch.id}>{batchLabel(batch)}</option>)}</select><FieldMessage id={admissionFieldErrorId("course.batchId")} message={errorFor("course.batchId")} /></label>
         <label>Admission date<RequiredMark /><input {...controlProps("course.admissionDate")} type="date" value={String(payload.course.admissionDate)} onChange={(e) => setSection("course", "admissionDate", e.target.value)} /><FieldMessage id={admissionFieldErrorId("course.admissionDate")} message={errorFor("course.admissionDate")} /></label>
         <label>Joining date<RequiredMark /><input {...controlProps("course.joiningDate")} type="date" value={String(payload.course.joiningDate)} onChange={(e) => setSection("course", "joiningDate", e.target.value)} /><FieldMessage id={admissionFieldErrorId("course.joiningDate")} message={errorFor("course.joiningDate")} /></label>
         <label>Expected completion<input type="date" value={String(payload.course.expectedCompletionDate)} onChange={(e) => setSection("course", "expectedCompletionDate", e.target.value)} /></label>
@@ -556,6 +582,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
           <Review label="Official identity" value={String(payload.identity.officialFullName)} />
           <Review label="Locality" value={`${payload.locality.locality || "Missing"}, ${payload.locality.city || "Missing"}`} />
           <Review label="Course" value={selectedCourse?.name || "Missing"} />
+          <Review label="Batch" value={selectedAdmissionBatch ? batchLabel(selectedAdmissionBatch) : "Assign later"} />
           <Review label="Joining date" value={String(payload.course.joiningDate || "Missing")} />
           <Review label="NSDC" value={String(payload.course.nsdcPreference)} />
           <Review label="Course Master standard fee" value={formatMoney(Number(reviewCourse?.default_fee_paise ?? payload.fee.standardFeePaise ?? 0))} />
@@ -603,7 +630,7 @@ export function defaultAdmissionPayload(detail?: EnquiryDetail | null): Admissio
     },
     locality: { locality: "", city: "", postalCode: "", state: "Maharashtra", residenceType: "", fullAddress: "", homeLocality: "" },
     education: { qualificationLevel: "", qualificationLevelCode: "", qualificationName: "", stream: "", streamCode: "", institutionName: "", currentlyPursuing: false, currentYearSemester: "", passingYear: null, occupationStatus: "", occupationStatusCode: "" },
-    course: { courseId: String(detail?.enquiry.course_id || ""), branchId: String(detail?.enquiry.branch_id || ""), trainingMode: "classroom", batchPreference: "", batchPreferenceCode: "", admissionDate: today, joiningDate: today, expectedCompletionDate: "", nsdcPreference: "no", placementSupport: false },
+    course: { courseId: String(detail?.enquiry.course_id || ""), branchId: String(detail?.enquiry.branch_id || ""), trainingMode: "classroom", batchPreference: "", batchPreferenceCode: "", batchId: "", admissionDate: today, joiningDate: today, expectedCompletionDate: "", nsdcPreference: "no", placementSupport: false },
     fee: { standardFeePaise: 0, finalAgreedFeePaise: 0, discountReason: "", discountReasonCode: "", paymentPlanType: "full", numberOfInstalments: 1, initialPaymentExpectedPaise: 0, feeRemarks: "" },
     declarations: {
       informationCorrect: false,
@@ -1111,6 +1138,11 @@ function paymentModeLabel(value: string) {
   if (value === "upi") return "UPI";
   if (value === "bank_transfer") return "Bank transfer";
   return value ? value.replace(/_/g, " ").replace(/^\w/, (letter) => letter.toUpperCase()) : "Not recorded";
+}
+
+function batchLabel(batch: AdmissionBatchOption) {
+  const capacity = batch.capacity ? ` · ${batch.activeStudents}/${batch.capacity}${batch.capacityWarning ? " full" : ""}` : "";
+  return `${batch.name} · ${batch.daysOfWeek.join(", ")} · ${batch.startTime}-${batch.endTime}${batch.trainerName ? ` · ${batch.trainerName}` : ""}${capacity}`;
 }
 
 function formatDisplayDateTime(value: string) {

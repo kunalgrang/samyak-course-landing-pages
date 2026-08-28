@@ -99,7 +99,8 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
           <article className="table-row" key={String(enrolment.id)}>
             <strong>{String(enrolment.enrolment_number)}</strong>
             <span>{String(enrolment.course_name)} · Joining {String(enrolment.joining_date)}</span>
-            <small>Fee {formatMoney(Number(enrolment.final_agreed_fee_paise || 0))} · {String(enrolment.payment_plan_type || "No plan")} · NSDC {String(enrolment.nsdc_status || "Not requested")}</small>
+            <small>Batch {currentBatchLabel(enrolment)} · Fee {formatMoney(Number(enrolment.final_agreed_fee_paise || 0))} · {String(enrolment.payment_plan_type || "No plan")} · NSDC {String(enrolment.nsdc_status || "Not requested")}</small>
+            {enrolment.current_batch_id ? <a className="button-link" href={`/app/batches/${String(enrolment.current_batch_id)}`}>Open Batch</a> : <a className="button-link" href="/app/batches">Assign Batch</a>}
             {enrolment.final_agreed_fee_paise ? <a className="button-link" href={`/app/enrolments/${String(enrolment.id)}/payments`}>Payments</a> : null}
           </article>
         ))}
@@ -268,4 +269,11 @@ function maskSubmittedMobile(value: string) {
 
 function formatMoney(paise: number) {
   return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(paise / 100);
+}
+
+function currentBatchLabel(enrolment: Record<string, unknown>) {
+  if (!enrolment.current_batch_id) return "Assign later";
+  const timing = enrolment.current_batch_start_time && enrolment.current_batch_end_time ? ` ${String(enrolment.current_batch_start_time)}-${String(enrolment.current_batch_end_time)}` : "";
+  const trainer = enrolment.current_batch_trainer_name ? ` · ${String(enrolment.current_batch_trainer_name)}` : "";
+  return `${String(enrolment.current_batch_name || "Current batch")}${timing}${trainer}`;
 }

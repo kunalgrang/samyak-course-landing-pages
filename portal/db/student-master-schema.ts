@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { check, index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
-import { branches, organisations, people, personContacts } from "./schema";
+import { branches, loginAccounts, organisations, people, personContacts } from "./schema";
 
 const timestamps = {
   createdAt: text("created_at").notNull(),
@@ -411,6 +411,71 @@ export const enrolments = sqliteTable(
       sql`${table.status} in ('provisional', 'confirmed', 'not_started', 'active', 'on_hold', 'transferred', 'completed', 'dropped_out', 'cancelled', 'expired')`,
     ),
     check("enrolments_nsdc_preference_check", sql`${table.nsdcPreference} in ('yes', 'no', 'decide_later')`),
+  ],
+);
+
+export const batches = sqliteTable(
+  "batches",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branches.id),
+    courseId: text("course_id")
+      .notNull()
+      .references(() => courses.id),
+    name: text("name").notNull(),
+    primaryTrainerPersonId: text("primary_trainer_person_id").references(() => people.id),
+    daysOfWeekJson: text("days_of_week_json").notNull(),
+    startTime: text("start_time").notNull(),
+    endTime: text("end_time").notNull(),
+    capacity: integer("capacity"),
+    status: text("status").notNull().default("active"),
+    createdByLoginAccountId: text("created_by_login_account_id").references(() => loginAccounts.id),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("batches_org_branch_name_unique").on(table.organisationId, table.branchId, table.name),
+    index("batches_org_branch_course_status_idx").on(table.organisationId, table.branchId, table.courseId, table.status),
+    index("batches_trainer_status_idx").on(table.primaryTrainerPersonId, table.status),
+    check("batches_status_check", sql`${table.status} in ('active', 'inactive', 'completed')`),
+    check("batches_time_format_check", sql`${table.startTime} glob '[0-2][0-9]:[0-5][0-9]' and ${table.endTime} glob '[0-2][0-9]:[0-5][0-9]' and ${table.startTime} < '24:00' and ${table.endTime} < '24:00' and ${table.endTime} > ${table.startTime}`),
+    check("batches_capacity_check", sql`${table.capacity} is null or ${table.capacity} > 0`),
+    check("batches_days_json_check", sql`json_valid(${table.daysOfWeekJson}) and json_array_length(${table.daysOfWeekJson}) >= 1`),
+  ],
+);
+
+export const batchMemberships = sqliteTable(
+  "batch_memberships",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    batchId: text("batch_id")
+      .notNull()
+      .references(() => batches.id),
+    enrolmentId: text("enrolment_id")
+      .notNull()
+      .references(() => enrolments.id),
+    joinedAt: text("joined_at").notNull(),
+    leftAt: text("left_at"),
+    status: text("status").notNull().default("active"),
+    assignedByLoginAccountId: text("assigned_by_login_account_id").references(() => loginAccounts.id),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("batch_memberships_one_active_enrolment")
+      .on(table.enrolmentId)
+      .where(sql`${table.status} = 'active' and ${table.leftAt} is null`),
+    index("batch_memberships_batch_status_idx").on(table.batchId, table.status, table.joinedAt),
+    index("batch_memberships_enrolment_status_idx").on(table.enrolmentId, table.status, table.joinedAt),
+    index("batch_memberships_org_enrolment_idx").on(table.organisationId, table.enrolmentId),
+    check("batch_memberships_status_check", sql`${table.status} in ('active', 'transferred', 'removed', 'completed')`),
+    check("batch_memberships_active_lifecycle_check", sql`(${table.status} = 'active' and ${table.leftAt} is null) or (${table.status} <> 'active' and ${table.leftAt} is not null)`),
   ],
 );
 

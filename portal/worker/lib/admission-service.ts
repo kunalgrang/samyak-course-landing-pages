@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AppContext } from "./http";
 import { ORG_ID, mobileHash } from "./auth-store";
+import { assignBatchOnAdmissionConfirmation, validateAdmissionBatchSelection } from "./batch-management";
 import { createOpaqueId, encryptText, hmacHex } from "./crypto";
 import { DISCOUNT_APPROVER_ROLES, canBackdateReceipts, canRecordReceipts, type StaffContext } from "./staff-auth";
 import { normalizeIndianMobile } from "./mobile";
@@ -86,6 +87,7 @@ export const admissionPayloadSchema = z.object({
       trainingMode: z.string().trim().optional(),
       batchPreference: z.string().trim().max(120).optional(),
       batchPreferenceCode: z.string().trim().max(60).optional(),
+      batchId: z.string().trim().max(160).nullable().optional(),
       admissionDate: z.string().trim().optional(),
       joiningDate: z.string().trim().optional(),
       expectedCompletionDate: z.string().trim().optional(),
@@ -846,6 +848,8 @@ async function finalizeAdmission(
   });
   const finalCheck = await finalizationIntegrityError(c, enquiry, draft, input);
   if (finalCheck) return finalCheck;
+  const batchAssignment = await assignBatchOnAdmissionConfirmation(c, staff, snapshot, input.enrolmentId, input.now);
+  if (!batchAssignment.ok) return batchAssignment;
   const financialSummary = (await financialSummaryForEnrolment(c, input.enrolmentId, snapshot)) || financialSummaryFromReceipts(snapshot.finalAgreedFeePaise, scheduleFromSnapshot(snapshot), []);
   return {
     ok: true as const,
@@ -938,6 +942,7 @@ type ConfirmationSnapshot = {
   expectedCompletionDate: string | null;
   trainingMode: string;
   batchPreference: string | null;
+  batchId: string | null;
   nsdcPreference: string;
   listedFeePaise: number;
   lowestAcceptableFeePaise: number;
@@ -981,6 +986,10 @@ async function getOrCreateConfirmationSnapshot(c: AppContext, staff: StaffContex
   const readiness = await getAdmissionReadiness(c, enquiry, payload, draft.id, course);
   if (Object.keys(readiness.fieldErrors).length) {
     return { ok: false as const, status: 400, code: "invalid_admission", message: firstFieldError(readiness.fieldErrors) || "Please check the admission details.", fieldErrors: readiness.fieldErrors };
+  }
+  const batchErrors = await validateAdmissionBatchSelection(c, staff, branch.id, course.id, String(payload.course?.batchId || "") || null);
+  if (batchErrors) {
+    return { ok: false as const, status: 400, code: "invalid_batch", message: firstFieldError(batchErrors) || "Please check the selected batch.", fieldErrors: batchErrors };
   }
   const receiptCheck = await tokenReceiptForConfirmation(c, draft, payload);
   if (!receiptCheck.ok) return receiptCheck;
@@ -1034,6 +1043,7 @@ async function buildConfirmationSnapshot(c: AppContext, enquiry: EnquiryRecord, 
     expectedCompletionDate: courseInput.expectedCompletionDate ? String(courseInput.expectedCompletionDate) : null,
     trainingMode: String(courseInput.trainingMode),
     batchPreference: courseInput.batchPreference ? String(courseInput.batchPreference) : null,
+    batchId: courseInput.batchId ? String(courseInput.batchId) : null,
     nsdcPreference: String(courseInput.nsdcPreference || "decide_later"),
     listedFeePaise,
     lowestAcceptableFeePaise,
@@ -1063,7 +1073,7 @@ function parseConfirmationSnapshot(draft: Pick<DraftRecord, "confirmation_snapsh
   if (!draft.confirmation_snapshot_json) return null;
   try {
     const parsed = JSON.parse(draft.confirmation_snapshot_json) as ConfirmationSnapshot;
-    return parsed.version === CONFIRMATION_SNAPSHOT_VERSION ? parsed : null;
+    return parsed.version === CONFIRMATION_SNAPSHOT_VERSION ? { ...parsed, batchId: parsed.batchId || null } : null;
   } catch {
     return null;
   }

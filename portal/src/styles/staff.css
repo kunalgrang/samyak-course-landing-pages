@@ -390,6 +390,65 @@
   font-weight: 800;
 }
 
+.table-row--selected {
+  border-color: rgba(13, 148, 136, 0.44);
+  background: #f8fdfc;
+}
+
+.table-row-main {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.table-row-main:focus-visible {
+  outline: 3px solid rgba(13, 148, 136, 0.25);
+  outline-offset: 3px;
+}
+
+.weekday-toggle-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.weekday-toggle {
+  min-height: 40px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 0 12px;
+  background: #fff;
+  color: var(--color-navy);
+  font-weight: 800;
+}
+
+.weekday-toggle:has(input:checked) {
+  border-color: rgba(13, 148, 136, 0.5);
+  background: #ecfdf5;
+  color: #0f766e;
+}
+
+.batch-assignment-row {
+  align-items: end;
+  margin: 16px 0;
+}
+
+.batch-management-page select {
+  min-height: 44px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 0 12px;
+  color: var(--color-ink);
+  background: #fff;
+  font: inherit;
+}
+
 .payments-page {
   min-width: 0;
 }

@@ -273,6 +273,50 @@ const courseSchema = z.object({
 
 const courseListSchema = z.object({ courses: z.array(courseSchema) });
 
+const batchSchema = z.object({
+  id: z.string(),
+  branchId: z.string(),
+  branchName: z.string(),
+  courseId: z.string(),
+  courseName: z.string(),
+  name: z.string(),
+  trainerPersonId: z.string().nullable(),
+  trainerName: z.string().nullable(),
+  daysOfWeek: z.array(z.string()),
+  startTime: z.string(),
+  endTime: z.string(),
+  capacity: z.number().nullable(),
+  activeStudents: z.number(),
+  capacityWarning: z.boolean(),
+  status: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const admissionBatchOptionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  trainerName: z.string().nullable(),
+  daysOfWeek: z.array(z.string()),
+  startTime: z.string(),
+  endTime: z.string(),
+  capacity: z.number().nullable(),
+  activeStudents: z.number(),
+  capacityWarning: z.boolean(),
+});
+
+const batchListSchema = z.object({ success: z.literal(true), batches: z.array(batchSchema) });
+const batchMutationSchema = z.object({ success: z.literal(true), batchId: z.string() });
+const batchMembershipMutationSchema = z.object({ success: z.literal(true), membershipId: z.string() });
+const trainerListSchema = z.object({ success: z.literal(true), trainers: z.array(z.record(z.string(), z.unknown())) });
+const eligibleEnrolmentListSchema = z.object({ success: z.literal(true), enrolments: z.array(z.record(z.string(), z.unknown())) });
+const admissionBatchOptionListSchema = z.object({ success: z.literal(true), batches: z.array(admissionBatchOptionSchema) });
+const batchDetailSchema = z.object({
+  success: z.literal(true),
+  batch: batchSchema,
+  roster: z.array(z.record(z.string(), z.unknown())),
+});
+
 const admissionDraftPayloadSchema = z.record(z.string(), z.unknown());
 
 const receiptSummarySchema = z.object({
@@ -882,6 +926,9 @@ export type EnquiryOptions = z.infer<typeof enquiryOptionsSchema>;
 export type StudentSearchResult = z.infer<typeof studentSearchSchema>;
 export type CreateEnquiryResponse = z.infer<typeof createEnquiryResponseSchema>;
 export type StaffCourse = z.infer<typeof courseSchema>;
+export type StaffBatch = z.infer<typeof batchSchema>;
+export type AdmissionBatchOption = z.infer<typeof admissionBatchOptionSchema>;
+export type StaffBatchDetail = z.infer<typeof batchDetailSchema>;
 export type EnquiryDetail = z.infer<typeof enquiryDetailSchema>;
 export type CrmEnquiryItem = z.infer<typeof crmItemSchema>;
 export type CrmEnquiryList = z.infer<typeof crmListSchema>;
@@ -1035,6 +1082,53 @@ export async function getAdmissionConfiguration() {
 
 export async function getStaffCourses() {
   return getJson("/api/staff/courses", courseListSchema);
+}
+
+export type StaffBatchQuery = {
+  branchId?: string;
+  courseId?: string;
+  status?: string;
+  q?: string;
+};
+
+export async function getStaffBatches(params: StaffBatchQuery = {}) {
+  return getJson(`/api/staff/batches${queryString(params)}`, batchListSchema);
+}
+
+export async function getStaffBatch(batchId: string) {
+  return getJson(`/api/staff/batches/${encodeURIComponent(batchId)}`, batchDetailSchema);
+}
+
+export async function createStaffBatch(input: Record<string, unknown>) {
+  return postJson("/api/staff/batches", input, batchMutationSchema);
+}
+
+export async function updateStaffBatch(batchId: string, input: Record<string, unknown>) {
+  return patchJson(`/api/staff/batches/${encodeURIComponent(batchId)}`, input, batchMutationSchema);
+}
+
+export async function getStaffBatchTrainers(branchId?: string) {
+  return getJson(`/api/staff/batches/trainers${queryString({ branchId })}`, trainerListSchema);
+}
+
+export async function getEligibleBatchEnrolments(batchId: string, q = "") {
+  return getJson(`/api/staff/batches/${encodeURIComponent(batchId)}/eligible-enrolments${queryString({ q })}`, eligibleEnrolmentListSchema);
+}
+
+export async function getAdmissionBatchOptions(branchId: string, courseId: string) {
+  return getJson(`/api/staff/batches/admission-options${queryString({ branchId, courseId })}`, admissionBatchOptionListSchema);
+}
+
+export async function assignEnrolmentToStaffBatch(batchId: string, enrolmentId: string) {
+  return postJson(`/api/staff/batches/${encodeURIComponent(batchId)}/assignments`, { enrolmentId }, batchMembershipMutationSchema);
+}
+
+export async function transferStaffBatchMembership(batchId: string, membershipId: string, targetBatchId: string) {
+  return postJson(`/api/staff/batches/${encodeURIComponent(batchId)}/memberships/${encodeURIComponent(membershipId)}/transfer`, { targetBatchId }, batchMembershipMutationSchema);
+}
+
+export async function removeStaffBatchMembership(batchId: string, membershipId: string) {
+  return postJson(`/api/staff/batches/${encodeURIComponent(batchId)}/memberships/${encodeURIComponent(membershipId)}/remove`, {}, batchMembershipMutationSchema);
 }
 
 export async function createCourse(input: Record<string, unknown>) {
