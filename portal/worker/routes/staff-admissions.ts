@@ -625,11 +625,21 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], sta
     c.env.DB.prepare("select * from education_records where person_id = ? order by created_at desc limit 1").bind(student.person_id).all(),
     c.env.DB.prepare(
       `select enrolments.*, courses.name as course_name, fee_agreements.final_agreed_fee_paise, fee_agreements.payment_plan_type,
-              nsdc_profiles.status as nsdc_status
+              nsdc_profiles.status as nsdc_status,
+              batch_memberships.id as current_batch_membership_id,
+              batches.id as current_batch_id,
+              batches.name as current_batch_name,
+              batches.days_of_week_json as current_batch_days_of_week_json,
+              batches.start_time as current_batch_start_time,
+              batches.end_time as current_batch_end_time,
+              coalesce(trainer.public_name, trainer.full_name) as current_batch_trainer_name
        from enrolments
        join courses on courses.id = enrolments.course_id
        left join fee_agreements on fee_agreements.enrolment_id = enrolments.id
        left join nsdc_profiles on nsdc_profiles.enrolment_id = enrolments.id
+       left join batch_memberships on batch_memberships.enrolment_id = enrolments.id and batch_memberships.status = 'active' and batch_memberships.left_at is null
+       left join batches on batches.id = batch_memberships.batch_id
+       left join people trainer on trainer.id = batches.primary_trainer_person_id
        where enrolments.student_id = ?
        order by enrolments.created_at desc`,
     )

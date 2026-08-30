@@ -13,6 +13,7 @@ import { registerStaffAdmissionRoutes } from "./routes/staff-admissions";
 import { registerStaffPaymentRoutes } from "./routes/staff-payments";
 import { registerStaffReferralRoutes } from "./routes/staff-referrals";
 import { registerStaffEducationPartnerRoutes } from "./routes/staff-education-partners";
+import { registerStaffBatchRoutes } from "./routes/staff-batches";
 import { registerStudentRoutes } from "./routes/student";
 import { registerPublicReferralRoutes } from "./routes/public-referrals";
 import { registerPartnerRoutes } from "./routes/partner";
@@ -45,6 +46,7 @@ registerStaffAdmissionRoutes(app);
 registerStaffPaymentRoutes(app);
 registerStaffReferralRoutes(app);
 registerStaffEducationPartnerRoutes(app);
+registerStaffBatchRoutes(app);
 registerCertificateRoutes(app);
 
 app.notFound((c) =>

@@ -15,6 +15,7 @@ import { StudentsPage } from "../features/staff/StudentsPage";
 import { EducationPartnerDetailPage, EducationPartnersPage } from "../features/staff/EducationPartnersPage";
 import { AdmissionPage } from "../features/staff/AdmissionPage";
 import { CourseMasterPage } from "../features/staff/CourseMasterPage";
+import { BatchManagementPage } from "../features/staff/BatchManagementPage";
 import { DiscountApprovalsPage } from "../features/staff/DiscountApprovalsPage";
 import { EnquiryDetailPage } from "../features/staff/EnquiryDetailPage";
 import { StudentProfilePage } from "../features/staff/StudentProfilePage";
@@ -24,7 +25,7 @@ import { ShellHomePage } from "./ShellHomePage";
 import { AppShell } from "./AppShell";
 import type { AppRoute, RoutePath, StudentRoute } from "./types";
 
-const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/students", "/app/education-partners", "/app/referral-operations", "/app/courses", "/app/discount-approvals", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
+const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/students", "/app/batches", "/app/education-partners", "/app/referral-operations", "/app/courses", "/app/discount-approvals", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
 const studentRoutes = new Set<RoutePath>(["/student/dashboard", "/student/certificates", "/student/referrals", "/student/rules", "/student/profile"]);
 const staffBlockedSelfServiceRoutes = new Set<RoutePath>(["/app", "/app/referrals", "/app/rules", "/app/profile"]);
 const staffRoles = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
@@ -52,6 +53,7 @@ export function normalizePath(pathname: string): RoutePath {
   if (/^\/app\/enquiries\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/referral-operations\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/students\/[^/]+$/.test(pathname)) return pathname as RoutePath;
+  if (/^\/app\/batches\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/education-partners\/[^/]+\/preview$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/education-partners\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/enrolments\/[^/]+\/payments$/.test(pathname)) return pathname as RoutePath;
@@ -104,6 +106,7 @@ export function Router() {
   const enquiryDetailMatch = activeAppPath.match(/^\/app\/enquiries\/([^/]+)$/);
   const referralOperationsMatch = activeAppPath.match(/^\/app\/referral-operations\/([^/]+)$/);
   const studentProfileMatch = activeAppPath.match(/^\/app\/students\/([^/]+)$/);
+  const batchMatch = activeAppPath.match(/^\/app\/batches\/([^/]+)$/);
   const educationPartnerPreviewMatch = activeAppPath.match(/^\/app\/education-partners\/([^/]+)\/preview$/);
   const educationPartnerMatch = activeAppPath.match(/^\/app\/education-partners\/([^/]+)$/);
   const paymentsMatch = activeAppPath.match(/^\/app\/enrolments\/([^/]+)\/payments$/);
@@ -181,6 +184,7 @@ export function Router() {
       {activeAppPath === "/app" ? <ShellHomePage /> : null}
       {activeAppPath === "/app/enquiries" && canAccessEnquiries ? <EnquiriesPage /> : null}
       {activeAppPath === "/app/students" && canAccessStudents ? <StudentsPage /> : null}
+      {activeAppPath === "/app/batches" && isStaff ? <BatchManagementPage /> : null}
       {activeAppPath === "/app/education-partners" && isStaff ? <EducationPartnersPage onNavigate={navigate} isOwner={isDiscountApprover} /> : null}
       {activeAppPath === "/app/referral-operations" && isStaff ? <ReferralOperationsPage onNavigate={navigate} /> : null}
       {activeAppPath === "/app/courses" && isStaff ? <CourseMasterPage /> : null}
@@ -190,6 +194,7 @@ export function Router() {
       {enquiryAdmissionMatch && isStaff ? <AdmissionPage enquiryId={enquiryAdmissionMatch[1]} /> : null}
       {referralOperationsMatch && isStaff ? <ReferralOperationsDetailPage referralId={referralOperationsMatch[1]} onNavigate={navigate} isOwner={isDiscountApprover} /> : null}
       {studentProfileMatch && isStaff ? <StudentProfilePage studentId={studentProfileMatch[1]} /> : null}
+      {batchMatch && isStaff ? <BatchManagementPage batchId={batchMatch[1]} /> : null}
       {educationPartnerPreviewMatch && isDiscountApprover ? <PartnerPortalPage mode="preview" partnerId={educationPartnerPreviewMatch[1]} onNavigate={navigate} /> : null}
       {educationPartnerMatch && isStaff ? <EducationPartnerDetailPage partnerId={educationPartnerMatch[1]} onNavigate={navigate} isOwner={isDiscountApprover} /> : null}
       {paymentsMatch && isStaff ? <PaymentsLedgerPage enrolmentId={paymentsMatch[1]} /> : null}
@@ -237,7 +242,7 @@ export function redirectForRouteState({
   if (!isStaff && studentRoute) return studentRoute;
   if ((path === "/app/enquiries" || path.startsWith("/app/enquiries/")) && !canAccessEnquiries) return isStaff ? "/app" : "/student/dashboard";
   if ((path === "/app/students" || path.startsWith("/app/students/")) && !canAccessStudents) return isStaff ? "/app" : "/student/dashboard";
-  if ((path === "/app/education-partners" || path === "/app/referral-operations" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/education-partners/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/enrolments/")) && !isStaff) {
+  if ((path === "/app/education-partners" || path === "/app/referral-operations" || path === "/app/batches" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/education-partners/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/batches/") || path.startsWith("/app/enrolments/")) && !isStaff) {
     return "/student/dashboard";
   }
   if (/^\/app\/education-partners\/[^/]+\/preview$/.test(path) && !isDiscountApprover) return isStaff ? "/app" : "/student/dashboard";

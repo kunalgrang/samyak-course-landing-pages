@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const apiMocks = vi.hoisted(() => ({
   confirmAdmission: vi.fn(),
   getAdmissionConfiguration: vi.fn(),
+  getAdmissionBatchOptions: vi.fn(),
   getAdmissionDraft: vi.fn(),
   getActiveCourses: vi.fn(),
   getEnquiryDetail: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     ...actual,
     confirmAdmission: apiMocks.confirmAdmission,
     getAdmissionConfiguration: apiMocks.getAdmissionConfiguration,
+    getAdmissionBatchOptions: apiMocks.getAdmissionBatchOptions,
     getAdmissionDraft: apiMocks.getAdmissionDraft,
     getActiveCourses: apiMocks.getActiveCourses,
     getEnquiryDetail: apiMocks.getEnquiryDetail,
@@ -406,6 +408,43 @@ describe("AdmissionPage draft validation interactions", () => {
     expect(container.textContent).toContain("Admission Confirmed");
   });
 
+  it("offers Assign later and saves selected canonical batch id", async () => {
+    apiMocks.getEnquiryDetail.mockResolvedValue({
+      ...linkedEnquiryDetail(),
+      enquiry: { ...linkedEnquiryDetail().enquiry, course_id: "course_full_stack" },
+    });
+    apiMocks.getAdmissionBatchOptions.mockResolvedValue({
+      success: true,
+      batches: [
+        {
+          id: "batch_morning",
+          name: "FSD Morning",
+          trainerName: "Riya Trainer",
+          daysOfWeek: ["mon", "wed", "fri"],
+          startTime: "08:00",
+          endTime: "10:00",
+          capacity: 24,
+          activeStudents: 24,
+          capacityWarning: true,
+        },
+      ],
+    });
+    const container = await renderAdmissionPage(roots);
+    await flushAdmissionPage();
+
+    const select = windowRef.document.getElementById(admissionFieldId("course.batchId")) as unknown as HTMLSelectElement;
+    expect(select.textContent).toContain("Assign later");
+    expect(select.textContent).toContain("FSD Morning");
+    await changeValue(select as unknown as HTMLInputElement, "batch_morning");
+    await click(buttonByText(container, "Save Draft"));
+
+    expect(apiMocks.saveAdmissionDraft).toHaveBeenCalledWith(
+      "enq_first",
+      expect.objectContaining({ course: expect.objectContaining({ batchId: "batch_morning" }) }),
+      expect.any(String),
+    );
+  });
+
   it("preserves typed values when draft save returns an API error", async () => {
     apiMocks.saveAdmissionDraft.mockRejectedValueOnce(new ApiError("Temporary network failure", undefined, "network_error"));
     const container = await renderAdmissionPage(roots);
@@ -495,6 +534,7 @@ function setDefaultAdmissionApiMocks() {
     activeDraft: null,
   });
   apiMocks.getActiveCourses.mockResolvedValue({ courses: [course] });
+  apiMocks.getAdmissionBatchOptions.mockResolvedValue({ success: true, batches: [] });
   apiMocks.getAdmissionDraft.mockResolvedValue({ draft: null });
   apiMocks.getAdmissionConfiguration.mockResolvedValue(populatedConfiguration());
   apiMocks.confirmAdmission.mockResolvedValue({
