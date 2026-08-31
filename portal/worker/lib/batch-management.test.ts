@@ -173,6 +173,32 @@ describe("Batch Management V1 service", () => {
     await expect(updateBatch(c, staff, "batch_one", { courseIds: ["course_fsd", "course_dm_wp"] })).resolves.toMatchObject({ ok: false, code: "batch_course_history_locked" });
   });
 
+  it("preserves mappings on partial edit, rejects zero-course edit, and keeps legacy primary mapped", async () => {
+    const { c, staff } = setup();
+    await seedBatch(c, "batch_one", "branch_sion", "course_fsd", ["course_fsd", "course_dm_ai", "course_dm_wp"]);
+
+    await expect(updateBatch(c, staff, "batch_one", { trainerPersonId: null, status: "inactive" })).resolves.toMatchObject({ ok: true });
+    expect(batchCourseIds(c, "batch_one")).toEqual(["course_dm_ai", "course_dm_wp", "course_fsd"]);
+
+    await expect(updateBatch(c, staff, "batch_one", { courseIds: [] })).resolves.toMatchObject({ ok: false, code: "invalid_batch" });
+    expect(batchCourseIds(c, "batch_one")).toEqual(["course_dm_ai", "course_dm_wp", "course_fsd"]);
+
+    await expect(updateBatch(c, staff, "batch_one", { courseIds: ["course_dm_ai", "course_dm_wp"] })).resolves.toMatchObject({ ok: true });
+    expect(batchCourseIds(c, "batch_one")).toEqual(["course_dm_ai", "course_dm_wp"]);
+    const batch = c.env.DB.database.prepare("select course_id from batches where id = 'batch_one'").get() as any;
+    expect(batch.course_id).toBe("course_dm_ai");
+  });
+
+  it("allows removing never-used course mappings without freezing unrelated courses", async () => {
+    const { c, staff } = setup();
+    await seedBatch(c, "batch_one", "branch_sion", "course_fsd", ["course_fsd", "course_dm_ai", "course_dm_wp"]);
+    await assignEnrolmentToBatch(c, staff, "batch_one", "enrol_one");
+
+    await expect(updateBatch(c, staff, "batch_one", { courseIds: ["course_fsd", "course_dm_ai"] })).resolves.toMatchObject({ ok: true });
+    expect(batchCourseIds(c, "batch_one")).toEqual(["course_dm_ai", "course_fsd"]);
+    await expect(updateBatch(c, staff, "batch_one", { courseIds: ["course_dm_ai"] })).resolves.toMatchObject({ ok: false, code: "batch_course_history_locked" });
+  });
+
   it("rejects inactive trainers, branch mismatch and duplicate active memberships", async () => {
     const { c, staff } = setup();
     await seedBatch(c, "batch_one", "branch_sion", "course_fsd");
@@ -333,6 +359,11 @@ async function seedBatch(c: AppContext, id: string, branchId: string, courseId: 
         .bind(id, mappedCourseId, NOW),
     ),
   ]);
+}
+
+function batchCourseIds(c: AppContext & { env: { DB: SqliteD1 } }, batchId: string) {
+  const rows = c.env.DB.database.prepare("select course_id from batch_courses where batch_id = ? order by course_id").all(batchId) as any[];
+  return rows.map((row) => row.course_id);
 }
 
 function installSchema(db: DatabaseSync) {

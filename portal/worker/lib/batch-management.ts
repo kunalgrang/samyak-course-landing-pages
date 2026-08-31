@@ -197,7 +197,7 @@ export async function updateBatch(c: AppContext, staff: StaffContext, batchId: s
     status: (patch.status ?? current.status) as BatchStatus,
   };
   const currentCourseIds = await listBatchCourseIds(c, batchId, current.course_id);
-  const nextCourseIds = normalizeCourseIds(merged.courseIds || [merged.courseId]);
+  const nextCourseIds = normalizeCourseIds(merged.courseIds ?? (patch.courseId ? [merged.courseId] : currentCourseIds));
   const hasHistory = await batchHasMembershipHistory(c, batchId);
   if (hasHistory && merged.branchId !== current.branch_id) {
     return {
