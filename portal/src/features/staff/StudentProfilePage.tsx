@@ -1,7 +1,17 @@
 import { useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
-import { ApiError, changeStaffStudentPrimaryMobile, getStaffStudentProfile, replaceStaffStudentReferralLink, type SharedMobileMatch, type StaffStudentProfile } from "../../lib/api";
+import {
+  ApiError,
+  assignEnrolmentToStaffBatch,
+  changeStaffStudentPrimaryMobile,
+  getAdmissionBatchOptions,
+  getStaffStudentProfile,
+  replaceStaffStudentReferralLink,
+  type AdmissionBatchOption,
+  type SharedMobileMatch,
+  type StaffStudentProfile,
+} from "../../lib/api";
 
 export function StudentProfilePage({ studentId }: { studentId: string }) {
   const [profile, setProfile] = useState<StaffStudentProfile | null>(null);
@@ -9,6 +19,11 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
   const [editingContact, setEditingContact] = useState(false);
   const [referralBusy, setReferralBusy] = useState(false);
   const [referralMessage, setReferralMessage] = useState<string | null>(null);
+  const [batchPanelEnrolmentId, setBatchPanelEnrolmentId] = useState("");
+  const [batchOptions, setBatchOptions] = useState<Record<string, AdmissionBatchOption[]>>({});
+  const [selectedBatchIds, setSelectedBatchIds] = useState<Record<string, string>>({});
+  const [batchBusyId, setBatchBusyId] = useState("");
+  const [batchMessage, setBatchMessage] = useState<string | null>(null);
 
   useEffect(() => {
     void getStaffStudentProfile(studentId)
@@ -40,6 +55,41 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
     if (!navigator.clipboard) return;
     await navigator.clipboard.writeText(link);
     setReferralMessage("Referral link copied.");
+  }
+
+  async function openBatchAssignment(enrolment: Record<string, unknown>) {
+    const enrolmentId = String(enrolment.id || "");
+    setBatchPanelEnrolmentId((current) => (current === enrolmentId ? "" : enrolmentId));
+    setBatchMessage(null);
+    if (!enrolmentId || batchOptions[enrolmentId]) return;
+    setBatchBusyId(enrolmentId);
+    try {
+      const data = await getAdmissionBatchOptions(String(enrolment.branch_id || ""), String(enrolment.course_id || ""));
+      setBatchOptions((current) => ({ ...current, [enrolmentId]: data.batches }));
+    } catch (cause) {
+      setBatchMessage(cause instanceof Error ? cause.message : "Could not load eligible batches.");
+    } finally {
+      setBatchBusyId("");
+    }
+  }
+
+  async function assignBatch(enrolmentId: string) {
+    const batchId = selectedBatchIds[enrolmentId] || "";
+    if (!batchId) return;
+    setBatchBusyId(enrolmentId);
+    setBatchMessage(null);
+    try {
+      await assignEnrolmentToStaffBatch(batchId, enrolmentId);
+      const nextProfile = await getStaffStudentProfile(studentId);
+      setProfile(nextProfile);
+      setBatchPanelEnrolmentId("");
+      setSelectedBatchIds((current) => ({ ...current, [enrolmentId]: "" }));
+      setBatchMessage("Batch assigned.");
+    } catch (cause) {
+      setBatchMessage(cause instanceof Error ? cause.message : "Batch could not be assigned.");
+    } finally {
+      setBatchBusyId("");
+    }
   }
 
   return (
@@ -100,10 +150,21 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
             <strong>{String(enrolment.enrolment_number)}</strong>
             <span>{String(enrolment.course_name)} · Joining {String(enrolment.joining_date)}</span>
             <small>Batch {currentBatchLabel(enrolment)} · Fee {formatMoney(Number(enrolment.final_agreed_fee_paise || 0))} · {String(enrolment.payment_plan_type || "No plan")} · NSDC {String(enrolment.nsdc_status || "Not requested")}</small>
-            {enrolment.current_batch_id ? <a className="button-link" href={`/app/batches/${String(enrolment.current_batch_id)}`}>Open Batch</a> : <a className="button-link" href="/app/batches">Assign Batch</a>}
+            {enrolment.current_batch_id ? <a className="button-link" href={openBatchHref(enrolment)}>Open Batch</a> : <button className="button-link" type="button" onClick={() => void openBatchAssignment(enrolment)}>Assign Batch</button>}
             {enrolment.final_agreed_fee_paise ? <a className="button-link" href={`/app/enrolments/${String(enrolment.id)}/payments`}>Payments</a> : null}
+            {batchPanelEnrolmentId === String(enrolment.id) ? (
+              <BatchAssignmentPanel
+                enrolmentId={String(enrolment.id)}
+                options={batchOptions[String(enrolment.id)] || []}
+                selectedBatchId={selectedBatchIds[String(enrolment.id)] || ""}
+                busy={batchBusyId === String(enrolment.id)}
+                onSelect={(batchId) => setSelectedBatchIds((current) => ({ ...current, [String(enrolment.id)]: batchId }))}
+                onAssign={() => void assignBatch(String(enrolment.id))}
+              />
+            ) : null}
           </article>
         ))}
+        {batchMessage ? <p className="form-message">{batchMessage}</p> : null}
       </section>
 
       <section className="staff-card">
@@ -118,6 +179,40 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
       </section>
     </div>
   );
+}
+
+export function BatchAssignmentPanel({
+  enrolmentId,
+  options,
+  selectedBatchId,
+  busy,
+  onSelect,
+  onAssign,
+}: {
+  enrolmentId: string;
+  options: AdmissionBatchOption[];
+  selectedBatchId: string;
+  busy: boolean;
+  onSelect: (batchId: string) => void;
+  onAssign: () => void;
+}) {
+  return (
+    <div className="inline-assignment-panel">
+      <label>
+        Batch
+        <select aria-label={`Eligible batch for ${enrolmentId}`} value={selectedBatchId} onChange={(event) => onSelect(event.target.value)} disabled={busy}>
+          <option value="">{busy ? "Loading batches..." : "Select batch"}</option>
+          {options.map((batch) => <option key={batch.id} value={batch.id}>{batchOptionLabel(batch)}</option>)}
+        </select>
+      </label>
+      <button type="button" disabled={busy || !selectedBatchId} onClick={onAssign}>{busy ? "Assigning..." : "Confirm"}</button>
+      {!busy && !options.length ? <small>No active batches are currently configured for this course. <a href="/app/batches">Manage Batches</a></small> : null}
+    </div>
+  );
+}
+
+export function openBatchHref(enrolment: Record<string, unknown>) {
+  return enrolment.current_batch_id ? `/app/batches/${String(enrolment.current_batch_id)}` : "";
 }
 
 function ReferralLinkPanel({
@@ -278,6 +373,11 @@ function currentBatchLabel(enrolment: Record<string, unknown>) {
   const timing = enrolment.current_batch_start_time && enrolment.current_batch_end_time ? ` ${String(enrolment.current_batch_start_time)}-${String(enrolment.current_batch_end_time)}` : "";
   const trainer = enrolment.current_batch_trainer_name ? ` · ${String(enrolment.current_batch_trainer_name)}` : "";
   return `${String(enrolment.current_batch_name || "Current batch")}${dayLabel}${timing}${trainer}`;
+}
+
+function batchOptionLabel(batch: AdmissionBatchOption) {
+  const trainer = batch.trainerName || "Trainer unassigned";
+  return `${batch.name} · ${trainer} · ${formatBatchDays(JSON.stringify(batch.daysOfWeek))} · ${batch.startTime}-${batch.endTime}`;
 }
 
 function formatBatchDays(value: unknown) {

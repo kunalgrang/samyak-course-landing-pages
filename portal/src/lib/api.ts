@@ -279,6 +279,8 @@ const batchSchema = z.object({
   branchName: z.string(),
   courseId: z.string(),
   courseName: z.string(),
+  courses: z.array(z.object({ id: z.string(), name: z.string() })).default([]),
+  courseCount: z.number().optional(),
   name: z.string(),
   trainerPersonId: z.string().nullable(),
   trainerName: z.string().nullable(),

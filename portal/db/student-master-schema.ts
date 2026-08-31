@@ -448,6 +448,28 @@ export const batches = sqliteTable(
   ],
 );
 
+export const batchCourses = sqliteTable(
+  "batch_courses",
+  {
+    batchId: text("batch_id")
+      .notNull()
+      .references(() => batches.id),
+    courseId: text("course_id")
+      .notNull()
+      .references(() => courses.id),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    createdAt: text("created_at").notNull(),
+    createdBy: text("created_by").references(() => loginAccounts.id),
+  },
+  (table) => [
+    uniqueIndex("batch_courses_batch_course_unique").on(table.batchId, table.courseId),
+    index("batch_courses_course_batch_idx").on(table.courseId, table.batchId),
+    index("batch_courses_org_course_idx").on(table.organisationId, table.courseId),
+  ],
+);
+
 export const batchMemberships = sqliteTable(
   "batch_memberships",
   {

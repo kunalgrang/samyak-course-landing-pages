@@ -30,7 +30,7 @@ const weekdays = [
 type BatchForm = {
   name: string;
   branchId: string;
-  courseId: string;
+  courseIds: string[];
   trainerPersonId: string;
   daysOfWeek: string[];
   startTime: string;
@@ -114,7 +114,8 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
       const input = {
         name: form.name,
         branchId: form.branchId,
-        courseId: form.courseId,
+        courseIds: form.courseIds,
+        courseId: form.courseIds[0] || "",
         trainerPersonId: form.trainerPersonId || null,
         daysOfWeek: form.daysOfWeek,
         startTime: form.startTime,
@@ -181,7 +182,7 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
     setForm({
       name: batch.name,
       branchId: batch.branchId,
-      courseId: batch.courseId,
+      courseIds: batch.courses.length ? batch.courses.map((course) => course.id) : [batch.courseId],
       trainerPersonId: batch.trainerPersonId || "",
       daysOfWeek: batch.daysOfWeek,
       startTime: batch.startTime,
@@ -207,7 +208,15 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
         <div className="staff-form-grid">
           <label>Name<input value={form.name} onChange={(event) => setFormValue("name", event.target.value)} /></label>
           <label>Branch<select value={form.branchId} onChange={(event) => setFormValue("branchId", event.target.value)}><option value="">Select branch</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
-          <label>Course<select value={form.courseId} onChange={(event) => setFormValue("courseId", event.target.value)}><option value="">Select course</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select></label>
+          <div className="course-checklist">
+            <small>Courses</small>
+            {courses.map((course) => (
+              <label key={course.id} className="check-row">
+                <input type="checkbox" checked={form.courseIds.includes(course.id)} onChange={(event) => setCourse(course.id, event.target.checked)} />
+                <span>{course.name}</span>
+              </label>
+            ))}
+          </div>
           <label>Trainer<select value={form.trainerPersonId} onChange={(event) => setFormValue("trainerPersonId", event.target.value)}><option value="">Unassigned</option>{trainers.map((trainer) => <option key={String(trainer.id)} value={String(trainer.id)}>{String(trainer.name)}</option>)}</select></label>
           <label>Start time<input type="time" value={form.startTime} onChange={(event) => setFormValue("startTime", event.target.value)} /></label>
           <label>End time<input type="time" value={form.endTime} onChange={(event) => setFormValue("endTime", event.target.value)} /></label>
@@ -242,7 +251,7 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
           <article className={`table-row ${batch.id === selectedBatchId ? "table-row--selected" : ""}`} key={batch.id}>
             <button className="link-button table-row-main" type="button" onClick={() => setSelectedBatchId(batch.id)}>
               <strong>{batch.name} {batch.capacityWarning ? <span className="status-pill status-pill--warning">Full</span> : null}</strong>
-              <span>{batch.courseName} · {batch.branchName} · {formatDays(batch.daysOfWeek)} · {batch.startTime}-{batch.endTime}</span>
+              <span>{compactCourseLabel(batch)} · {batch.branchName} · {formatDays(batch.daysOfWeek)} · {batch.startTime}-{batch.endTime}</span>
               <small>{batch.trainerName || "Trainer unassigned"} · {batch.activeStudents}{batch.capacity ? `/${batch.capacity}` : ""} students · {batch.status}</small>
             </button>
             <button type="button" className="button-link" onClick={() => editBatch(batch)}>Edit</button>
@@ -254,7 +263,10 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
         <section className="staff-card">
           <div className="section-heading"><h2>{selectedBatch.name}</h2><span>{selectedBatch.activeStudents}{selectedBatch.capacity ? `/${selectedBatch.capacity}` : ""}</span></div>
           <div className="detail-grid">
-            <Detail label="Course" value={selectedBatch.courseName} />
+            <div>
+              <small>Courses</small>
+              <div className="chip-list">{batchCourses(selectedBatch).map((course) => <span className="status-pill" key={course.id}>{course.name}</span>)}</div>
+            </div>
             <Detail label="Branch" value={selectedBatch.branchName} />
             <Detail label="Trainer" value={selectedBatch.trainerName || "Unassigned"} />
             <Detail label="Schedule" value={`${formatDays(selectedBatch.daysOfWeek)} ${selectedBatch.startTime}-${selectedBatch.endTime}`} />
@@ -267,11 +279,11 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
           {detail?.roster.length ? detail.roster.map((row) => (
             <article className="table-row" key={String(row.membership_id)}>
               <strong>{String(row.student_name)}</strong>
-              <span>{String(row.student_number)} · {String(row.enrolment_number)} · Joined {String(row.joined_at).slice(0, 10)}</span>
+              <span>{String(row.student_number)} · {String(row.enrolment_number)} · {String(row.course_name || "Course")} · Joined {String(row.joined_at).slice(0, 10)}</span>
               <small>{String(row.enrolment_status)}</small>
               <select value={targetBatchId} onChange={(event) => setTargetBatchId(event.target.value)}>
                 <option value="">Transfer to</option>
-                {batches.filter((batch) => batch.id !== selectedBatch.id && batch.courseId === selectedBatch.courseId && batch.branchId === selectedBatch.branchId && batch.status === "active").map((batch) => <option key={batch.id} value={batch.id}>{batch.name}</option>)}
+                {batches.filter((batch) => batch.id !== selectedBatch.id && batch.branchId === selectedBatch.branchId && batch.status === "active" && batchCourses(batch).some((course) => course.id === String(row.course_id))).map((batch) => <option key={batch.id} value={batch.id}>{batch.name}</option>)}
               </select>
               <button type="button" className="button-secondary" disabled={!targetBatchId} onClick={() => void transferMembership(String(row.membership_id))}>Transfer</button>
               <button type="button" className="button-link" onClick={() => void removeMembership(String(row.membership_id))}>Remove</button>
@@ -292,13 +304,21 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
       return { ...current, daysOfWeek: weekdays.map(([value]) => value).filter((value) => days.includes(value)) };
     });
   }
+
+  function setCourse(courseId: string, checked: boolean) {
+    setForm((current) => {
+      const next = checked ? [...current.courseIds, courseId] : current.courseIds.filter((item) => item !== courseId);
+      const ordered = courses.map((course) => course.id).filter((id) => next.includes(id));
+      return { ...current, courseIds: ordered };
+    });
+  }
 }
 
 function defaultForm(): BatchForm {
   return {
     name: "",
     branchId: "",
-    courseId: "",
+    courseIds: [],
     trainerPersonId: "",
     daysOfWeek: ["mon", "wed", "fri"],
     startTime: "08:00",
@@ -306,6 +326,15 @@ function defaultForm(): BatchForm {
     capacity: "",
     status: "active",
   };
+}
+
+function batchCourses(batch: StaffBatch) {
+  return batch.courses.length ? batch.courses : [{ id: batch.courseId, name: batch.courseName }];
+}
+
+function compactCourseLabel(batch: StaffBatch) {
+  const courses = batchCourses(batch);
+  return courses.length <= 1 ? courses[0]?.name || "No course" : `${courses[0]?.name || "Courses"} +${courses.length - 1} courses`;
 }
 
 function formatDays(days: string[]) {
