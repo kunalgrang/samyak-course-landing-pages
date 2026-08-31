@@ -1,4 +1,6 @@
 /// <reference types="node" />
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { AppContext } from "./http";
@@ -7,6 +9,7 @@ import {
   assignBatchOnAdmissionConfirmation,
   assignEnrolmentToBatch,
   createBatch,
+  getBatchDetail,
   listAdmissionEligibleBatches,
   normalizeDaysOfWeek,
   removeBatchMembership,
@@ -72,7 +75,7 @@ describe("Batch Management V1 service", () => {
     const created = await createBatch(c, staff, {
       name: "FSD Morning",
       branchId: "branch_sion",
-      courseId: "course_fsd",
+      courseIds: ["course_fsd"],
       trainerPersonId: "person_trainer",
       daysOfWeek: ["wed", "mon"],
       startTime: "08:00",
@@ -88,6 +91,86 @@ describe("Batch Management V1 service", () => {
       daysOfWeek: ["mon", "wed"],
       activeStudents: 0,
     });
+  });
+
+  it("creates mixed-course batches and enforces explicit course eligibility", async () => {
+    const { c, staff } = setup();
+    const created = await createBatch(c, staff, {
+      name: "Digital Marketing Evening",
+      branchId: "branch_sion",
+      courseIds: ["course_fsd", "course_dm_ai", "course_dm_wp", "course_dm_ai"],
+      trainerPersonId: "person_trainer",
+      daysOfWeek: ["mon", "wed", "fri"],
+      startTime: "18:00",
+      endTime: "20:00",
+      capacity: null,
+      status: "active",
+    });
+    expect(created).toMatchObject({ ok: true });
+    if (!created.ok) return;
+
+    const mappings = c.env.DB.database.prepare("select course_id from batch_courses where batch_id = ? order by course_id").all(created.batchId) as any[];
+    expect(mappings.map((row) => row.course_id)).toEqual(["course_dm_ai", "course_dm_wp", "course_fsd"]);
+
+    await expect(assignEnrolmentToBatch(c, staff, created.batchId, "enrol_one")).resolves.toMatchObject({ ok: true });
+    await expect(assignEnrolmentToBatch(c, staff, created.batchId, "enrol_dm_ai")).resolves.toMatchObject({ ok: true });
+    await expect(assignEnrolmentToBatch(c, staff, created.batchId, "enrol_unrelated")).resolves.toMatchObject({ ok: false, code: "batch_course_not_eligible" });
+
+    const detail = await getBatchDetail(c, staff, created.batchId);
+    expect(detail.ok && detail.batch.courses.map((course) => course.id)).toEqual(["course_fsd", "course_dm_ai", "course_dm_wp"]);
+    expect(detail.ok && detail.roster.map((row) => row.course_name).sort()).toEqual(["Digital Marketing with AI", "Full Stack"]);
+  });
+
+  it("uses batch course mappings for admission options and transfer targets", async () => {
+    const { c, staff } = setup();
+    await seedBatch(c, "batch_one", "branch_sion", "course_fsd", ["course_fsd", "course_dm_ai"]);
+    await seedBatch(c, "batch_two", "branch_sion", "course_fsd", ["course_fsd", "course_dm_ai"]);
+    await seedBatch(c, "batch_unrelated", "branch_sion", "course_other", ["course_other"]);
+
+    const fsdOptions = await listAdmissionEligibleBatches(c, staff, "branch_sion", "course_fsd");
+    const aiOptions = await listAdmissionEligibleBatches(c, staff, "branch_sion", "course_dm_ai");
+    const unrelatedOptions = await listAdmissionEligibleBatches(c, staff, "branch_sion", "course_unrelated");
+    expect(fsdOptions.ok && fsdOptions.batches.map((batch) => batch.id)).toEqual(["batch_one", "batch_two"]);
+    expect(aiOptions.ok && aiOptions.batches.map((batch) => batch.id)).toEqual(["batch_one", "batch_two"]);
+    expect(unrelatedOptions.ok && unrelatedOptions.batches).toEqual([]);
+
+    const assigned = await assignEnrolmentToBatch(c, staff, "batch_one", "enrol_dm_ai");
+    expect(assigned).toMatchObject({ ok: true });
+    if (!assigned.ok) return;
+    await expect(transferBatchMembership(c, staff, "batch_one", assigned.membershipId, "batch_two")).resolves.toMatchObject({ ok: true });
+    await expect(validateAdmissionBatchSelection(c, staff, "branch_sion", "course_dm_ai", "batch_one")).resolves.toBeNull();
+    await expect(validateAdmissionBatchSelection(c, staff, "branch_sion", "course_unrelated", "batch_one")).resolves.toHaveProperty("course.batchId");
+  });
+
+  it("requires at least one course, rejects cross-org courses, and locks course mappings with history", async () => {
+    const { c, staff } = setup();
+    await expect(createBatch(c, staff, {
+      name: "No Course",
+      branchId: "branch_sion",
+      courseIds: [],
+      trainerPersonId: null,
+      daysOfWeek: ["mon"],
+      startTime: "08:00",
+      endTime: "10:00",
+      capacity: null,
+      status: "active",
+    })).resolves.toMatchObject({ ok: false, code: "invalid_batch" });
+    await expect(createBatch(c, staff, {
+      name: "Cross Org",
+      branchId: "branch_sion",
+      courseIds: ["course_foreign"],
+      trainerPersonId: null,
+      daysOfWeek: ["mon"],
+      startTime: "08:00",
+      endTime: "10:00",
+      capacity: null,
+      status: "active",
+    })).resolves.toMatchObject({ ok: false, code: "invalid_batch" });
+
+    await seedBatch(c, "batch_one", "branch_sion", "course_fsd", ["course_fsd", "course_dm_ai"]);
+    await expect(updateBatch(c, staff, "batch_one", { courseIds: ["course_fsd", "course_dm_ai", "course_dm_wp"] })).resolves.toMatchObject({ ok: true });
+    await assignEnrolmentToBatch(c, staff, "batch_one", "enrol_dm_ai");
+    await expect(updateBatch(c, staff, "batch_one", { courseIds: ["course_fsd", "course_dm_wp"] })).resolves.toMatchObject({ ok: false, code: "batch_course_history_locked" });
   });
 
   it("rejects inactive trainers, branch mismatch and duplicate active memberships", async () => {
@@ -166,12 +249,12 @@ describe("Batch Management V1 service", () => {
     expect(active.count).toBe(1);
   });
 
-  it("locks batch course and branch once membership history exists while allowing trainer/status changes", async () => {
+  it("locks batch branch and mapped courses once membership history exists while allowing trainer/status changes", async () => {
     const { c, staff } = setup();
     await seedBatch(c, "batch_one", "branch_sion", "course_fsd");
     await assignEnrolmentToBatch(c, staff, "batch_one", "enrol_one");
 
-    await expect(updateBatch(c, staff, "batch_one", { courseId: "course_other" })).resolves.toMatchObject({ ok: false, code: "batch_identity_locked" });
+    await expect(updateBatch(c, staff, "batch_one", { courseId: "course_other" })).resolves.toMatchObject({ ok: false, code: "batch_course_history_locked" });
     await expect(updateBatch(c, staff, "batch_one", { branchId: "branch_dadar" })).resolves.toMatchObject({ ok: false, code: "batch_identity_locked" });
     await expect(updateBatch(c, staff, "batch_one", { trainerPersonId: null, status: "inactive" })).resolves.toMatchObject({ ok: true });
   });
@@ -207,6 +290,27 @@ describe("Batch Management V1 service", () => {
     expect(first).toMatchObject({ ok: true });
     expect(second).toEqual(first);
   });
+
+  it("backfills existing V1 batches when migration 0025 is applied", () => {
+    const db = new DatabaseSync(":memory:");
+    const migrationsDir = join(process.cwd(), "migrations");
+    for (const file of readdirSync(migrationsDir).filter((name) => name.endsWith(".sql") && name <= "0024_batch_management_v1.sql").sort()) {
+      db.exec(readFileSync(join(migrationsDir, file), "utf8"));
+    }
+    db.prepare("insert into organisations (id, name, slug, status, created_at, updated_at) values ('org_samyak', 'Samyak', 'samyak', 'active', ?, ?)").run(NOW, NOW);
+    db.prepare("insert into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at) values ('branch_sion', 'org_samyak', 'Sion', 'SION', 'Asia/Kolkata', 'active', ?, ?)").run(NOW, NOW);
+    db.prepare("insert into courses (id, organisation_id, code, name, duration_label, default_fee_paise, nsdc_available, status, created_at, updated_at) values ('course_fsd', 'org_samyak', 'FSD', 'Full Stack', '6 months', 5000000, 1, 'active', ?, ?)").run(NOW, NOW);
+    db.prepare(
+      `insert into batches
+       (id, organisation_id, branch_id, course_id, name, days_of_week_json, start_time, end_time, status, created_at, updated_at)
+       values ('batch_legacy', 'org_samyak', 'branch_sion', 'course_fsd', 'Legacy Batch', '["mon"]', '08:00', '10:00', 'active', ?, ?)`,
+    ).run(NOW, NOW);
+
+    db.exec(readFileSync(join(migrationsDir, "0025_batch_multi_course.sql"), "utf8"));
+
+    const row = db.prepare("select count(*) as count from batch_courses where batch_id = 'batch_legacy' and course_id = 'course_fsd'").get() as any;
+    expect(row.count).toBe(1);
+  });
 });
 
 function setup() {
@@ -218,13 +322,17 @@ function setup() {
   return { c, staff };
 }
 
-async function seedBatch(c: AppContext, id: string, branchId: string, courseId: string) {
-  await c.env.DB.prepare(
+async function seedBatch(c: AppContext, id: string, branchId: string, courseId: string, courseIds = [courseId]) {
+  await c.env.DB.batch([
+    c.env.DB.prepare(
     `insert into batches (id, organisation_id, branch_id, course_id, name, primary_trainer_person_id, days_of_week_json, start_time, end_time, capacity, status, created_by_login_account_id, created_at, updated_at)
      values (?, 'org_samyak', ?, ?, ?, 'person_trainer', '["mon","wed"]', '08:00', '10:00', null, 'active', 'acct_admin', ?, ?)`,
-  )
-    .bind(id, branchId, courseId, id, NOW, NOW)
-    .run();
+    ).bind(id, branchId, courseId, id, NOW, NOW),
+    ...courseIds.map((mappedCourseId) =>
+      c.env.DB.prepare("insert into batch_courses (batch_id, course_id, organisation_id, created_at, created_by) values (?, ?, 'org_samyak', ?, 'acct_admin')")
+        .bind(id, mappedCourseId, NOW),
+    ),
+  ]);
 }
 
 function installSchema(db: DatabaseSync) {
@@ -249,6 +357,10 @@ function installSchema(db: DatabaseSync) {
       id text primary key, organisation_id text not null, batch_id text not null, enrolment_id text not null,
       joined_at text not null, left_at text, status text not null default 'active', assigned_by_login_account_id text, created_at text not null
     );
+    create table batch_courses (
+      batch_id text not null, course_id text not null, organisation_id text not null, created_at text not null, created_by text,
+      primary key (batch_id, course_id)
+    );
     create unique index batch_memberships_one_active_enrolment on batch_memberships (enrolment_id) where status = 'active' and left_at is null;
   `);
 }
@@ -269,11 +381,17 @@ function seedBase(db: DatabaseSync) {
   db.prepare("insert into person_roles values ('person_trainer', 'role_trainer', 'branch_sion', 'branch_sion', ?)").run(NOW);
   db.prepare("insert into person_roles values ('person_inactive_trainer', 'role_trainer', 'branch_sion', 'branch_sion', ?)").run(NOW);
   db.prepare("insert into courses values ('course_fsd', 'org_samyak', 'FSD', 'Full Stack', '6 months', 6, 5000000, 4000000, 1, 1, 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into courses values ('course_dm_ai', 'org_samyak', 'DMAI', 'Digital Marketing with AI', '4 months', 4, 5000000, 4000000, 1, 1, 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into courses values ('course_dm_wp', 'org_samyak', 'DMWP', 'Digital Marketing with AI & WordPress', '4 months', 4, 5000000, 4000000, 1, 1, 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into courses values ('course_unrelated', 'org_samyak', 'TLY', 'Tally', '3 months', 3, 3000000, 2500000, 1, 1, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into courses values ('course_other', 'org_samyak', 'DS', 'Data Science', '6 months', 6, 5000000, 4000000, 1, 1, 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into courses values ('course_foreign', 'org_other', 'FO', 'Foreign', '1 month', 1, 1000000, 1000000, 1, 1, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into students values ('student_one', 'org_samyak', 'person_student', 'branch_sion', 'SYK-SION-0001', 1, '2026-08-28', 'active', 'not_invited', ?, ?)").run(NOW, NOW);
   db.prepare("insert into students values ('student_second', 'org_samyak', 'person_second_student', 'branch_sion', 'SYK-SION-0002', 2, '2026-08-28', 'active', 'not_invited', ?, ?)").run(NOW, NOW);
   db.prepare("insert into students values ('student_other_branch', 'org_samyak', 'person_other_student', 'branch_dadar', 'SYK-DDR-0001', 1, '2026-08-28', 'active', 'not_invited', ?, ?)").run(NOW, NOW);
   db.prepare("insert into enrolments values ('enrol_one', 'student_one', 'branch_sion', 'course_fsd', 'enq_one', 'ENR-SION-2026-0001', 'classroom', null, '2026-08-28', '2026-08-28', null, null, 'confirmed', 'no', ?, ?)").run(NOW, NOW);
   db.prepare("insert into enrolments values ('enrol_second', 'student_second', 'branch_sion', 'course_fsd', 'enq_second', 'ENR-SION-2026-0002', 'classroom', null, '2026-08-28', '2026-08-28', null, null, 'confirmed', 'no', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into enrolments values ('enrol_dm_ai', 'student_second', 'branch_sion', 'course_dm_ai', 'enq_dm_ai', 'ENR-SION-2026-0003', 'classroom', null, '2026-08-28', '2026-08-28', null, null, 'confirmed', 'no', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into enrolments values ('enrol_unrelated', 'student_second', 'branch_sion', 'course_unrelated', 'enq_unrelated', 'ENR-SION-2026-0004', 'classroom', null, '2026-08-28', '2026-08-28', null, null, 'confirmed', 'no', ?, ?)").run(NOW, NOW);
   db.prepare("insert into enrolments values ('enrol_other_branch', 'student_other_branch', 'branch_dadar', 'course_fsd', 'enq_two', 'ENR-DDR-2026-0001', 'classroom', null, '2026-08-28', '2026-08-28', null, null, 'confirmed', 'no', ?, ?)").run(NOW, NOW);
 }

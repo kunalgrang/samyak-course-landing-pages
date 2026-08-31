@@ -12,10 +12,11 @@ const weekdaySet = new Set<string>(weekdayOrder);
 const batchStatusValues = ["active", "inactive", "completed"] as const;
 type BatchStatus = (typeof batchStatusValues)[number];
 
-export const batchInputSchema = z.object({
+const batchBaseSchema = z.object({
   name: z.string().trim().min(2).max(140),
   branchId: z.string().trim().min(1).max(140),
-  courseId: z.string().trim().min(1).max(140),
+  courseId: z.string().trim().min(1).max(140).optional(),
+  courseIds: z.array(z.string().trim().min(1).max(140)).min(1).max(24).optional(),
   trainerPersonId: z.string().trim().min(1).max(140).nullable().optional(),
   daysOfWeek: z.array(z.string().trim()).min(1).max(7),
   startTime: z.string().trim(),
@@ -23,7 +24,11 @@ export const batchInputSchema = z.object({
   capacity: z.coerce.number().int().positive().nullable().optional(),
   status: z.enum(batchStatusValues).default("active"),
 });
-export const batchPatchSchema = batchInputSchema.partial();
+export const batchInputSchema = batchBaseSchema.refine((value) => Boolean(value.courseId || value.courseIds?.length), {
+  message: "Select at least one course.",
+  path: ["courseIds"],
+});
+export const batchPatchSchema = batchBaseSchema.partial();
 export const batchAssignmentSchema = z.object({
   enrolmentId: z.string().trim().min(1).max(160),
 });
@@ -80,7 +85,7 @@ export async function listBatches(c: AppContext, staff: StaffContext, filters: {
     where += branchScopeSql(staff, "batches.branch_id", bindings);
   }
   if (filters.courseId) {
-    where += " and batches.course_id = ?";
+    where += " and exists (select 1 from batch_courses filter_courses where filter_courses.batch_id = batches.id and filter_courses.course_id = ? and filter_courses.organisation_id = batches.organisation_id)";
     bindings.push(filters.courseId);
   }
   if (filters.status && filters.status !== "all") {
@@ -88,17 +93,25 @@ export async function listBatches(c: AppContext, staff: StaffContext, filters: {
     bindings.push(filters.status);
   }
   if (filters.q) {
-    where += " and (batches.name like ? or courses.name like ? or trainer.public_name like ? or trainer.full_name like ?)";
+    where += " and (batches.name like ? or exists (select 1 from batch_courses search_batch_courses join courses search_courses on search_courses.id = search_batch_courses.course_id where search_batch_courses.batch_id = batches.id and search_courses.name like ?) or trainer.public_name like ? or trainer.full_name like ?)";
     const query = `%${filters.q}%`;
     bindings.push(query, query, query, query);
   }
   const rows = await c.env.DB.prepare(
-    `select batches.*, branches.name as branch_name, courses.name as course_name,
+    `select batches.*, branches.name as branch_name, legacy_course.name as course_name,
+            course_summary.course_count, course_summary.course_pairs,
             coalesce(trainer.public_name, trainer.full_name) as trainer_name,
             coalesce(active_counts.active_students, 0) as active_students
      from batches
      join branches on branches.id = batches.branch_id
-     join courses on courses.id = batches.course_id
+     join courses legacy_course on legacy_course.id = batches.course_id
+     left join (
+       select batch_courses.batch_id, count(*) as course_count,
+              group_concat(courses.id || char(31) || courses.name, char(30)) as course_pairs
+       from batch_courses
+       join courses on courses.id = batch_courses.course_id and courses.organisation_id = batch_courses.organisation_id
+       group by batch_courses.batch_id
+     ) course_summary on course_summary.batch_id = batches.id
      left join people trainer on trainer.id = batches.primary_trainer_person_id
      left join (
        select batch_id, count(*) as active_students
@@ -122,10 +135,12 @@ export async function getBatchDetail(c: AppContext, staff: StaffContext, batchId
   const roster = await c.env.DB.prepare(
     `select batch_memberships.id as membership_id, batch_memberships.joined_at, batch_memberships.status as membership_status,
             enrolments.id as enrolment_id, enrolments.enrolment_number, enrolments.status as enrolment_status,
+            enrolments.course_id, courses.name as course_name,
             students.id as student_id, students.student_number,
             coalesce(people.public_name, people.full_name) as student_name
      from batch_memberships
      join enrolments on enrolments.id = batch_memberships.enrolment_id
+     join courses on courses.id = enrolments.course_id
      join students on students.id = enrolments.student_id
      join people on people.id = students.person_id
      where batch_memberships.batch_id = ?
@@ -146,14 +161,21 @@ export async function createBatch(c: AppContext, staff: StaffContext, input: z.i
   if (!validated.ok) return validated;
   const now = new Date().toISOString();
   const batchId = createOpaqueId("batch");
-  await c.env.DB.prepare(
+  const primaryCourseId = validated.courseIds[0];
+  await c.env.DB.batch([
+    c.env.DB.prepare(
     `insert into batches
        (id, organisation_id, branch_id, course_id, name, primary_trainer_person_id, days_of_week_json, start_time, end_time, capacity, status, created_by_login_account_id, created_at, updated_at)
      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(batchId, ORG_ID, input.branchId, input.courseId, input.name, input.trainerPersonId || null, JSON.stringify(validated.days), input.startTime, input.endTime, input.capacity ?? null, input.status, staff.loginAccountId, now, now)
-    .run();
-  await writeAudit(c, staff, input.branchId, "batch_created", "batch", batchId, null, { name: input.name, courseId: input.courseId, trainerPersonId: input.trainerPersonId || null });
+    ).bind(batchId, ORG_ID, input.branchId, primaryCourseId, input.name, input.trainerPersonId || null, JSON.stringify(validated.days), input.startTime, input.endTime, input.capacity ?? null, input.status, staff.loginAccountId, now, now),
+    ...validated.courseIds.map((courseId) =>
+      c.env.DB.prepare(
+        `insert into batch_courses (batch_id, course_id, organisation_id, created_at, created_by)
+         values (?, ?, ?, ?, ?)`,
+      ).bind(batchId, courseId, ORG_ID, now, staff.loginAccountId),
+    ),
+  ]);
+  await writeAudit(c, staff, input.branchId, "batch_created", "batch", batchId, null, { name: input.name, courseIds: validated.courseIds, trainerPersonId: input.trainerPersonId || null });
   return { ok: true as const, batchId };
 }
 
@@ -166,6 +188,7 @@ export async function updateBatch(c: AppContext, staff: StaffContext, batchId: s
     name: patch.name ?? current.name,
     branchId: patch.branchId ?? current.branch_id,
     courseId: patch.courseId ?? current.course_id,
+    courseIds: patch.courseIds,
     trainerPersonId: patch.trainerPersonId === undefined ? current.primary_trainer_person_id : patch.trainerPersonId,
     daysOfWeek: patch.daysOfWeek ?? parseDays(current.days_of_week_json),
     startTime: patch.startTime ?? current.start_time,
@@ -173,31 +196,54 @@ export async function updateBatch(c: AppContext, staff: StaffContext, batchId: s
     capacity: patch.capacity === undefined ? current.capacity : patch.capacity,
     status: (patch.status ?? current.status) as BatchStatus,
   };
+  const currentCourseIds = await listBatchCourseIds(c, batchId, current.course_id);
+  const nextCourseIds = normalizeCourseIds(merged.courseIds || [merged.courseId]);
   const hasHistory = await batchHasMembershipHistory(c, batchId);
-  if (hasHistory && (merged.branchId !== current.branch_id || merged.courseId !== current.course_id)) {
+  if (hasHistory && merged.branchId !== current.branch_id) {
     return {
       ok: false as const,
       status: 409,
       code: "batch_identity_locked",
-      message: "Batch branch and course cannot change after students have been assigned.",
+      message: "Batch branch cannot change after students have been assigned.",
       fieldErrors: {
         branchId: ["Branch is locked after batch membership history exists."],
-        courseId: ["Course is locked after batch membership history exists."],
       },
     };
+  }
+  const removedCourseIds = currentCourseIds.filter((courseId) => !nextCourseIds.includes(courseId));
+  if (removedCourseIds.length) {
+    const locked = await lockedCourseRemovals(c, batchId, removedCourseIds);
+    if (locked.length) {
+      const courseName = locked[0]?.name || "This course";
+      return {
+        ok: false as const,
+        status: 409,
+        code: "batch_course_history_locked",
+        message: `${courseName} cannot be removed because students from this course are currently or historically assigned to this batch.`,
+        fieldErrors: { courseIds: [`${courseName} cannot be removed because this batch has membership history for the course.`] },
+      };
+    }
   }
   const validated = await validateBatchInput(c, staff, merged);
   if (!validated.ok) return validated;
   const now = new Date().toISOString();
-  await c.env.DB.prepare(
+  const primaryCourseId = validated.courseIds[0];
+  await c.env.DB.batch([
+    c.env.DB.prepare(
     `update batches
      set branch_id = ?, course_id = ?, name = ?, primary_trainer_person_id = ?, days_of_week_json = ?,
          start_time = ?, end_time = ?, capacity = ?, status = ?, updated_at = ?
      where id = ? and organisation_id = ?`,
-  )
-    .bind(merged.branchId, merged.courseId, merged.name, merged.trainerPersonId || null, JSON.stringify(validated.days), merged.startTime, merged.endTime, merged.capacity ?? null, merged.status, now, batchId, ORG_ID)
-    .run();
-  await writeAudit(c, staff, merged.branchId, "batch_updated", "batch", batchId, current, merged);
+    ).bind(merged.branchId, primaryCourseId, merged.name, merged.trainerPersonId || null, JSON.stringify(validated.days), merged.startTime, merged.endTime, merged.capacity ?? null, merged.status, now, batchId, ORG_ID),
+    ...removedCourseIds.map((courseId) => c.env.DB.prepare("delete from batch_courses where batch_id = ? and course_id = ? and organisation_id = ?").bind(batchId, courseId, ORG_ID)),
+    ...validated.courseIds.map((courseId) =>
+      c.env.DB.prepare(
+        `insert or ignore into batch_courses (batch_id, course_id, organisation_id, created_at, created_by)
+         values (?, ?, ?, ?, ?)`,
+      ).bind(batchId, courseId, ORG_ID, now, staff.loginAccountId),
+    ),
+  ]);
+  await writeAudit(c, staff, merged.branchId, "batch_updated", "batch", batchId, current, { ...merged, courseIds: validated.courseIds });
   return { ok: true as const, batchId };
 }
 
@@ -245,15 +291,17 @@ export async function listEligibleEnrolments(c: AppContext, staff: StaffContext,
        on active_membership.enrolment_id = enrolments.id
       and active_membership.status = 'active'
       and active_membership.left_at is null
+     join batch_courses on batch_courses.batch_id = ?
+      and batch_courses.course_id = enrolments.course_id
+      and batch_courses.organisation_id = ?
      where enrolments.branch_id = ?
-       and enrolments.course_id = ?
        and enrolments.status in ('confirmed', 'not_started', 'active', 'on_hold')
        and active_membership.id is null
        and (? = '' or people.full_name like ? or students.student_number like ? or enrolments.enrolment_number like ? or primary_mobile.normalized_value like ? or primary_mobile.display_value like ? or primary_mobile.last_four like ?)
      order by people.full_name collate nocase
      limit 50`,
   )
-    .bind(ORG_ID, batch.branch_id, batch.course_id, q, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`)
+    .bind(ORG_ID, batchId, ORG_ID, batch.branch_id, q, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`)
     .all<Record<string, unknown>>();
   return { ok: true as const, enrolments: rows.results || [] };
 }
@@ -272,10 +320,13 @@ export async function listAdmissionEligibleBatches(c: AppContext, staff: StaffCo
        where status = 'active' and left_at is null
        group by batch_id
      ) active_counts on active_counts.batch_id = batches.id
-     where batches.organisation_id = ? and batches.branch_id = ? and batches.course_id = ? and batches.status = 'active'
+     join batch_courses on batch_courses.batch_id = batches.id
+      and batch_courses.organisation_id = batches.organisation_id
+      and batch_courses.course_id = ?
+     where batches.organisation_id = ? and batches.branch_id = ? and batches.status = 'active'
      order by batches.start_time, batches.name collate nocase`,
   )
-    .bind(ORG_ID, branchId, courseId)
+    .bind(courseId, ORG_ID, branchId)
     .all<Record<string, unknown>>();
   return { ok: true as const, batches: (rows.results || []).map(mapAdmissionBatchOption) };
 }
@@ -283,7 +334,7 @@ export async function listAdmissionEligibleBatches(c: AppContext, staff: StaffCo
 export async function validateAdmissionBatchSelection(c: AppContext, staff: StaffContext, branchId: string, courseId: string, batchId: string | null | undefined) {
   if (!batchId) return null;
   const batch = await loadBatch(c, batchId);
-  if (!batch || batch.status !== "active" || batch.branch_id !== branchId || batch.course_id !== courseId || batch.organisation_id !== ORG_ID) {
+  if (!batch || batch.status !== "active" || batch.branch_id !== branchId || batch.organisation_id !== ORG_ID || !(await batchIncludesCourse(c, batchId, courseId))) {
     return { "course.batchId": ["Select an active batch for this branch and course, or choose Assign later."] };
   }
   const access = await hasBranchAccess(c, staff, branchId);
@@ -379,6 +430,8 @@ export async function assignBatchOnAdmissionConfirmation(c: AppContext, staff: S
 
 async function validateBatchInput(c: AppContext, staff: StaffContext, input: z.infer<typeof batchInputSchema>) {
   const fieldErrors: FieldErrors = {};
+  const courseIds = normalizeCourseIds(input.courseIds || (input.courseId ? [input.courseId] : []));
+  if (!courseIds.length) fieldErrors.courseIds = ["Select at least one course."];
   let days: string[] = [];
   try {
     days = normalizeDaysOfWeek(input.daysOfWeek);
@@ -392,10 +445,15 @@ async function validateBatchInput(c: AppContext, staff: StaffContext, input: z.i
   }
   const access = await hasBranchAccess(c, staff, input.branchId);
   if (!access) fieldErrors.branchId = ["You do not have access to this branch."];
-  const course = await c.env.DB.prepare("select id from courses where id = ? and organisation_id = ? and status = 'active'")
-    .bind(input.courseId, ORG_ID)
-    .first<{ id: string }>();
-  if (!course) fieldErrors.courseId = ["Select an active course."];
+  if (courseIds.length) {
+    const placeholders = courseIds.map(() => "?").join(", ");
+    const rows = await c.env.DB.prepare(`select id from courses where id in (${placeholders}) and organisation_id = ? and status = 'active'`)
+      .bind(...courseIds, ORG_ID)
+      .all<{ id: string }>();
+    const validCourseIds = new Set((rows.results || []).map((row) => row.id));
+    const invalid = courseIds.filter((courseId) => !validCourseIds.has(courseId));
+    if (invalid.length) fieldErrors.courseIds = ["Select only active courses from this organisation."];
+  }
   const branch = await c.env.DB.prepare("select id from branches where id = ? and organisation_id = ? and status = 'active'")
     .bind(input.branchId, ORG_ID)
     .first<{ id: string }>();
@@ -407,7 +465,7 @@ async function validateBatchInput(c: AppContext, staff: StaffContext, input: z.i
   if (Object.keys(fieldErrors).length) {
     return { ok: false as const, status: 400, code: "invalid_batch", message: Object.values(fieldErrors)[0]?.[0] || "Please check the batch details.", fieldErrors };
   }
-  return { ok: true as const, days };
+  return { ok: true as const, days, courseIds };
 }
 
 async function validateAssignment(c: AppContext, staff: StaffContext, batch: BatchRecord, enrolmentId: string, allowCurrent: boolean) {
@@ -424,7 +482,10 @@ async function validateAssignment(c: AppContext, staff: StaffContext, batch: Bat
     .first<{ id: string; branch_id: string; course_id: string; status: string; organisation_id: string }>();
   if (!enrolment || enrolment.organisation_id !== ORG_ID) return { ok: false as const, status: 404, code: "enrolment_not_found", message: "Enrolment not found." };
   if (!["confirmed", "not_started", "active", "on_hold"].includes(enrolment.status)) return { ok: false as const, status: 400, code: "ineligible_enrolment", message: "Only current confirmed enrolments can be assigned." };
-  if (enrolment.branch_id !== batch.branch_id || enrolment.course_id !== batch.course_id) return { ok: false as const, status: 400, code: "batch_mismatch", message: "Enrolment branch and course must match the batch." };
+  if (enrolment.branch_id !== batch.branch_id) return { ok: false as const, status: 400, code: "batch_mismatch", message: "Enrolment branch must match the batch." };
+  if (!(await batchIncludesCourse(c, batch.id, enrolment.course_id))) {
+    return { ok: false as const, status: 400, code: "batch_course_not_eligible", message: "This enrolment's course is not configured for the batch." };
+  }
   const current = await currentMembershipForEnrolment(c, enrolmentId);
   if (current && !(allowCurrent && current.batch_id !== batch.id)) return { ok: false as const, status: 409, code: "already_assigned", message: "This enrolment already has an active batch assignment." };
   return { ok: true as const };
@@ -468,12 +529,20 @@ async function loadBatch(c: AppContext, batchId: string) {
 
 async function decorateBatch(c: AppContext, batch: BatchRecord) {
   const rows = await c.env.DB.prepare(
-    `select batches.*, branches.name as branch_name, courses.name as course_name,
+    `select batches.*, branches.name as branch_name, legacy_course.name as course_name,
+            course_summary.course_count, course_summary.course_pairs,
             coalesce(trainer.public_name, trainer.full_name) as trainer_name,
             coalesce(active_counts.active_students, 0) as active_students
      from batches
      join branches on branches.id = batches.branch_id
-     join courses on courses.id = batches.course_id
+     join courses legacy_course on legacy_course.id = batches.course_id
+     left join (
+       select batch_courses.batch_id, count(*) as course_count,
+              group_concat(courses.id || char(31) || courses.name, char(30)) as course_pairs
+       from batch_courses
+       join courses on courses.id = batch_courses.course_id and courses.organisation_id = batch_courses.organisation_id
+       group by batch_courses.batch_id
+     ) course_summary on course_summary.batch_id = batches.id
      left join people trainer on trainer.id = batches.primary_trainer_person_id
      left join (
        select batch_id, count(*) as active_students
@@ -524,6 +593,51 @@ async function batchHasMembershipHistory(c: AppContext, batchId: string) {
   return Boolean(row);
 }
 
+function normalizeCourseIds(courseIds: string[]) {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const raw of courseIds) {
+    const courseId = raw.trim();
+    if (!courseId || seen.has(courseId)) continue;
+    seen.add(courseId);
+    normalized.push(courseId);
+  }
+  return normalized;
+}
+
+async function listBatchCourseIds(c: AppContext, batchId: string, legacyCourseId: string) {
+  const rows = await c.env.DB.prepare("select course_id from batch_courses where batch_id = ? and organisation_id = ? order by created_at, course_id")
+    .bind(batchId, ORG_ID)
+    .all<{ course_id: string }>();
+  const courseIds = (rows.results || []).map((row) => row.course_id);
+  return courseIds.length ? courseIds : [legacyCourseId];
+}
+
+async function batchIncludesCourse(c: AppContext, batchId: string, courseId: string) {
+  const row = await c.env.DB.prepare("select 1 as found from batch_courses where batch_id = ? and course_id = ? and organisation_id = ? limit 1")
+    .bind(batchId, courseId, ORG_ID)
+    .first<{ found: number }>();
+  return Boolean(row);
+}
+
+async function lockedCourseRemovals(c: AppContext, batchId: string, courseIds: string[]) {
+  if (!courseIds.length) return [];
+  const placeholders = courseIds.map(() => "?").join(", ");
+  const rows = await c.env.DB.prepare(
+    `select distinct courses.id, courses.name
+     from batch_memberships
+     join enrolments on enrolments.id = batch_memberships.enrolment_id
+     join courses on courses.id = enrolments.course_id
+     where batch_memberships.batch_id = ?
+       and batch_memberships.organisation_id = ?
+       and enrolments.course_id in (${placeholders})
+     order by courses.name collate nocase`,
+  )
+    .bind(batchId, ORG_ID, ...courseIds)
+    .all<{ id: string; name: string }>();
+  return rows.results || [];
+}
+
 async function writeAudit(c: AppContext, staff: StaffContext, branchId: string, action: string, entityType: string, entityId: string, oldValues: unknown, newValues: unknown) {
   await c.env.DB.prepare(
     `insert into audit_logs
@@ -548,12 +662,16 @@ function mapBatchRow(row: Record<string, unknown>) {
   const daysOfWeek = parseDays(String(row.days_of_week_json || "[]"));
   const capacity = row.capacity == null ? null : Number(row.capacity);
   const activeStudents = Number(row.active_students || 0);
+  const courses = parseCoursePairs(row.course_pairs, row.course_id, row.course_name);
+  const primaryCourse = courses[0] || { id: String(row.course_id), name: String(row.course_name || "") };
   return {
     id: String(row.id),
     branchId: String(row.branch_id),
     branchName: String(row.branch_name || ""),
-    courseId: String(row.course_id),
-    courseName: String(row.course_name || ""),
+    courseId: primaryCourse.id,
+    courseName: primaryCourse.name,
+    courses,
+    courseCount: courses.length || Number(row.course_count || 0) || 1,
     name: String(row.name),
     trainerPersonId: row.primary_trainer_person_id ? String(row.primary_trainer_person_id) : null,
     trainerName: row.trainer_name ? String(row.trainer_name) : null,
@@ -567,6 +685,22 @@ function mapBatchRow(row: Record<string, unknown>) {
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
+}
+
+function parseCoursePairs(value: unknown, legacyCourseId: unknown, legacyCourseName: unknown) {
+  const fallback = [{ id: String(legacyCourseId), name: String(legacyCourseName || "") }];
+  if (typeof value !== "string" || !value) return fallback;
+  const courses = value.split(String.fromCharCode(30)).flatMap((pair) => {
+    const [id, name] = pair.split(String.fromCharCode(31));
+    return id ? [{ id, name: name || id }] : [];
+  });
+  if (!courses.length) return fallback;
+  const primaryId = String(legacyCourseId);
+  return courses.sort((left, right) => {
+    if (left.id === primaryId) return -1;
+    if (right.id === primaryId) return 1;
+    return left.name.localeCompare(right.name);
+  });
 }
 
 function mapAdmissionBatchOption(row: Record<string, unknown>) {
