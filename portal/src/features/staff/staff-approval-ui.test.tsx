@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { navigationForRoles, canAccessDiscountApprovals, canViewEnquiries, canViewStudents } from "../../routes/Router";
 import { DiscountApprovalsContent } from "./DiscountApprovalsPage";
 import { courseConfigurationLabel, isCourseConfigurationComplete } from "./CourseMasterPage";
-import { ContactEditPanel } from "./StudentProfilePage";
+import { BatchAssignmentPanel, ContactEditPanel, openBatchHref } from "./StudentProfilePage";
 import { StudentDirectoryContent, statusLabel } from "./StudentsPage";
 
 describe("staff approval UI", () => {
@@ -124,6 +124,35 @@ describe("staff approval UI", () => {
     expect(html).toContain("Confirm Change");
     expect(html).toContain("******3210");
     expect(html).not.toContain("9876543210");
+  });
+
+  it("renders inline batch assignment controls and keeps Open Batch pointed at detail routes", () => {
+    const html = renderToStaticMarkup(
+      <BatchAssignmentPanel
+        enrolmentId="enrol_one"
+        options={[{
+          id: "batch_evening",
+          name: "Digital Marketing Evening",
+          trainerName: "Rahul",
+          daysOfWeek: ["mon", "wed", "fri"],
+          startTime: "18:00",
+          endTime: "20:00",
+          capacity: null,
+          activeStudents: 12,
+          capacityWarning: false,
+        }]}
+        selectedBatchId=""
+        busy={false}
+        onSelect={vi.fn()}
+        onAssign={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain("Digital Marketing Evening");
+    expect(html).toContain("Rahul");
+    expect(html).toContain("Confirm");
+    expect(openBatchHref({ current_batch_id: "batch_evening" })).toBe("/app/batches/batch_evening");
+    expect(openBatchHref({ current_batch_id: null })).toBe("");
   });
 
   it("renders student directory filters, status chips, profile links and deduped enrolment summary", () => {
