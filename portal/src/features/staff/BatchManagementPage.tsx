@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
 import {
@@ -56,9 +56,18 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
   const [isSaving, setIsSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<BatchForm>(defaultForm());
+  const [courseSearch, setCourseSearch] = useState("");
+  const [isCoursePanelOpen, setIsCoursePanelOpen] = useState(false);
+  const [courseError, setCourseError] = useState<string | null>(null);
+  const courseSelectorRef = useRef<HTMLDivElement | null>(null);
 
   const selectedBatch = detail?.batch || batches.find((batch) => batch.id === selectedBatchId) || null;
   const branchIdForForm = form.branchId || selectedBatch?.branchId || branches[0]?.id || "";
+  const selectedCourses = useMemo(
+    () => form.courseIds.map((courseId) => courses.find((course) => course.id === courseId)).filter((course): course is StaffCourse => Boolean(course)),
+    [courses, form.courseIds],
+  );
+  const filteredCourses = useMemo(() => filterCourses(courses, courseSearch), [courseSearch, courses]);
 
   useEffect(() => {
     void load();
@@ -78,6 +87,24 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
       .then((data) => setTrainers(data.trainers))
       .catch(() => setTrainers([]));
   }, [branchIdForForm]);
+
+  useEffect(() => {
+    if (!isCoursePanelOpen) return;
+    function handlePointerDown(event: MouseEvent) {
+      if (courseSelectorRef.current && !courseSelectorRef.current.contains(event.target as Node)) {
+        setIsCoursePanelOpen(false);
+      }
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setIsCoursePanelOpen(false);
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isCoursePanelOpen]);
 
   async function load() {
     setIsLoading(true);
@@ -108,6 +135,11 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
   }
 
   async function submit() {
+    if (!form.courseIds.length) {
+      setCourseError("Select at least one course.");
+      setError(null);
+      return;
+    }
     setIsSaving(true);
     setMessage(null);
     try {
@@ -127,6 +159,9 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
       setMessage(editingId ? "Batch updated." : "Batch created.");
       setEditingId(null);
       setForm(defaultForm());
+      setCourseSearch("");
+      setIsCoursePanelOpen(false);
+      setCourseError(null);
       await load();
       setSelectedBatchId(saved.batchId);
     } catch (reason) {
@@ -179,6 +214,9 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
 
   function editBatch(batch: StaffBatch) {
     setEditingId(batch.id);
+    setCourseSearch("");
+    setIsCoursePanelOpen(false);
+    setCourseError(null);
     setForm({
       name: batch.name,
       branchId: batch.branchId,
@@ -208,28 +246,75 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
         <div className="staff-form-grid">
           <label>Name<input value={form.name} onChange={(event) => setFormValue("name", event.target.value)} /></label>
           <label>Branch<select value={form.branchId} onChange={(event) => setFormValue("branchId", event.target.value)}><option value="">Select branch</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
-          <div className="course-checklist">
-            <small>Courses</small>
-            {courses.map((course) => (
-              <label key={course.id} className="check-row">
-                <input type="checkbox" checked={form.courseIds.includes(course.id)} onChange={(event) => setCourse(course.id, event.target.checked)} />
-                <span>{course.name}</span>
+          <div className="course-selector-field" ref={courseSelectorRef}>
+            <label id="batch-courses-label">Courses <span className="required-mark" aria-hidden="true">*</span></label>
+            <button
+              type="button"
+              className="course-selector-trigger"
+              aria-haspopup="dialog"
+              aria-expanded={isCoursePanelOpen}
+              aria-labelledby="batch-courses-label"
+              aria-describedby={courseError ? "batch-courses-error" : undefined}
+              aria-invalid={courseError ? true : undefined}
+              onClick={() => setIsCoursePanelOpen((current) => !current)}
+            >
+              <span>{selectedCourses.length ? selectedCountLabel(selectedCourses.length) : "Search or select courses..."}</span>
+              <span aria-hidden="true">v</span>
+            </button>
+            {isCoursePanelOpen ? (
+              <div className="course-selector-panel" role="dialog" aria-labelledby="batch-courses-label">
+                <input
+                  type="search"
+                  value={courseSearch}
+                  onChange={(event) => setCourseSearch(event.target.value)}
+                  placeholder="Search courses..."
+                  aria-label="Search courses"
+                  autoFocus
+                />
+                <div className="course-selector-list">
+                  {filteredCourses.length ? filteredCourses.map((course) => {
+                    const inputId = `batch-course-${course.id}`;
+                    return (
+                      <label key={course.id} className="course-selector-option" htmlFor={inputId}>
+                        <input
+                          id={inputId}
+                          type="checkbox"
+                          checked={form.courseIds.includes(course.id)}
+                          onChange={(event) => setCourse(course.id, event.target.checked)}
+                        />
+                        <span>{course.name}</span>
+                      </label>
+                    );
+                  }) : <p className="course-selector-empty">No courses found.</p>}
+                </div>
+              </div>
+            ) : null}
+            <div className="selected-course-summary" aria-live="polite">{selectedCourses.length ? selectedCountLabel(selectedCourses.length) : "No courses selected"}</div>
+            {selectedCourses.length ? (
+              <div className="selected-course-chips" aria-label="Selected courses">
+                {selectedCourses.map((course) => (
+                  <span className="selected-course-chip" key={course.id}>
+                    <span>{course.name}</span>
+                    <button type="button" onClick={() => setCourse(course.id, false)} aria-label={`Remove ${course.name}`}>x</button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {courseError ? <span className="field-error" id="batch-courses-error">{courseError}</span> : null}
+          </div>
+          <label>Trainer<select value={form.trainerPersonId} onChange={(event) => setFormValue("trainerPersonId", event.target.value)}><option value="">Unassigned</option>{trainers.map((trainer) => <option key={String(trainer.id)} value={String(trainer.id)}>{String(trainer.name)}</option>)}</select></label>
+          <div className="weekday-toggle-group batch-days-field" aria-label="Class days">
+            {weekdays.map(([value, label]) => (
+              <label key={value} className="check-row weekday-toggle">
+                <input type="checkbox" checked={form.daysOfWeek.includes(value)} onChange={(event) => setDays(value, event.target.checked)} />
+                <span>{label}</span>
               </label>
             ))}
           </div>
-          <label>Trainer<select value={form.trainerPersonId} onChange={(event) => setFormValue("trainerPersonId", event.target.value)}><option value="">Unassigned</option>{trainers.map((trainer) => <option key={String(trainer.id)} value={String(trainer.id)}>{String(trainer.name)}</option>)}</select></label>
           <label>Start time<input type="time" value={form.startTime} onChange={(event) => setFormValue("startTime", event.target.value)} /></label>
           <label>End time<input type="time" value={form.endTime} onChange={(event) => setFormValue("endTime", event.target.value)} /></label>
           <label>Capacity<input type="number" min="1" value={form.capacity} onChange={(event) => setFormValue("capacity", event.target.value)} placeholder="Optional" /></label>
           <label>Status<select value={form.status} onChange={(event) => setFormValue("status", event.target.value)}><option value="active">Active</option><option value="inactive">Inactive</option><option value="completed">Completed</option></select></label>
-        </div>
-        <div className="weekday-toggle-group" aria-label="Class days">
-          {weekdays.map(([value, label]) => (
-            <label key={value} className="check-row weekday-toggle">
-              <input type="checkbox" checked={form.daysOfWeek.includes(value)} onChange={(event) => setDays(value, event.target.checked)} />
-              <span>{label}</span>
-            </label>
-          ))}
         </div>
         <div className="form-actions">
           {editingId ? <button type="button" className="button-secondary" onClick={() => { setEditingId(null); setForm(defaultForm()); }}>Cancel</button> : null}
@@ -311,6 +396,7 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
       const ordered = courses.map((course) => course.id).filter((id) => next.includes(id));
       return { ...current, courseIds: ordered };
     });
+    if (checked) setCourseError(null);
   }
 }
 
@@ -340,6 +426,16 @@ function compactCourseLabel(batch: StaffBatch) {
 function formatDays(days: string[]) {
   const labels = new Map<string, string>(weekdays.map(([value, label]) => [value, label]));
   return days.map((day) => labels.get(day) || day).join(", ");
+}
+
+export function filterCourses(courses: StaffCourse[], search: string) {
+  const query = search.trim().toLowerCase();
+  if (!query) return courses;
+  return courses.filter((course) => course.name.toLowerCase().includes(query));
+}
+
+function selectedCountLabel(count: number) {
+  return count === 1 ? "1 course selected" : `${count} courses selected`;
 }
 
 function Detail({ label, value }: { label: string; value: string }) {
