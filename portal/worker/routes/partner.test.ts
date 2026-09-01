@@ -2,7 +2,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import app from "../index";
 import type { WorkerBindings } from "../bindings";
 import { hmacHex } from "../lib/crypto";
@@ -17,6 +17,11 @@ const NEW_PARTNER_MOBILE = "9876543211";
 const STUDENT_MOBILE = "9876543222";
 
 type Row = Record<string, any>;
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(NOW));
+});
 
 describe("Education Partner portal security", () => {
   it("adds only additive Partner auth objects and enforces session subject exclusivity", async () => {
@@ -606,5 +611,6 @@ class SqliteD1Statement {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
