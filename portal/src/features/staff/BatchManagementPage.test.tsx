@@ -175,7 +175,7 @@ describe("BatchManagementPage course selector", () => {
   });
 
   it("keeps long-list and mobile selector behavior in CSS instead of permanent page growth", () => {
-    const staffCss = readFileSync(new URL("../../styles/staff.css", import.meta.url), "utf8");
+    const staffCss = readStaffCss();
 
     expect(staffCss).toContain(".batch-form");
     expect(staffCss).toContain("width: min(100%, 860px);");
@@ -188,7 +188,7 @@ describe("BatchManagementPage course selector", () => {
   });
 
   it("keeps Batch assignment controls bounded and shrinkable on mobile", () => {
-    const staffCss = readFileSync(new URL("../../styles/staff.css", import.meta.url), "utf8");
+    const staffCss = readStaffCss();
 
     expect(staffCss).toContain(".batch-assignment-row {\n  display: grid;\n  gap: 12px;\n  align-items: end;\n  min-width: 0;\n  max-width: 100%;");
     expect(staffCss).toContain(".batch-assignment-row > label {\n  display: grid;\n  gap: 7px;\n  min-width: 0;");
@@ -196,7 +196,7 @@ describe("BatchManagementPage course selector", () => {
   });
 
   it("stacks Batch assignment controls on mobile and preserves desktop columns", () => {
-    const staffCss = readFileSync(new URL("../../styles/staff.css", import.meta.url), "utf8");
+    const staffCss = readStaffCss();
 
     expect(staffCss).toContain(".batch-assignment-row button {\n  width: 100%;");
     expect(staffCss).toContain("@media (min-width: 640px)");
@@ -246,7 +246,7 @@ describe("BatchManagementPage course selector", () => {
   });
 
   it("protects checkbox and radio controls from generic staff input sizing", () => {
-    const staffCss = readFileSync(new URL("../../styles/staff.css", import.meta.url), "utf8");
+    const staffCss = readStaffCss();
 
     expect(staffCss).toContain(".staff-form input,");
     expect(staffCss).toContain(".staff-form input[type=\"checkbox\"],");
@@ -254,6 +254,10 @@ describe("BatchManagementPage course selector", () => {
     expect(staffCss).toContain("min-width: 18px;");
     expect(staffCss).toContain("min-height: 18px;");
     expect(staffCss).toContain(".course-selector-option input[type=\"checkbox\"]");
+  });
+
+  it("normalizes CSS text assertions across LF and CRLF checkouts", () => {
+    expect(normalizeLineEndings(".batch-assignment-row {\r\n  display: grid;\r\n}")).toBe(".batch-assignment-row {\n  display: grid;\n}");
   });
 
   async function renderPage() {
@@ -309,6 +313,14 @@ describe("BatchManagementPage course selector", () => {
     await act(async () => {});
   }
 });
+
+function readStaffCss() {
+  return normalizeLineEndings(readFileSync(new URL("../../styles/staff.css", import.meta.url), "utf8"));
+}
+
+function normalizeLineEndings(value: string) {
+  return value.replace(/\r\n/g, "\n");
+}
 
 const courses: StaffCourse[] = [
   course("course_dm", "Digital Marketing"),
