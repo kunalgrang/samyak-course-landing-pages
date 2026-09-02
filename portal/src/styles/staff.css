@@ -442,8 +442,48 @@
 }
 
 .batch-assignment-row {
+  display: grid;
+  gap: 12px;
   align-items: end;
+  min-width: 0;
+  max-width: 100%;
   margin: 16px 0;
+}
+
+.batch-assignment-row > label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: var(--color-navy);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.batch-assignment-select,
+.batch-transfer-select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.batch-roster-row {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.batch-roster-row > * {
+  min-width: 0;
+}
+
+.batch-roster-row strong,
+.batch-roster-row span {
+  overflow-wrap: anywhere;
+}
+
+.batch-assignment-row button {
+  width: 100%;
 }
 
 .batch-management-page select {
@@ -1706,6 +1746,14 @@
 
   .staff-form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .batch-assignment-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .batch-assignment-row button {
+    width: auto;
   }
 
   .detail-grid {
