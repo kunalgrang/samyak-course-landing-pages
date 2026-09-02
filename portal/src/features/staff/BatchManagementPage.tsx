@@ -357,16 +357,16 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
             <Detail label="Schedule" value={`${formatDays(selectedBatch.daysOfWeek)} ${selectedBatch.startTime}-${selectedBatch.endTime}`} />
           </div>
           <div className="staff-form-grid batch-assignment-row">
-            <label>Assign enrolment<select value={selectedEnrolmentId} onChange={(event) => setSelectedEnrolmentId(event.target.value)}><option value="">Select eligible student</option>{eligible.map((row) => <option key={String(row.id)} value={String(row.id)}>{String(row.student_name)} · {String(row.enrolment_number)}</option>)}</select></label>
+            <label>Assign enrolment<select className="batch-assignment-select" value={selectedEnrolmentId} onChange={(event) => setSelectedEnrolmentId(event.target.value)}><option value="">Select eligible student</option>{eligible.map((row) => <option key={String(row.id)} value={String(row.id)}>{String(row.student_name)} · {String(row.enrolment_number)}</option>)}</select></label>
             <button type="button" disabled={!selectedEnrolmentId} onClick={() => void assignStudent()}>Assign</button>
           </div>
           <div className="section-heading"><h2>Roster</h2><span>{detail?.roster.length || 0}</span></div>
           {detail?.roster.length ? detail.roster.map((row) => (
-            <article className="table-row" key={String(row.membership_id)}>
+            <article className="table-row batch-roster-row" key={String(row.membership_id)}>
               <strong>{String(row.student_name)}</strong>
               <span>{String(row.student_number)} · {String(row.enrolment_number)} · {String(row.course_name || "Course")} · Joined {String(row.joined_at).slice(0, 10)}</span>
               <small>{String(row.enrolment_status)}</small>
-              <select value={targetBatchId} onChange={(event) => setTargetBatchId(event.target.value)}>
+              <select className="batch-transfer-select" value={targetBatchId} onChange={(event) => setTargetBatchId(event.target.value)}>
                 <option value="">Transfer to</option>
                 {batches.filter((batch) => batch.id !== selectedBatch.id && batch.branchId === selectedBatch.branchId && batch.status === "active" && batchCourses(batch).some((course) => course.id === String(row.course_id))).map((batch) => <option key={batch.id} value={batch.id}>{batch.name}</option>)}
               </select>

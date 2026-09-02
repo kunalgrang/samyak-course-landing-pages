@@ -13,6 +13,8 @@ const apiMocks = vi.hoisted(() => ({
   getStaffBatch: vi.fn(),
   getStaffBatches: vi.fn(),
   getStaffBatchTrainers: vi.fn(),
+  removeStaffBatchMembership: vi.fn(),
+  transferStaffBatchMembership: vi.fn(),
   updateStaffBatch: vi.fn(),
 }));
 
@@ -27,6 +29,8 @@ vi.mock("../../lib/api", async (importOriginal) => {
     getStaffBatch: apiMocks.getStaffBatch,
     getStaffBatches: apiMocks.getStaffBatches,
     getStaffBatchTrainers: apiMocks.getStaffBatchTrainers,
+    removeStaffBatchMembership: apiMocks.removeStaffBatchMembership,
+    transferStaffBatchMembership: apiMocks.transferStaffBatchMembership,
     updateStaffBatch: apiMocks.updateStaffBatch,
   };
 });
@@ -181,6 +185,64 @@ describe("BatchManagementPage course selector", () => {
     expect(staffCss).toContain("max-width: 100%;");
     expect(staffCss).toContain(".selected-course-chips");
     expect(staffCss).toContain("flex-wrap: wrap;");
+  });
+
+  it("keeps Batch assignment controls bounded and shrinkable on mobile", () => {
+    const staffCss = readFileSync(new URL("../../styles/staff.css", import.meta.url), "utf8");
+
+    expect(staffCss).toContain(".batch-assignment-row {\n  display: grid;\n  gap: 12px;\n  align-items: end;\n  min-width: 0;\n  max-width: 100%;");
+    expect(staffCss).toContain(".batch-assignment-row > label {\n  display: grid;\n  gap: 7px;\n  min-width: 0;");
+    expect(staffCss).toContain(".batch-assignment-select,\n.batch-transfer-select {\n  width: 100%;\n  min-width: 0;\n  max-width: 100%;\n  box-sizing: border-box;");
+  });
+
+  it("stacks Batch assignment controls on mobile and preserves desktop columns", () => {
+    const staffCss = readFileSync(new URL("../../styles/staff.css", import.meta.url), "utf8");
+
+    expect(staffCss).toContain(".batch-assignment-row button {\n  width: 100%;");
+    expect(staffCss).toContain("@media (min-width: 640px)");
+    expect(staffCss).toContain(".batch-assignment-row {\n    grid-template-columns: minmax(0, 1fr) auto;");
+    expect(staffCss).toContain(".batch-assignment-row button {\n    width: auto;");
+  });
+
+  it("renders scoped assignment and transfer select hooks for long enrolment labels", async () => {
+    apiMocks.getEligibleBatchEnrolments.mockResolvedValue({
+      success: true,
+      enrolments: [{
+        id: "enrolment_long",
+        student_name: "Abdul Kadir Iftekhar Khan",
+        enrolment_number: "ENR-SION-2026-0000000000000000000000000000000000000000",
+      }],
+    });
+    apiMocks.getStaffBatch.mockResolvedValue({
+      success: true,
+      batch: batch(),
+      roster: [{
+        membership_id: "membership_one",
+        student_name: "Abdul Kadir Iftekhar Khan",
+        student_number: "STU-SION-2026-000001",
+        enrolment_number: "ENR-SION-2026-0000000000000000000000000000000000000000",
+        course_id: "course_dm",
+        course_name: "Digital Marketing",
+        joined_at: "2026-09-02T00:00:00.000Z",
+        enrolment_status: "active",
+      }],
+    });
+    apiMocks.getStaffBatches.mockResolvedValue({
+      success: true,
+      batches: [
+        batch(),
+        batch({ id: "batch_two", name: "Digital Batch Evening" }),
+      ],
+    });
+
+    await renderPage();
+    click(container.querySelector<HTMLButtonElement>(".table-row-main")!);
+    await flush();
+
+    expect(container.querySelector(".batch-assignment-select")).toBeInstanceOf(windowRef.HTMLSelectElement);
+    expect(container.querySelector(".batch-roster-row")).toBeInstanceOf(windowRef.HTMLElement);
+    expect(container.querySelector(".batch-transfer-select")).toBeInstanceOf(windowRef.HTMLSelectElement);
+    expect(text()).toContain("Abdul Kadir Iftekhar Khan · ENR-SION-2026-0000000000000000000000000000000000000000");
   });
 
   it("protects checkbox and radio controls from generic staff input sizing", () => {
