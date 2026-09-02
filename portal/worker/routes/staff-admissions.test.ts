@@ -199,21 +199,75 @@ describe("staff student directory routes", () => {
 
     expect(response.status).toBe(404);
   });
+
+  it("allows owner basic detail edits through the narrow student endpoint", async () => {
+    const app = routeApp();
+    authenticateAs(["owner"]);
+    const db = studentProfileDb("owner");
+    const versionResponse = await app.request("http://localhost/api/staff/students/student_sion", {}, { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" });
+    const versionBody = await versionResponse.json() as { basicDetailsVersion: string };
+
+    const response = await app.request("http://localhost/api/staff/students/student_sion/basic-details", {
+      method: "PATCH",
+      headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+      body: JSON.stringify({ fullName: "  Md. Arif Khan  ", expectedBasicDetailsVersion: versionBody.basicDetailsVersion }),
+    }, { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ success: true, studentId: "student_sion", personId: "person_sion", fullName: "Md. Arif Khan" });
+    expect(row(db, "select full_name, public_name from people where id = 'person_sion'")).toMatchObject({ full_name: "Md. Arif Khan", public_name: "Md. Arif Khan" });
+    expect(row(db, "select official_full_name from person_identity_details where person_id = 'person_sion'")).toMatchObject({ official_full_name: "Md. Arif Khan" });
+  });
+
+  it.each(["admin", "system_admin", "admission_admin", "counsellor", "student", "partner"])("denies %s student basic detail edits", async (role) => {
+    const app = routeApp();
+    authenticateAs([role]);
+    const db = studentProfileDb(role);
+    const response = await app.request("http://localhost/api/staff/students/student_sion/basic-details", {
+      method: "PATCH",
+      headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+      body: JSON.stringify({ fullName: "Blocked Name", expectedBasicDetailsVersion: "version-token-123456" }),
+    }, { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" });
+
+    expect(response.status).toBe(403);
+    expect(row(db, "select full_name from people where id = 'person_sion'")).toMatchObject({ full_name: "Sion Student" });
+  });
+
+  it("denies unauthenticated student basic detail edits", async () => {
+    const app = routeApp();
+    mocks.getSessionFromRequest.mockResolvedValue(null);
+    const response = await app.request("http://localhost/api/staff/students/student_sion/basic-details", {
+      method: "PATCH",
+      headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+      body: JSON.stringify({ fullName: "Blocked Name", expectedBasicDetailsVersion: "version-token-123456" }),
+    }, { DB: new D1Adapter(studentProfileDb()), SESSION_PEPPER: "test-pepper" });
+
+    expect(response.status).toBe(403);
+  });
 });
 
-function studentProfileDb() {
+function studentProfileDb(roleCode = "counsellor") {
   const db = new DatabaseSync(":memory:");
   installStudentProfileSchema(db);
+  const roleId = `role_${roleCode}`;
   db.exec(`
     insert into roles values ('role_counsellor', 'org_samyak', 'counsellor', 'Counsellor', '2026-08-22T00:00:00.000Z');
-    insert into login_account_roles values ('acct_test', 'role_counsellor', 'branch_sion', '2026-08-22T00:00:00.000Z');
+    insert into roles values ('role_owner', 'org_samyak', 'owner', 'Owner', '2026-08-22T00:00:00.000Z');
+    insert into roles values ('role_admin', 'org_samyak', 'admin', 'Admin', '2026-08-22T00:00:00.000Z');
+    insert into roles values ('role_system_admin', 'org_samyak', 'system_admin', 'System Admin', '2026-08-22T00:00:00.000Z');
+    insert into roles values ('role_admission_admin', 'org_samyak', 'admission_admin', 'Admission Admin', '2026-08-22T00:00:00.000Z');
+    insert into roles values ('role_student', 'org_samyak', 'student', 'Student', '2026-08-22T00:00:00.000Z');
+    insert into roles values ('role_partner', 'org_samyak', 'partner', 'Partner', '2026-08-22T00:00:00.000Z');
     insert into people values ('person_sion', 'org_samyak', 'branch_sion', 'Sion Student', 'Sion Student', null, 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+    insert into person_identity_details values ('person_sion', 'Sion Student', '2000-01-01', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
     insert into students values ('student_sion', 'org_samyak', 'person_sion', 'branch_sion', 'SYK-SION-0001', 1, '2026-01-01', 'active', 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
     insert into people values ('person_bandra', 'org_samyak', 'branch_bandra', 'Band Stand Student', 'Band Student', null, 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+    insert into person_identity_details values ('person_bandra', 'Band Stand Student', '2000-01-01', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
     insert into students values ('student_bandra', 'org_samyak', 'person_bandra', 'branch_bandra', 'SYK-BANDRA-0001', 1, '2026-01-01', 'active', 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
     insert into people values ('person_archived', 'org_samyak', 'branch_sion', 'Archived Student', 'Archived Student', null, 'archived', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
     insert into students values ('student_archived', 'org_samyak', 'person_archived', 'branch_sion', 'SYK-SION-ARCHIVED', 2, '2026-01-01', 'active', 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
   `);
+  db.prepare("insert into login_account_roles values ('acct_test', ?, 'branch_sion', '2026-08-22T00:00:00.000Z')").run(roleId);
   return db;
 }
 
@@ -222,6 +276,7 @@ function installStudentProfileSchema(db: DatabaseSync) {
     create table roles (id text primary key, organisation_id text, code text, name text, created_at text);
     create table login_account_roles (login_account_id text, role_id text, branch_id text, created_at text);
     create table people (id text primary key, organisation_id text, home_branch_id text, full_name text, public_name text, date_of_birth text, status text, created_at text, updated_at text);
+    create table person_identity_details (person_id text primary key, official_full_name text, date_of_birth text, created_at text, updated_at text);
     create table students (id text primary key, organisation_id text, person_id text, home_branch_id text, student_number text, sequence_number integer, student_since text, current_status text, portal_status text, created_at text, updated_at text);
     create table person_localities (id text primary key, person_id text, locality text, city text, status text, created_at text);
     create table education_records (id text primary key, person_id text, qualification_level text, created_at text);
@@ -238,13 +293,30 @@ function installStudentProfileSchema(db: DatabaseSync) {
     create table referrer_profiles (id text primary key, organisation_id text, person_id text, external_referrer_id text, referral_token text, personal_link text, active integer, created_at text, updated_at text);
     create table referral_links (id text primary key, organisation_id text, referral_programme_id text, referrer_profile_id text, token_hash text, token_last_four text, link_version integer, status text, activated_at text, expires_at text, revoked_at text, last_used_at text, created_at text, updated_at text);
     create table referral_link_secrets (referral_link_id text primary key, token_ciphertext text, encryption_version text, created_at text, updated_at text);
+    create table audit_logs (id text primary key, organisation_id text, branch_id text, actor_login_account_id text, actor_person_id text, action text, entity_type text, entity_id text, metadata_json text, created_at text);
   `);
+}
+
+function row(db: DatabaseSync, sql: string, ...values: SqlValue[]) {
+  return db.prepare(sql).get(...values) as Record<string, any> | undefined;
 }
 
 class D1Adapter {
   constructor(private readonly db: DatabaseSync) {}
   prepare(sql: string) {
     return new D1Statement(this.db, sql);
+  }
+  async batch(statements: D1Statement[]) {
+    this.db.exec("begin");
+    try {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      this.db.exec("commit");
+      return results;
+    } catch (error) {
+      this.db.exec("rollback");
+      throw error;
+    }
   }
 }
 
@@ -260,5 +332,9 @@ class D1Statement {
   }
   async all<T>() {
     return { results: this.db.prepare(this.sql).all(...this.values) } as T;
+  }
+  async run() {
+    const result = this.db.prepare(this.sql).run(...this.values);
+    return { success: true, meta: { changes: result.changes } };
   }
 }

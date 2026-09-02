@@ -4,6 +4,7 @@ import { LoadingState } from "../../components/LoadingState";
 import {
   ApiError,
   assignEnrolmentToStaffBatch,
+  changeStaffStudentBasicDetails,
   changeStaffStudentPrimaryMobile,
   getAdmissionBatchOptions,
   getStaffStudentProfile,
@@ -16,6 +17,8 @@ import {
 export function StudentProfilePage({ studentId }: { studentId: string }) {
   const [profile, setProfile] = useState<StaffStudentProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingBasicDetails, setEditingBasicDetails] = useState(false);
+  const [basicDetailsMessage, setBasicDetailsMessage] = useState<string | null>(null);
   const [editingContact, setEditingContact] = useState(false);
   const [referralBusy, setReferralBusy] = useState(false);
   const [referralMessage, setReferralMessage] = useState<string | null>(null);
@@ -97,6 +100,10 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
       <header className="page-header">
         <h1>{String(student.student_number)}</h1>
         <p>{String(student.full_name)} · DOB {String(student.date_of_birth || "Not recorded")}</p>
+        {profile.canMaintainBasicDetails ? <button className="button-link" type="button" onClick={() => {
+          setEditingBasicDetails(true);
+          setBasicDetailsMessage(null);
+        }}>Edit Basic Details</button> : null}
         {profile.canMaintainContact ? <button className="button-link" type="button" onClick={() => setEditingContact(true)}>Edit Contact</button> : null}
       </header>
       <section className="staff-card detail-grid">
@@ -109,6 +116,20 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
         <Detail label="Status" value={String(student.current_status)} />
         <Detail label="Education" value={profile.education ? String(profile.education.qualification_level) : "Not recorded"} />
       </section>
+
+      {profile.canMaintainBasicDetails && editingBasicDetails ? (
+        <BasicDetailsEditPanel
+          studentId={studentId}
+          profile={profile}
+          onCancel={() => setEditingBasicDetails(false)}
+          onSaved={(nextProfile) => {
+            setProfile(nextProfile);
+            setEditingBasicDetails(false);
+            setBasicDetailsMessage("Basic details updated.");
+          }}
+        />
+      ) : null}
+      {basicDetailsMessage ? <p className="form-message">{basicDetailsMessage}</p> : null}
 
       {profile.canMaintainContact && editingContact ? (
         <ContactEditPanel
@@ -257,6 +278,57 @@ function ReferralLinkPanel({
 
 function Detail({ label, value }: { label: string; value: string }) {
   return <div><small>{label}</small><strong>{value}</strong></div>;
+}
+
+export function BasicDetailsEditPanel({
+  studentId,
+  profile,
+  onCancel,
+  onSaved,
+}: {
+  studentId: string;
+  profile: StaffStudentProfile;
+  onCancel: () => void;
+  onSaved: (profile: StaffStudentProfile) => void;
+}) {
+  const [fullName, setFullName] = useState(String(profile.student.full_name || ""));
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const canSubmit = fullName.trim().length >= 2 && !saving;
+
+  async function submit() {
+    if (!canSubmit) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      if (!profile.basicDetailsVersion) {
+        setMessage("Refresh the profile before changing basic details.");
+        return;
+      }
+      await changeStaffStudentBasicDetails(studentId, { fullName, expectedBasicDetailsVersion: profile.basicDetailsVersion });
+      const nextProfile = await getStaffStudentProfile(studentId);
+      onSaved(nextProfile);
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Basic details could not be updated.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="staff-card contact-edit-panel">
+      <div className="section-heading"><h2>Edit Basic Details</h2><span>{String(profile.student.student_number)}</span></div>
+      <label>
+        <small>Full Name</small>
+        <input value={fullName} onChange={(event) => setFullName(event.target.value)} maxLength={120} autoComplete="name" />
+      </label>
+      {message ? <p className="form-message">{message}</p> : null}
+      <div className="form-actions">
+        <button type="button" onClick={onCancel} disabled={saving}>Cancel</button>
+        <button type="button" onClick={() => void submit()} disabled={!canSubmit}>{saving ? "Saving..." : "Save"}</button>
+      </div>
+    </section>
+  );
 }
 
 export function ContactEditPanel({

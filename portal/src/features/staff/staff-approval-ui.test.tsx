@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { navigationForRoles, canAccessDiscountApprovals, canViewEnquiries, canViewStudents } from "../../routes/Router";
 import { DiscountApprovalsContent } from "./DiscountApprovalsPage";
 import { courseConfigurationLabel, isCourseConfigurationComplete } from "./CourseMasterPage";
-import { BatchAssignmentPanel, ContactEditPanel, openBatchHref } from "./StudentProfilePage";
+import { BasicDetailsEditPanel, BatchAssignmentPanel, ContactEditPanel, openBatchHref } from "./StudentProfilePage";
 import { StudentDirectoryContent, statusLabel } from "./StudentsPage";
 
 describe("staff approval UI", () => {
@@ -104,8 +104,10 @@ describe("staff approval UI", () => {
           primaryMobile: "9876543210",
           mobileDisplay: "******3210",
           canMaintainContact: true,
+          canMaintainBasicDetails: true,
           canReplaceReferralLink: false,
           referralLink: null,
+          basicDetailsVersion: "basic-details-version-token",
           contactVersion: "contact-version-token",
           contactHistory: [],
           locality: null,
@@ -124,6 +126,46 @@ describe("staff approval UI", () => {
     expect(html).toContain("Confirm Change");
     expect(html).toContain("******3210");
     expect(html).not.toContain("9876543210");
+  });
+
+  it("renders owner basic-details name editing without unrelated identity fields", () => {
+    const html = renderToStaticMarkup(
+      <BasicDetailsEditPanel
+        studentId="student_a"
+        profile={{
+          student: {
+            id: "student_a",
+            student_number: "SYK-SION-0001",
+            full_name: "Asha Student",
+            date_of_birth: "2000-01-01",
+            student_since: "2024-01-01",
+            current_status: "active",
+          },
+          primaryMobile: "9876543210",
+          mobileDisplay: "******3210",
+          canMaintainContact: true,
+          canMaintainBasicDetails: true,
+          canReplaceReferralLink: false,
+          referralLink: null,
+          basicDetailsVersion: "basic-details-version-token",
+          contactVersion: "contact-version-token",
+          contactHistory: [],
+          locality: null,
+          education: null,
+          enrolments: [],
+          enquiries: [],
+        }}
+        onCancel={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain("Edit Basic Details");
+    expect(html).toContain("Full Name");
+    expect(html).toContain("Asha Student");
+    expect(html).toContain("Save");
+    expect(html).not.toContain("Gender");
+    expect(html).not.toContain("Mobile");
   });
 
   it("renders inline batch assignment controls and keeps Open Batch pointed at detail routes", () => {

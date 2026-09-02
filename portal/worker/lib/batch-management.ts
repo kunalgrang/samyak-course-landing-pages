@@ -137,12 +137,13 @@ export async function getBatchDetail(c: AppContext, staff: StaffContext, batchId
             enrolments.id as enrolment_id, enrolments.enrolment_number, enrolments.status as enrolment_status,
             enrolments.course_id, courses.name as course_name,
             students.id as student_id, students.student_number,
-            coalesce(people.public_name, people.full_name) as student_name
+            coalesce(person_identity_details.official_full_name, people.full_name, people.public_name) as student_name
      from batch_memberships
      join enrolments on enrolments.id = batch_memberships.enrolment_id
      join courses on courses.id = enrolments.course_id
      join students on students.id = enrolments.student_id
      join people on people.id = students.person_id
+     left join person_identity_details on person_identity_details.person_id = people.id
      where batch_memberships.batch_id = ?
        and batch_memberships.organisation_id = ?
        and students.organisation_id = ?
@@ -278,11 +279,12 @@ export async function listEligibleEnrolments(c: AppContext, staff: StaffContext,
   if (!access) return { ok: false as const, status: 403, code: "forbidden", message: "You do not have access to this batch." };
   const rows = await c.env.DB.prepare(
     `select enrolments.id, enrolments.enrolment_number, enrolments.status, students.student_number,
-            coalesce(people.public_name, people.full_name) as student_name,
+            coalesce(person_identity_details.official_full_name, people.full_name, people.public_name) as student_name,
             primary_mobile.last_four as mobile_last_four
      from enrolments
      join students on students.id = enrolments.student_id
      join people on people.id = students.person_id and people.organisation_id = ?
+     left join person_identity_details on person_identity_details.person_id = people.id
      left join person_contacts primary_mobile
        on primary_mobile.person_id = people.id
       and primary_mobile.contact_type = 'mobile'
@@ -297,11 +299,11 @@ export async function listEligibleEnrolments(c: AppContext, staff: StaffContext,
      where enrolments.branch_id = ?
        and enrolments.status in ('confirmed', 'not_started', 'active', 'on_hold')
        and active_membership.id is null
-       and (? = '' or people.full_name like ? or students.student_number like ? or enrolments.enrolment_number like ? or primary_mobile.normalized_value like ? or primary_mobile.display_value like ? or primary_mobile.last_four like ?)
-     order by people.full_name collate nocase
+       and (? = '' or person_identity_details.official_full_name like ? or people.full_name like ? or people.public_name like ? or students.student_number like ? or enrolments.enrolment_number like ? or primary_mobile.normalized_value like ? or primary_mobile.display_value like ? or primary_mobile.last_four like ?)
+     order by coalesce(person_identity_details.official_full_name, people.full_name, people.public_name) collate nocase
      limit 50`,
   )
-    .bind(ORG_ID, batchId, ORG_ID, batch.branch_id, q, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`)
+    .bind(ORG_ID, batchId, ORG_ID, batch.branch_id, q, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`)
     .all<Record<string, unknown>>();
   return { ok: true as const, enrolments: rows.results || [] };
 }
