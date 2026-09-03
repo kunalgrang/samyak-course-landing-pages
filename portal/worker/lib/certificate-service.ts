@@ -9,7 +9,7 @@ import {
   certificatePdfStorageFromEnv,
   type CertificatePdfStorage,
 } from "./certificate-storage";
-import { markApplicationCertificateIssued } from "./certificate-application-service";
+import { certificateIssuedApplicationStatements, markApplicationCertificateIssued } from "./certificate-application-service";
 
 export const CERTIFICATE_TEMPLATE_CODE = "SAMYAK_COMPLETION_V1";
 export const CERTIFICATE_VERIFICATION_ORIGIN = "https://go.samyaksion.com";
@@ -181,7 +181,10 @@ export async function listCertificates(c: AppContext, input: { q?: string; cours
 
 export async function issueCertificate(c: AppContext, staff: StaffContext, enrolmentId: string, issueDate: string, options: { storage?: CertificatePdfStorage | null } = {}) {
   const eligibility = await certificateEligibility(c, enrolmentId);
-  if (eligibility.existingCertificate) return { ok: true as const, certificate: eligibility.existingCertificate, idempotent: true };
+  if (eligibility.existingCertificate) {
+    await markApplicationCertificateIssued(c, staff, eligibility.existingCertificate);
+    return { ok: true as const, certificate: eligibility.existingCertificate, idempotent: true };
+  }
   if (!eligibility.eligible || !eligibility.enrolment) {
     return { ok: false as const, status: 409, code: "not_eligible", message: "This enrolment is not eligible for certificate issuance.", reasons: eligibility.reasons };
   }
@@ -248,6 +251,7 @@ export async function issueCertificate(c: AppContext, staff: StaffContext, enrol
     }
   }
   try {
+    const applicationStatements = await certificateIssuedApplicationStatements(c, staff, certificate, now);
     await c.env.DB.batch([
       c.env.DB.prepare(
         `insert into certificates
@@ -266,6 +270,7 @@ export async function issueCertificate(c: AppContext, staff: StaffContext, enrol
         certificate.issued_by_actor_id, certificate.issued_at, certificate.created_at, certificate.updated_at,
       ),
       statusEvent(c, certificate, staff, "issued", null, "issued", null, now),
+      ...applicationStatements,
     ]);
   } catch (error) {
     const existing = await activeCertificateForEnrolment(c, row.enrolment_id);
@@ -278,7 +283,6 @@ export async function issueCertificate(c: AppContext, staff: StaffContext, enrol
     if (storage && certificate.pdf_storage_key) await storage.delete(certificate.pdf_storage_key).catch(() => undefined);
     throw error;
   }
-  await markApplicationCertificateIssued(c, staff, certificate).catch(() => undefined);
   return { ok: true as const, certificate, idempotent: false };
 }
 

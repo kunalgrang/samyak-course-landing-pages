@@ -214,6 +214,42 @@ describe("certificate application workflow", () => {
     db.close();
   });
 
+  it("applies the low-feedback boundary rule deterministically", async () => {
+    const { c, db } = testContext();
+    seedCertificateStudent(db, "active_boundary", "active", null);
+    seedCertificateStudent(db, "active_overall", "active", null);
+
+    const boundary = await submitCertificateApplication(c, "person_active", applicationInput({
+      feedbackTrainerClarityScore: 2,
+      feedbackPracticalLearningScore: 3,
+      feedbackCourseExpectationScore: 2,
+      feedbackOverallScore: 3,
+    }));
+    const aboveBoundary = await submitCertificateApplication(c, "person_active_boundary", {
+      ...applicationInput({
+        enrolmentId: "enrolment_active_boundary",
+        feedbackTrainerClarityScore: 3,
+        feedbackPracticalLearningScore: 3,
+        feedbackCourseExpectationScore: 2,
+        feedbackOverallScore: 3,
+      }),
+    });
+    const lowOverall = await submitCertificateApplication(c, "person_active_overall", {
+      ...applicationInput({
+        enrolmentId: "enrolment_active_overall",
+        feedbackTrainerClarityScore: 5,
+        feedbackPracticalLearningScore: 5,
+        feedbackCourseExpectationScore: 5,
+        feedbackOverallScore: 2,
+      }),
+    });
+
+    expect(boundary).toMatchObject({ ok: true, application: { low_feedback_flag: true } });
+    expect(aboveBoundary).toMatchObject({ ok: true, application: { low_feedback_flag: false } });
+    expect(lowOverall).toMatchObject({ ok: true, application: { low_feedback_flag: true } });
+    db.close();
+  });
+
   it("approves course completion from application and then existing eligibility becomes true", async () => {
     const { c, db, staff } = testContext();
     const submitted = await submitCertificateApplication(c, "person_active", applicationInput());
@@ -226,6 +262,21 @@ describe("certificate application workflow", () => {
     expect(row(db, "select status, actual_completion_date from enrolments where id = 'enrolment_active'")).toMatchObject({ status: "completed", actual_completion_date: "2026-08-18" });
     expect(row(db, "select status, completion_date from certificate_applications where id = ?", submitted.application.id)).toMatchObject({ status: "approved", completion_date: "2026-08-18" });
     expect(eligibility).toMatchObject({ eligible: true, reasons: [] });
+    db.close();
+  });
+
+  it("rejects invalid completion dates and keeps needs-attention recoverable", async () => {
+    const { c, db, staff } = testContext();
+    const submitted = await submitCertificateApplication(c, "person_active", applicationInput());
+    if (!submitted.ok) throw new Error("expected application submission");
+    await expect(approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-01-01")).resolves.toMatchObject({ ok: false, code: "completion_before_joining" });
+    await expect(approveCourseCompletionFromApplication(c, staff, submitted.application.id, tomorrowInIndia())).resolves.toMatchObject({ ok: false, code: "completion_date_future" });
+    db.prepare("update certificate_applications set status = 'needs_attention', updated_at = ? where id = ?").run(now(), submitted.application.id);
+
+    const approved = await approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-18");
+
+    expect(approved).toMatchObject({ ok: true });
+    expect(row(db, "select status from certificate_applications where id = ?", submitted.application.id)).toMatchObject({ status: "approved" });
     db.close();
   });
 
@@ -243,6 +294,48 @@ describe("certificate application workflow", () => {
     expect(row(db, "select status from certificate_applications where id = ?", submitted.application.id)).toMatchObject({ status: "certificate_issued" });
     expect(legacy.ok).toBe(true);
     expect(count(db, "certificate_applications where enrolment_id = 'enrolment_completed'")).toBe(0);
+    db.close();
+  });
+
+  it("reconciles approved application status on idempotent certificate issuance retry", async () => {
+    const { c, db, staff } = testContext();
+    const storage = createMemoryCertificatePdfStorage(new Map<string, Uint8Array>());
+    const submitted = await submitCertificateApplication(c, "person_active", applicationInput());
+    if (!submitted.ok) throw new Error("expected application submission");
+    await approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-18");
+    await issueCertificate(c, staff, "enrolment_active", "2026-08-19", { storage });
+    db.prepare("update certificate_applications set status = 'approved', updated_at = ? where id = ?").run(now(), submitted.application.id);
+
+    const retry = await issueCertificate(c, staff, "enrolment_active", "2026-08-19", { storage });
+
+    expect(retry).toMatchObject({ ok: true, idempotent: true });
+    expect(row(db, "select status from certificate_applications where id = ?", submitted.application.id)).toMatchObject({ status: "certificate_issued" });
+    expect(count(db, "certificates where enrolment_id = 'enrolment_active' and status = 'issued'")).toBe(1);
+    db.close();
+  });
+
+  it("enforces duplicate application and event foreign-key constraints in the database", () => {
+    const db = migratedSeededDb();
+    seedStaff(db);
+    seedCertificateStudents(db);
+    db.exec("pragma foreign_keys = on");
+    const insertApplication = db.prepare(
+      `insert into certificate_applications
+        (id, organisation_id, branch_id, person_id, student_id, enrolment_id, course_id, status,
+         student_completion_confirmed, certificate_details_confirmed, feedback_trainer_clarity_score,
+         feedback_practical_learning_score, feedback_course_expectation_score, feedback_overall_score,
+         low_feedback_flag, applied_at, created_at, updated_at)
+       values (?, 'org_samyak', 'branch_sion', 'person_active', 'student_active', 'enrolment_active',
+         'course_syk_wdd_001', 'submitted', 1, 1, 5, 5, 5, 5, 0, ?, ?, ?)`,
+    );
+    insertApplication.run("certapp_direct_1", now(), now(), now());
+
+    expect(() => insertApplication.run("certapp_direct_2", now(), now(), now())).toThrow();
+    expect(() => db.prepare(
+      `insert into certificate_application_events
+        (id, organisation_id, branch_id, application_id, action, to_status, created_at)
+       values ('certappevt_missing', 'org_samyak', 'branch_sion', 'certapp_missing', 'submitted', 'submitted', ?)`,
+    ).run(now())).toThrow();
     db.close();
   });
 });
@@ -297,7 +390,7 @@ function applicationInput(overrides: Partial<Parameters<typeof submitCertificate
 function seedCertificateStudent(db: DatabaseSync, suffix: string, enrolmentStatus: string, actualCompletionDate: string | null) {
   const studentStatus = enrolmentStatus === "completed" ? "completed" : enrolmentStatus;
   const readableName = title(suffix.replace(/_/g, " "));
-  const sequence = suffix === "completed" ? 1 : suffix === "active" ? 2 : suffix === "on_hold" ? 3 : suffix === "completed_null_date" ? 4 : 5;
+  const sequence = suffix === "completed" ? 1 : suffix === "active" ? 2 : suffix === "on_hold" ? 3 : suffix === "completed_null_date" ? 4 : suffix === "active_boundary" ? 6 : suffix === "active_overall" ? 7 : 5;
   db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values (?, 'org_samyak', 'branch_sion', ?, ?, 'active', ?, ?)")
     .run(`person_${suffix}`, `Synthetic ${readableName} Student`, `Synthetic ${readableName}`, now(), now());
   db.prepare("insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at) values (?, 'org_samyak', ?, 'branch_sion', ?, ?, '2026-01-01', ?, 'active', ?, ?)")
@@ -365,6 +458,20 @@ function title(value: string) {
 
 function now() {
   return "2026-08-17T00:00:00.000Z";
+}
+
+function tomorrowInIndia() {
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(tomorrow);
+  const year = parts.find((part) => part.type === "year")?.value || "1970";
+  const month = parts.find((part) => part.type === "month")?.value || "01";
+  const day = parts.find((part) => part.type === "day")?.value || "01";
+  return `${year}-${month}-${day}`;
 }
 
 class SqliteD1 {

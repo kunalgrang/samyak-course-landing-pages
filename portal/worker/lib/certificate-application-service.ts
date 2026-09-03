@@ -427,10 +427,15 @@ export async function approveCourseCompletionFromApplication(c: AppContext, staf
 }
 
 export async function markApplicationCertificateIssued(c: AppContext, staff: StaffContext, certificate: { enrolment_id: string; branch_id: string }) {
+  const statements = await certificateIssuedApplicationStatements(c, staff, certificate, new Date().toISOString());
+  if (!statements.length) return;
+  await c.env.DB.batch(statements);
+}
+
+export async function certificateIssuedApplicationStatements(c: AppContext, staff: StaffContext, certificate: { enrolment_id: string; branch_id: string }, now: string) {
   const application = await activeApplicationForEnrolment(c, certificate.enrolment_id);
-  if (!application || application.status !== "approved") return;
-  const now = new Date().toISOString();
-  await c.env.DB.batch([
+  if (!application || application.status !== "approved") return [];
+  return [
     c.env.DB.prepare(
       `update certificate_applications
        set status = 'certificate_issued', updated_at = ?
@@ -448,7 +453,7 @@ export async function markApplicationCertificateIssued(c: AppContext, staff: Sta
       metadata: { enrolmentId: certificate.enrolment_id },
       now,
     }),
-  ]);
+  ];
 }
 
 function publicStudentEnrolment(row: ApplicationEligibilityRow) {
@@ -511,11 +516,23 @@ function validateCompletionDate(completionDate: string, joiningDate: string) {
   if (completionDate < joiningDate.slice(0, 10)) {
     return { ok: false as const, status: 400, code: "completion_before_joining", message: "Completion date cannot be before joining date." };
   }
-  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  if (completionDate > tomorrow) {
-    return { ok: false as const, status: 400, code: "completion_date_future", message: "Completion date cannot be far in the future." };
+  if (completionDate > todayInIndia()) {
+    return { ok: false as const, status: 400, code: "completion_date_future", message: "Completion date cannot be in the future." };
   }
   return { ok: true as const };
+}
+
+function todayInIndia() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const year = parts.find((part) => part.type === "year")?.value || "1970";
+  const month = parts.find((part) => part.type === "month")?.value || "01";
+  const day = parts.find((part) => part.type === "day")?.value || "01";
+  return `${year}-${month}-${day}`;
 }
 
 function hasLowFeedback(input: CertificateApplicationInput) {

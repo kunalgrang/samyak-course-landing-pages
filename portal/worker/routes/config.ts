@@ -14,7 +14,17 @@ export function registerConfigRoutes(app: PortalHono) {
     return jsonPlain(c, {
       turnstileSiteKey: c.env.TURNSTILE_SITE_KEY || "",
       otpEnabled: hasMsg91Config(c.env) || canUseDevelopmentOtp(c.env, hostname),
-      googleReviewUrl: c.env.GOOGLE_REVIEW_URL || "",
+      googleReviewUrl: safeHttpsUrl(c.env.GOOGLE_REVIEW_URL),
     });
   });
+}
+
+function safeHttpsUrl(value: string | undefined) {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.toString() : "";
+  } catch {
+    return "";
+  }
 }
