@@ -10,6 +10,7 @@ export type WorkerBindings = {
   SESSION_PEPPER: string;
   REFERRAL_TOKEN_PEPPER?: string;
   CERTIFICATE_VERIFICATION_ORIGIN?: string;
+  GOOGLE_REVIEW_URL?: string;
   CERTIFICATE_PDFS?: R2Bucket;
   DEV_OTP?: string;
 };

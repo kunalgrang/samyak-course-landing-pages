@@ -7,6 +7,12 @@ const mocks = vi.hoisted(() => ({
   getAccountRoles: vi.fn(),
   listEligibleCertificates: vi.fn(),
   listCertificates: vi.fn(),
+  listStaffCertificateApplications: vi.fn(),
+  listStudentCertificateApplications: vi.fn(),
+  submitCertificateApplication: vi.fn(),
+  getStaffCertificateApplication: vi.fn(),
+  approveCourseCompletionFromApplication: vi.fn(),
+  markCertificateApplicationNeedsAttention: vi.fn(),
   issueCertificate: vi.fn(),
   revokeCertificate: vi.fn(),
   verifyCertificate: vi.fn(),
@@ -34,6 +40,15 @@ vi.mock("../lib/certificate-service", () => ({
   verifyCertificate: mocks.verifyCertificate,
 }));
 
+vi.mock("../lib/certificate-application-service", () => ({
+  listStaffCertificateApplications: mocks.listStaffCertificateApplications,
+  listStudentCertificateApplications: mocks.listStudentCertificateApplications,
+  submitCertificateApplication: mocks.submitCertificateApplication,
+  getStaffCertificateApplication: mocks.getStaffCertificateApplication,
+  approveCourseCompletionFromApplication: mocks.approveCourseCompletionFromApplication,
+  markCertificateApplicationNeedsAttention: mocks.markCertificateApplicationNeedsAttention,
+}));
+
 function routeApp() {
   const app = new Hono();
   registerCertificateRoutes(app as never);
@@ -52,6 +67,17 @@ describe("certificate routes", () => {
     vi.clearAllMocks();
     mocks.listEligibleCertificates.mockResolvedValue({ items: [], pagination: { limit: 25, offset: 0, hasMore: false } });
     mocks.listCertificates.mockResolvedValue({ items: [], pagination: { limit: 25, offset: 0, hasMore: false } });
+    mocks.listStaffCertificateApplications.mockResolvedValue({ items: [], pagination: { limit: 25, offset: 0, hasMore: false } });
+    mocks.listStudentCertificateApplications.mockResolvedValue({ items: [] });
+    mocks.submitCertificateApplication.mockResolvedValue({
+      ok: true,
+      status: 201,
+      idempotent: false,
+      application: { id: "certapp_1", status: "submitted", applied_at: "2026-08-18T00:00:00.000Z", low_feedback_flag: false },
+    });
+    mocks.getStaffCertificateApplication.mockResolvedValue({ id: "certapp_1", status: "submitted" });
+    mocks.approveCourseCompletionFromApplication.mockResolvedValue({ ok: true, idempotent: false });
+    mocks.markCertificateApplicationNeedsAttention.mockResolvedValue({ ok: true });
     mocks.issueCertificate.mockResolvedValue({
       ok: true,
       idempotent: false,
@@ -73,7 +99,7 @@ describe("certificate routes", () => {
     const list = await app.request("/api/staff/certificates/eligible");
     const issue = await app.request("/api/staff/certificates/issue", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Origin: "http://localhost" },
       body: JSON.stringify({ enrolmentId: "enrol_1", issueDate: "2026-08-14" }),
     });
 
@@ -88,19 +114,97 @@ describe("certificate routes", () => {
     authenticateAs(["admin"]);
     const denied = await app.request("/api/staff/certificates/cert_1/revoke", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Origin: "http://localhost" },
       body: JSON.stringify({ reason: "Incorrect student name" }),
     });
     authenticateAs(["owner"]);
     const allowed = await app.request("/api/staff/certificates/cert_1/revoke", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Origin: "http://localhost" },
       body: JSON.stringify({ reason: "Incorrect student name" }),
     });
 
     expect(denied.status).toBe(403);
     expect(allowed.status).toBe(200);
     expect(mocks.revokeCertificate).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns student certificate application state with issued certificates", async () => {
+    const app = routeApp();
+    authenticateAs([]);
+    mocks.listCertificates.mockResolvedValue({ items: [{ id: "cert_1" }], pagination: { limit: 25, offset: 0, hasMore: false } });
+    mocks.listStudentCertificateApplications.mockResolvedValue({
+      items: [{ enrolment: { enrolment_id: "enrol_1" }, applicationEligibility: { eligible: true, reasons: [] }, application: null, certificate: null }],
+    });
+
+    const response = await app.request("/api/student/certificates");
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      certificates: { items: [{ id: "cert_1" }] },
+      applications: { items: [{ enrolment: { enrolment_id: "enrol_1" } }] },
+    });
+    expect(mocks.listCertificates).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ personId: "person_1" }));
+  });
+
+  it("lets students submit certificate applications without changing enrolments in the route", async () => {
+    const app = routeApp();
+    authenticateAs([]);
+
+    const response = await app.request("/api/student/certificate-applications", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost" },
+      body: JSON.stringify({
+        enrolmentId: "enrol_1",
+        studentCompletionConfirmed: true,
+        certificateDetailsConfirmed: true,
+        feedbackTrainerClarityScore: 5,
+        feedbackPracticalLearningScore: 5,
+        feedbackCourseExpectationScore: 4,
+        feedbackOverallScore: 5,
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(mocks.submitCertificateApplication).toHaveBeenCalledWith(expect.anything(), "person_1", expect.objectContaining({ enrolmentId: "enrol_1" }));
+  });
+
+  it("requires course completion approval roles for application queue and approval", async () => {
+    const app = routeApp();
+    authenticateAs(["counsellor"]);
+
+    const list = await app.request("/api/staff/certificate-applications");
+    const approve = await app.request("/api/staff/certificate-applications/certapp_1/approve-completion", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost" },
+      body: JSON.stringify({ completionDate: "2026-08-18" }),
+    });
+
+    expect(list.status).toBe(403);
+    expect(approve.status).toBe(403);
+    expect(mocks.approveCourseCompletionFromApplication).not.toHaveBeenCalled();
+  });
+
+  it("allows application reviewers to approve completion and mark needs attention", async () => {
+    const app = routeApp();
+    authenticateAs(["admission_admin"]);
+
+    const list = await app.request("/api/staff/certificate-applications");
+    const approve = await app.request("/api/staff/certificate-applications/certapp_1/approve-completion", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost" },
+      body: JSON.stringify({ completionDate: "2026-08-18" }),
+    });
+    const attention = await app.request("/api/staff/certificate-applications/certapp_1/needs-attention", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost" },
+      body: JSON.stringify({ note: "Confirm details" }),
+    });
+
+    expect(list.status).toBe(200);
+    expect(approve.status).toBe(200);
+    expect(attention.status).toBe(200);
   });
 
   it("returns privacy-safe public verification responses", async () => {

@@ -3,10 +3,18 @@ import type { Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { ORG_ID } from "../lib/auth-store";
 import { createOpaqueId, hmacHex } from "../lib/crypto";
-import { getClientIp } from "../lib/http";
+import { getClientIp, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { getSessionFromRequest, hasSessionCookie, clearSessionCookie, sessionView } from "../lib/auth-store";
 import { requireStaffRoles, type StaffContext } from "../lib/staff-auth";
+import {
+  approveCourseCompletionFromApplication,
+  getStaffCertificateApplication,
+  listStaffCertificateApplications,
+  listStudentCertificateApplications,
+  markCertificateApplicationNeedsAttention,
+  submitCertificateApplication,
+} from "../lib/certificate-application-service";
 import {
   buildVerificationUrl,
   getCertificatePdf,
@@ -23,6 +31,7 @@ type PortalHono = Hono<{
 }>;
 
 const CERTIFICATE_STAFF_ROLES = ["owner", "system_admin", "admin", "counsellor", "admission_admin"] as const;
+const CERTIFICATE_APPLICATION_REVIEW_ROLES = ["owner", "system_admin", "admin", "admission_admin"] as const;
 const CERTIFICATE_OWNER_ROLES = ["owner"] as const;
 const PUBLIC_VERIFY_LIMIT = { count: 120, windowSeconds: 60 };
 
@@ -33,6 +42,25 @@ const issueSchema = z.object({
 
 const revokeSchema = z.object({
   reason: z.string().trim().min(5).max(500),
+});
+
+const applicationSubmitSchema = z.object({
+  enrolmentId: z.string().min(1),
+  studentCompletionConfirmed: z.boolean(),
+  certificateDetailsConfirmed: z.boolean(),
+  feedbackTrainerClarityScore: z.number().int().min(1).max(5),
+  feedbackPracticalLearningScore: z.number().int().min(1).max(5),
+  feedbackCourseExpectationScore: z.number().int().min(1).max(5),
+  feedbackOverallScore: z.number().int().min(1).max(5),
+  feedbackImprovementText: z.string().max(1000).nullable().optional(),
+});
+
+const approveApplicationSchema = z.object({
+  completionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+});
+
+const needsAttentionSchema = z.object({
+  note: z.string().trim().max(500).nullable().optional(),
 });
 
 export function registerCertificateRoutes(app: PortalHono) {
@@ -48,7 +76,47 @@ export function registerCertificateRoutes(app: PortalHono) {
     return jsonPlain(c, await listCertificates(c, { ...listQuery(c), status: statusQuery(c) }));
   });
 
+  app.get("/api/staff/certificate-applications", async (c) => {
+    const staff = await requireCertificateApplicationReviewer(c);
+    if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Course completion approval access is required." });
+    return jsonPlain(c, await listStaffCertificateApplications(c, staff, { ...listQuery(c), status: applicationStatusQuery(c) }));
+  });
+
+  app.get("/api/staff/certificate-applications/:applicationId", async (c) => {
+    const staff = await requireCertificateApplicationReviewer(c);
+    if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Course completion approval access is required." });
+    const application = await getStaffCertificateApplication(c, staff, c.req.param("applicationId"));
+    if (!application) return jsonError(c, { status: 404, code: "application_not_found", message: "Certificate application was not found." });
+    return jsonPlain(c, { application });
+  });
+
+  app.post("/api/staff/certificate-applications/:applicationId/needs-attention", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
+    const staff = await requireCertificateApplicationReviewer(c);
+    if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Course completion approval access is required." });
+    const parsed = needsAttentionSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_request", message: "Please check the review note." });
+    const result = await markCertificateApplicationNeedsAttention(c, staff, c.req.param("applicationId"), parsed.data.note?.trim() || null);
+    if (!result.ok) return jsonError(c, { status: httpStatus(result.status), code: result.code, message: result.message });
+    return jsonPlain(c, { success: true });
+  });
+
+  app.post("/api/staff/certificate-applications/:applicationId/approve-completion", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
+    const staff = await requireCertificateApplicationReviewer(c);
+    if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Course completion approval access is required." });
+    const parsed = approveApplicationSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_request", message: "Completion date is required." });
+    const result = await approveCourseCompletionFromApplication(c, staff, c.req.param("applicationId"), parsed.data.completionDate);
+    if (!result.ok) return jsonError(c, { status: httpStatus(result.status), code: result.code, message: result.message });
+    return jsonPlain(c, { success: true, idempotent: Boolean(result.idempotent) });
+  });
+
   app.post("/api/staff/certificates/issue", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
     const staff = await requireCertificateStaff(c);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Staff access is required." });
     const parsed = issueSchema.safeParse(await c.req.json().catch(() => null));
@@ -59,6 +127,8 @@ export function registerCertificateRoutes(app: PortalHono) {
   });
 
   app.post("/api/staff/certificates/:certificateId/revoke", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
     const staff = await requireStaffRoles(c, CERTIFICATE_OWNER_ROLES);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Owner access is required." });
     const parsed = revokeSchema.safeParse(await c.req.json().catch(() => null));
@@ -79,7 +149,33 @@ export function registerCertificateRoutes(app: PortalHono) {
   app.get("/api/student/certificates", async (c) => {
     const profile = await authenticatedStudentProfile(c);
     if (profile instanceof Response) return profile;
-    return jsonPlain(c, await listCertificates(c, { personId: profile.personId, limit: clamp(c.req.query("limit"), 25, 1, 50), offset: clamp(c.req.query("offset"), 0, 0, 5000) }));
+    const [certificates, applications] = await Promise.all([
+      listCertificates(c, { personId: profile.personId, limit: clamp(c.req.query("limit"), 25, 1, 50), offset: clamp(c.req.query("offset"), 0, 0, 5000) }),
+      listStudentCertificateApplications(c, profile.personId),
+    ]);
+    return jsonPlain(c, {
+      certificates,
+      applications,
+    });
+  });
+
+  app.post("/api/student/certificate-applications", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
+    const profile = await authenticatedStudentProfile(c);
+    if (profile instanceof Response) return profile;
+    const parsed = applicationSubmitSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_request", message: "Please complete the certificate application." });
+    const result = await submitCertificateApplication(c, profile.personId, parsed.data);
+    if (!result.ok) {
+      return jsonError(c, {
+        status: httpStatus(result.status),
+        code: result.code,
+        message: result.message,
+        details: "reasons" in result ? { reasons: result.reasons } : undefined,
+      });
+    }
+    return jsonPlain(c, { success: true, application: result.application, idempotent: result.idempotent }, { status: result.status === 201 ? 201 : 200 });
   });
 
   app.get("/api/student/certificates/:certificateId/pdf", async (c) => {
@@ -113,6 +209,10 @@ export function registerCertificateRoutes(app: PortalHono) {
 
 async function requireCertificateStaff(c: Parameters<typeof requireStaffRoles>[0]): Promise<StaffContext | null> {
   return requireStaffRoles(c, CERTIFICATE_STAFF_ROLES);
+}
+
+async function requireCertificateApplicationReviewer(c: Parameters<typeof requireStaffRoles>[0]): Promise<StaffContext | null> {
+  return requireStaffRoles(c, CERTIFICATE_APPLICATION_REVIEW_ROLES);
 }
 
 async function authenticatedStudentProfile(c: Parameters<typeof getSessionFromRequest>[0]) {
@@ -151,6 +251,11 @@ function listQuery(c: Parameters<typeof getSessionFromRequest>[0]) {
 function statusQuery(c: Parameters<typeof getSessionFromRequest>[0]) {
   const status = c.req.query("status");
   return status === "issued" || status === "revoked" || status === "superseded" ? status : undefined;
+}
+
+function applicationStatusQuery(c: Parameters<typeof getSessionFromRequest>[0]) {
+  const status = c.req.query("status");
+  return status === "submitted" || status === "approved" || status === "needs_attention" || status === "certificate_issued" || status === "cancelled" ? status : undefined;
 }
 
 function clamp(value: string | undefined, fallback: number, min: number, max: number) {
