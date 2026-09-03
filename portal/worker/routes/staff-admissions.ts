@@ -22,7 +22,7 @@ import { mapStatusToPipelineStage } from "../lib/enquiry-crm";
 import { isResponse, readJsonBody, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
-import { changeStudentPrimaryMobile, getStudentContactHistory, getStudentContactVersion } from "../lib/owner-student-maintenance";
+import { changeStudentFullName, changeStudentPrimaryMobile, getStudentBasicDetailsVersion, getStudentContactHistory, getStudentContactVersion } from "../lib/owner-student-maintenance";
 import { addMobileIfMissing } from "../lib/person-contact";
 import { getRecoverableReferralLink, rotateReferralLink, type ReferralServiceEnv } from "../lib/referral-service";
 import { requireReferralTokenPepper } from "../lib/referral-token";
@@ -83,6 +83,10 @@ const studentMobileChangeSchema = z.object({
   confirmSharedMobile: z.boolean().default(false),
   reason: z.string().trim().max(160).optional(),
   expectedContactVersion: z.string().trim().min(16).max(256),
+});
+const studentBasicDetailsChangeSchema = z.object({
+  fullName: z.string().min(1).max(160),
+  expectedBasicDetailsVersion: z.string().trim().min(16).max(256),
 });
 const studentDirectoryQuerySchema = z.object({
   status: z.enum(["all", "current", "alumni"]).default("all"),
@@ -341,6 +345,24 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
         code: result.code,
         message: result.message,
         ...(result.sharedMobileMatches ? { details: { sharedMobileMatches: result.sharedMobileMatches } } : {}),
+      });
+    }
+    return jsonPlain(c, { success: true, ...result });
+  });
+
+  app.patch("/api/staff/students/:studentId/basic-details", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
+    const staff = await requireStaffRoles(c, ["owner"]);
+    if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Only owner accounts can edit student basic details." });
+    const body = await readJsonBody(c, studentBasicDetailsChangeSchema);
+    if (isResponse(body)) return body;
+    const result = await changeStudentFullName(c, staff, c.req.param("studentId"), body);
+    if (!result.ok) {
+      return jsonError(c, {
+        status: result.status as 400,
+        code: result.code,
+        message: result.message,
       });
     }
     return jsonPlain(c, { success: true, ...result });
@@ -609,9 +631,12 @@ function formatIndianMobileDisplay(mobile: string) {
 
 async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], staff: StaffContext, studentId: string) {
   const student = await c.env.DB.prepare(
-    `select students.*, people.full_name, people.date_of_birth
+    `select students.*,
+            coalesce(person_identity_details.official_full_name, people.full_name, people.public_name) as full_name,
+            coalesce(person_identity_details.date_of_birth, people.date_of_birth) as date_of_birth
      from students
      join people on people.id = students.person_id
+     left join person_identity_details on person_identity_details.person_id = people.id
      where students.id = ? and students.organisation_id = ? and people.organisation_id = ? and people.status != 'archived'`,
   )
     .bind(studentId, ORG_ID, ORG_ID)
@@ -657,8 +682,10 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], sta
     primaryMobile: null,
     mobileDisplay: primaryMobile ? maskMobile(primaryMobile) : null,
     canMaintainContact,
+    canMaintainBasicDetails: canMaintainContact,
     canReplaceReferralLink: canMaintainContact,
     referralLink,
+    basicDetailsVersion: canMaintainContact ? await getStudentBasicDetailsVersion(c, studentId) : null,
     contactVersion: canMaintainContact ? await getStudentContactVersion(c, String(student.person_id)) : null,
     contactHistory: canMaintainContact ? await getStudentContactHistory(c, String(student.person_id)) : [],
     locality: localities.results?.[0] || null,

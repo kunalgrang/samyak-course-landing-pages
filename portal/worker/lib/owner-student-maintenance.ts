@@ -13,6 +13,14 @@ type StudentRecord = {
   person_status: string;
 };
 
+type StudentNameRecord = StudentRecord & {
+  people_full_name: string;
+  people_public_name: string | null;
+  people_updated_at: string;
+  official_full_name: string | null;
+  identity_updated_at: string | null;
+};
+
 type ContactRecord = {
   id: string;
   normalized_value: string;
@@ -53,6 +61,111 @@ export type SharedMobileMatch = {
   studentNumber: string | null;
   status: string | null;
 };
+
+export type NameChangeResult =
+  | {
+      ok: true;
+      studentId: string;
+      studentNumber: string;
+      personId: string;
+      fullName: string;
+      idempotent: boolean;
+    }
+  | { ok: false; status: number; code: string; message: string };
+
+export async function changeStudentFullName(
+  c: AppContext,
+  staff: StaffContext,
+  studentId: string,
+  input: { fullName: string; expectedBasicDetailsVersion: string },
+): Promise<NameChangeResult> {
+  const student = await getStudentNameForMaintenance(c, studentId);
+  if (!student) return { ok: false, status: 404, code: "student_not_found", message: "Student was not found." };
+  if (student.person_status === "archived") return { ok: false, status: 404, code: "student_not_found", message: "Student was not found." };
+  if (!(await hasOwnerMaintenanceAccessForBranch(c, staff, student.branch_id))) {
+    return { ok: false, status: 403, code: "forbidden", message: "Only owner accounts can edit student basic details." };
+  }
+
+  const fullName = normalizeStudentFullName(input.fullName);
+  if (!fullName.ok) return fullName;
+
+  const currentVersion = await studentBasicDetailsVersionForRecord(c, student);
+  if (input.expectedBasicDetailsVersion !== currentVersion) {
+    return { ok: false, status: 409, code: "stale_student", message: "Student details changed. Refresh the profile and try again." };
+  }
+
+  const currentName = student.official_full_name || student.people_full_name || student.people_public_name || "";
+  if (currentName === fullName.value && student.people_full_name === fullName.value && (student.people_public_name || fullName.value) === fullName.value) {
+    return {
+      ok: true,
+      studentId: student.student_id,
+      studentNumber: student.student_number,
+      personId: student.person_id,
+      fullName: fullName.value,
+      idempotent: true,
+    };
+  }
+
+  const now = new Date().toISOString();
+  const statements: D1PreparedStatement[] = [];
+  if (student.identity_updated_at) {
+    statements.push(
+      c.env.DB.prepare(
+        `update person_identity_details
+         set official_full_name = ?, updated_at = ?
+         where person_id = ? and official_full_name = ? and updated_at = ?`,
+      ).bind(fullName.value, now, student.person_id, student.official_full_name, student.identity_updated_at),
+    );
+  }
+  const peopleStatementIndex = statements.length;
+  statements.push(
+    c.env.DB.prepare(
+      `update people
+       set full_name = ?, public_name = ?, updated_at = ?
+       where id = ? and organisation_id = ? and full_name = ? and coalesce(public_name, '') = coalesce(?, '') and updated_at = ?`,
+    ).bind(fullName.value, fullName.value, now, student.person_id, ORG_ID, student.people_full_name, student.people_public_name, student.people_updated_at),
+  );
+  statements.push(
+    c.env.DB.prepare(
+      `insert into audit_logs
+         (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
+       values (?, ?, ?, ?, ?, 'student_name_changed', 'student', ?, ?, ?)`,
+    ).bind(
+      createOpaqueId("audit"),
+      ORG_ID,
+      student.branch_id,
+      staff.loginAccountId,
+      staff.activePersonId,
+      student.student_id,
+      JSON.stringify({
+        studentId: student.student_id,
+        studentNumber: student.student_number,
+        personId: student.person_id,
+        changedFields: ["fullName"],
+        oldNameFingerprint: await hmacHex(c.env.SESSION_PEPPER, "student-name-audit", currentName),
+        newNameFingerprint: await hmacHex(c.env.SESSION_PEPPER, "student-name-audit", fullName.value),
+      }),
+      now,
+    ),
+  );
+
+  const results = await c.env.DB.batch(statements);
+  if (student.identity_updated_at && !changed(results[0] as D1RunResult)) {
+    return { ok: false, status: 409, code: "stale_student", message: "Student details changed. Refresh the profile and try again." };
+  }
+  if (!changed(results[peopleStatementIndex] as D1RunResult)) {
+    return { ok: false, status: 409, code: "stale_student", message: "Student details changed. Refresh the profile and try again." };
+  }
+
+  return {
+    ok: true,
+    studentId: student.student_id,
+    studentNumber: student.student_number,
+    personId: student.person_id,
+    fullName: fullName.value,
+    idempotent: false,
+  };
+}
 
 export async function changeStudentPrimaryMobile(
   c: AppContext,
@@ -234,6 +347,11 @@ export async function getStudentContactVersion(c: AppContext, personId: string) 
   return contactVersion(c, personId, await getCurrentPrimaryMobileContact(c, personId));
 }
 
+export async function getStudentBasicDetailsVersion(c: AppContext, studentId: string) {
+  const student = await getStudentNameForMaintenance(c, studentId);
+  return student ? studentBasicDetailsVersionForRecord(c, student) : null;
+}
+
 export async function getStudentContactHistory(c: AppContext, personId: string) {
   const rows = await c.env.DB.prepare(
     `select person_contacts.last_four, person_contacts.is_primary,
@@ -273,6 +391,27 @@ async function getStudentForMaintenance(c: AppContext, studentId: string) {
   )
     .bind(studentId, ORG_ID)
     .first<StudentRecord>();
+}
+
+async function getStudentNameForMaintenance(c: AppContext, studentId: string) {
+  return c.env.DB.prepare(
+    `select students.id as student_id, students.student_number, students.person_id,
+            students.home_branch_id as branch_id, students.current_status,
+            people.status as person_status,
+            people.full_name as people_full_name,
+            people.public_name as people_public_name,
+            people.updated_at as people_updated_at,
+            person_identity_details.official_full_name,
+            person_identity_details.updated_at as identity_updated_at
+     from students
+     join people on people.id = students.person_id
+       and people.organisation_id = students.organisation_id
+     left join person_identity_details on person_identity_details.person_id = people.id
+     where students.id = ?
+       and students.organisation_id = ?`,
+  )
+    .bind(studentId, ORG_ID)
+    .first<StudentNameRecord>();
 }
 
 async function getCurrentPrimaryMobileContact(c: AppContext, personId: string) {
@@ -382,6 +521,27 @@ async function contactVersion(c: AppContext, personId: string, contact: ContactR
     ? `${personId}:${contact.id}:${contact.normalized_value}:${contact.is_primary}:${contact.status || ""}:${contact.valid_until || ""}:${contact.updated_at}`
     : `${personId}:no-active-primary`;
   return hmacHex(c.env.SESSION_PEPPER, "student-contact-version", value);
+}
+
+async function studentBasicDetailsVersionForRecord(c: AppContext, student: StudentNameRecord) {
+  const value = [
+    student.student_id,
+    student.person_id,
+    student.people_full_name,
+    student.people_public_name || "",
+    student.people_updated_at,
+    student.official_full_name || "",
+    student.identity_updated_at || "",
+  ].join(":");
+  return hmacHex(c.env.SESSION_PEPPER, "student-basic-details-version", value);
+}
+
+function normalizeStudentFullName(value: string): { ok: true; value: string } | { ok: false; status: number; code: string; message: string } {
+  const fullName = value.trim().replace(/\s+/g, " ");
+  if (fullName.length < 2) return { ok: false, status: 400, code: "invalid_name", message: "Enter the student's full name." };
+  if (fullName.length > 120) return { ok: false, status: 400, code: "invalid_name", message: "Student name is too long." };
+  if (/[\u0000-\u001F\u007F]/.test(fullName)) return { ok: false, status: 400, code: "invalid_name", message: "Student name contains unsupported characters." };
+  return { ok: true, value: fullName };
 }
 
 function changed(result: D1RunResult | null | undefined) {

@@ -11,6 +11,7 @@ import {
   createBatch,
   getBatchDetail,
   listAdmissionEligibleBatches,
+  listEligibleEnrolments,
   normalizeDaysOfWeek,
   removeBatchMembership,
   transferBatchMembership,
@@ -119,6 +120,21 @@ describe("Batch Management V1 service", () => {
     const detail = await getBatchDetail(c, staff, created.batchId);
     expect(detail.ok && detail.batch.courses.map((course) => course.id)).toEqual(["course_fsd", "course_dm_ai", "course_dm_wp"]);
     expect(detail.ok && detail.roster.map((row) => row.course_name).sort()).toEqual(["Digital Marketing with AI", "Full Stack"]);
+  });
+
+  it("uses canonical Person identity names in live roster and eligible-enrolment lists", async () => {
+    const { c, staff } = setup();
+    await seedBatch(c, "batch_one", "branch_sion", "course_fsd");
+    await seedBatch(c, "batch_two", "branch_sion", "course_fsd");
+    c.env.DB.database.prepare("update person_identity_details set official_full_name = 'Corrected Current Name' where person_id = 'person_student'").run();
+    c.env.DB.database.prepare("update person_identity_details set official_full_name = 'Eligible Corrected Name' where person_id = 'person_second_student'").run();
+
+    await expect(assignEnrolmentToBatch(c, staff, "batch_one", "enrol_one")).resolves.toMatchObject({ ok: true });
+    const detail = await getBatchDetail(c, staff, "batch_one");
+    const eligible = await listEligibleEnrolments(c, staff, "batch_two", "Eligible Corrected");
+
+    expect(detail.ok && detail.roster[0]).toMatchObject({ student_name: "Corrected Current Name" });
+    expect(eligible.ok && eligible.enrolments[0]).toMatchObject({ student_name: "Eligible Corrected Name" });
   });
 
   it("uses batch course mappings for admission options and transfer targets", async () => {
@@ -371,6 +387,8 @@ function installSchema(db: DatabaseSync) {
     create table organisations (id text primary key, name text, slug text, status text, created_at text, updated_at text);
     create table branches (id text primary key, organisation_id text, name text, code text, timezone text, status text, created_at text, updated_at text);
     create table people (id text primary key, organisation_id text, home_branch_id text, full_name text, public_name text, date_of_birth text, status text, created_at text, updated_at text);
+    create table person_identity_details (person_id text primary key, official_full_name text, date_of_birth text, created_at text, updated_at text);
+    create table person_contacts (id text primary key, person_id text, contact_type text, normalized_value text, display_value text, last_four text, is_primary integer);
     create table roles (id text primary key, organisation_id text, code text, name text, created_at text);
     create table login_accounts (id text primary key, organisation_id text, mobile_normalized text, mobile_last_four text, login_enabled integer, status text, created_at text, updated_at text);
     create table login_account_roles (login_account_id text, role_id text, branch_id text, created_at text);
@@ -407,6 +425,9 @@ function seedBase(db: DatabaseSync) {
   db.prepare("insert into people values ('person_student', 'org_samyak', 'branch_sion', 'Asha Student', 'Asha', null, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into people values ('person_second_student', 'org_samyak', 'branch_sion', 'Second Student', 'Second', null, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into people values ('person_other_student', 'org_samyak', 'branch_dadar', 'Dadar Student', 'Dadar Student', null, 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into person_identity_details values ('person_student', 'Asha Student', '2000-01-01', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into person_identity_details values ('person_second_student', 'Second Student', '2000-01-01', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into person_identity_details values ('person_other_student', 'Dadar Student', '2000-01-01', ?, ?)").run(NOW, NOW);
   db.prepare("insert into login_accounts values ('acct_admin', 'org_samyak', '+919876543210', '3210', 1, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into login_account_roles values ('acct_admin', 'role_admin', 'branch_sion', ?)").run(NOW);
   db.prepare("insert into person_roles values ('person_trainer', 'role_trainer', 'branch_sion', 'branch_sion', ?)").run(NOW);

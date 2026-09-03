@@ -514,6 +514,7 @@ const studentProfileSchema = z.object({
   primaryMobile: z.string().nullable(),
   mobileDisplay: z.string().nullable(),
   canMaintainContact: z.boolean().default(false),
+  canMaintainBasicDetails: z.boolean().default(false),
   canReplaceReferralLink: z.boolean().default(false),
   referralLink: z.object({
     hasActiveLink: z.boolean(),
@@ -523,6 +524,7 @@ const studentProfileSchema = z.object({
     recoverable: z.boolean(),
     message: z.string(),
   }).nullable().default(null),
+  basicDetailsVersion: z.string().nullable().default(null),
   contactVersion: z.string().nullable().default(null),
   contactHistory: z.array(z.object({
     mobileDisplay: z.string(),
@@ -579,6 +581,15 @@ const studentMobileChangeResponseSchema = z.object({
   newLastFour: z.string(),
   sharedMobileMatches: z.array(sharedMobileMatchSchema),
   otpProfiles: z.number(),
+});
+
+const studentBasicDetailsChangeResponseSchema = z.object({
+  success: z.literal(true),
+  studentId: z.string(),
+  studentNumber: z.string(),
+  personId: z.string(),
+  fullName: z.string(),
+  idempotent: z.boolean(),
 });
 
 const admissionConfigurationSchema = z.object({
@@ -1234,6 +1245,10 @@ export async function getStaffStudents(params: StaffStudentDirectoryQuery = {}) 
 
 export async function changeStaffStudentPrimaryMobile(studentId: string, input: { newMobile: string; confirmSharedMobile?: boolean; reason?: string; expectedContactVersion: string }) {
   return patchJson(`/api/staff/students/${encodeURIComponent(studentId)}/contact/mobile`, input, studentMobileChangeResponseSchema);
+}
+
+export async function changeStaffStudentBasicDetails(studentId: string, input: { fullName: string; expectedBasicDetailsVersion: string }) {
+  return patchJson(`/api/staff/students/${encodeURIComponent(studentId)}/basic-details`, input, studentBasicDetailsChangeResponseSchema);
 }
 
 export async function replaceStaffStudentReferralLink(studentId: string) {
