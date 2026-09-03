@@ -9,6 +9,7 @@ import {
   certificatePdfStorageFromEnv,
   type CertificatePdfStorage,
 } from "./certificate-storage";
+import { markApplicationCertificateIssued } from "./certificate-application-service";
 
 export const CERTIFICATE_TEMPLATE_CODE = "SAMYAK_COMPLETION_V1";
 export const CERTIFICATE_VERIFICATION_ORIGIN = "https://go.samyaksion.com";
@@ -277,6 +278,7 @@ export async function issueCertificate(c: AppContext, staff: StaffContext, enrol
     if (storage && certificate.pdf_storage_key) await storage.delete(certificate.pdf_storage_key).catch(() => undefined);
     throw error;
   }
+  await markApplicationCertificateIssued(c, staff, certificate).catch(() => undefined);
   return { ok: true as const, certificate, idempotent: false };
 }
 

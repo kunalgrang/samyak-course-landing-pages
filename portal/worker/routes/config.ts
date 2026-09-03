@@ -14,6 +14,7 @@ export function registerConfigRoutes(app: PortalHono) {
     return jsonPlain(c, {
       turnstileSiteKey: c.env.TURNSTILE_SITE_KEY || "",
       otpEnabled: hasMsg91Config(c.env) || canUseDevelopmentOtp(c.env, hostname),
+      googleReviewUrl: c.env.GOOGLE_REVIEW_URL || "",
     });
   });
 }

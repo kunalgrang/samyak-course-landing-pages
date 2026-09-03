@@ -12,6 +12,11 @@ import {
   revokeCertificate,
   verifyCertificate,
 } from "./certificate-service";
+import {
+  approveCourseCompletionFromApplication,
+  listStudentCertificateApplications,
+  submitCertificateApplication,
+} from "./certificate-application-service";
 import { createMemoryCertificatePdfStorage, type CertificatePdfStorage } from "./certificate-storage";
 
 type SqlValue = SQLInputValue;
@@ -158,6 +163,90 @@ describe("certificate service synthetic issuance flow", () => {
   });
 });
 
+describe("certificate application workflow", () => {
+  it("lets an active student apply once and leaves enrolment active", async () => {
+    const { c, db } = testContext();
+
+    const before = await listStudentCertificateApplications(c, "person_active");
+    expect(before.items[0]).toMatchObject({
+      enrolment: { enrolment_id: "enrolment_active", student_name: "Synthetic Active Student" },
+      applicationEligibility: { eligible: true, reasons: [] },
+    });
+
+    const submitted = await submitCertificateApplication(c, "person_active", applicationInput({ feedbackOverallScore: 5 }));
+    const duplicate = await submitCertificateApplication(c, "person_active", applicationInput({ feedbackOverallScore: 1 }));
+
+    expect(submitted).toMatchObject({ ok: true, status: 201, idempotent: false, application: { status: "submitted", low_feedback_flag: false } });
+    expect(duplicate).toMatchObject({ ok: true, status: 200, idempotent: true, application: { status: "submitted", low_feedback_flag: false } });
+    expect(row(db, "select status from enrolments where id = 'enrolment_active'")).toMatchObject({ status: "active" });
+    expect(count(db, "certificate_applications where enrolment_id = 'enrolment_active'")).toBe(1);
+    db.close();
+  });
+
+  it("rejects cross-person, archived, incomplete confirmation, invalid score, and long comment submissions", async () => {
+    const { c, db } = testContext();
+    db.prepare("update students set current_status = 'archived', updated_at = ? where id = 'student_on_hold'").run(now());
+
+    await expect(submitCertificateApplication(c, "person_active", { ...applicationInput(), enrolmentId: "enrolment_on_hold" })).resolves.toMatchObject({ ok: false, status: 404 });
+    await expect(submitCertificateApplication(c, "person_on_hold", { ...applicationInput(), enrolmentId: "enrolment_on_hold" })).resolves.toMatchObject({ ok: false, status: 409, reasons: expect.arrayContaining(["student_archived"]) });
+    await expect(submitCertificateApplication(c, "person_active", applicationInput({ studentCompletionConfirmed: false }))).resolves.toMatchObject({ ok: false, status: 400, code: "confirmations_required" });
+    await expect(submitCertificateApplication(c, "person_active", applicationInput({ feedbackOverallScore: 6 }))).resolves.toMatchObject({ ok: false, status: 400, code: "invalid_feedback" });
+    await expect(submitCertificateApplication(c, "person_active", applicationInput({ feedbackImprovementText: "x".repeat(1001) }))).resolves.toMatchObject({ ok: false, status: 400, code: "comment_too_long" });
+    db.close();
+  });
+
+  it("flags low feedback without rejecting or affecting Google-review-neutral eligibility", async () => {
+    const { c, db } = testContext();
+
+    const submitted = await submitCertificateApplication(c, "person_active", applicationInput({
+      feedbackTrainerClarityScore: 2,
+      feedbackPracticalLearningScore: 3,
+      feedbackCourseExpectationScore: 2,
+      feedbackOverallScore: 3,
+      feedbackImprovementText: "More practice time",
+    }));
+
+    expect(submitted).toMatchObject({ ok: true, application: { low_feedback_flag: true } });
+    expect(row(db, "select feedback_improvement_text, low_feedback_flag from certificate_applications where enrolment_id = 'enrolment_active'")).toMatchObject({
+      feedback_improvement_text: "More practice time",
+      low_feedback_flag: 1,
+    });
+    db.close();
+  });
+
+  it("approves course completion from application and then existing eligibility becomes true", async () => {
+    const { c, db, staff } = testContext();
+    const submitted = await submitCertificateApplication(c, "person_active", applicationInput());
+    if (!submitted.ok) throw new Error("expected application submission");
+
+    const approved = await approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-18");
+    const eligibility = await certificateEligibility(c, "enrolment_active");
+
+    expect(approved).toMatchObject({ ok: true, idempotent: false });
+    expect(row(db, "select status, actual_completion_date from enrolments where id = 'enrolment_active'")).toMatchObject({ status: "completed", actual_completion_date: "2026-08-18" });
+    expect(row(db, "select status, completion_date from certificate_applications where id = ?", submitted.application.id)).toMatchObject({ status: "approved", completion_date: "2026-08-18" });
+    expect(eligibility).toMatchObject({ eligible: true, reasons: [] });
+    db.close();
+  });
+
+  it("updates approved applications after certificate issuance while legacy completed enrolments still issue", async () => {
+    const { c, db, staff } = testContext();
+    const storage = createMemoryCertificatePdfStorage(new Map<string, Uint8Array>());
+    const submitted = await submitCertificateApplication(c, "person_active", applicationInput());
+    if (!submitted.ok) throw new Error("expected application submission");
+    await approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-18");
+
+    const issuedFromApplication = await issueCertificate(c, staff, "enrolment_active", "2026-08-19", { storage });
+    const legacy = await issueCertificate(c, staff, "enrolment_completed", "2026-08-19", { storage });
+
+    expect(issuedFromApplication.ok).toBe(true);
+    expect(row(db, "select status from certificate_applications where id = ?", submitted.application.id)).toMatchObject({ status: "certificate_issued" });
+    expect(legacy.ok).toBe(true);
+    expect(count(db, "certificate_applications where enrolment_id = 'enrolment_completed'")).toBe(0);
+    db.close();
+  });
+});
+
 function testContext() {
   const db = migratedSeededDb();
   seedStaff(db);
@@ -179,6 +268,8 @@ function seedStaff(db: DatabaseSync) {
   db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values ('person_staff', 'org_samyak', 'branch_sion', 'Synthetic Staff', 'Synthetic Staff', 'active', ?, ?)").run(now(), now());
   db.prepare("insert into login_accounts (id, organisation_id, mobile_normalized, mobile_last_four, login_enabled, status, created_at, updated_at) values ('login_staff', 'org_samyak', '+919876543210', '3210', 1, 'active', ?, ?)").run(now(), now());
   db.prepare("insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at) values ('login_staff', 'person_staff', 'staff', 1, 1, ?)").run(now());
+  db.prepare("insert or ignore into roles (id, organisation_id, code, name, created_at) values ('role_owner', 'org_samyak', 'owner', 'Owner', ?)").run(now());
+  db.prepare("insert or ignore into login_account_roles (login_account_id, role_id, branch_id, created_at) values ('login_staff', 'role_owner', null, ?)").run(now());
 }
 
 function seedCertificateStudents(db: DatabaseSync) {
@@ -187,6 +278,20 @@ function seedCertificateStudents(db: DatabaseSync) {
   seedCertificateStudent(db, "on_hold", "on_hold", null);
   seedCertificateStudent(db, "completed_null_date", "completed", null);
   seedCertificateStudent(db, "storage_failure", "completed", "2026-08-12");
+}
+
+function applicationInput(overrides: Partial<Parameters<typeof submitCertificateApplication>[2]> = {}) {
+  return {
+    enrolmentId: "enrolment_active",
+    studentCompletionConfirmed: true,
+    certificateDetailsConfirmed: true,
+    feedbackTrainerClarityScore: 5,
+    feedbackPracticalLearningScore: 5,
+    feedbackCourseExpectationScore: 5,
+    feedbackOverallScore: 5,
+    feedbackImprovementText: null,
+    ...overrides,
+  };
 }
 
 function seedCertificateStudent(db: DatabaseSync, suffix: string, enrolmentStatus: string, actualCompletionDate: string | null) {

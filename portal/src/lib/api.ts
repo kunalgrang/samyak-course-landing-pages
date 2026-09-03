@@ -42,6 +42,7 @@ export type SessionResponse = z.infer<typeof sessionSchema>;
 const publicConfigSchema = z.object({
   turnstileSiteKey: z.string(),
   otpEnabled: z.boolean(),
+  googleReviewUrl: z.string().default(""),
 });
 
 export type PublicConfig = z.infer<typeof publicConfigSchema>;
@@ -926,6 +927,119 @@ const issueCertificateSchema = z.object({
   }).passthrough(),
 });
 
+const certificateApplicationStatusSchema = z.union([
+  z.literal("submitted"),
+  z.literal("approved"),
+  z.literal("needs_attention"),
+  z.literal("certificate_issued"),
+  z.literal("cancelled"),
+]);
+
+const studentCertificateApplicationItemSchema = z.object({
+  enrolment: z.object({
+    enrolment_id: z.string(),
+    enrolment_number: z.string(),
+    student_name: z.string(),
+    student_number: z.string(),
+    student_status: z.string(),
+    course_id: z.string(),
+    course_code: z.string(),
+    course_name: z.string(),
+    course_status: z.string(),
+    duration_label: z.string().nullable(),
+    joining_date: z.string(),
+    actual_completion_date: z.string().nullable(),
+    status: z.string(),
+    batch_id: z.string().nullable(),
+    batch_name: z.string().nullable(),
+  }),
+  certificate: z.object({
+    id: z.string(),
+    certificate_number: z.string().nullable(),
+    verification_code: z.string().nullable(),
+  }).nullable(),
+  application: z.object({
+    id: z.string(),
+    status: certificateApplicationStatusSchema.nullable(),
+    applied_at: z.string().nullable(),
+    low_feedback_flag: z.boolean(),
+  }).nullable(),
+  applicationEligibility: z.object({
+    eligible: z.boolean(),
+    reasons: z.array(z.string()),
+  }),
+});
+
+const studentCertificateApplicationListSchema = z.object({
+  items: z.array(studentCertificateApplicationItemSchema),
+});
+
+const studentCertificatePageSchema = z.object({
+  certificates: certificateListSchema,
+  applications: studentCertificateApplicationListSchema,
+});
+
+const submitCertificateApplicationSchema = z.object({
+  success: z.literal(true),
+  idempotent: z.boolean(),
+  application: z.object({
+    id: z.string(),
+    status: certificateApplicationStatusSchema,
+    applied_at: z.string(),
+    low_feedback_flag: z.boolean(),
+  }),
+});
+
+const staffCertificateApplicationListItemSchema = z.object({
+  id: z.string(),
+  status: certificateApplicationStatusSchema,
+  applied_at: z.string(),
+  low_feedback_flag: z.union([z.number(), z.boolean()]),
+  feedback_overall_score: z.number(),
+  feedback_trainer_clarity_score: z.number(),
+  feedback_practical_learning_score: z.number(),
+  feedback_course_expectation_score: z.number(),
+  enrolment_id: z.string(),
+  course_id: z.string(),
+  student_name: z.string(),
+  student_number: z.string(),
+  course_name: z.string(),
+  enrolment_status: z.string(),
+  joining_date: z.string(),
+  actual_completion_date: z.string().nullable(),
+});
+
+const staffCertificateApplicationListSchema = z.object({
+  items: z.array(staffCertificateApplicationListItemSchema),
+  pagination: certificatePaginationSchema,
+});
+
+const staffCertificateApplicationDetailSchema = z.object({
+  application: staffCertificateApplicationListItemSchema.extend({
+    organisation_id: z.string(),
+    branch_id: z.string(),
+    person_id: z.string(),
+    student_id: z.string(),
+    student_completion_confirmed: z.union([z.number(), z.boolean()]),
+    certificate_details_confirmed: z.union([z.number(), z.boolean()]),
+    feedback_improvement_text: z.string().nullable(),
+    reviewed_at: z.string().nullable(),
+    reviewed_by_actor_id: z.string().nullable(),
+    completion_date: z.string().nullable(),
+    decision_note: z.string().nullable(),
+    created_at: z.string(),
+    updated_at: z.string(),
+    course_code: z.string(),
+    enrolment_number: z.string(),
+    batch_name: z.string().nullable(),
+  }).passthrough(),
+});
+
+const certificateApplicationMutationSchema = z.object({
+  success: z.literal(true),
+  idempotent: z.boolean().optional(),
+});
+
 const verifyCertificateSchema = z.object({
   success: z.literal(true),
   verification: z.object({
@@ -965,6 +1079,10 @@ export type FieldErrors = Record<string, string[]>;
 export type CertificateListItem = z.infer<typeof certificateListItemSchema>;
 export type EligibleCertificate = z.infer<typeof eligibleCertificateSchema>;
 export type CertificateListResponse = z.infer<typeof certificateListSchema>;
+export type StudentCertificateApplicationItem = z.infer<typeof studentCertificateApplicationItemSchema>;
+export type StudentCertificatePage = z.infer<typeof studentCertificatePageSchema>;
+export type StaffCertificateApplicationItem = z.infer<typeof staffCertificateApplicationListItemSchema>;
+export type StaffCertificateApplicationDetail = z.infer<typeof staffCertificateApplicationDetailSchema>["application"];
 export type PublicCertificateVerification = z.infer<typeof verifyCertificateSchema>["verification"];
 export type StaffReferralList = z.infer<typeof staffReferralListSchema>;
 export type StaffReferralListItem = z.infer<typeof staffReferralListItemSchema>;
@@ -1366,7 +1484,36 @@ export async function revokeStaffCertificate(certificateId: string, reason: stri
 }
 
 export async function getStudentCertificates(params: CertificateQuery = {}) {
-  return getJson(`/api/student/certificates${queryString(params)}`, certificateListSchema);
+  return getJson(`/api/student/certificates${queryString(params)}`, studentCertificatePageSchema);
+}
+
+export async function submitStudentCertificateApplication(input: {
+  enrolmentId: string;
+  studentCompletionConfirmed: boolean;
+  certificateDetailsConfirmed: boolean;
+  feedbackTrainerClarityScore: number;
+  feedbackPracticalLearningScore: number;
+  feedbackCourseExpectationScore: number;
+  feedbackOverallScore: number;
+  feedbackImprovementText?: string;
+}) {
+  return postJson("/api/student/certificate-applications", input, submitCertificateApplicationSchema);
+}
+
+export async function getStaffCertificateApplications(params: CertificateQuery = {}) {
+  return getJson(`/api/staff/certificate-applications${queryString(params)}`, staffCertificateApplicationListSchema);
+}
+
+export async function getStaffCertificateApplication(applicationId: string) {
+  return getJson(`/api/staff/certificate-applications/${encodeURIComponent(applicationId)}`, staffCertificateApplicationDetailSchema).then((response) => response.application);
+}
+
+export async function approveStaffCertificateApplication(applicationId: string, completionDate: string) {
+  return postJson(`/api/staff/certificate-applications/${encodeURIComponent(applicationId)}/approve-completion`, { completionDate }, certificateApplicationMutationSchema);
+}
+
+export async function markStaffCertificateApplicationNeedsAttention(applicationId: string, note?: string) {
+  return postJson(`/api/staff/certificate-applications/${encodeURIComponent(applicationId)}/needs-attention`, { note: note || null }, certificateApplicationMutationSchema);
 }
 
 export async function verifyPublicCertificate(code: string) {
