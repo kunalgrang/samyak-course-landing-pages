@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { lookupPortalProfilesByMobile, mobileHash, ORG_ID } from "./auth-store";
+import { fetchStudentHomeForActiveProfile, lookupPortalProfilesByMobile, mobileHash, ORG_ID } from "./auth-store";
 import { changeStudentFullName, changeStudentPrimaryMobile, getStudentBasicDetailsVersion, getStudentContactVersion } from "./owner-student-maintenance";
 import { hmacHex } from "./crypto";
 import { listStaffStudents } from "./student-directory";
@@ -75,6 +75,35 @@ describe("owner student maintenance", () => {
     expect(all(fixture.db, "select enrolment_number from enrolments where student_id = 'student_a' order by id").map((item) => item.enrolment_number)).toEqual(["ENR-SYK-SION-0001", "ENR-SYK-SION-0001-B"]);
   });
 
+  it("advances the basic-details version, keeps portal names current, and avoids same-name audit churn", async () => {
+    const fixture = await createFixture();
+    const beforeVersion = await getStudentBasicDetailsVersion(fixture.c, "student_a") || "";
+    const changed = await changeStudentFullName(fixture.c, ownerStaff(), "student_a", {
+      fullName: " A. K.   Sharma ",
+      expectedBasicDetailsVersion: beforeVersion,
+    });
+
+    expect(changed).toMatchObject({ ok: true, idempotent: false, fullName: "A. K. Sharma" });
+    await expect(getStudentBasicDetailsVersion(fixture.c, "student_a")).resolves.not.toBe(beforeVersion);
+    await expect(fetchStudentHomeForActiveProfile(fixture.c, "person_a")).resolves.toMatchObject({
+      identity: { fullName: "A. K. Sharma", publicName: "A. K. Sharma" },
+    });
+    expect((await lookupPortalProfilesByMobile(fixture.c, "9876543210")).profiles[0]).toMatchObject({
+      fullName: "A. K. Sharma",
+      publicName: "A. K. Sharma",
+    });
+
+    const afterVersion = await getStudentBasicDetailsVersion(fixture.c, "student_a") || "";
+    const same = await changeStudentFullName(fixture.c, ownerStaff(), "student_a", {
+      fullName: "A. K.   Sharma",
+      expectedBasicDetailsVersion: afterVersion,
+    });
+
+    expect(same).toMatchObject({ ok: true, idempotent: true, fullName: "A. K. Sharma" });
+    await expect(getStudentBasicDetailsVersion(fixture.c, "student_a")).resolves.toBe(afterVersion);
+    expect(row(fixture.db, "select count(*) as count from audit_logs where action = 'student_name_changed'")?.count).toBe(1);
+  });
+
   it("rejects non-owner, branch-inaccessible, archived, invalid, and stale name updates safely", async () => {
     const fixture = await createFixture({ withOtherBranch: true, withArchived: true });
     const version = await getStudentBasicDetailsVersion(fixture.c, "student_a") || "";
@@ -87,12 +116,15 @@ describe("owner student maintenance", () => {
       .resolves.toMatchObject({ ok: false, status: 404 });
     await expect(changeStudentFullName(fixture.c, ownerStaff(), "student_a", { fullName: "   ", expectedBasicDetailsVersion: version }))
       .resolves.toMatchObject({ ok: false, status: 400, code: "invalid_name" });
+    await expect(changeStudentFullName(fixture.c, ownerStaff(), "student_a", { fullName: "R".repeat(121), expectedBasicDetailsVersion: version }))
+      .resolves.toMatchObject({ ok: false, status: 400, code: "invalid_name" });
     await expect(changeStudentFullName(fixture.c, ownerStaff(), "student_a", { fullName: `Bad${String.fromCharCode(7)}Name`, expectedBasicDetailsVersion: version }))
       .resolves.toMatchObject({ ok: false, status: 400, code: "invalid_name" });
 
     await changeStudentFullName(fixture.c, ownerStaff(), "student_a", { fullName: "First Correction", expectedBasicDetailsVersion: version });
     await expect(changeStudentFullName(fixture.c, ownerStaff(), "student_a", { fullName: "Second Correction", expectedBasicDetailsVersion: version }))
       .resolves.toMatchObject({ ok: false, status: 409, code: "stale_student" });
+    expect(row(fixture.db, "select count(*) as count from audit_logs where action = 'student_name_changed'")?.count).toBe(1);
   });
 
   it("changes a student primary mobile without changing identity or history tables", async () => {
@@ -268,6 +300,7 @@ function installSchema(db: DatabaseSync) {
     create table referral_programmes (id text primary key, organisation_id text, code text, status text);
     create table referral_programme_referrer_types (referral_programme_id text, referrer_type text);
     create table referrer_profiles (id text primary key, organisation_id text, person_id text, external_referrer_id text, referral_token text, personal_link text, active integer, created_at text, updated_at text);
+    create table referral_links (id text primary key, organisation_id text, referral_programme_id text, referrer_profile_id text, token_hash text, token_last_four text, link_version integer, status text, activated_at text, expires_at text, revoked_at text, last_used_at text, created_at text, updated_at text);
     create table courses (id text primary key, organisation_id text, code text, name text, duration_label text);
     create table enrolments (id text primary key, student_id text, branch_id text, course_id text, enquiry_id text, enrolment_number text, training_mode text, batch_preference text, admission_date text, joining_date text, expected_completion_date text, actual_completion_date text, status text, nsdc_preference text, created_at text, updated_at text);
     create table fee_agreements (id text primary key, enrolment_id text, final_agreed_fee_paise integer, payment_plan_type text, status text);
