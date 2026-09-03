@@ -1198,6 +1198,31 @@
   color: #475569;
 }
 
+.status-pill--submitted,
+.status-pill--approved {
+  border: 1px solid rgba(37, 99, 235, 0.28);
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.status-pill--needs_attention {
+  border: 1px solid rgba(217, 119, 6, 0.36);
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.status-pill--certificate_issued {
+  border: 1px solid rgba(13, 148, 136, 0.36);
+  background: #ecfdf5;
+  color: #0f766e;
+}
+
+.status-pill--other {
+  border: 1px solid rgba(99, 112, 131, 0.32);
+  background: #f8fafc;
+  color: #475569;
+}
+
 .certificate-tabs,
 .certificate-pagination,
 .certificate-actions {
@@ -1219,6 +1244,209 @@
 
 .certificate-row {
   align-items: start;
+}
+
+.certificate-application-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.certificate-application-row {
+  width: 100%;
+  color: var(--color-ink);
+  background: #fff;
+  text-align: left;
+}
+
+.certificate-application-row:hover {
+  background: #f8fdfc;
+}
+
+.certificate-badge-row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.certificate-application-detail,
+.student-certificate-card,
+.certificate-application-form,
+.certificate-feedback,
+.certificate-success-card {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+}
+
+.certificate-application-detail {
+  align-self: start;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 16px;
+  background: #f8fafc;
+}
+
+.certificate-application-detail label,
+.certificate-application-form label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: var(--color-navy);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.certificate-application-detail input,
+.certificate-application-detail textarea,
+.certificate-application-form textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  color: var(--color-ink);
+  background: #fff;
+  font: inherit;
+}
+
+.certificate-application-detail input {
+  min-height: 44px;
+}
+
+.certificate-application-detail textarea,
+.certificate-application-form textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.certificate-detail-list,
+.certificate-feedback-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.certificate-detail-list div,
+.certificate-feedback-list div {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid var(--color-line);
+  padding: 10px 0;
+}
+
+.certificate-detail-list div:first-child,
+.certificate-feedback-list div:first-child {
+  border-top: 0;
+}
+
+.certificate-detail-list dt,
+.certificate-feedback-list dt {
+  color: var(--color-muted);
+  font-weight: 800;
+}
+
+.certificate-detail-list dd,
+.certificate-feedback-list dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-navy);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.student-certificate-card .section-heading {
+  align-items: flex-start;
+}
+
+.student-certificate-card .section-heading div {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.student-certificate-card .section-heading strong,
+.student-certificate-card .section-heading small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.certificate-application-form {
+  border-top: 1px solid var(--color-line);
+  padding-top: 14px;
+}
+
+.certificate-application-form .confirmation-box p {
+  display: grid;
+  gap: 3px;
+}
+
+.certificate-application-form .confirmation-box span {
+  color: var(--color-muted);
+  font-weight: 800;
+}
+
+.feedback-question {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 12px;
+  background: #fff;
+}
+
+.feedback-question legend {
+  padding: 0 4px;
+  color: var(--color-navy);
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.feedback-scale {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.feedback-scale label {
+  min-height: 40px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  background: #fff;
+  color: var(--color-navy);
+  cursor: pointer;
+}
+
+.feedback-scale input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.feedback-scale label:has(input:checked) {
+  border-color: rgba(13, 148, 136, 0.52);
+  background: var(--color-green-soft);
+  color: var(--color-teal-dark);
+}
+
+.feedback-scale-labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--color-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.certificate-success-card p {
+  margin: 0;
+  color: var(--color-muted);
+  line-height: 1.5;
 }
 
 .certificate-confirmation {
@@ -1820,6 +2048,11 @@
 
   .staff-form-actions {
     grid-column: 1 / -1;
+  }
+
+  .certificate-application-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
+    align-items: start;
   }
 }
 
