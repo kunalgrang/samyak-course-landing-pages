@@ -47,6 +47,34 @@ describe("Education Partner portal security", () => {
     db.close();
   });
 
+  it("preserves existing Partner session subjects when migration 0027 is applied", async () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec("pragma foreign_keys = on");
+    applyMigrationsThrough(db, "0026_certificate_applications_feedback.sql");
+    seedBase(db);
+    await seedLoginAccount(db, "acct_student_existing", STUDENT_MOBILE);
+    await seedLoginAccount(db, "acct_staff_existing", "9876543333");
+    await seedLoginAccount(db, "acct_partner_existing", PARTNER_MOBILE);
+    await seedLoginAccount(db, "acct_unselected_existing", "9876543334");
+    await seedPersonStudent(db, "person_student_existing", "student_subject_existing", STUDENT_MOBILE);
+    db.prepare("insert or ignore into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values ('person_staff_existing', 'org_samyak', 'branch_sion', 'Staff Existing', 'Staff Existing', 'active', ?, ?)")
+      .run(NOW, NOW);
+    await seedEducationPartner(db, "epartner_existing", PARTNER_MOBILE, { referrerProfileId: "refprof_partner_existing" });
+    await seedSessionRow(db, "sess_student_existing", "acct_student_existing", "person_student_existing", null);
+    await seedSessionRow(db, "sess_staff_existing", "acct_staff_existing", "person_staff_existing", null);
+    await seedSessionRow(db, "sess_partner_existing", "acct_partner_existing", null, "epartner_existing");
+    await seedSessionRow(db, "sess_unselected_existing", "acct_unselected_existing", null, null);
+
+    applyMigrationFile(db, "0027_trainer_attendance_sessions.sql");
+
+    expect(row(db, "select active_subject_type from user_sessions where id = 'sess_student_existing'")).toMatchObject({ active_subject_type: "person" });
+    expect(row(db, "select active_subject_type from user_sessions where id = 'sess_staff_existing'")).toMatchObject({ active_subject_type: "person" });
+    expect(row(db, "select active_subject_type from user_sessions where id = 'sess_partner_existing'")).toMatchObject({ active_subject_type: "partner" });
+    expect(row(db, "select active_subject_type from user_sessions where id = 'sess_unselected_existing'")).toMatchObject({ active_subject_type: "person" });
+    expect(count(db, "user_sessions where active_subject_type = 'trainer'")).toBe(0);
+    db.close();
+  });
+
   it("logs in active Partners with OTP, hides unknown/inactive enumeration, blocks replay and wrong or expired OTPs", async () => {
     const fixture = await createFixture();
     try {

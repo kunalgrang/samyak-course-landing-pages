@@ -1,5 +1,13 @@
 alter table user_sessions add column active_subject_type text not null default 'person';
 --> statement-breakpoint
+update user_sessions
+set active_subject_type = 'partner'
+where active_education_partner_id is not null;
+--> statement-breakpoint
+update user_sessions
+set active_subject_type = 'person'
+where active_education_partner_id is null;
+--> statement-breakpoint
 create index user_sessions_active_subject_type_idx
   on user_sessions (active_subject_type);
 --> statement-breakpoint
