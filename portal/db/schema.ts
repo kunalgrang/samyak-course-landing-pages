@@ -206,6 +206,7 @@ export const userSessions = sqliteTable(
       .notNull()
       .references(() => loginAccounts.id),
     activePersonId: text("active_person_id").references(() => people.id),
+    activeSubjectType: text("active_subject_type").notNull().default("person"),
     tokenHash: text("token_hash").notNull(),
     createdAt: text("created_at").notNull(),
     expiresAt: text("expires_at").notNull(),
@@ -217,6 +218,7 @@ export const userSessions = sqliteTable(
   (table) => [
     uniqueIndex("user_sessions_token_hash_unique").on(table.tokenHash),
     index("user_sessions_login_account_id_idx").on(table.loginAccountId),
+    index("user_sessions_active_subject_type_idx").on(table.activeSubjectType),
     index("user_sessions_expires_at_idx").on(table.expiresAt),
     index("user_sessions_revoked_at_idx").on(table.revokedAt),
   ],

@@ -2362,11 +2362,19 @@
 .trainer-row {
   padding: 0.85rem;
   text-align: left;
+  overflow-wrap: anywhere;
 }
 
 .trainer-row-button {
   width: 100%;
   border: 1px solid #dde4ef;
+}
+
+.trainer-session-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(10rem, 0.8fr);
+  gap: 0.75rem;
+  align-items: start;
 }
 
 .trainer-attendance-panel {
@@ -2433,6 +2441,7 @@
   }
 
   .trainer-batch-card,
+  .trainer-session-history-row,
   .trainer-attendance-row,
   .trainer-two-column {
     grid-template-columns: 1fr;

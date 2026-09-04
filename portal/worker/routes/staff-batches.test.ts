@@ -30,9 +30,9 @@ function routeApp() {
   return app;
 }
 
-function authenticateAs(roles: string[], partnerId: string | null = null) {
+function authenticateAs(roles: string[], partnerId: string | null = null, subjectType: string = partnerId ? "partner" : "person") {
   mocks.getSessionFromRequest.mockResolvedValue({
-    record: { login_account_id: "acct_test", active_person_id: "person_test", active_education_partner_id: partnerId },
+    record: { login_account_id: "acct_test", active_person_id: partnerId ? null : "person_test", active_education_partner_id: partnerId, active_subject_type: subjectType },
   });
   mocks.getAccountRoles.mockResolvedValue(roles);
 }
@@ -61,6 +61,16 @@ describe("staff batch routes", () => {
 
     authenticateAs(["owner"], "partner_1");
     expect((await app.request("/api/staff/batches")).status).toBe(403);
+    expect(mocks.listBatches).not.toHaveBeenCalled();
+  });
+
+  it("rejects a trainer-context cookie even if the account has staff roles", async () => {
+    const app = routeApp();
+    authenticateAs(["owner"], null, "trainer");
+
+    const response = await app.request("/api/staff/batches");
+
+    expect(response.status).toBe(403);
     expect(mocks.listBatches).not.toHaveBeenCalled();
   });
 

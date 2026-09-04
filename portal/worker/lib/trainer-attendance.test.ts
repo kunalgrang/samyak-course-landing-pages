@@ -6,6 +6,7 @@ import type { AppContext } from "./http";
 import {
   getTrainerBatchDetail,
   getTrainerSessionDetail,
+  listTrainerSessions,
   listTrainerBatches,
   openOrCreateTrainerSession,
   saveTrainerSession,
@@ -144,6 +145,31 @@ describe("trainer attendance service", () => {
     const detail = await getTrainerSessionDetail(c, trainer, opened.session.session.id);
     expect(detail?.session).toMatchObject({ status: "completed", version: 2 });
     expect(detail?.roster.map((item) => item.attendanceStatus)).toEqual(["present", "absent"]);
+  });
+
+  it("lists only the active trainer's class history with attendance counts", async () => {
+    const { c, trainer, otherTrainer } = setup();
+    const opened = await openOrCreateTrainerSession(c, trainer, "batch_morning", "2026-09-04");
+    const otherOpened = await openOrCreateTrainerSession(c, otherTrainer, "batch_other_trainer", "2026-09-04");
+    if (!opened.ok || !otherOpened.ok) throw new Error("expected sessions");
+    await saveTrainerSession(c, trainer, opened.session.session.id, {
+      expectedVersion: opened.session.session.version,
+      teachingNote: "Power BI relationships and dashboard review.",
+      attendance: opened.session.roster.map((item, index) => ({ batchMembershipId: item.batchMembershipId, status: index === 0 ? "present" : "absent" })),
+    });
+
+    const sessions = await listTrainerSessions(c, trainer);
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      id: opened.session.session.id,
+      batchName: "Data Analytics Morning",
+      courseLabel: "Excel / SQL",
+      presentCount: 1,
+      absentCount: 1,
+      teachingNoteExcerpt: "Power BI relationships and dashboard review.",
+    });
+    expect(JSON.stringify(sessions)).not.toContain(otherOpened.session.session.id);
   });
 
   it("blocks other trainers and inactive batches", async () => {

@@ -12,6 +12,7 @@ const PRODUCTION_SESSION_COOKIE = "__Host-samyak_session";
 const LOCAL_DEVELOPMENT_SESSION_COOKIE = "samyak_session";
 const PERSON_ROLE_CODES = new Set(["student", "alumni"]);
 const TRAINER_ROLE_CODE = "trainer";
+export type SessionSubjectType = "person" | "trainer" | "partner";
 
 export type ProfileChoice = {
   personId: string;
@@ -102,6 +103,7 @@ type SessionRecord = {
   login_account_id: string;
   active_person_id: string | null;
   active_education_partner_id: string | null;
+  active_subject_type?: SessionSubjectType;
   expires_at: string;
   last_seen_at: string;
   revoked_at: string | null;
@@ -440,7 +442,7 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
     await c.env.DB.prepare("update login_account_people set is_available = 0 where login_account_id = ? and person_id = ?")
       .bind(account.id, previous.person_id)
       .run();
-    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ?")
+    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ? and coalesce(active_subject_type, 'person') = 'person'")
       .bind(account.id, previous.person_id)
       .run();
     await recordProfileAudit(c, account.id, previous.person_id, "profile_unlinked", previous.person_id);
@@ -448,7 +450,7 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
 
   for (const previous of previousLinks.results || []) {
     if (returnedPersonIds.has(previous.person_id)) continue;
-    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ?")
+    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ? and coalesce(active_subject_type, 'person') = 'person'")
       .bind(account.id, previous.person_id)
       .run();
   }
@@ -543,7 +545,7 @@ export async function bootstrapTrainerAccount(c: AppContext, mobile: string, loo
     await c.env.DB.prepare("update login_account_people set is_available = 0 where login_account_id = ? and person_id = ?")
       .bind(account.id, previous.person_id)
       .run();
-    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ?")
+    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ? and coalesce(active_subject_type, 'person') = 'person'")
       .bind(account.id, previous.person_id)
       .run();
   }
@@ -551,16 +553,22 @@ export async function bootstrapTrainerAccount(c: AppContext, mobile: string, loo
   return account.id;
 }
 
-export async function createSession(c: AppContext, loginAccountId: string, activePersonId: string | null, activeEducationPartnerId: string | null = null) {
+export async function createSession(
+  c: AppContext,
+  loginAccountId: string,
+  activePersonId: string | null,
+  activeEducationPartnerId: string | null = null,
+  activeSubjectType: SessionSubjectType = activeEducationPartnerId ? "partner" : "person",
+) {
   const token = createSessionToken();
   const tokenHash = await hmacHex(sessionPepper(c), "session", token);
   const now = new Date().toISOString();
   const fingerprint = await requestFingerprint(c);
   await c.env.DB.prepare(
-    `insert into user_sessions (id, login_account_id, active_person_id, active_education_partner_id, token_hash, created_at, expires_at, last_seen_at, ip_hash, user_agent_hash)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `insert into user_sessions (id, login_account_id, active_person_id, active_education_partner_id, active_subject_type, token_hash, created_at, expires_at, last_seen_at, ip_hash, user_agent_hash)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(createOpaqueId("sess"), loginAccountId, activePersonId, activeEducationPartnerId, tokenHash, now, daysFromNow(30), now, fingerprint.ipHash, fingerprint.userAgentHash)
+    .bind(createOpaqueId("sess"), loginAccountId, activePersonId, activeEducationPartnerId, activeSubjectType, tokenHash, now, daysFromNow(30), now, fingerprint.ipHash, fingerprint.userAgentHash)
     .run();
   return token;
 }
@@ -613,7 +621,13 @@ export async function getSessionValidationResult(c: AppContext): Promise<Session
     return { session: null, resultCode: "SESSION_INACTIVE_EXPIRED", shouldClearCookie: true };
   }
   let currentRecord = record;
-  if (record.active_person_id && !(await isLinkedProfileAvailable(c, record.login_account_id, record.active_person_id))) {
+  const activeSubjectType = record.active_subject_type || "person";
+  if (record.active_person_id && activeSubjectType === "trainer" && !(await isLinkedTrainerAvailable(c, record.login_account_id, record.active_person_id))) {
+    await c.env.DB.prepare("update user_sessions set active_person_id = null where id = ?").bind(record.id).run();
+    currentRecord = { ...record, active_person_id: null };
+    await recordSessionResult(c, "SESSION_PROFILE_CLEARED", record.login_account_id);
+  }
+  if (record.active_person_id && activeSubjectType === "person" && !(await isLinkedProfileAvailable(c, record.login_account_id, record.active_person_id))) {
     await c.env.DB.prepare("update user_sessions set active_person_id = null where id = ?").bind(record.id).run();
     currentRecord = { ...record, active_person_id: null };
     await recordSessionResult(c, "SESSION_PROFILE_CLEARED", record.login_account_id);
@@ -729,6 +743,7 @@ export async function getEffectiveRolesForActiveProfile(c: AppContext, loginAcco
 export async function requireAuthenticatedProfile(c: AppContext) {
   const session = await getSessionFromRequest(c);
   if (!session) return null;
+  if ((session.record.active_subject_type || "person") !== "person") return null;
   const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
   if (!view.activeProfile) return null;
   return { session, view, activeProfile: view.activeProfile };
@@ -779,6 +794,7 @@ export async function trainerSessionView(c: AppContext, loginAccountId: string, 
 export async function requireAuthenticatedTrainer(c: AppContext) {
   const session = await getSessionFromRequest(c);
   if (!session?.record.active_person_id || session.record.active_education_partner_id) return null;
+  if (session.record.active_subject_type !== "trainer") return null;
   if (!(await isLinkedTrainerAvailable(c, session.record.login_account_id, session.record.active_person_id))) return null;
   const view = await trainerSessionView(c, session.record.login_account_id, session.record.active_person_id);
   if (!view.activeTrainer) return null;
@@ -788,7 +804,7 @@ export async function requireAuthenticatedTrainer(c: AppContext) {
 export async function selectLinkedTrainer(c: AppContext, sessionId: string, loginAccountId: string, personId: string) {
   const linked = await isLinkedTrainerAvailable(c, loginAccountId, personId);
   if (!linked) return false;
-  await c.env.DB.prepare("update user_sessions set active_person_id = ?, active_education_partner_id = null, last_seen_at = ? where id = ?")
+  await c.env.DB.prepare("update user_sessions set active_person_id = ?, active_education_partner_id = null, active_subject_type = 'trainer', last_seen_at = ? where id = ?")
     .bind(personId, new Date().toISOString(), sessionId)
     .run();
   return true;
@@ -805,7 +821,7 @@ export async function requireActiveProfileRole(c: AppContext, allowedRoles: stri
 export async function selectLinkedProfile(c: AppContext, sessionId: string, loginAccountId: string, personId: string) {
   const linked = await isLinkedProfileAvailable(c, loginAccountId, personId);
   if (!linked) return false;
-  await c.env.DB.prepare("update user_sessions set active_person_id = ?, active_education_partner_id = null, last_seen_at = ? where id = ?")
+  await c.env.DB.prepare("update user_sessions set active_person_id = ?, active_education_partner_id = null, active_subject_type = 'person', last_seen_at = ? where id = ?")
     .bind(personId, new Date().toISOString(), sessionId)
     .run();
   return true;
@@ -814,7 +830,7 @@ export async function selectLinkedProfile(c: AppContext, sessionId: string, logi
 export async function selectLinkedPartner(c: AppContext, sessionId: string, loginAccountId: string, educationPartnerId: string) {
   const linked = await isLinkedPartnerAvailable(c, loginAccountId, educationPartnerId);
   if (!linked) return false;
-  await c.env.DB.prepare("update user_sessions set active_person_id = null, active_education_partner_id = ?, last_seen_at = ? where id = ?")
+  await c.env.DB.prepare("update user_sessions set active_person_id = null, active_education_partner_id = ?, active_subject_type = 'partner', last_seen_at = ? where id = ?")
     .bind(educationPartnerId, new Date().toISOString(), sessionId)
     .run();
   return true;
@@ -1317,6 +1333,7 @@ export async function partnerSessionView(c: AppContext, loginAccountId: string, 
 
 export async function requireAuthenticatedPartner(c: AppContext) {
   const session = await getSessionFromRequest(c);
+  if (session?.record.active_subject_type !== "partner") return null;
   if (!session?.record.active_education_partner_id) return null;
   if (!(await isLinkedPartnerAvailable(c, session.record.login_account_id, session.record.active_education_partner_id))) return null;
   const view = await partnerSessionView(c, session.record.login_account_id, session.record.active_education_partner_id);
@@ -1463,7 +1480,6 @@ async function recordProfileAudit(c: AppContext, loginAccountId: string, personI
 }
 
 async function isLinkedProfileAvailable(c: AppContext, loginAccountId: string, personId: string) {
-  if (await isLinkedTrainerAvailable(c, loginAccountId, personId)) return true;
   const linked = await c.env.DB.prepare(
     `select 1 as ok
      from login_account_people

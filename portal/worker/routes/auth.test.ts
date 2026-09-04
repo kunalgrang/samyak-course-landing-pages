@@ -36,6 +36,9 @@ class FakeD1Statement {
       return (this.db.userSessions.find((row) => row.token_hash === this.values[0]) ?? null) as T;
     }
     if (sql.includes("select 1 as ok from login_account_people")) {
+      if (sql.includes("join person_roles") && sql.includes("roles.code = ?")) {
+        return (this.db.isLinkedTrainerAvailable(String(this.values[0]), String(this.values[1])) ? { ok: 1 } : null) as T;
+      }
       return (this.db.isLinkedProfileAvailable(String(this.values[0]), String(this.values[1])) ? { ok: 1 } : null) as T;
     }
     if (sql.includes("select * from referrer_profiles where person_id = ? and active = 1")) {
@@ -252,6 +255,15 @@ class FakeD1 {
     return Boolean(link && person && referrer);
   }
 
+  isLinkedTrainerAvailable(loginAccountId: string, personId: string) {
+    const link = this.loginAccountPeople.find((row) => row.login_account_id === loginAccountId && row.person_id === personId && row.is_available === 1);
+    const person = this.people.find((row) => row.id === personId && row.organisation_id === "org_samyak" && row.status === "active");
+    const trainerRole = this.roles.find((row) => row.code === "trainer");
+    const role = trainerRole ? this.personRoles.find((row) => row.person_id === personId && row.role_id === trainerRole.id) : null;
+    const branch = role?.branch_id ? this.branches.find((row) => row.id === role.branch_id) : null;
+    return Boolean(link && person && role && (!branch || branch.status === "active" || branch.status === undefined));
+  }
+
   run(sql: string, values: unknown[]) {
     if (sql.startsWith("insert into otp_challenges")) {
       const [id, organisationId, mobileHash, mobileLastFour, requestedAt, expiresAt, ipHash] = values;
@@ -419,8 +431,8 @@ class FakeD1 {
       return 1;
     }
     if (sql.startsWith("insert into user_sessions")) {
-      const [id, loginAccountId, activePersonId, activeEducationPartnerId, tokenHash, createdAt, expiresAt, lastSeenAt, ipHash, userAgentHash] = values;
-      this.userSessions.push({ id, login_account_id: loginAccountId, active_person_id: activePersonId, active_education_partner_id: activeEducationPartnerId, token_hash: tokenHash, created_at: createdAt, expires_at: expiresAt, last_seen_at: lastSeenAt, revoked_at: null, ip_hash: ipHash, user_agent_hash: userAgentHash });
+      const [id, loginAccountId, activePersonId, activeEducationPartnerId, activeSubjectType, tokenHash, createdAt, expiresAt, lastSeenAt, ipHash, userAgentHash] = values;
+      this.userSessions.push({ id, login_account_id: loginAccountId, active_person_id: activePersonId, active_education_partner_id: activeEducationPartnerId, active_subject_type: activeSubjectType, token_hash: tokenHash, created_at: createdAt, expires_at: expiresAt, last_seen_at: lastSeenAt, revoked_at: null, ip_hash: ipHash, user_agent_hash: userAgentHash });
       return 1;
     }
     if (sql.startsWith("update user_sessions set active_person_id = ?")) {
@@ -428,6 +440,8 @@ class FakeD1 {
       const row = this.userSessions.find((session) => session.id === sessionId);
       if (!row) return 0;
       row.active_person_id = personId;
+      row.active_education_partner_id = null;
+      row.active_subject_type = sql.includes("active_subject_type = 'trainer'") ? "trainer" : "person";
       row.last_seen_at = lastSeenAt;
       return 1;
     }
@@ -938,6 +952,36 @@ describe("auth routes", () => {
       },
       courseHistory: [expect.objectContaining({ status: "on_hold" })],
     });
+  });
+
+  it("does not expose student APIs through a trainer-context person session", async () => {
+    const db = new FakeD1();
+    const token = "trainer-session-token";
+    db.loginAccounts.push({ id: "acct_cross", mobile_last_four: "10" });
+    db.people.push({ id: "person_cross", organisation_id: "org_samyak", full_name: "Asha Trainer Student", public_name: "Asha", status: "active" });
+    db.loginAccountPeople.push({ login_account_id: "acct_cross", person_id: "person_cross", access_type: "self", is_available: 1, created_at: "2026-01-01T00:00:00.000Z" });
+    db.referrerProfiles.push({ id: "ref_cross", organisation_id: "org_samyak", person_id: "person_cross", external_referrer_id: "CROSS", referral_token: "CROSS_TOKEN", personal_link: "https://example.test/r/CROSS_TOKEN", active: 1, created_at: "2026-01-01T00:00:00.000Z" });
+    db.students.push({ id: "student_cross", organisation_id: "org_samyak", person_id: "person_cross", student_number: "SYK-SION-009999", student_since: "2026-01-01", current_status: "active", portal_status: "active", home_branch_id: "branch_sion" });
+    db.personRoles.push({ person_id: "person_cross", role_id: "role_trainer", branch_id: "branch_sion", branch_key: "branch_sion", created_at: "2026-01-01T00:00:00.000Z" });
+    db.userSessions.push({
+      id: "sess_trainer",
+      login_account_id: "acct_cross",
+      active_person_id: "person_cross",
+      active_education_partner_id: null,
+      active_subject_type: "trainer",
+      token_hash: await hmacHex("test-pepper", "session", token),
+      created_at: "2026-01-01T00:00:00.000Z",
+      expires_at: "2999-01-01T00:00:00.000Z",
+      last_seen_at: new Date().toISOString(),
+      revoked_at: null,
+    });
+
+    const cookie = `samyak_session=${token}`;
+    const session = await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db));
+    await expect(session.json()).resolves.toMatchObject({ authenticated: false, code: "TRAINER_SESSION_ACTIVE" });
+
+    const studentHome = await app.request("http://localhost/api/student/home", { headers: { Cookie: cookie } }, env(db));
+    expect(studentHome.status).toBe(403);
   });
 
   it("accepts a session after simulated Worker restart and ordinary deployment when SESSION_PEPPER is stable", async () => {

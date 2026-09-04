@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getSessionFromRequest: vi.fn(),
   listTrainerBatches: vi.fn(),
   getTrainerBatchDetail: vi.fn(),
+  listTrainerSessions: vi.fn(),
   openOrCreateTrainerSession: vi.fn(),
   getTrainerSessionDetail: vi.fn(),
   saveTrainerSession: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock("../lib/trainer-attendance", async (importOriginal) => {
     ...actual,
     listTrainerBatches: mocks.listTrainerBatches,
     getTrainerBatchDetail: mocks.getTrainerBatchDetail,
+    listTrainerSessions: mocks.listTrainerSessions,
     openOrCreateTrainerSession: mocks.openOrCreateTrainerSession,
     getTrainerSessionDetail: mocks.getTrainerSessionDetail,
     saveTrainerSession: mocks.saveTrainerSession,
@@ -58,6 +60,7 @@ describe("trainer routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.listTrainerBatches.mockResolvedValue([]);
+    mocks.listTrainerSessions.mockResolvedValue([]);
     mocks.getTrainerBatchDetail.mockResolvedValue({ batch: { id: "batch_1" }, roster: [], sessions: [] });
     mocks.openOrCreateTrainerSession.mockResolvedValue({ ok: true, session: { session: { id: "session_1" }, batch: { id: "batch_1" }, roster: [] } });
     mocks.getTrainerSessionDetail.mockResolvedValue({ session: { id: "session_1" }, batch: { id: "batch_1" }, roster: [] });
@@ -72,6 +75,20 @@ describe("trainer routes", () => {
     expect((await app.request("/api/trainer/batches/batch_1")).status).toBe(401);
     expect((await app.request("/api/trainer/sessions/session_1")).status).toBe(401);
     expect(mocks.listTrainerBatches).not.toHaveBeenCalled();
+  });
+
+  it("returns trainer-scoped class history", async () => {
+    const app = routeApp();
+    trainerAuth();
+    mocks.listTrainerSessions.mockResolvedValue([{ id: "session_1", presentCount: 2, absentCount: 1, teachingNoteExcerpt: "Power BI" }]);
+
+    const response = await app.request("/api/trainer/sessions");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ success: true, sessions: [expect.objectContaining({ id: "session_1" })] });
+    expect(mocks.listTrainerSessions).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      activeTrainer: expect.objectContaining({ personId: "person_trainer" }),
+    }));
   });
 
   it("passes only trainer context into my-batches and detail services", async () => {
@@ -114,7 +131,7 @@ describe("trainer routes", () => {
   it("keeps partner sessions out of trainer session checks", async () => {
     const app = routeApp();
     mocks.getSessionValidationResult.mockResolvedValue({
-      session: { record: { login_account_id: "acct_partner", active_person_id: null, active_education_partner_id: "partner_1" } },
+      session: { record: { login_account_id: "acct_partner", active_person_id: null, active_education_partner_id: "partner_1", active_subject_type: "partner" } },
       resultCode: "SESSION_VALID",
       shouldClearCookie: false,
     });
@@ -122,6 +139,21 @@ describe("trainer routes", () => {
     const response = await app.request("/api/trainer/session");
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ authenticated: false, code: "PARTNER_SESSION_ACTIVE" });
+    expect(mocks.trainerSessionView).not.toHaveBeenCalled();
+  });
+
+  it("keeps person sessions out of trainer session checks", async () => {
+    const app = routeApp();
+    mocks.getSessionValidationResult.mockResolvedValue({
+      session: { record: { login_account_id: "acct_student", active_person_id: "person_student", active_education_partner_id: null, active_subject_type: "person" } },
+      resultCode: "SESSION_VALID",
+      shouldClearCookie: false,
+    });
+
+    const response = await app.request("/api/trainer/session");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ authenticated: false, code: "PERSON_SESSION_ACTIVE" });
     expect(mocks.trainerSessionView).not.toHaveBeenCalled();
   });
 });

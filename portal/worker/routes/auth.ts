@@ -253,13 +253,22 @@ export function registerAuthRoutes(app: PortalHono) {
       if (validation.shouldClearCookie && hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
       return response;
     }
-    if (session.record.active_education_partner_id) {
+    if (session.record.active_education_partner_id || session.record.active_subject_type === "partner") {
       return jsonWithRequestId(c, {
         authenticated: false,
         activeProfile: null,
         profiles: [],
         code: "PARTNER_SESSION_ACTIVE",
         message: "Please use Partner Portal.",
+      });
+    }
+    if (session.record.active_subject_type === "trainer") {
+      return jsonWithRequestId(c, {
+        authenticated: false,
+        activeProfile: null,
+        profiles: [],
+        code: "TRAINER_SESSION_ACTIVE",
+        message: "Please use Trainer Portal.",
       });
     }
     return jsonWithRequestId(c, await sessionView(c, session.record.login_account_id, session.record.active_person_id));
@@ -272,7 +281,8 @@ export function registerAuthRoutes(app: PortalHono) {
     if (isResponse(body)) return body;
     const session = await getSessionFromRequest(c);
     if (!session) return jsonWithRequestId(c, { success: false, code: "UNAUTHENTICATED", message: "Please sign in again." }, 401);
-    if (session.record.active_education_partner_id) return jsonWithRequestId(c, { success: false, code: "PARTNER_SESSION_ACTIVE", message: "Please use Partner Portal." }, 401);
+    if (session.record.active_education_partner_id || session.record.active_subject_type === "partner") return jsonWithRequestId(c, { success: false, code: "PARTNER_SESSION_ACTIVE", message: "Please use Partner Portal." }, 401);
+    if (session.record.active_subject_type === "trainer") return jsonWithRequestId(c, { success: false, code: "TRAINER_SESSION_ACTIVE", message: "Please use Trainer Portal." }, 401);
     const selected = await selectLinkedProfile(c, session.record.id, session.record.login_account_id, body.personId);
     if (!selected) return jsonWithRequestId(c, { success: false, code: "PROFILE_NOT_LINKED", message: "This profile is not available." }, 403);
     return jsonWithRequestId(c, { success: true, session: await sessionView(c, session.record.login_account_id, body.personId) });

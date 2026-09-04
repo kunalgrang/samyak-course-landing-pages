@@ -136,6 +136,45 @@ export async function getTrainerBatchDetail(c: AppContext, trainer: TrainerConte
   return { batch: await decorateBatch(c, batch), roster: mapRoster(roster), sessions };
 }
 
+export async function listTrainerSessions(c: AppContext, trainer: TrainerContext) {
+  const rows = await c.env.DB.prepare(
+    `select class_sessions.*,
+            batches.name as batch_name,
+            branches.name as branch_name,
+            course_summary.course_pairs,
+            sum(case when attendance_records.status = 'present' then 1 else 0 end) as present_count,
+            sum(case when attendance_records.status = 'absent' then 1 else 0 end) as absent_count
+     from class_sessions
+     join batches on batches.id = class_sessions.batch_id
+       and batches.organisation_id = class_sessions.organisation_id
+     join branches on branches.id = class_sessions.branch_id
+     left join (
+       select batch_courses.batch_id,
+              group_concat(courses.id || char(31) || courses.name, char(30)) as course_pairs
+       from batch_courses
+       join courses on courses.id = batch_courses.course_id and courses.organisation_id = batch_courses.organisation_id
+       group by batch_courses.batch_id
+     ) course_summary on course_summary.batch_id = class_sessions.batch_id
+     left join attendance_records on attendance_records.class_session_id = class_sessions.id
+     where class_sessions.organisation_id = ?
+       and class_sessions.trainer_person_id = ?
+     group by class_sessions.id
+     order by class_sessions.session_date desc, class_sessions.scheduled_start_time desc, class_sessions.created_at desc
+     limit 50`,
+  )
+    .bind(ORG_ID, trainer.activeTrainer.personId)
+    .all<Record<string, unknown>>();
+  return (rows.results || []).map((row) => ({
+    ...mapSession(row as unknown as SessionRecord, isWithinEditWindow(String(row.session_date))),
+    batchName: String(row.batch_name || ""),
+    branchName: String(row.branch_name || ""),
+    courseLabel: parseCoursePairs(row.course_pairs, "", "").map((course) => course.name).join(" / "),
+    presentCount: Number(row.present_count || 0),
+    absentCount: Number(row.absent_count || 0),
+    teachingNoteExcerpt: String(row.teaching_note || "").slice(0, 140),
+  }));
+}
+
 export async function openOrCreateTrainerSession(c: AppContext, trainer: TrainerContext, batchId: string, sessionDate = indiaDate()) {
   const batch = await loadAssignedBatch(c, trainer.activeTrainer.personId, batchId);
   if (!batch) return { ok: false as const, status: 404, code: "batch_not_found", message: "Batch not found." };

@@ -397,12 +397,16 @@ const trainerClassSessionSchema = z.object({
 });
 
 const trainerSessionSummarySchema = trainerClassSessionSchema.extend({
+  batchName: z.string().optional(),
+  branchName: z.string().optional(),
+  courseLabel: z.string().optional(),
   presentCount: z.number(),
   absentCount: z.number(),
   teachingNoteExcerpt: z.string(),
 });
 
 const trainerBatchListSchema = z.object({ success: z.literal(true), batches: z.array(trainerBatchSchema) });
+const trainerSessionListSchema = z.object({ success: z.literal(true), sessions: z.array(trainerSessionSummarySchema) });
 const trainerBatchDetailSchema = z.object({
   success: z.literal(true),
   batch: trainerBatchSchema,
@@ -1156,6 +1160,7 @@ export type TrainerBatch = z.infer<typeof trainerBatchSchema>;
 export type TrainerBatchDetail = z.infer<typeof trainerBatchDetailSchema>;
 export type TrainerRosterItem = z.infer<typeof trainerRosterItemSchema>;
 export type TrainerClassSession = z.infer<typeof trainerClassSessionSchema>;
+export type TrainerSessionSummary = z.infer<typeof trainerSessionSummarySchema>;
 export type TrainerSessionDetail = z.infer<typeof trainerSessionDetailSchema>;
 export type EnquiryDetail = z.infer<typeof enquiryDetailSchema>;
 export type CrmEnquiryItem = z.infer<typeof crmItemSchema>;
@@ -1298,6 +1303,10 @@ export async function logoutTrainer() {
 
 export async function getTrainerBatches(status = "active") {
   return getJson(`/api/trainer/batches${queryString({ status })}`, trainerBatchListSchema);
+}
+
+export async function getTrainerSessions() {
+  return getJson("/api/trainer/sessions", trainerSessionListSchema);
 }
 
 export async function getTrainerBatch(batchId: string) {

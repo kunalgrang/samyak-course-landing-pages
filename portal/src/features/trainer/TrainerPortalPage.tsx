@@ -6,6 +6,7 @@ import {
   getTrainerBatches,
   getTrainerClassSession,
   getTrainerSession,
+  getTrainerSessions,
   logoutTrainer,
   openTrainerTodaySession,
   saveTrainerClassSession,
@@ -13,6 +14,7 @@ import {
   type TrainerClassSession,
   type TrainerRosterItem,
   type TrainerSessionResponse,
+  type TrainerSessionSummary,
 } from "../../lib/api";
 import type { RoutePath } from "../../routes/types";
 
@@ -82,27 +84,28 @@ export function TrainerPortalPage({ path, onNavigate }: { path: RoutePath; onNav
           </button>
         ))}
       </nav>
-      {path === "/trainer/dashboard" || path === "/trainer/sessions" ? <TrainerDashboard mode={path === "/trainer/sessions" ? "sessions" : "batches"} onNavigate={onNavigate} /> : null}
+      {path === "/trainer/dashboard" ? <TrainerDashboard onNavigate={onNavigate} /> : null}
+      {path === "/trainer/sessions" ? <TrainerSessionHistory onNavigate={onNavigate} /> : null}
       {batchMatch ? <TrainerBatchDetail batchId={batchMatch[1]} onNavigate={onNavigate} /> : null}
       {classMatch ? <TrainerSessionDetail sessionId={classMatch[1]} onNavigate={onNavigate} /> : null}
     </main>
   );
 }
 
-function TrainerDashboard({ mode, onNavigate }: { mode: "batches" | "sessions"; onNavigate: (path: RoutePath) => void }) {
+function TrainerDashboard({ onNavigate }: { onNavigate: (path: RoutePath) => void }) {
   const [batches, setBatches] = useState<TrainerBatch[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void getTrainerBatches(mode === "sessions" ? "all" : "active")
+    void getTrainerBatches("active")
       .then((data) => {
         setBatches(data.batches);
         setError(null);
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : "Could not load batches."))
       .finally(() => setIsLoading(false));
-  }, [mode]);
+  }, []);
 
   if (isLoading) return <LoadingState label="Loading your batches" />;
   if (error) return <ErrorState title="Could not load trainer dashboard" message={error} />;
@@ -110,7 +113,7 @@ function TrainerDashboard({ mode, onNavigate }: { mode: "batches" | "sessions"; 
   return (
     <section className="trainer-section">
       <div className="section-heading">
-        <h2>{mode === "sessions" ? "Class History" : "My Batches"}</h2>
+        <h2>My Batches</h2>
         <span>{batches.length}</span>
       </div>
       <div className="trainer-batch-grid">
@@ -129,6 +132,47 @@ function TrainerDashboard({ mode, onNavigate }: { mode: "batches" | "sessions"; 
           </article>
         ))}
         {!batches.length ? <p className="staff-empty">No batches are currently assigned to you.</p> : null}
+      </div>
+    </section>
+  );
+}
+
+function TrainerSessionHistory({ onNavigate }: { onNavigate: (path: RoutePath) => void }) {
+  const [sessions, setSessions] = useState<TrainerSessionSummary[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void getTrainerSessions()
+      .then((data) => {
+        setSessions(data.sessions);
+        setError(null);
+      })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : "Could not load class history."))
+      .finally(() => setIsLoading(false));
+  }, []);
+
+  if (isLoading) return <LoadingState label="Loading class history" />;
+  if (error) return <ErrorState title="Could not load class history" message={error} />;
+
+  return (
+    <section className="trainer-section">
+      <div className="section-heading">
+        <h2>Class History</h2>
+        <span>{sessions.length}</span>
+      </div>
+      <div className="trainer-list trainer-session-history-list">
+        {sessions.map((session) => (
+          <button type="button" className="trainer-row trainer-row-button trainer-session-history-row" key={session.id} onClick={() => onNavigate(`/trainer/sessions/${session.id}`)}>
+            <div>
+              <strong>{formatDate(session.sessionDate)} · {session.scheduledStartTime || "--:--"}</strong>
+              <span>{session.batchName || "Class Session"}{session.courseLabel ? ` · ${session.courseLabel}` : ""}</span>
+              <small>{session.presentCount} Present · {session.absentCount} Absent · {label(session.status)}</small>
+            </div>
+            <small>{session.teachingNoteExcerpt || "No note yet"}</small>
+          </button>
+        ))}
+        {!sessions.length ? <p className="staff-empty">No class sessions recorded yet.</p> : null}
       </div>
     </section>
   );

@@ -157,7 +157,7 @@ export function registerPartnerRoutes(app: PortalHono) {
     if (!verified) return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
     const accountId = await bootstrapPartnerAccount(c, mobile, lookup);
     const activePartnerId = lookup.partners.length === 1 ? lookup.partners[0].educationPartnerId : null;
-    const token = await createSession(c, accountId, null, activePartnerId);
+    const token = await createSession(c, accountId, null, activePartnerId, "partner");
     await recordAuthEvent(c, "partner_otp_verify", "LOGIN_SUCCESS", { loginAccountId: accountId, mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
     await recordAuditLog(c, accountId, null, "partner_login");
     const response = jsonWithRequestId(c, { success: true, session: await partnerSessionView(c, accountId, activePartnerId) });
@@ -180,7 +180,7 @@ export function registerPartnerRoutes(app: PortalHono) {
       if (validation.shouldClearCookie && hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
       return response;
     }
-    if (session.record.active_person_id) {
+    if (session.record.active_person_id || session.record.active_subject_type === "person" || session.record.active_subject_type === "trainer") {
       return jsonWithRequestId(c, {
         authenticated: false,
         activePartner: null,
@@ -199,7 +199,7 @@ export function registerPartnerRoutes(app: PortalHono) {
     if (isResponse(body)) return body;
     const session = await getSessionFromRequest(c);
     if (!session) return jsonWithRequestId(c, { success: false, code: "UNAUTHENTICATED", message: "Please sign in again." }, 401);
-    if (session.record.active_person_id) return jsonWithRequestId(c, { success: false, code: "PERSON_SESSION_ACTIVE", message: "Please sign in to Partner Portal." }, 401);
+    if (session.record.active_person_id || session.record.active_subject_type === "person" || session.record.active_subject_type === "trainer") return jsonWithRequestId(c, { success: false, code: "PERSON_SESSION_ACTIVE", message: "Please sign in to Partner Portal." }, 401);
     const selected = await selectLinkedPartner(c, session.record.id, session.record.login_account_id, body.educationPartnerId);
     if (!selected) return jsonWithRequestId(c, { success: false, code: "PROFILE_NOT_LINKED", message: "This partner profile is not available." }, 403);
     return jsonWithRequestId(c, { success: true, session: await partnerSessionView(c, session.record.login_account_id, body.educationPartnerId) });

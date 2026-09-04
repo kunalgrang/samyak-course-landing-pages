@@ -35,6 +35,7 @@ import {
 import {
   getTrainerBatchDetail,
   getTrainerSessionDetail,
+  listTrainerSessions,
   listTrainerBatches,
   openOrCreateTrainerSession,
   saveTrainerSession,
@@ -166,7 +167,7 @@ export function registerTrainerRoutes(app: PortalHono) {
     if (!verified) return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
     const accountId = await bootstrapTrainerAccount(c, mobile, lookup);
     const activeTrainerId = lookup.trainers.length === 1 ? lookup.trainers[0].personId : null;
-    const token = await createSession(c, accountId, activeTrainerId);
+    const token = await createSession(c, accountId, activeTrainerId, null, "trainer");
     await recordAuthEvent(c, "trainer_otp_verify", "LOGIN_SUCCESS", { loginAccountId: accountId, mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
     await recordAuditLog(c, accountId, activeTrainerId, "trainer_login");
     const response = jsonWithRequestId(c, { success: true, session: await trainerSessionView(c, accountId, activeTrainerId) });
@@ -189,8 +190,11 @@ export function registerTrainerRoutes(app: PortalHono) {
       if (validation.shouldClearCookie && hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
       return response;
     }
-    if (session.record.active_education_partner_id) {
+    if (session.record.active_education_partner_id || session.record.active_subject_type === "partner") {
       return jsonWithRequestId(c, { authenticated: false, activeTrainer: null, trainers: [], code: "PARTNER_SESSION_ACTIVE", message: "Please use Trainer login." });
+    }
+    if ((session.record.active_subject_type || "person") !== "trainer") {
+      return jsonWithRequestId(c, { authenticated: false, activeTrainer: null, trainers: [], code: "PERSON_SESSION_ACTIVE", message: "Please use Trainer login." });
     }
     return jsonWithRequestId(c, await trainerSessionView(c, session.record.login_account_id, session.record.active_person_id));
   });
@@ -202,7 +206,8 @@ export function registerTrainerRoutes(app: PortalHono) {
     if (isResponse(body)) return body;
     const session = await getSessionFromRequest(c);
     if (!session) return jsonWithRequestId(c, { success: false, code: "UNAUTHENTICATED", message: "Please sign in again." }, 401);
-    if (session.record.active_education_partner_id) return jsonWithRequestId(c, { success: false, code: "PARTNER_SESSION_ACTIVE", message: "Please use Trainer login." }, 401);
+    if (session.record.active_education_partner_id || session.record.active_subject_type === "partner") return jsonWithRequestId(c, { success: false, code: "PARTNER_SESSION_ACTIVE", message: "Please use Trainer login." }, 401);
+    if ((session.record.active_subject_type || "person") !== "trainer") return jsonWithRequestId(c, { success: false, code: "PERSON_SESSION_ACTIVE", message: "Please use Trainer login." }, 401);
     const selected = await selectLinkedTrainer(c, session.record.id, session.record.login_account_id, body.personId);
     if (!selected) return jsonWithRequestId(c, { success: false, code: "PROFILE_NOT_LINKED", message: "This trainer profile is not available." }, 403);
     return jsonWithRequestId(c, { success: true, session: await trainerSessionView(c, session.record.login_account_id, body.personId) });
@@ -234,6 +239,12 @@ export function registerTrainerRoutes(app: PortalHono) {
     const detail = await getTrainerBatchDetail(c, trainer, c.req.param("batchId"));
     if (!detail) return jsonError(c, { status: 404, code: "batch_not_found", message: "Batch not found." });
     return jsonPlain(c, { success: true, ...detail });
+  });
+
+  app.get("/api/trainer/sessions", async (c) => {
+    const trainer = await trainerContext(c);
+    if (!trainer) return unauthenticated(c);
+    return jsonPlain(c, { success: true, sessions: await listTrainerSessions(c, trainer) });
   });
 
   app.post("/api/trainer/batches/:batchId/sessions/today", async (c) => {

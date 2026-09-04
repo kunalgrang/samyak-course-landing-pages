@@ -1,3 +1,26 @@
+alter table user_sessions add column active_subject_type text not null default 'person';
+--> statement-breakpoint
+create index user_sessions_active_subject_type_idx
+  on user_sessions (active_subject_type);
+--> statement-breakpoint
+create trigger user_sessions_active_subject_insert_check
+before insert on user_sessions
+when NEW.active_subject_type not in ('person', 'trainer', 'partner')
+  or (NEW.active_education_partner_id is not null and NEW.active_subject_type != 'partner')
+  or (NEW.active_person_id is not null and NEW.active_subject_type = 'partner')
+begin
+  select raise(abort, 'Invalid user session subject.');
+end;
+--> statement-breakpoint
+create trigger user_sessions_active_subject_update_check
+before update of active_person_id, active_education_partner_id, active_subject_type on user_sessions
+when NEW.active_subject_type not in ('person', 'trainer', 'partner')
+  or (NEW.active_education_partner_id is not null and NEW.active_subject_type != 'partner')
+  or (NEW.active_person_id is not null and NEW.active_subject_type = 'partner')
+begin
+  select raise(abort, 'Invalid user session subject.');
+end;
+--> statement-breakpoint
 create table class_sessions (
   id text primary key,
   organisation_id text not null references organisations(id),
