@@ -13,6 +13,7 @@
     "test:run": "vitest run",
     "test:d1-migration-0021": "node ./scripts/d1-migration-0021-local-check.mjs",
     "test:migration-line-endings": "node ./scripts/check-migration-line-endings.mjs",
+    "test:d1-migration-wrangler-local": "node ./scripts/check-d1-migration-wrangler-local.mjs",
     "import:legacy-students": "node --experimental-strip-types --experimental-specifier-resolution=node ./worker/lib/legacy-import-cli.ts",
     "smoke:production": "node ./scripts/smoke-production.mjs",
     "db:generate": "drizzle-kit generate",

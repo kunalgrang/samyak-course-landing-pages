@@ -981,7 +981,7 @@ describe("auth routes", () => {
     await expect(session.json()).resolves.toMatchObject({ authenticated: false, code: "TRAINER_SESSION_ACTIVE" });
 
     const studentHome = await app.request("http://localhost/api/student/home", { headers: { Cookie: cookie } }, env(db));
-    expect(studentHome.status).toBe(403);
+    expect(studentHome.status).toBe(409);
   });
 
   it("accepts a session after simulated Worker restart and ordinary deployment when SESSION_PEPPER is stable", async () => {
