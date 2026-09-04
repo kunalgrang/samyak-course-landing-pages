@@ -97,6 +97,35 @@ const verifyPartnerOtpResponseSchema = z.object({
 export type PartnerSessionResponse = z.infer<typeof partnerSessionSchema>;
 export type VerifyPartnerOtpResponse = z.infer<typeof verifyPartnerOtpResponseSchema>;
 
+const trainerProfileSchema = z.object({
+  personId: z.string(),
+  publicName: z.string(),
+  branchId: z.string().nullable(),
+  branchName: z.string(),
+  roles: z.array(z.string()),
+});
+
+const trainerSessionSchema = z.object({
+  authenticated: z.boolean(),
+  activeTrainer: trainerProfileSchema.nullable(),
+  trainers: z.array(trainerProfileSchema),
+  mobileLastFour: z.string().optional(),
+  code: z.string().optional(),
+  message: z.string().optional(),
+  requestId: z.string().optional(),
+});
+
+const verifyTrainerOtpResponseSchema = z.object({
+  success: z.boolean(),
+  code: z.string().optional(),
+  message: z.string().optional(),
+  session: trainerSessionSchema.optional(),
+  requestId: z.string(),
+});
+
+export type TrainerSessionResponse = z.infer<typeof trainerSessionSchema>;
+export type VerifyTrainerOtpResponse = z.infer<typeof verifyTrainerOtpResponseSchema>;
+
 const dashboardSchema = z.object({
   success: z.literal(true),
   profile: z.object({
@@ -318,6 +347,77 @@ const batchDetailSchema = z.object({
   success: z.literal(true),
   batch: batchSchema,
   roster: z.array(z.record(z.string(), z.unknown())),
+});
+
+const trainerBatchSchema = z.object({
+  id: z.string(),
+  branchId: z.string(),
+  branchName: z.string(),
+  courseId: z.string(),
+  courseName: z.string(),
+  courses: z.array(z.object({ id: z.string(), name: z.string() })).default([]),
+  courseCount: z.number().optional(),
+  name: z.string(),
+  daysOfWeek: z.array(z.string()),
+  startTime: z.string(),
+  endTime: z.string(),
+  activeStudents: z.number(),
+  status: z.string(),
+  todaySessionId: z.string().nullable().default(null),
+});
+
+const trainerRosterItemSchema = z.object({
+  batchMembershipId: z.string(),
+  enrolmentId: z.string(),
+  enrolmentNumber: z.string(),
+  studentNumber: z.string(),
+  studentName: z.string(),
+  courseId: z.string(),
+  courseName: z.string(),
+  joinedAt: z.string(),
+  leftAt: z.string().nullable(),
+  attendanceStatus: z.string().nullable(),
+});
+
+const trainerClassSessionSchema = z.object({
+  id: z.string(),
+  batchId: z.string(),
+  trainerPersonId: z.string(),
+  sessionDate: z.string(),
+  scheduledStartTime: z.string().nullable(),
+  scheduledEndTime: z.string().nullable(),
+  actualStartedAt: z.string().nullable(),
+  actualEndedAt: z.string().nullable(),
+  teachingNote: z.string(),
+  status: z.string(),
+  version: z.number(),
+  canEdit: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const trainerSessionSummarySchema = trainerClassSessionSchema.extend({
+  batchName: z.string().optional(),
+  branchName: z.string().optional(),
+  courseLabel: z.string().optional(),
+  presentCount: z.number(),
+  absentCount: z.number(),
+  teachingNoteExcerpt: z.string(),
+});
+
+const trainerBatchListSchema = z.object({ success: z.literal(true), batches: z.array(trainerBatchSchema) });
+const trainerSessionListSchema = z.object({ success: z.literal(true), sessions: z.array(trainerSessionSummarySchema) });
+const trainerBatchDetailSchema = z.object({
+  success: z.literal(true),
+  batch: trainerBatchSchema,
+  roster: z.array(trainerRosterItemSchema),
+  sessions: z.array(trainerSessionSummarySchema),
+});
+const trainerSessionDetailSchema = z.object({
+  success: z.literal(true),
+  session: trainerClassSessionSchema,
+  batch: trainerBatchSchema.nullable(),
+  roster: z.array(trainerRosterItemSchema),
 });
 
 const admissionDraftPayloadSchema = z.record(z.string(), z.unknown());
@@ -1056,6 +1156,12 @@ export type StaffCourse = z.infer<typeof courseSchema>;
 export type StaffBatch = z.infer<typeof batchSchema>;
 export type AdmissionBatchOption = z.infer<typeof admissionBatchOptionSchema>;
 export type StaffBatchDetail = z.infer<typeof batchDetailSchema>;
+export type TrainerBatch = z.infer<typeof trainerBatchSchema>;
+export type TrainerBatchDetail = z.infer<typeof trainerBatchDetailSchema>;
+export type TrainerRosterItem = z.infer<typeof trainerRosterItemSchema>;
+export type TrainerClassSession = z.infer<typeof trainerClassSessionSchema>;
+export type TrainerSessionSummary = z.infer<typeof trainerSessionSummarySchema>;
+export type TrainerSessionDetail = z.infer<typeof trainerSessionDetailSchema>;
 export type EnquiryDetail = z.infer<typeof enquiryDetailSchema>;
 export type CrmEnquiryItem = z.infer<typeof crmItemSchema>;
 export type CrmEnquiryList = z.infer<typeof crmListSchema>;
@@ -1169,6 +1275,54 @@ export async function selectPartnerProfile(educationPartnerId: string) {
 
 export async function logoutPartner() {
   return postJson("/api/partner/auth/logout", {}, z.object({ success: z.boolean(), requestId: z.string() }));
+}
+
+export async function getTrainerSession() {
+  return getJson("/api/trainer/session", trainerSessionSchema);
+}
+
+export async function requestTrainerOtp(mobile: string, turnstileToken: string) {
+  return postJson("/api/trainer/auth/request-otp", { mobile, turnstileToken }, requestOtpResponseSchema);
+}
+
+export async function resendTrainerOtp(challengeId: string) {
+  return postJson("/api/trainer/auth/resend-otp", { challengeId }, requestOtpResponseSchema);
+}
+
+export async function verifyTrainerOtp(challengeId: string, otp: string) {
+  return postJson("/api/trainer/auth/verify-otp", { challengeId, otp }, verifyTrainerOtpResponseSchema);
+}
+
+export async function selectTrainerProfile(personId: string) {
+  return postJson("/api/trainer/auth/select-profile", { personId }, verifyTrainerOtpResponseSchema);
+}
+
+export async function logoutTrainer() {
+  return postJson("/api/trainer/auth/logout", {}, z.object({ success: z.boolean(), requestId: z.string() }));
+}
+
+export async function getTrainerBatches(status = "active") {
+  return getJson(`/api/trainer/batches${queryString({ status })}`, trainerBatchListSchema);
+}
+
+export async function getTrainerSessions() {
+  return getJson("/api/trainer/sessions", trainerSessionListSchema);
+}
+
+export async function getTrainerBatch(batchId: string) {
+  return getJson(`/api/trainer/batches/${encodeURIComponent(batchId)}`, trainerBatchDetailSchema);
+}
+
+export async function openTrainerTodaySession(batchId: string, sessionDate?: string) {
+  return postJson(`/api/trainer/batches/${encodeURIComponent(batchId)}/sessions/today`, { sessionDate }, trainerSessionDetailSchema);
+}
+
+export async function getTrainerClassSession(sessionId: string) {
+  return getJson(`/api/trainer/sessions/${encodeURIComponent(sessionId)}`, trainerSessionDetailSchema);
+}
+
+export async function saveTrainerClassSession(sessionId: string, input: { expectedVersion: number; teachingNote: string; attendance: Array<{ batchMembershipId: string; status: "present" | "absent" }> }) {
+  return postJson(`/api/trainer/sessions/${encodeURIComponent(sessionId)}/save`, input, trainerSessionDetailSchema);
 }
 
 export async function getPartnerPortal(params: { limit?: number; offset?: number } = {}) {

@@ -6,6 +6,8 @@ import { useAuth } from "../features/auth/AuthContext";
 import { LoginPage } from "../features/auth/LoginPage";
 import { PartnerLoginPage } from "../features/partner/PartnerLoginPage";
 import { PartnerPortalPage } from "../features/partner/PartnerPortalPage";
+import { TrainerLoginPage } from "../features/trainer/TrainerLoginPage";
+import { TrainerPortalPage } from "../features/trainer/TrainerPortalPage";
 import { ProfilePage } from "../features/profile/ProfilePage";
 import { ReferralsPage } from "../features/referrals/ReferralsPage";
 import { ReferralOperationsDetailPage, ReferralOperationsPage } from "../features/staff/ReferralOperationsPage";
@@ -47,8 +49,11 @@ type RedirectState = {
 export function normalizePath(pathname: string): RoutePath {
   if (pathname === "/login" || pathname === "/student/login") return pathname;
   if (pathname === "/partner/login" || pathname === "/partner/dashboard") return pathname;
+  if (pathname === "/trainer/login" || pathname === "/trainer/dashboard" || pathname === "/trainer/sessions") return pathname;
   if (studentRoutes.has(pathname as RoutePath)) return pathname as RoutePath;
   if (appRoutes.has(pathname as RoutePath)) return pathname as RoutePath;
+  if (/^\/trainer\/batches\/[^/]+$/.test(pathname)) return pathname as RoutePath;
+  if (/^\/trainer\/sessions\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/enquiries\/[^/]+\/admission$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/enquiries\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/referral-operations\/[^/]+$/.test(pathname)) return pathname as RoutePath;
@@ -126,6 +131,14 @@ export function Router() {
   async function handleStudentSignOut() {
     await signOut();
     navigate("/student/login", true);
+  }
+
+  if (path === "/trainer/login") {
+    return <TrainerLoginPage sessionMessage={sessionMessage} onAuthenticated={() => navigate("/trainer/dashboard", true)} />;
+  }
+
+  if (path.startsWith("/trainer/")) {
+    return <TrainerPortalPage path={path} onNavigate={navigate} />;
   }
 
   if (isLoading) {

@@ -11,6 +11,8 @@ const REFERRAL_PUBLIC_ORIGIN = "https://go.samyaksion.com";
 const PRODUCTION_SESSION_COOKIE = "__Host-samyak_session";
 const LOCAL_DEVELOPMENT_SESSION_COOKIE = "samyak_session";
 const PERSON_ROLE_CODES = new Set(["student", "alumni"]);
+const TRAINER_ROLE_CODE = "trainer";
+export type SessionSubjectType = "person" | "trainer" | "partner";
 
 export type ProfileChoice = {
   personId: string;
@@ -41,6 +43,29 @@ export type PartnerSessionView = {
   authenticated: boolean;
   activePartner: PartnerProfileChoice | null;
   partners: PartnerProfileChoice[];
+  mobileLastFour?: string;
+  code?: string;
+  message?: string;
+};
+
+export type TrainerProfileChoice = {
+  personId: string;
+  publicName: string;
+  branchId: string | null;
+  branchName: string;
+  roles: string[];
+};
+
+export type TrainerLookup = {
+  success: true;
+  eligible: boolean;
+  trainers: TrainerProfileChoice[];
+};
+
+export type TrainerSessionView = {
+  authenticated: boolean;
+  activeTrainer: TrainerProfileChoice | null;
+  trainers: TrainerProfileChoice[];
   mobileLastFour?: string;
   code?: string;
   message?: string;
@@ -78,6 +103,7 @@ type SessionRecord = {
   login_account_id: string;
   active_person_id: string | null;
   active_education_partner_id: string | null;
+  active_subject_type?: SessionSubjectType;
   expires_at: string;
   last_seen_at: string;
   revoked_at: string | null;
@@ -416,7 +442,7 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
     await c.env.DB.prepare("update login_account_people set is_available = 0 where login_account_id = ? and person_id = ?")
       .bind(account.id, previous.person_id)
       .run();
-    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ?")
+    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ? and coalesce(active_subject_type, 'person') = 'person'")
       .bind(account.id, previous.person_id)
       .run();
     await recordProfileAudit(c, account.id, previous.person_id, "profile_unlinked", previous.person_id);
@@ -424,7 +450,7 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
 
   for (const previous of previousLinks.results || []) {
     if (returnedPersonIds.has(previous.person_id)) continue;
-    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ?")
+    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ? and coalesce(active_subject_type, 'person') = 'person'")
       .bind(account.id, previous.person_id)
       .run();
   }
@@ -432,16 +458,117 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
   return account.id;
 }
 
-export async function createSession(c: AppContext, loginAccountId: string, activePersonId: string | null, activeEducationPartnerId: string | null = null) {
+export async function lookupTrainersByMobile(c: AppContext, mobile: string): Promise<TrainerLookup> {
+  const hash = await mobileHash(c, mobile);
+  const rows = await c.env.DB.prepare(
+    `select distinct
+       people.id as person_id,
+       coalesce(people.public_name, people.full_name) as public_name,
+       people.home_branch_id,
+       branches.name as branch_name
+     from person_contacts
+     join people on people.id = person_contacts.person_id
+       and people.organisation_id = ?
+       and people.status = 'active'
+     left join person_contact_details on person_contact_details.contact_id = person_contacts.id
+     join person_roles on person_roles.person_id = people.id
+     join roles on roles.id = person_roles.role_id
+       and roles.organisation_id = people.organisation_id
+       and roles.code = ?
+     left join branches on branches.id = coalesce(person_roles.branch_id, people.home_branch_id)
+       and branches.organisation_id = people.organisation_id
+     where person_contacts.contact_type = 'mobile'
+       and person_contacts.normalized_value = ?
+       and (person_contact_details.status is null or person_contact_details.status = 'active')
+       and (person_contact_details.valid_until is null or person_contact_details.valid_until > ?)
+       and (branches.id is null or branches.status = 'active')
+     order by public_name collate nocase`,
+  )
+    .bind(ORG_ID, TRAINER_ROLE_CODE, hash, new Date().toISOString())
+    .all<{ person_id: string; public_name: string; home_branch_id: string | null; branch_name: string | null }>();
+  const trainers = (rows.results || []).map((row) => ({
+    personId: row.person_id,
+    publicName: row.public_name,
+    branchId: row.home_branch_id,
+    branchName: row.branch_name || "",
+    roles: [TRAINER_ROLE_CODE],
+  }));
+  return { success: true, eligible: trainers.length > 0, trainers };
+}
+
+export async function bootstrapTrainerAccount(c: AppContext, mobile: string, lookup: TrainerLookup) {
+  const now = new Date().toISOString();
+  const accountHash = await mobileHash(c, mobile);
+  const accountId = createOpaqueId("acct");
+  await c.env.DB.prepare(
+    `insert into login_accounts (
+      id, organisation_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status,
+      last_login_at, created_at, updated_at
+    ) values (?, ?, ?, ?, ?, 1, 'active', ?, ?, ?)
+    on conflict(organisation_id, mobile_normalized) do update set
+      mobile_hash = excluded.mobile_hash,
+      mobile_last_four = excluded.mobile_last_four,
+      last_login_at = excluded.last_login_at,
+      updated_at = excluded.updated_at`,
+  )
+    .bind(accountId, ORG_ID, accountHash, accountHash, mobile.slice(-4), now, now, now)
+    .run();
+  const account = await c.env.DB.prepare("select id from login_accounts where organisation_id = ? and mobile_normalized = ?")
+    .bind(ORG_ID, accountHash)
+    .first<{ id: string }>();
+  if (!account) throw new Error("Trainer account bootstrap failed");
+
+  const returnedPersonIds = new Set(lookup.trainers.map((trainer) => trainer.personId));
+  if (returnedPersonIds.size === 0) throw new Error("Trainer account bootstrap requires linked trainers");
+
+  for (const personId of returnedPersonIds) {
+    await c.env.DB.prepare(
+      `insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at)
+       values (?, ?, 'staff', ?, 1, ?)
+       on conflict(login_account_id, person_id) do update set access_type = excluded.access_type, is_default = excluded.is_default, is_available = 1`,
+    )
+      .bind(account.id, personId, lookup.trainers.length === 1 ? 1 : 0, now)
+      .run();
+  }
+
+  const previousLinks = await c.env.DB.prepare(
+    `select login_account_people.person_id
+     from login_account_people
+     join person_roles on person_roles.person_id = login_account_people.person_id
+     join roles on roles.id = person_roles.role_id and roles.code = ?
+     where login_account_people.login_account_id = ?`,
+  )
+    .bind(TRAINER_ROLE_CODE, account.id)
+    .all<{ person_id: string }>();
+  for (const previous of previousLinks.results || []) {
+    if (returnedPersonIds.has(previous.person_id)) continue;
+    await c.env.DB.prepare("update login_account_people set is_available = 0 where login_account_id = ? and person_id = ?")
+      .bind(account.id, previous.person_id)
+      .run();
+    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ? and coalesce(active_subject_type, 'person') = 'person'")
+      .bind(account.id, previous.person_id)
+      .run();
+  }
+
+  return account.id;
+}
+
+export async function createSession(
+  c: AppContext,
+  loginAccountId: string,
+  activePersonId: string | null,
+  activeEducationPartnerId: string | null = null,
+  activeSubjectType: SessionSubjectType = activeEducationPartnerId ? "partner" : "person",
+) {
   const token = createSessionToken();
   const tokenHash = await hmacHex(sessionPepper(c), "session", token);
   const now = new Date().toISOString();
   const fingerprint = await requestFingerprint(c);
   await c.env.DB.prepare(
-    `insert into user_sessions (id, login_account_id, active_person_id, active_education_partner_id, token_hash, created_at, expires_at, last_seen_at, ip_hash, user_agent_hash)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `insert into user_sessions (id, login_account_id, active_person_id, active_education_partner_id, active_subject_type, token_hash, created_at, expires_at, last_seen_at, ip_hash, user_agent_hash)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(createOpaqueId("sess"), loginAccountId, activePersonId, activeEducationPartnerId, tokenHash, now, daysFromNow(30), now, fingerprint.ipHash, fingerprint.userAgentHash)
+    .bind(createOpaqueId("sess"), loginAccountId, activePersonId, activeEducationPartnerId, activeSubjectType, tokenHash, now, daysFromNow(30), now, fingerprint.ipHash, fingerprint.userAgentHash)
     .run();
   return token;
 }
@@ -494,7 +621,13 @@ export async function getSessionValidationResult(c: AppContext): Promise<Session
     return { session: null, resultCode: "SESSION_INACTIVE_EXPIRED", shouldClearCookie: true };
   }
   let currentRecord = record;
-  if (record.active_person_id && !(await isLinkedProfileAvailable(c, record.login_account_id, record.active_person_id))) {
+  const activeSubjectType = record.active_subject_type || "person";
+  if (record.active_person_id && activeSubjectType === "trainer" && !(await isLinkedTrainerAvailable(c, record.login_account_id, record.active_person_id))) {
+    await c.env.DB.prepare("update user_sessions set active_person_id = null where id = ?").bind(record.id).run();
+    currentRecord = { ...record, active_person_id: null };
+    await recordSessionResult(c, "SESSION_PROFILE_CLEARED", record.login_account_id);
+  }
+  if (record.active_person_id && activeSubjectType === "person" && !(await isLinkedProfileAvailable(c, record.login_account_id, record.active_person_id))) {
     await c.env.DB.prepare("update user_sessions set active_person_id = null where id = ?").bind(record.id).run();
     currentRecord = { ...record, active_person_id: null };
     await recordSessionResult(c, "SESSION_PROFILE_CLEARED", record.login_account_id);
@@ -610,9 +743,71 @@ export async function getEffectiveRolesForActiveProfile(c: AppContext, loginAcco
 export async function requireAuthenticatedProfile(c: AppContext) {
   const session = await getSessionFromRequest(c);
   if (!session) return null;
+  if ((session.record.active_subject_type || "person") !== "person") return null;
   const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
   if (!view.activeProfile) return null;
   return { session, view, activeProfile: view.activeProfile };
+}
+
+export async function trainerSessionView(c: AppContext, loginAccountId: string, activePersonId: string | null): Promise<TrainerSessionView> {
+  const account = await c.env.DB.prepare("select mobile_last_four from login_accounts where id = ?")
+    .bind(loginAccountId)
+    .first<{ mobile_last_four: string | null }>();
+  const rows = await c.env.DB.prepare(
+    `select distinct
+       people.id as person_id,
+       coalesce(people.public_name, people.full_name) as public_name,
+       people.home_branch_id,
+       branches.name as branch_name
+     from login_account_people
+     join people on people.id = login_account_people.person_id
+       and people.organisation_id = ?
+       and people.status = 'active'
+     join person_roles on person_roles.person_id = people.id
+     join roles on roles.id = person_roles.role_id
+       and roles.organisation_id = people.organisation_id
+       and roles.code = ?
+     left join branches on branches.id = coalesce(person_roles.branch_id, people.home_branch_id)
+       and branches.organisation_id = people.organisation_id
+     where login_account_people.login_account_id = ?
+       and login_account_people.is_available = 1
+       and (branches.id is null or branches.status = 'active')
+     order by public_name collate nocase`,
+  )
+    .bind(ORG_ID, TRAINER_ROLE_CODE, loginAccountId)
+    .all<{ person_id: string; public_name: string; home_branch_id: string | null; branch_name: string | null }>();
+  const trainers = (rows.results || []).map((row) => ({
+    personId: row.person_id,
+    publicName: row.public_name,
+    branchId: row.home_branch_id,
+    branchName: row.branch_name || "",
+    roles: [TRAINER_ROLE_CODE],
+  }));
+  return {
+    authenticated: true,
+    activeTrainer: trainers.find((trainer) => trainer.personId === activePersonId) || null,
+    trainers,
+    mobileLastFour: account?.mobile_last_four || undefined,
+  };
+}
+
+export async function requireAuthenticatedTrainer(c: AppContext) {
+  const session = await getSessionFromRequest(c);
+  if (!session?.record.active_person_id || session.record.active_education_partner_id) return null;
+  if (session.record.active_subject_type !== "trainer") return null;
+  if (!(await isLinkedTrainerAvailable(c, session.record.login_account_id, session.record.active_person_id))) return null;
+  const view = await trainerSessionView(c, session.record.login_account_id, session.record.active_person_id);
+  if (!view.activeTrainer) return null;
+  return { session, view, activeTrainer: view.activeTrainer };
+}
+
+export async function selectLinkedTrainer(c: AppContext, sessionId: string, loginAccountId: string, personId: string) {
+  const linked = await isLinkedTrainerAvailable(c, loginAccountId, personId);
+  if (!linked) return false;
+  await c.env.DB.prepare("update user_sessions set active_person_id = ?, active_education_partner_id = null, active_subject_type = 'trainer', last_seen_at = ? where id = ?")
+    .bind(personId, new Date().toISOString(), sessionId)
+    .run();
+  return true;
 }
 
 export async function requireActiveProfileRole(c: AppContext, allowedRoles: string[]) {
@@ -626,7 +821,7 @@ export async function requireActiveProfileRole(c: AppContext, allowedRoles: stri
 export async function selectLinkedProfile(c: AppContext, sessionId: string, loginAccountId: string, personId: string) {
   const linked = await isLinkedProfileAvailable(c, loginAccountId, personId);
   if (!linked) return false;
-  await c.env.DB.prepare("update user_sessions set active_person_id = ?, active_education_partner_id = null, last_seen_at = ? where id = ?")
+  await c.env.DB.prepare("update user_sessions set active_person_id = ?, active_education_partner_id = null, active_subject_type = 'person', last_seen_at = ? where id = ?")
     .bind(personId, new Date().toISOString(), sessionId)
     .run();
   return true;
@@ -635,7 +830,7 @@ export async function selectLinkedProfile(c: AppContext, sessionId: string, logi
 export async function selectLinkedPartner(c: AppContext, sessionId: string, loginAccountId: string, educationPartnerId: string) {
   const linked = await isLinkedPartnerAvailable(c, loginAccountId, educationPartnerId);
   if (!linked) return false;
-  await c.env.DB.prepare("update user_sessions set active_person_id = null, active_education_partner_id = ?, last_seen_at = ? where id = ?")
+  await c.env.DB.prepare("update user_sessions set active_person_id = null, active_education_partner_id = ?, active_subject_type = 'partner', last_seen_at = ? where id = ?")
     .bind(educationPartnerId, new Date().toISOString(), sessionId)
     .run();
   return true;
@@ -1138,6 +1333,7 @@ export async function partnerSessionView(c: AppContext, loginAccountId: string, 
 
 export async function requireAuthenticatedPartner(c: AppContext) {
   const session = await getSessionFromRequest(c);
+  if (session?.record.active_subject_type !== "partner") return null;
   if (!session?.record.active_education_partner_id) return null;
   if (!(await isLinkedPartnerAvailable(c, session.record.login_account_id, session.record.active_education_partner_id))) return null;
   const view = await partnerSessionView(c, session.record.login_account_id, session.record.active_education_partner_id);
@@ -1295,6 +1491,29 @@ async function isLinkedProfileAvailable(c: AppContext, loginAccountId: string, p
        and people.status = 'active'`,
   )
     .bind(loginAccountId, personId)
+    .first<{ ok: number }>();
+  return Boolean(linked);
+}
+
+async function isLinkedTrainerAvailable(c: AppContext, loginAccountId: string, personId: string) {
+  const linked = await c.env.DB.prepare(
+    `select 1 as ok
+     from login_account_people
+     join people on people.id = login_account_people.person_id
+     join person_roles on person_roles.person_id = people.id
+     join roles on roles.id = person_roles.role_id and roles.organisation_id = people.organisation_id
+     left join branches on branches.id = coalesce(person_roles.branch_id, people.home_branch_id)
+       and branches.organisation_id = people.organisation_id
+     where login_account_people.login_account_id = ?
+       and login_account_people.person_id = ?
+       and login_account_people.is_available = 1
+       and people.organisation_id = ?
+       and people.status = 'active'
+       and roles.code = ?
+       and (branches.id is null or branches.status = 'active')
+     limit 1`,
+  )
+    .bind(loginAccountId, personId, ORG_ID, TRAINER_ROLE_CODE)
     .first<{ ok: number }>();
   return Boolean(linked);
 }
