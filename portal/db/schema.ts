@@ -338,6 +338,73 @@ export const auditLogs = sqliteTable(
   ],
 );
 
+export const classSessions = sqliteTable(
+  "class_sessions",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branches.id),
+    batchId: text("batch_id")
+      .notNull(),
+    trainerPersonId: text("trainer_person_id")
+      .notNull()
+      .references(() => people.id),
+    sessionDate: text("session_date").notNull(),
+    scheduledStartTime: text("scheduled_start_time"),
+    scheduledEndTime: text("scheduled_end_time"),
+    actualStartedAt: text("actual_started_at"),
+    actualEndedAt: text("actual_ended_at"),
+    teachingNote: text("teaching_note").notNull().default(""),
+    status: text("status").notNull().default("open"),
+    version: integer("version").notNull().default(1),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    createdByActorId: text("created_by_actor_id").references(() => loginAccounts.id),
+  },
+  (table) => [
+    uniqueIndex("class_sessions_batch_date_start_unique").on(table.organisationId, table.batchId, table.sessionDate, table.scheduledStartTime),
+    index("class_sessions_org_trainer_date_idx").on(table.organisationId, table.trainerPersonId, table.sessionDate),
+    index("class_sessions_batch_date_idx").on(table.batchId, table.sessionDate),
+    index("class_sessions_batch_status_idx").on(table.batchId, table.status),
+    check("class_sessions_status_check", sql`${table.status} in ('open', 'completed', 'cancelled')`),
+    check("class_sessions_version_check", sql`${table.version} > 0`),
+  ],
+);
+
+export const attendanceRecords = sqliteTable(
+  "attendance_records",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    classSessionId: text("class_session_id")
+      .notNull()
+      .references(() => classSessions.id),
+    batchMembershipId: text("batch_membership_id").notNull(),
+    enrolmentId: text("enrolment_id").notNull(),
+    personId: text("person_id")
+      .notNull()
+      .references(() => people.id),
+    status: text("status").notNull(),
+    markedByActorId: text("marked_by_actor_id").references(() => loginAccounts.id),
+    markedAt: text("marked_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("attendance_records_session_membership_unique").on(table.classSessionId, table.batchMembershipId),
+    index("attendance_records_session_idx").on(table.classSessionId),
+    index("attendance_records_enrolment_idx").on(table.enrolmentId),
+    index("attendance_records_membership_idx").on(table.batchMembershipId),
+    index("attendance_records_org_person_idx").on(table.organisationId, table.personId),
+    check("attendance_records_status_check", sql`${table.status} in ('present', 'absent')`),
+  ],
+);
+
 export const organisationRelations = relations(organisations, ({ many }) => ({
   branches: many(branches),
   people: many(people),
