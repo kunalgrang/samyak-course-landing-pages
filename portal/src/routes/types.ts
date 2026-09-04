@@ -26,5 +26,11 @@ export type StudentRoute =
   | "/student/rules"
   | "/student/profile";
 export type PartnerRoute = "/partner/login" | "/partner/dashboard";
+export type TrainerRoute =
+  | "/trainer/login"
+  | "/trainer/dashboard"
+  | "/trainer/sessions"
+  | `/trainer/batches/${string}`
+  | `/trainer/sessions/${string}`;
 
-export type RoutePath = "/login" | "/student/login" | PartnerRoute | AppRoute | StudentRoute;
+export type RoutePath = "/login" | "/student/login" | PartnerRoute | TrainerRoute | AppRoute | StudentRoute;

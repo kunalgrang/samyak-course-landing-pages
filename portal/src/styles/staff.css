@@ -2207,3 +2207,253 @@
     gap: 5px;
   }
 }
+
+.trainer-shell {
+  min-height: 100vh;
+  background: #f5f7fb;
+  color: #172033;
+  padding: 1rem;
+}
+
+.trainer-topbar,
+.trainer-nav,
+.trainer-section {
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+.trainer-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 0;
+}
+
+.trainer-topbar h1,
+.trainer-detail-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+
+.trainer-eyebrow {
+  display: block;
+  color: #637083;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.trainer-nav {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.35rem;
+  border: 1px solid #dde4ef;
+  background: #ffffff;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.trainer-nav button {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #435169;
+  padding: 0.65rem 0.9rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.trainer-nav button[aria-pressed="true"] {
+  background: #17324d;
+  color: #ffffff;
+}
+
+.nav-label-short {
+  display: none;
+}
+
+.trainer-section {
+  padding: 1rem 0 2rem;
+}
+
+.trainer-batch-grid,
+.trainer-list,
+.trainer-attendance-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.trainer-batch-card,
+.trainer-row,
+.trainer-attendance-panel,
+.trainer-note-field,
+.trainer-session-page > .notice {
+  background: #ffffff;
+  border: 1px solid #dde4ef;
+  border-radius: 8px;
+  box-shadow: 0 8px 22px rgba(23, 32, 51, 0.05);
+}
+
+.trainer-batch-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem;
+}
+
+.trainer-batch-card strong,
+.trainer-row strong,
+.trainer-attendance-row strong {
+  display: block;
+  color: #172033;
+}
+
+.trainer-batch-card span,
+.trainer-row span,
+.trainer-attendance-row span {
+  display: block;
+  color: #435169;
+  margin-top: 0.2rem;
+}
+
+.trainer-batch-card small,
+.trainer-row small {
+  display: block;
+  color: #637083;
+  margin-top: 0.25rem;
+}
+
+.trainer-card-actions,
+.trainer-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.trainer-card-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.trainer-detail-header {
+  justify-content: space-between;
+  margin: 0 0 1rem;
+}
+
+.trainer-detail-header p {
+  margin: 0.35rem 0 0;
+  color: #435169;
+}
+
+.trainer-back-link {
+  margin-bottom: 0.75rem;
+}
+
+.trainer-two-column {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.trainer-row {
+  padding: 0.85rem;
+  text-align: left;
+}
+
+.trainer-row-button {
+  width: 100%;
+  border: 1px solid #dde4ef;
+}
+
+.trainer-attendance-panel {
+  padding: 1rem;
+}
+
+.trainer-attendance-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.75rem 0;
+  border-top: 1px solid #e8edf4;
+}
+
+.trainer-attendance-row:first-child {
+  border-top: 0;
+}
+
+.attendance-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(5rem, 1fr));
+  gap: 0.35rem;
+}
+
+.attendance-toggle button {
+  min-height: 2.35rem;
+  border: 1px solid #c9d3e2;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #253248;
+  font-weight: 700;
+}
+
+.attendance-toggle button[aria-pressed="true"] {
+  background: #17324d;
+  border-color: #17324d;
+  color: #ffffff;
+}
+
+.trainer-note-field {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  color: #253248;
+  font-weight: 700;
+}
+
+.trainer-note-field textarea {
+  min-height: 8rem;
+  resize: vertical;
+}
+
+@media (max-width: 760px) {
+  .trainer-shell {
+    padding: 0.75rem;
+  }
+
+  .trainer-topbar,
+  .trainer-detail-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .trainer-batch-card,
+  .trainer-attendance-row,
+  .trainer-two-column {
+    grid-template-columns: 1fr;
+  }
+
+  .trainer-card-actions {
+    justify-content: stretch;
+  }
+
+  .trainer-card-actions button,
+  .trainer-detail-header button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 430px) {
+  .nav-label-full {
+    display: none;
+  }
+
+  .nav-label-short {
+    display: inline;
+  }
+}
