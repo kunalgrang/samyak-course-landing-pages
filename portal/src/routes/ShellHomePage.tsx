@@ -93,6 +93,19 @@ export function OverviewContent({ home, referralPath = home.skillCircle.referral
         </div>
       </section>
 
+      <section className="link-panel" aria-label="Learning">
+        <div>
+          <span className="field-label">Learning</span>
+          <strong>Classes and attendance</strong>
+          <p>View your class history, attendance and PDFs shared by your trainer.</p>
+        </div>
+        <div className="link-actions">
+          <a className="button-link" href="/student/learning">
+            Open Learning
+          </a>
+        </div>
+      </section>
+
       <section className="content-stack" aria-labelledby="course-history-title">
         <div className="section-heading">
           <h2 id="course-history-title">Course history</h2>

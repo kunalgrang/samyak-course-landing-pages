@@ -14,6 +14,7 @@ describe("Router student namespace", () => {
     expect(navigationForRoles(["owner"]).map((item) => item.path)).not.toEqual(expect.arrayContaining(["/student/referrals", "/app/referrals"]));
     expect(navigationForRoles(["student"]).map((item) => item.path)).toEqual([
       "/student/dashboard",
+      "/student/learning",
       "/student/certificates",
       "/student/referrals",
       "/student/rules",

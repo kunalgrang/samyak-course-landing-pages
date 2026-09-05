@@ -21,6 +21,7 @@ export type AppRoute =
   | "/app/profile";
 export type StudentRoute =
   | "/student/dashboard"
+  | "/student/learning"
   | "/student/certificates"
   | "/student/referrals"
   | "/student/rules"

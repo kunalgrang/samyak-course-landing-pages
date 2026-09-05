@@ -405,6 +405,15 @@ const trainerSessionSummarySchema = trainerClassSessionSchema.extend({
   teachingNoteExcerpt: z.string(),
 });
 
+const sessionMaterialSchema = z.object({
+  id: z.string(),
+  materialType: z.union([z.literal("notes"), z.literal("homework"), z.literal("study_material")]),
+  title: z.string(),
+  sizeBytes: z.number(),
+  originalFilename: z.string(),
+  createdAt: z.string(),
+});
+
 const trainerBatchListSchema = z.object({ success: z.literal(true), batches: z.array(trainerBatchSchema) });
 const trainerSessionListSchema = z.object({ success: z.literal(true), sessions: z.array(trainerSessionSummarySchema) });
 const trainerBatchDetailSchema = z.object({
@@ -418,6 +427,65 @@ const trainerSessionDetailSchema = z.object({
   session: trainerClassSessionSchema,
   batch: trainerBatchSchema.nullable(),
   roster: z.array(trainerRosterItemSchema),
+});
+const trainerSessionMaterialListSchema = z.object({ success: z.literal(true), materials: z.array(sessionMaterialSchema) });
+const trainerSessionMaterialMutationSchema = z.object({ success: z.literal(true), material: sessionMaterialSchema });
+const mutationSuccessSchema = z.object({ success: z.literal(true) });
+
+const studentLearningEnrolmentSchema = z.object({
+  enrolmentId: z.string(),
+  enrolmentNumber: z.string(),
+  status: z.string(),
+  joiningDate: z.string(),
+  completionDate: z.string().nullable(),
+  studentId: z.string(),
+  studentNumber: z.string(),
+  courseId: z.string(),
+  courseCode: z.string(),
+  courseName: z.string(),
+  branchName: z.string(),
+  currentBatch: z.object({
+    id: z.string(),
+    name: z.string(),
+    trainerName: z.string(),
+    daysOfWeek: z.array(z.string()),
+    startTime: z.string(),
+    endTime: z.string(),
+    joinedAt: z.string(),
+  }).nullable(),
+});
+
+const studentLearningSessionSchema = z.object({
+  id: z.string(),
+  sessionDate: z.string(),
+  scheduledStartTime: z.string().nullable(),
+  scheduledEndTime: z.string().nullable(),
+  batchId: z.string(),
+  batchName: z.string(),
+  trainerName: z.string(),
+  teachingNote: z.string(),
+  attendanceStatus: z.string().nullable(),
+  status: z.string(),
+  materialCount: z.number(),
+  materials: z.array(sessionMaterialSchema),
+});
+
+const studentLearningListSchema = z.object({
+  success: z.literal(true),
+  enrolments: z.array(studentLearningEnrolmentSchema),
+});
+
+const studentLearningDetailSchema = z.object({
+  success: z.literal(true),
+  enrolment: studentLearningEnrolmentSchema,
+  summary: z.object({
+    present: z.number(),
+    absent: z.number(),
+    totalClasses: z.number(),
+    attendancePercent: z.number().nullable(),
+  }),
+  sessions: z.array(studentLearningSessionSchema),
+  pagination: z.object({ limit: z.number(), offset: z.number(), hasMore: z.boolean() }),
 });
 
 const admissionDraftPayloadSchema = z.record(z.string(), z.unknown());
@@ -1197,6 +1265,9 @@ export type EducationPartnerList = z.infer<typeof educationPartnerListSchema>;
 export type EducationPartner = z.infer<typeof educationPartnerSchema>;
 export type EducationPartnerDetail = z.infer<typeof educationPartnerDetailSchema>;
 export type PartnerPortal = z.infer<typeof partnerPortalSchema>;
+export type SessionMaterial = z.infer<typeof sessionMaterialSchema>;
+export type StudentLearningEnrolment = z.infer<typeof studentLearningEnrolmentSchema>;
+export type StudentLearningDetail = z.infer<typeof studentLearningDetailSchema>;
 
 export class ApiError extends Error {
   code?: string;
@@ -1325,6 +1396,26 @@ export async function saveTrainerClassSession(sessionId: string, input: { expect
   return postJson(`/api/trainer/sessions/${encodeURIComponent(sessionId)}/save`, input, trainerSessionDetailSchema);
 }
 
+export async function getTrainerSessionMaterials(sessionId: string) {
+  return getJson(`/api/trainer/sessions/${encodeURIComponent(sessionId)}/materials`, trainerSessionMaterialListSchema);
+}
+
+export async function uploadTrainerSessionMaterial(sessionId: string, input: { title: string; materialType: SessionMaterial["materialType"]; file: File }) {
+  const form = new FormData();
+  form.set("title", input.title);
+  form.set("materialType", input.materialType);
+  form.set("file", input.file);
+  return postForm(`/api/trainer/sessions/${encodeURIComponent(sessionId)}/materials`, form, trainerSessionMaterialMutationSchema);
+}
+
+export async function deleteTrainerSessionMaterial(materialId: string) {
+  return deleteJson(`/api/trainer/session-materials/${encodeURIComponent(materialId)}`, mutationSuccessSchema);
+}
+
+export function trainerMaterialContentUrl(materialId: string) {
+  return `/api/trainer/session-materials/${encodeURIComponent(materialId)}/content`;
+}
+
 export async function getPartnerPortal(params: { limit?: number; offset?: number } = {}) {
   return getJson(`/api/partner/me${queryString(params)}`, partnerPortalSchema);
 }
@@ -1335,6 +1426,18 @@ export async function getReferralDashboard() {
 
 export async function getStudentHome() {
   return getJson("/api/student/home", studentHomeSchema);
+}
+
+export async function getStudentLearningEnrolments() {
+  return getJson("/api/student/learning/enrolments", studentLearningListSchema);
+}
+
+export async function getStudentLearningDetail(enrolmentId: string, params: { limit?: number; offset?: number } = {}) {
+  return getJson(`/api/student/learning/enrolments/${encodeURIComponent(enrolmentId)}${queryString(params)}`, studentLearningDetailSchema);
+}
+
+export function studentMaterialContentUrl(materialId: string) {
+  return `/api/student/session-materials/${encodeURIComponent(materialId)}/content`;
 }
 
 export async function generateReferralLink() {
@@ -1700,6 +1803,18 @@ async function postJson<T extends z.ZodType>(url: string, body: Record<string, u
   return schema.parse(data);
 }
 
+async function postForm<T extends z.ZodType>(url: string, body: FormData, schema: T): Promise<z.infer<T>> {
+  const response = await fetch(url, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+    body,
+  });
+  const data: unknown = await response.json();
+  if (!response.ok) throw apiError(data);
+  return schema.parse(data);
+}
+
 async function patchJson<T extends z.ZodType>(url: string, body: Record<string, unknown>, schema: T): Promise<z.infer<T>> {
   const response = await fetch(url, {
     method: "PATCH",
@@ -1709,6 +1824,17 @@ async function patchJson<T extends z.ZodType>(url: string, body: Record<string, 
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+  });
+  const data: unknown = await response.json();
+  if (!response.ok) throw apiError(data);
+  return schema.parse(data);
+}
+
+async function deleteJson<T extends z.ZodType>(url: string, schema: T): Promise<z.infer<T>> {
+  const response = await fetch(url, {
+    method: "DELETE",
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
   });
   const data: unknown = await response.json();
   if (!response.ok) throw apiError(data);

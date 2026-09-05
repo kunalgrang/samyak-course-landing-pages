@@ -20,7 +20,7 @@ describe("staff approval UI", () => {
     expect(ownerNav.map((item) => item.label)).not.toEqual(expect.arrayContaining(["My Referrals", "Rewards & Benefits", "My Profile"]));
     expect(navigationForRoles(["counsellor"]).map((item) => item.path)).toEqual(expect.arrayContaining(["/app/enquiries", "/app/students"]));
     expect(navigationForRoles(["admission_admin"]).map((item) => item.path)).toEqual(expect.arrayContaining(["/app/enquiries", "/app/students"]));
-    expect(navigationForRoles(["student"]).map((item) => item.path)).toEqual(["/student/dashboard", "/student/certificates", "/student/referrals", "/student/rules", "/student/profile"]);
+    expect(navigationForRoles(["student"]).map((item) => item.path)).toEqual(["/student/dashboard", "/student/learning", "/student/certificates", "/student/referrals", "/student/rules", "/student/profile"]);
     expect(canViewEnquiries(["counsellor"])).toBe(true);
     expect(canViewStudents(["counsellor"])).toBe(true);
     expect(canViewStudents(["student"])).toBe(false);
