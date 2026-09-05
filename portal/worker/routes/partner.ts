@@ -180,7 +180,7 @@ export function registerPartnerRoutes(app: PortalHono) {
       if (validation.shouldClearCookie && hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
       return response;
     }
-    if (session.record.active_person_id || session.record.active_subject_type === "person" || session.record.active_subject_type === "trainer") {
+    if (session.record.active_person_id || session.record.active_subject_type !== "partner") {
       return jsonWithRequestId(c, {
         authenticated: false,
         activePartner: null,
@@ -199,7 +199,7 @@ export function registerPartnerRoutes(app: PortalHono) {
     if (isResponse(body)) return body;
     const session = await getSessionFromRequest(c);
     if (!session) return jsonWithRequestId(c, { success: false, code: "UNAUTHENTICATED", message: "Please sign in again." }, 401);
-    if (session.record.active_person_id || session.record.active_subject_type === "person" || session.record.active_subject_type === "trainer") return jsonWithRequestId(c, { success: false, code: "PERSON_SESSION_ACTIVE", message: "Please sign in to Partner Portal." }, 401);
+    if (session.record.active_person_id || session.record.active_subject_type !== "partner") return jsonWithRequestId(c, { success: false, code: "PERSON_SESSION_ACTIVE", message: "Please sign in to Partner Portal." }, 401);
     const selected = await selectLinkedPartner(c, session.record.id, session.record.login_account_id, body.educationPartnerId);
     if (!selected) return jsonWithRequestId(c, { success: false, code: "PROFILE_NOT_LINKED", message: "This partner profile is not available." }, 403);
     return jsonWithRequestId(c, { success: true, session: await partnerSessionView(c, session.record.login_account_id, body.educationPartnerId) });

@@ -38,6 +38,9 @@ export function registerStudentRoutes(app: PortalHono) {
       if (hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
       return response;
     }
+    if ((session.record.active_subject_type || "person") !== "person") {
+      return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
+    }
     const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
     if (!view.activeProfile) {
       return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
@@ -58,6 +61,9 @@ export function registerStudentRoutes(app: PortalHono) {
       const response = jsonError(c, { status: 401, code: "unauthenticated", message: "Please sign in again." });
       if (hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
       return response;
+    }
+    if ((session.record.active_subject_type || "person") !== "person") {
+      return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
     }
     const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
     if (!view.activeProfile) {
@@ -127,6 +133,9 @@ async function authenticatedReferrerContext(c: PortalContext) {
     const response = jsonError(c, { status: 401, code: "unauthenticated", message: "Please sign in again." });
     if (hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
     return response;
+  }
+  if ((session.record.active_subject_type || "person") !== "person") {
+    return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
   }
   const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
   if (!view.activeProfile) return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });

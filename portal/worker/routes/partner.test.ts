@@ -97,9 +97,10 @@ describe("Education Partner portal security", () => {
       expect(login.status).toBe(200);
       const loginBody = (await login.json()) as Row;
       expect(loginBody.session.activePartner).toMatchObject({ educationPartnerId: "epartner_a" });
-      expect(row(fixture.sqlite, "select active_person_id, active_education_partner_id from user_sessions order by created_at desc limit 1")).toMatchObject({
+      expect(row(fixture.sqlite, "select active_person_id, active_education_partner_id, active_subject_type from user_sessions order by created_at desc limit 1")).toMatchObject({
         active_person_id: null,
         active_education_partner_id: "epartner_a",
+        active_subject_type: "partner",
       });
       expect((await verifyPartnerOtp(fixture.env, challengeId)).status).toBe(400);
 
@@ -139,6 +140,49 @@ describe("Education Partner portal security", () => {
     }
   });
 
+  it("rejects malformed direct session subject combinations across portals", async () => {
+    const fixture = await createFixture();
+    try {
+      await seedLoginAccount(fixture.sqlite, "acct_malformed", PARTNER_MOBILE);
+      await seedPersonStudent(fixture.sqlite, "person_malformed", "student_malformed", PARTNER_MOBILE);
+      await seedEducationPartner(fixture.sqlite, "epartner_a", PARTNER_MOBILE, { referrerProfileId: "refprof_partner_a" });
+      fixture.sqlite.prepare("insert or ignore into roles (id, organisation_id, code, name, created_at) values ('role_trainer', 'org_samyak', 'trainer', 'Trainer', ?)")
+        .run(NOW);
+      fixture.sqlite.prepare("insert or ignore into login_account_people (login_account_id, person_id, access_type, is_available, created_at) values (?, ?, 'self', 1, ?)")
+        .run("acct_malformed", "person_malformed", NOW);
+      fixture.sqlite.prepare("insert or ignore into login_account_education_partners (login_account_id, education_partner_id, created_at) values (?, ?, ?)")
+        .run("acct_malformed", "epartner_a", NOW);
+      fixture.sqlite.prepare("insert or ignore into person_roles (person_id, role_id, branch_id, branch_key, created_at) values (?, 'role_trainer', 'branch_sion', 'branch_sion', ?)")
+        .run("person_malformed", NOW);
+
+      await expect(seedSessionRow(fixture.sqlite, "sess_person_partner", "acct_malformed", "person_malformed", "epartner_a", "person-partner-token"))
+        .rejects.toThrow(/both person and education partner/i);
+
+      await seedSessionRow(fixture.sqlite, "sess_partner_person", "acct_malformed", "person_malformed", null, "partner-person-token");
+      fixture.sqlite.prepare("update user_sessions set active_subject_type = 'partner' where id = 'sess_partner_person'").run();
+      const partnerPersonCookie = "samyak_session=partner-person-token";
+      expect((await app.request("http://localhost/api/student/home", { headers: { Cookie: partnerPersonCookie } }, fixture.env)).status).toBe(409);
+      await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: partnerPersonCookie } }, fixture.env)).json())
+        .resolves.toMatchObject({ authenticated: false, code: "PARTNER_SESSION_ACTIVE" });
+
+      await seedSessionRow(fixture.sqlite, "sess_trainer_partner", "acct_malformed", null, "epartner_a", "trainer-partner-token");
+      fixture.sqlite.prepare("update user_sessions set active_subject_type = 'trainer' where id = 'sess_trainer_partner'").run();
+      const trainerPartnerCookie = "samyak_session=trainer-partner-token";
+      await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: trainerPartnerCookie } }, fixture.env)).json())
+        .resolves.toMatchObject({ authenticated: false, code: "PARTNER_SESSION_ACTIVE" });
+      expect((await app.request("http://localhost/api/partner/me", { headers: { Cookie: trainerPartnerCookie } }, fixture.env)).status).toBe(401);
+
+      await seedSessionRow(fixture.sqlite, "sess_random_partner", "acct_malformed", null, "epartner_a", "random-partner-token");
+      fixture.sqlite.prepare("update user_sessions set active_subject_type = 'random_invalid_value' where id = 'sess_random_partner'").run();
+      const randomPartnerCookie = "samyak_session=random-partner-token";
+      await expect((await app.request("http://localhost/api/partner/session", { headers: { Cookie: randomPartnerCookie } }, fixture.env)).json())
+        .resolves.toMatchObject({ authenticated: false, code: "PERSON_SESSION_ACTIVE" });
+      expect((await selectPartner(fixture.env, randomPartnerCookie, "epartner_a")).status).toBe(401);
+    } finally {
+      fixture.close();
+    }
+  });
+
   it("requires explicit selection for multiple Partners on one mobile and rejects cross-Partner selection", async () => {
     const fixture = await createFixture();
     try {
@@ -150,14 +194,20 @@ describe("Education Partner portal security", () => {
       const { cookie, body } = await loginPartnerUnselected(fixture.env, PARTNER_MOBILE);
       expect(body.session.activePartner).toBeNull();
       expect(body.session.partners.map((partner: Row) => partner.businessName)).toEqual(["ABC Career Academy", "XYZ College"]);
+      expect(row(fixture.sqlite, "select active_person_id, active_education_partner_id, active_subject_type from user_sessions order by created_at desc limit 1")).toMatchObject({
+        active_person_id: null,
+        active_education_partner_id: null,
+        active_subject_type: "partner",
+      });
 
       const rejected = await selectPartner(fixture.env, cookie, "epartner_c");
       expect(rejected.status).toBe(403);
       const selected = await selectPartner(fixture.env, cookie, "epartner_a");
       expect(selected.status).toBe(200);
-      expect(row(fixture.sqlite, "select active_person_id, active_education_partner_id from user_sessions order by created_at desc limit 1")).toMatchObject({
+      expect(row(fixture.sqlite, "select active_person_id, active_education_partner_id, active_subject_type from user_sessions order by created_at desc limit 1")).toMatchObject({
         active_person_id: null,
         active_education_partner_id: "epartner_a",
+        active_subject_type: "partner",
       });
     } finally {
       fixture.close();
