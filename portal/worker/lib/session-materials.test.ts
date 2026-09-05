@@ -1,5 +1,7 @@
 /// <reference types="node" />
 import { DatabaseSync } from "node:sqlite";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { TrainerProfileChoice } from "./auth-store";
 import type { AppContext } from "./http";
@@ -11,6 +13,7 @@ import {
   getTrainerMaterialContent,
   listStudentLearning,
   listTrainerSessionMaterials,
+  materialUploadSchema,
   uploadTrainerSessionMaterial,
 } from "./session-materials";
 
@@ -69,6 +72,7 @@ class MemoryR2 {
   readonly objects = new Map<string, Uint8Array>();
   readonly deleted: string[] = [];
   failPut = false;
+  failDelete = false;
 
   async put(key: string, value: ArrayBuffer | ArrayBufferView | string) {
     if (this.failPut) throw new Error("put failed");
@@ -88,12 +92,47 @@ class MemoryR2 {
   }
 
   async delete(key: string) {
+    if (this.failDelete) throw new Error("delete failed");
     this.deleted.push(key);
     this.objects.delete(key);
   }
 }
 
 describe("session materials and student learning", () => {
+  it("replays migrations through 0028 with session material constraints and indexes", () => {
+    const db = new DatabaseSync(":memory:");
+    applyMigrationsThrough0028(db);
+
+    const columns = db.prepare("select name from pragma_table_info('session_materials') order by cid").all().map((row) => (row as { name: string }).name);
+    expect(columns).toEqual([
+      "id",
+      "organisation_id",
+      "branch_id",
+      "class_session_id",
+      "batch_id",
+      "trainer_person_id",
+      "material_type",
+      "title",
+      "r2_object_key",
+      "mime_type",
+      "size_bytes",
+      "original_filename",
+      "created_at",
+      "updated_at",
+      "created_by_actor_id",
+      "deleted_at",
+    ]);
+    const indexes = new Set(db.prepare("select name from sqlite_master where type = 'index' and tbl_name = 'session_materials'").all().map((row) => (row as { name: string }).name));
+    expect(indexes.has("session_materials_r2_object_key_unique")).toBe(true);
+    expect(indexes.has("session_materials_class_session_idx")).toBe(true);
+    expect(indexes.has("session_materials_org_session_idx")).toBe(true);
+    expect(indexes.has("session_materials_org_trainer_created_idx")).toBe(true);
+
+    expect(() => db.exec("insert into session_materials (id, organisation_id, branch_id, class_session_id, batch_id, trainer_person_id, material_type, title, r2_object_key, mime_type, size_bytes, original_filename, created_at, updated_at) values ('bad_type', 'org_samyak', 'branch_sion', 'class_missing', 'batch_missing', 'person_missing', 'video', 'Title', 'key-a', 'application/pdf', 10, 'a.pdf', 'now', 'now')")).toThrow();
+    expect(() => db.exec("insert into session_materials (id, organisation_id, branch_id, class_session_id, batch_id, trainer_person_id, material_type, title, r2_object_key, mime_type, size_bytes, original_filename, created_at, updated_at) values ('bad_size', 'org_samyak', 'branch_sion', 'class_missing', 'batch_missing', 'person_missing', 'notes', 'Title', 'key-b', 'application/pdf', 10485761, 'a.pdf', 'now', 'now')")).toThrow();
+    expect(() => db.exec("insert into session_materials (id, organisation_id, branch_id, class_session_id, batch_id, trainer_person_id, material_type, title, r2_object_key, mime_type, size_bytes, original_filename, created_at, updated_at) values ('bad_mime', 'org_samyak', 'branch_sion', 'class_missing', 'batch_missing', 'person_missing', 'notes', 'Title', 'key-c', 'text/plain', 10, 'a.pdf', 'now', 'now')")).toThrow();
+  });
+
   it("accepts only trainer-owned PDF materials for open or completed sessions", async () => {
     const { c, trainer, otherTrainer } = setup();
 
@@ -126,6 +165,32 @@ describe("session materials and student learning", () => {
       .resolves.toMatchObject({ ok: false, code: "material_limit_reached" });
   });
 
+  it("validates material type and title before upload", () => {
+    expect(materialUploadSchema.safeParse({ title: "", materialType: "notes" }).success).toBe(false);
+    expect(materialUploadSchema.safeParse({ title: "x".repeat(121), materialType: "notes" }).success).toBe(false);
+    expect(materialUploadSchema.safeParse({ title: "Valid", materialType: "video" }).success).toBe(false);
+    expect(materialUploadSchema.safeParse({ title: "  Valid  ", materialType: "homework" })).toMatchObject({
+      success: true,
+      data: { title: "Valid", materialType: "homework" },
+    });
+  });
+
+  it("does not count soft-deleted materials toward the active material cap", async () => {
+    const { c, trainer } = setup();
+    const uploaded = [];
+    for (let index = 0; index < MAX_ACTIVE_MATERIALS_PER_SESSION; index += 1) {
+      const result = await uploadTrainerSessionMaterial(c, trainer, "class_completed", { title: `File ${index}`, materialType: "study_material" }, pdfFile(`file-${index}.pdf`));
+      if (!result.ok) throw new Error("expected upload");
+      uploaded.push(result.material);
+    }
+
+    await expect(uploadTrainerSessionMaterial(c, trainer, "class_completed", { title: "Blocked", materialType: "notes" }, pdfFile()))
+      .resolves.toMatchObject({ ok: false, code: "material_limit_reached" });
+    await expect(deleteTrainerSessionMaterial(c, trainer, uploaded[0].id)).resolves.toMatchObject({ ok: true });
+    await expect(uploadTrainerSessionMaterial(c, trainer, "class_completed", { title: "Allowed again", materialType: "notes" }, pdfFile()))
+      .resolves.toMatchObject({ ok: true });
+  });
+
   it("does not create material metadata when private R2 put fails", async () => {
     const { c, trainer, storage } = setup();
     storage.failPut = true;
@@ -134,6 +199,24 @@ describe("session materials and student learning", () => {
       .resolves.toMatchObject({ ok: false, code: "material_storage_failed" });
 
     expect(count(c, "session_materials")).toBe(0);
+  });
+
+  it("cleans up the private R2 object when metadata insert fails", async () => {
+    const { c, trainer, storage } = setup();
+    c.env.DB.database.exec(`
+      create trigger session_material_insert_failure
+      before insert on session_materials
+      begin
+        select raise(abort, 'insert failed');
+      end;
+    `);
+
+    await expect(uploadTrainerSessionMaterial(c, trainer, "class_completed", { title: "DB failure", materialType: "notes" }, pdfFile()))
+      .rejects.toThrow(/insert failed/);
+
+    expect(count(c, "session_materials")).toBe(0);
+    expect(storage.objects.size).toBe(0);
+    expect(storage.deleted).toHaveLength(1);
   });
 
   it("soft deletes material before R2 cleanup and hides deleted content", async () => {
@@ -145,6 +228,20 @@ describe("session materials and student learning", () => {
     await expect(listTrainerSessionMaterials(c, trainer, "class_completed")).resolves.toMatchObject({ ok: true, materials: [] });
     await expect(getTrainerMaterialContent(c, trainer, uploaded.material.id)).resolves.toMatchObject({ ok: false, code: "material_not_found" });
     expect(count(c, "audit_logs where action = 'session_material_deleted'")).toBe(1);
+  });
+
+  it("keeps deleted metadata hidden even when private R2 delete fails", async () => {
+    const { c, trainer, storage } = setup();
+    const uploaded = await uploadTrainerSessionMaterial(c, trainer, "class_completed", { title: "Private orphan", materialType: "homework" }, pdfFile());
+    if (!uploaded.ok) throw new Error("expected upload");
+    expect(storage.objects.size).toBe(1);
+
+    storage.failDelete = true;
+    await expect(deleteTrainerSessionMaterial(c, trainer, uploaded.material.id)).resolves.toMatchObject({ ok: true });
+
+    await expect(listTrainerSessionMaterials(c, trainer, "class_completed")).resolves.toMatchObject({ ok: true, materials: [] });
+    await expect(getStudentMaterialContent(c, "person_asha", uploaded.material.id)).resolves.toMatchObject({ ok: false, code: "material_not_found" });
+    expect(storage.objects.size).toBe(1);
   });
 
   it("shows student learning across transfer-valid completed sessions only", async () => {
@@ -170,6 +267,34 @@ describe("session materials and student learning", () => {
     await expect(getStudentMaterialContent(c, "person_asha", own.material.id)).resolves.toMatchObject({ ok: true, filename: ".. unsafe name.pdf" });
     await expect(getStudentMaterialContent(c, "person_late", beforeJoin.material.id)).resolves.toMatchObject({ ok: false, code: "material_not_found" });
     await expect(getStudentMaterialContent(c, "person_other", own.material.id)).resolves.toMatchObject({ ok: false, code: "material_not_found" });
+  });
+
+  it("denies cross-organisation material IDs before storage access", async () => {
+    const { c, trainer, storage } = setup();
+    c.env.DB.database.prepare(`insert into session_materials
+      (id, organisation_id, branch_id, class_session_id, batch_id, trainer_person_id, material_type, title, r2_object_key, mime_type, size_bytes, original_filename, created_at, updated_at, created_by_actor_id, deleted_at)
+      values ('mat_other_org', 'org_other', 'branch_other', 'class_completed', 'batch_morning', 'person_trainer', 'notes', 'Other org', 'session-materials/org_other/sessions/class_completed/materials/mat_other_org.pdf', 'application/pdf', ?, 'other.pdf', ?, ?, 'acct_trainer', null)`)
+      .run(PDF_BYTES.byteLength, NOW, NOW);
+    storage.objects.set("session-materials/org_other/sessions/class_completed/materials/mat_other_org.pdf", PDF_BYTES);
+
+    await expect(getTrainerMaterialContent(c, trainer, "mat_other_org")).resolves.toMatchObject({ ok: false, code: "material_not_found" });
+    await expect(getStudentMaterialContent(c, "person_asha", "mat_other_org")).resolves.toMatchObject({ ok: false, code: "material_not_found" });
+  });
+
+  it("sanitizes filenames and keeps script-like titles as escaped display data only", async () => {
+    const { c, trainer } = setup();
+    const uploaded = await uploadTrainerSessionMaterial(
+      c,
+      trainer,
+      "class_completed",
+      { title: "<script>alert(1)</script>", materialType: "notes" },
+      pdfFile("bad\";\r\nContent-Length: 0/नाम.pdf"),
+    );
+    if (!uploaded.ok) throw new Error("expected upload");
+
+    expect(uploaded.material.title).toBe("<script>alert(1)</script>");
+    expect(uploaded.material.originalFilename).not.toMatch(/[\r\n"\\/;]/);
+    expect(JSON.stringify(uploaded.material)).not.toContain("r2_object_key");
   });
 });
 
@@ -281,4 +406,21 @@ function pdfFile(filename = "../unsafe\r\nname.pdf") {
 function count(c: AppContext & { env: { DB: SqliteD1 } }, tableExpression: string) {
   const row = c.env.DB.database.prepare(`select count(*) as count from ${tableExpression}`).get() as { count: number };
   return row.count;
+}
+
+function applyMigrationsThrough0028(db: DatabaseSync) {
+  const migrationsDir = join(process.cwd(), "migrations");
+  for (const file of readdirSync(migrationsDir).filter((name) => /^\d{4}_.+\.sql$/.test(name)).sort()) {
+    if (file > "0028_session_materials_student_academic.sql") break;
+    if (file === "0012_d1_referral_foundation.sql") seedMigrationBase(db);
+    const sql = readFileSync(join(migrationsDir, file), "utf8");
+    for (const statement of sql.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
+      db.exec(statement);
+    }
+  }
+}
+
+function seedMigrationBase(db: DatabaseSync) {
+  db.prepare("insert into organisations (id, name, slug, status, created_at, updated_at) values ('org_samyak', 'Samyak', 'samyak', 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at) values ('branch_sion', 'org_samyak', 'Sion', 'SION', 'Asia/Kolkata', 'active', ?, ?)").run(NOW, NOW);
 }
