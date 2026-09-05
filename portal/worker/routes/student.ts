@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import type { Hono } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import {
   activeReferrerForPerson,
@@ -14,6 +15,7 @@ import {
 } from "../lib/auth-store";
 import { getClientIp, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
+import { getStudentLearningEnrolment, getStudentMaterialContent, listStudentLearning } from "../lib/session-materials";
 import { issueReferralLink, ReferralServiceError, type ReferralServiceEnv } from "../lib/referral-service";
 import { requireReferralTokenPepper } from "../lib/referral-token";
 import { hmacHex } from "../lib/crypto";
@@ -76,6 +78,39 @@ export function registerStudentRoutes(app: PortalHono) {
     }
   });
 
+  app.get("/api/student/learning/enrolments", async (c) => {
+    const profile = await authenticatedStudentProfile(c);
+    if (profile instanceof Response) return profile;
+    return jsonPlain(c, await listStudentLearning(c, profile.personId));
+  });
+
+  app.get("/api/student/learning/enrolments/:enrolmentId", async (c) => {
+    const profile = await authenticatedStudentProfile(c);
+    if (profile instanceof Response) return profile;
+    const result = await getStudentLearningEnrolment(c, profile.personId, c.req.param("enrolmentId"), {
+      limit: clampInteger(c.req.query("limit") || null, 20, 1, 50),
+      offset: clampInteger(c.req.query("offset") || null, 0, 0, 5000),
+    });
+    if (!result.ok) return jsonError(c, { status: result.status as ContentfulStatusCode, code: result.code, message: result.message });
+    return jsonPlain(c, result);
+  });
+
+  app.get("/api/student/session-materials/:materialId/content", async (c) => {
+    const profile = await authenticatedStudentProfile(c);
+    if (profile instanceof Response) return profile;
+    const result = await getStudentMaterialContent(c, profile.personId, c.req.param("materialId"));
+    if (!result.ok) return jsonError(c, { status: result.status as ContentfulStatusCode, code: result.code, message: result.message });
+    return new Response(result.body, {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `inline; filename="${result.filename.replace(/[^a-zA-Z0-9_. -]/g, "-").replace(/"/g, "")}"`,
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        ...(result.sizeBytes ? { "Content-Length": String(result.sizeBytes) } : {}),
+      },
+    });
+  });
+
   app.post("/api/referrals/link", async (c) => {
     const originError = requireSameOrigin(c);
     if (originError) return originError;
@@ -125,6 +160,24 @@ export function registerStudentRoutes(app: PortalHono) {
       message: "Contact Samyak if your active referral link needs to be replaced.",
     });
   });
+}
+
+async function authenticatedStudentProfile(c: PortalContext) {
+  const session = await getSessionFromRequest(c);
+  if (!session) {
+    const response = jsonError(c, { status: 401, code: "unauthenticated", message: "Please sign in again." });
+    if (hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
+    return response;
+  }
+  if ((session.record.active_subject_type || "person") !== "person") {
+    return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
+  }
+  const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
+  if (!view.activeProfile) return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
+  if (!view.activeProfile.effectiveRoles?.some((role) => role === "student" || role === "alumni")) {
+    return jsonError(c, { status: 403, code: "student_profile_required", message: "This profile is not available." });
+  }
+  return { personId: view.activeProfile.personId };
 }
 
 async function authenticatedReferrerContext(c: PortalContext) {

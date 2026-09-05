@@ -42,6 +42,13 @@ import {
   saveTrainerSessionSchema,
   trainerSessionDateSchema,
 } from "../lib/trainer-attendance";
+import {
+  deleteTrainerSessionMaterial,
+  getTrainerMaterialContent,
+  listTrainerSessionMaterials,
+  materialUploadSchema,
+  uploadTrainerSessionMaterial,
+} from "../lib/session-materials";
 import { getClientIp, isResponse, jsonWithRequestId, readJsonBody, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { maskMobile, normalizeIndianMobile } from "../lib/mobile";
@@ -267,6 +274,37 @@ export function registerTrainerRoutes(app: PortalHono) {
     return jsonPlain(c, { success: true, ...detail });
   });
 
+  app.get("/api/trainer/sessions/:sessionId/materials", async (c) => {
+    const trainer = await trainerContext(c);
+    if (!trainer) return unauthenticated(c);
+    const result = await listTrainerSessionMaterials(c, trainer, c.req.param("sessionId"));
+    if (!result.ok) return trainerError(c, result);
+    return jsonPlain(c, { success: true, materials: result.materials });
+  });
+
+  app.post("/api/trainer/sessions/:sessionId/materials", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
+    const trainer = await trainerContext(c);
+    if (!trainer) return unauthenticated(c);
+    const form = await c.req.formData().catch(() => null);
+    if (!form) return jsonError(c, { status: 400, code: "invalid_request", message: "Upload a PDF material file." });
+    const parsed = materialUploadSchema.safeParse({
+      title: String(form.get("title") || ""),
+      materialType: String(form.get("materialType") || "study_material"),
+    });
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_request", message: "Title and material type are required." });
+    const file = form.get("file");
+    if (!(file instanceof File)) return jsonError(c, { status: 400, code: "file_required", message: "Choose a PDF file." });
+    const result = await uploadTrainerSessionMaterial(c, trainer, c.req.param("sessionId"), parsed.data, {
+      bytes: new Uint8Array(await file.arrayBuffer()),
+      filename: file.name,
+      contentType: file.type || "",
+    });
+    if (!result.ok) return trainerError(c, result);
+    return jsonPlain(c, { success: true, material: result.material }, { status: 201 });
+  });
+
   app.post("/api/trainer/sessions/:sessionId/save", async (c) => {
     const originError = requireSameOrigin(c);
     if (originError) return originError;
@@ -277,6 +315,24 @@ export function registerTrainerRoutes(app: PortalHono) {
     const result = await saveTrainerSession(c, trainer, c.req.param("sessionId"), body);
     if (!result.ok) return trainerError(c, result);
     return jsonPlain(c, { success: true, ...result.session });
+  });
+
+  app.get("/api/trainer/session-materials/:materialId/content", async (c) => {
+    const trainer = await trainerContext(c);
+    if (!trainer) return unauthenticated(c);
+    const result = await getTrainerMaterialContent(c, trainer, c.req.param("materialId"));
+    if (!result.ok) return trainerError(c, result);
+    return pdfResponse(result.body, result.filename, result.sizeBytes);
+  });
+
+  app.delete("/api/trainer/session-materials/:materialId", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
+    const trainer = await trainerContext(c);
+    if (!trainer) return unauthenticated(c);
+    const result = await deleteTrainerSessionMaterial(c, trainer, c.req.param("materialId"));
+    if (!result.ok) return trainerError(c, result);
+    return jsonPlain(c, { success: true });
   });
 }
 
@@ -295,4 +351,16 @@ function unauthenticated(c: Parameters<typeof readJsonBody>[0]) {
 
 function trainerError(c: Parameters<typeof readJsonBody>[0], result: { status: number; code: string; message: string }) {
   return jsonError(c, { status: result.status as ContentfulStatusCode, code: result.code, message: result.message });
+}
+
+function pdfResponse(body: ReadableStream<Uint8Array>, filename: string, sizeBytes?: number) {
+  return new Response(body, {
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="${filename.replace(/[^a-zA-Z0-9_. -]/g, "-").replace(/"/g, "")}"`,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+      ...(sizeBytes ? { "Content-Length": String(sizeBytes) } : {}),
+    },
+  });
 }
