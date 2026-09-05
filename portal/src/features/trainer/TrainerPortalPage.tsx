@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
 import {
@@ -6,10 +6,15 @@ import {
   getTrainerBatches,
   getTrainerClassSession,
   getTrainerSession,
+  getTrainerSessionMaterials,
   getTrainerSessions,
   logoutTrainer,
   openTrainerTodaySession,
   saveTrainerClassSession,
+  deleteTrainerSessionMaterial,
+  trainerMaterialContentUrl,
+  uploadTrainerSessionMaterial,
+  type SessionMaterial,
   type TrainerBatch,
   type TrainerClassSession,
   type TrainerRosterItem,
@@ -20,6 +25,7 @@ import type { RoutePath } from "../../routes/types";
 
 type AttendanceStatus = "present" | "absent";
 type AttendanceDraft = Record<string, AttendanceStatus | "">;
+type MaterialType = SessionMaterial["materialType"];
 
 const trainerNavigation = [
   { path: "/trainer/dashboard" as const, label: "My Batches", shortLabel: "Batches" },
@@ -264,19 +270,27 @@ function TrainerSessionDetail({ sessionId, onNavigate }: { sessionId: string; on
   const [session, setSession] = useState<TrainerClassSession | null>(null);
   const [batch, setBatch] = useState<TrainerBatch | null>(null);
   const [roster, setRoster] = useState<TrainerRosterItem[]>([]);
+  const [materials, setMaterials] = useState<SessionMaterial[]>([]);
   const [draft, setDraft] = useState<AttendanceDraft>({});
   const [note, setNote] = useState("");
+  const [materialTitle, setMaterialTitle] = useState("");
+  const [materialType, setMaterialType] = useState<MaterialType>("study_material");
+  const [materialFile, setMaterialFile] = useState<File | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [deletingMaterialId, setDeletingMaterialId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [materialError, setMaterialError] = useState<string | null>(null);
 
   useEffect(() => {
-    void getTrainerClassSession(sessionId)
-      .then((data) => {
+    void Promise.all([getTrainerClassSession(sessionId), getTrainerSessionMaterials(sessionId)])
+      .then(([data, materialData]) => {
         setSession(data.session);
         setBatch(data.batch);
         setRoster(data.roster);
+        setMaterials(materialData.materials);
         setNote(data.session.teachingNote);
         setDraft(Object.fromEntries(data.roster.map((item) => [item.batchMembershipId, item.attendanceStatus === "present" || item.attendanceStatus === "absent" ? item.attendanceStatus : ""])));
         setError(null);
@@ -287,6 +301,8 @@ function TrainerSessionDetail({ sessionId, onNavigate }: { sessionId: string; on
 
   const markedCount = useMemo(() => Object.values(draft).filter(Boolean).length, [draft]);
   const canSave = Boolean(session?.canEdit && note.trim() && roster.every((student) => draft[student.batchMembershipId]));
+  const canManageMaterials = Boolean(session && session.status !== "cancelled");
+  const canUploadMaterial = Boolean(canManageMaterials && materialTitle.trim() && materialFile && !isUploading);
 
   async function save() {
     if (!session) return;
@@ -308,6 +324,42 @@ function TrainerSessionDetail({ sessionId, onNavigate }: { sessionId: string; on
       setError(reason instanceof Error ? reason.message : "Could not save session.");
     } finally {
       setIsSaving(false);
+    }
+  }
+
+  async function uploadMaterial(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session || !materialFile) return;
+    setIsUploading(true);
+    setMaterialError(null);
+    setMessage(null);
+    try {
+      const response = await uploadTrainerSessionMaterial(session.id, { title: materialTitle, materialType, file: materialFile });
+      setMaterials((current) => [...current, response.material]);
+      setMaterialTitle("");
+      setMaterialType("study_material");
+      setMaterialFile(null);
+      event.currentTarget.reset();
+      setMessage("Material uploaded.");
+    } catch (reason) {
+      setMaterialError(reason instanceof Error ? reason.message : "Could not upload material.");
+    } finally {
+      setIsUploading(false);
+    }
+  }
+
+  async function removeMaterial(materialId: string) {
+    setDeletingMaterialId(materialId);
+    setMaterialError(null);
+    setMessage(null);
+    try {
+      await deleteTrainerSessionMaterial(materialId);
+      setMaterials((current) => current.filter((material) => material.id !== materialId));
+      setMessage("Material removed.");
+    } catch (reason) {
+      setMaterialError(reason instanceof Error ? reason.message : "Could not remove material.");
+    } finally {
+      setDeletingMaterialId(null);
     }
   }
 
@@ -360,6 +412,55 @@ function TrainerSessionDetail({ sessionId, onNavigate }: { sessionId: string; on
       <div className="form-actions">
         <button type="button" disabled={!canSave || isSaving} onClick={() => void save()}>{isSaving ? "Saving..." : "Save Session"}</button>
       </div>
+
+      <section className="trainer-materials-panel" aria-labelledby="trainer-materials-title">
+        <div className="section-heading">
+          <div>
+            <h3 id="trainer-materials-title">Session Materials</h3>
+            <p>PDF only · 10 MB max · {materials.length}/20 active files</p>
+          </div>
+        </div>
+        {materialError ? <ErrorState title="Material action failed" message={materialError} /> : null}
+        <div className="trainer-material-list">
+          {materials.map((material) => (
+            <article className="trainer-material-row" key={material.id}>
+              <div>
+                <strong>{material.title}</strong>
+                <span>{materialTypeLabel(material.materialType)} · {formatBytes(material.sizeBytes)}</span>
+                <small>{material.originalFilename}</small>
+              </div>
+              <div className="trainer-card-actions">
+                <a className="button-link" href={trainerMaterialContentUrl(material.id)} target="_blank" rel="noreferrer">View PDF</a>
+                <button type="button" className="secondary-button" disabled={!canManageMaterials || deletingMaterialId === material.id} onClick={() => void removeMaterial(material.id)}>
+                  {deletingMaterialId === material.id ? "Removing..." : "Remove"}
+                </button>
+              </div>
+            </article>
+          ))}
+          {!materials.length ? <p className="staff-empty">No PDFs have been shared for this session yet.</p> : null}
+        </div>
+        <form className="trainer-material-form" onSubmit={(event) => void uploadMaterial(event)}>
+          <label>
+            Material title
+            <input value={materialTitle} onChange={(event) => setMaterialTitle(event.target.value)} maxLength={120} disabled={!canManageMaterials} placeholder="Power BI relationships notes" />
+          </label>
+          <label>
+            Type
+            <select value={materialType} onChange={(event) => setMaterialType(event.target.value as MaterialType)} disabled={!canManageMaterials}>
+              <option value="notes">Notes</option>
+              <option value="homework">Homework</option>
+              <option value="study_material">Study Material</option>
+            </select>
+          </label>
+          <label>
+            PDF
+            <input type="file" accept="application/pdf,.pdf" disabled={!canManageMaterials} onChange={(event) => setMaterialFile(event.target.files?.[0] || null)} />
+          </label>
+          <div className="form-actions">
+            <button type="submit" disabled={!canUploadMaterial}>{isUploading ? "Uploading..." : "Upload PDF"}</button>
+          </div>
+        </form>
+      </section>
     </section>
   );
 }
@@ -389,4 +490,16 @@ function formatDate(value: string) {
 
 function label(value: string) {
   return value.split("_").filter(Boolean).map((part) => part.slice(0, 1).toUpperCase() + part.slice(1)).join(" ");
+}
+
+function materialTypeLabel(value: string) {
+  if (value === "notes") return "Notes";
+  if (value === "homework") return "Homework";
+  return "Study Material";
+}
+
+function formatBytes(value: number) {
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  if (value >= 1024) return `${Math.round(value / 1024)} KB`;
+  return `${value} B`;
 }

@@ -15,7 +15,7 @@ type AppShellProps = {
 
 export function AppShell({ activePath, navigation, children, onNavigate, onSignOut }: AppShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const usesMobileDrawer = navigation.length > 5;
+  const usesMobileDrawer = navigation.some((item) => item.path.startsWith("/app/")) && navigation.length > 5;
 
   useEffect(() => {
     if (!drawerOpen) return;

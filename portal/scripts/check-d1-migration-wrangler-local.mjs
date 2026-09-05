@@ -18,25 +18,31 @@ try {
     persistTo,
   ]);
 
-  const schema = query("select name, type from sqlite_master where name in ('class_sessions','attendance_records','user_sessions_active_subject_type_idx','class_sessions_batch_date_start_unique','attendance_records_session_membership_unique') order by type, name;");
+  const schema = query("select name, type from sqlite_master where name in ('class_sessions','attendance_records','session_materials','user_sessions_active_subject_type_idx','class_sessions_batch_date_start_unique','attendance_records_session_membership_unique','session_materials_class_session_idx','session_materials_org_session_idx','session_materials_org_trainer_created_idx') order by type, name;");
   const columns = query("select name from pragma_table_info('user_sessions') where name = 'active_subject_type';");
   const migrations = query("select name from d1_migrations where name = '0027_trainer_attendance_sessions.sql';");
+  const materialMigration = query("select name from d1_migrations where name = '0028_session_materials_student_academic.sql';");
   const subjectTriggers = query("select name from sqlite_master where type = 'trigger' and name like 'user_sessions_active_subject_%';");
 
   expectSome(columns, "active_subject_type column");
   expectSome(migrations, "0027 migration record");
+  expectSome(materialMigration, "0028 migration record");
   expectNames(schema, [
     "attendance_records",
     "class_sessions",
+    "session_materials",
     "attendance_records_session_membership_unique",
     "class_sessions_batch_date_start_unique",
+    "session_materials_class_session_idx",
+    "session_materials_org_session_idx",
+    "session_materials_org_trainer_created_idx",
     "user_sessions_active_subject_type_idx",
   ]);
   if (subjectTriggers.length !== 0) {
     throw new Error("0027 should not create user_sessions_active_subject_* triggers through Wrangler migrations.");
   }
 
-  console.log("Wrangler local D1 migration apply passed through 0027.");
+  console.log("Wrangler local D1 migration apply passed through 0028.");
 } finally {
   rmSync(persistTo, { recursive: true, force: true });
 }

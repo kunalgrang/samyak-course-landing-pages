@@ -8,6 +8,7 @@ import { PartnerLoginPage } from "../features/partner/PartnerLoginPage";
 import { PartnerPortalPage } from "../features/partner/PartnerPortalPage";
 import { TrainerLoginPage } from "../features/trainer/TrainerLoginPage";
 import { TrainerPortalPage } from "../features/trainer/TrainerPortalPage";
+import { StudentLearningPage } from "../features/student/StudentLearningPage";
 import { ProfilePage } from "../features/profile/ProfilePage";
 import { ReferralsPage } from "../features/referrals/ReferralsPage";
 import { ReferralOperationsDetailPage, ReferralOperationsPage } from "../features/staff/ReferralOperationsPage";
@@ -28,7 +29,7 @@ import { AppShell } from "./AppShell";
 import type { AppRoute, RoutePath, StudentRoute } from "./types";
 
 const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/students", "/app/batches", "/app/education-partners", "/app/referral-operations", "/app/courses", "/app/discount-approvals", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
-const studentRoutes = new Set<RoutePath>(["/student/dashboard", "/student/certificates", "/student/referrals", "/student/rules", "/student/profile"]);
+const studentRoutes = new Set<RoutePath>(["/student/dashboard", "/student/learning", "/student/certificates", "/student/referrals", "/student/rules", "/student/profile"]);
 const staffBlockedSelfServiceRoutes = new Set<RoutePath>(["/app", "/app/referrals", "/app/rules", "/app/profile"]);
 const staffRoles = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
 const courseAdminRoles = new Set(["owner", "admin", "system_admin"]);
@@ -184,6 +185,7 @@ export function Router() {
     return (
       <AppShell activePath={activeStudentPath} navigation={studentNavigation} onNavigate={navigate} onSignOut={handleStudentSignOut}>
         {activeStudentPath === "/student/dashboard" ? <ShellHomePage referralPath="/student/referrals" profilePath="/student/profile" /> : null}
+        {activeStudentPath === "/student/learning" ? <StudentLearningPage /> : null}
         {activeStudentPath === "/student/certificates" ? <CertificatesPage /> : null}
         {activeStudentPath === "/student/referrals" ? <ReferralsPage rulesPath="/student/rules" /> : null}
         {activeStudentPath === "/student/rules" ? <RulesPage /> : null}

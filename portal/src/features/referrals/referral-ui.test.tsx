@@ -242,6 +242,7 @@ describe("student referral portal UI", () => {
     expect(appNavigation.map((item) => item.label)).toEqual(["Overview", "My Referrals", "Rewards & Benefits", "My Profile"]);
     expect(studentNavigation.map((item) => item.path)).toEqual([
       "/student/dashboard",
+      "/student/learning",
       "/student/certificates",
       "/student/referrals",
       "/student/rules",

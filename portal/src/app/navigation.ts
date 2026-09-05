@@ -8,6 +8,7 @@ export type NavigationItem = {
 
 export const studentNavigation: NavigationItem[] = [
   { path: "/student/dashboard", label: "Overview", shortLabel: "Overview" },
+  { path: "/student/learning", label: "Learning", shortLabel: "Learning" },
   { path: "/student/certificates", label: "Certificates", shortLabel: "Certs" },
   { path: "/student/referrals", label: "My Referrals", shortLabel: "Referrals" },
   { path: "/student/rules", label: "Rewards & Benefits", shortLabel: "Rewards" },
