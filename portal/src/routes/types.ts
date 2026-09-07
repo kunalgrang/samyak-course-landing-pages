@@ -3,6 +3,7 @@ export type AppRoute =
   | "/app/enquiries"
   | "/app/students"
   | "/app/batches"
+  | "/app/academic"
   | "/app/trainers"
   | "/app/trainers/new"
   | "/app/education-partners"
@@ -10,6 +11,10 @@ export type AppRoute =
   | `/app/enquiries/${string}/admission`
   | `/app/students/${string}`
   | `/app/batches/${string}`
+  | `/app/academic/batches/${string}`
+  | `/app/academic/sessions/${string}`
+  | `/app/academic/trainers/${string}`
+  | `/app/academic/students/${string}`
   | `/app/trainers/${string}`
   | `/app/education-partners/${string}`
   | `/app/education-partners/${string}/preview`
