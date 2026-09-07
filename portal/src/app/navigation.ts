@@ -27,6 +27,7 @@ export const staffNavigation: NavigationItem[] = [
   { path: "/app/enquiries", label: "Enquiries", shortLabel: "Enquiries" },
   { path: "/app/students", label: "Students", shortLabel: "Students" },
   { path: "/app/batches", label: "Batches", shortLabel: "Batches" },
+  { path: "/app/academic", label: "Academic", shortLabel: "Academic" },
   { path: "/app/trainers", label: "Trainers", shortLabel: "Trainers" },
   { path: "/app/education-partners", label: "Education Partners", shortLabel: "Partners" },
   { path: "/app/referral-operations", label: "Referral Operations", shortLabel: "Ref Ops" },

@@ -537,6 +537,157 @@ const studentLearningDetailSchema = z.object({
   pagination: z.object({ limit: z.number(), offset: z.number(), hasMore: z.boolean() }),
 });
 
+const staffAcademicBatchSummarySchema = z.object({
+  id: z.string(),
+  branchId: z.string(),
+  branchName: z.string(),
+  name: z.string(),
+  trainerPersonId: z.string().nullable(),
+  trainerName: z.string().nullable(),
+  trainerStatus: z.string().nullable(),
+  daysOfWeek: z.array(z.string()),
+  startTime: z.string(),
+  endTime: z.string(),
+  status: z.string(),
+  courses: z.array(z.object({ id: z.string(), name: z.string() })),
+  activeStudents: z.number(),
+  lastClassDate: z.string().nullable(),
+  lastSessionId: z.string().nullable(),
+  lastAttendanceCount: z.number(),
+  lastMaterialCount: z.number(),
+});
+
+const staffAcademicSessionSummarySchema = z.object({
+  id: z.string(),
+  branchId: z.string(),
+  batchId: z.string(),
+  batchName: z.string(),
+  trainerPersonId: z.string(),
+  trainerName: z.string(),
+  sessionDate: z.string(),
+  scheduledStartTime: z.string().nullable(),
+  scheduledEndTime: z.string().nullable(),
+  actualStartedAt: z.string().nullable(),
+  actualEndedAt: z.string().nullable(),
+  teachingNote: z.string(),
+  teachingNoteExcerpt: z.string(),
+  status: z.string(),
+  presentCount: z.number(),
+  absentCount: z.number(),
+  materialCount: z.number(),
+});
+
+const staffAcademicPaginationSchema = z.object({ limit: z.number(), offset: z.number(), hasMore: z.boolean() });
+
+const staffAcademicOverviewSchema = z.object({
+  success: z.literal(true),
+  today: z.string(),
+  week: z.object({ startsOn: z.string(), endsOn: z.string() }),
+  summary: z.object({
+    classesToday: z.number(),
+    studentsPresentToday: z.number(),
+    studentsAbsentToday: z.number(),
+    activeBatches: z.number(),
+    batchesWithoutRecentClass: z.number(),
+  }),
+  todayClasses: z.array(staffAcademicSessionSummarySchema),
+  needsAttention: z.array(z.object({
+    type: z.string(),
+    severity: z.string(),
+    batchId: z.string(),
+    batchName: z.string(),
+    message: z.string(),
+  })),
+  activeBatches: z.array(staffAcademicBatchSummarySchema),
+});
+
+const staffAcademicBatchDetailSchema = z.object({
+  success: z.literal(true),
+  batch: staffAcademicBatchSummarySchema,
+  summary: z.object({
+    classesLogged: z.number(),
+    present: z.number(),
+    absent: z.number(),
+    attendancePercent: z.number().nullable(),
+    lastClassDate: z.string().nullable(),
+    materialsShared: z.number(),
+  }),
+  sessions: z.array(staffAcademicSessionSummarySchema),
+  pagination: staffAcademicPaginationSchema,
+});
+
+const staffAcademicSessionDetailSchema = z.object({
+  success: z.literal(true),
+  session: staffAcademicSessionSummarySchema,
+  roster: z.array(z.object({
+    studentId: z.string(),
+    studentNumber: z.string(),
+    enrolmentId: z.string(),
+    enrolmentNumber: z.string(),
+    courseName: z.string(),
+    studentName: z.string(),
+    attendanceStatus: z.string().nullable(),
+  })),
+  materials: z.array(sessionMaterialSchema),
+});
+
+const staffAcademicTrainerActivitySchema = z.object({
+  success: z.literal(true),
+  trainer: z.object({
+    personId: z.string(),
+    name: z.string(),
+    branchId: z.string().nullable(),
+    branchName: z.string(),
+    trainerStatus: z.string(),
+  }),
+  range: z.string(),
+  summary: z.object({
+    activeBatches: z.number(),
+    classesThisWeek: z.number(),
+    classesThisMonth: z.number(),
+    lastClassDate: z.string().nullable(),
+  }),
+  sessions: z.array(staffAcademicSessionSummarySchema),
+  pagination: staffAcademicPaginationSchema,
+});
+
+const staffAcademicStudentAttendanceSchema = z.object({
+  success: z.literal(true),
+  student: z.object({
+    studentId: z.string(),
+    studentNumber: z.string(),
+    status: z.string(),
+    branchId: z.string(),
+    branchName: z.string(),
+    name: z.string(),
+  }),
+  enrolments: z.array(z.object({
+    enrolmentId: z.string(),
+    enrolmentNumber: z.string(),
+    status: z.string(),
+    courseName: z.string(),
+    totalClasses: z.number(),
+    present: z.number(),
+    absent: z.number(),
+    attendancePercent: z.number().nullable(),
+  })),
+  sessions: z.array(staffAcademicSessionSummarySchema.extend({
+    attendanceStatus: z.string().nullable(),
+    enrolmentId: z.string(),
+    enrolmentNumber: z.string(),
+    courseName: z.string(),
+  })),
+  pagination: staffAcademicPaginationSchema,
+});
+
+export type StaffAcademicOverview = z.infer<typeof staffAcademicOverviewSchema>;
+export type StaffAcademicBatchSummary = z.infer<typeof staffAcademicBatchSummarySchema>;
+export type StaffAcademicSessionSummary = z.infer<typeof staffAcademicSessionSummarySchema>;
+export type StaffAcademicBatchDetail = z.infer<typeof staffAcademicBatchDetailSchema>;
+export type StaffAcademicSessionDetail = z.infer<typeof staffAcademicSessionDetailSchema>;
+export type StaffAcademicTrainerActivity = z.infer<typeof staffAcademicTrainerActivitySchema>;
+export type StaffAcademicStudentAttendance = z.infer<typeof staffAcademicStudentAttendanceSchema>;
+
 const admissionDraftPayloadSchema = z.record(z.string(), z.unknown());
 
 const receiptSummarySchema = z.object({
@@ -1492,6 +1643,38 @@ export async function getStudentLearningDetail(enrolmentId: string, params: { li
 
 export function studentMaterialContentUrl(materialId: string) {
   return `/api/student/session-materials/${encodeURIComponent(materialId)}/content`;
+}
+
+export async function getStaffAcademicOverview() {
+  return getJson("/api/staff/academic/overview", staffAcademicOverviewSchema);
+}
+
+export async function getStaffAcademicBatches(params: { q?: string; limit?: number; offset?: number } = {}) {
+  return getJson(`/api/staff/academic/batches${queryString(params)}`, z.object({
+    success: z.literal(true),
+    batches: z.array(staffAcademicBatchSummarySchema),
+    pagination: staffAcademicPaginationSchema,
+  }));
+}
+
+export async function getStaffAcademicBatch(batchId: string, params: { limit?: number; offset?: number } = {}) {
+  return getJson(`/api/staff/academic/batches/${encodeURIComponent(batchId)}${queryString(params)}`, staffAcademicBatchDetailSchema);
+}
+
+export async function getStaffAcademicSession(sessionId: string) {
+  return getJson(`/api/staff/academic/sessions/${encodeURIComponent(sessionId)}`, staffAcademicSessionDetailSchema);
+}
+
+export async function getStaffAcademicTrainerActivity(personId: string, params: { range?: string; limit?: number; offset?: number } = {}) {
+  return getJson(`/api/staff/academic/trainers/${encodeURIComponent(personId)}${queryString(params)}`, staffAcademicTrainerActivitySchema);
+}
+
+export async function getStaffAcademicStudentAttendance(studentId: string, params: { limit?: number; offset?: number } = {}) {
+  return getJson(`/api/staff/academic/students/${encodeURIComponent(studentId)}${queryString(params)}`, staffAcademicStudentAttendanceSchema);
+}
+
+export function staffAcademicMaterialContentUrl(materialId: string) {
+  return `/api/staff/academic/session-materials/${encodeURIComponent(materialId)}/content`;
 }
 
 export async function generateReferralLink() {

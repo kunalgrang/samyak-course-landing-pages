@@ -12,6 +12,8 @@ describe("Router student namespace", () => {
 
   it("keeps staff navigation separate from student self-service navigation", () => {
     expect(navigationForRoles(["owner"]).map((item) => item.path)).not.toEqual(expect.arrayContaining(["/student/referrals", "/app/referrals"]));
+    expect(navigationForRoles(["owner"]).map((item) => item.path)).toContain("/app/academic");
+    expect(navigationForRoles(["counsellor"]).map((item) => item.path)).not.toContain("/app/academic");
     expect(navigationForRoles(["student"]).map((item) => item.path)).toEqual([
       "/student/dashboard",
       "/student/learning",
@@ -35,6 +37,8 @@ describe("Router student namespace", () => {
     expect(redirectForRouteState(state({ path: "/student/referrals", isStaff: true }))).toBe("/app/enquiries");
     expect(redirectForRouteState(state({ path: "/app/referrals", isStaff: true }))).toBe("/app/enquiries");
     expect(redirectForRouteState(state({ path: "/app/enquiries", isStaff: false, canAccessEnquiries: false }))).toBe("/student/dashboard");
+    expect(redirectForRouteState(state({ path: "/app/academic", isStaff: true, canAccessAcademic: false }))).toBe("/app/enquiries");
+    expect(redirectForRouteState(state({ path: "/app/academic", isStaff: true, canAccessAcademic: true }))).toBeNull();
     expect(redirectForRouteState(state({ path: "/login", isStaff: false }))).toBe("/student/dashboard");
     expect(redirectForRouteState(state({ path: "/student/login", isStaff: true }))).toBe("/app/enquiries");
   });
@@ -56,6 +60,7 @@ function state(overrides: Partial<Parameters<typeof redirectForRouteState>[0]> =
     canAccessEnquiries: false,
     canAccessStudents: false,
     isCourseAdmin: false,
+    canAccessAcademic: false,
     canManageTrainers: false,
     isDiscountApprover: false,
     ...overrides,

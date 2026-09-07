@@ -2656,6 +2656,75 @@
   overflow-wrap: anywhere;
 }
 
+.academic-page {
+  min-width: 0;
+}
+
+.academic-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+}
+
+.academic-section,
+.academic-list {
+  display: grid;
+  gap: 12px;
+}
+
+.academic-batch-row,
+.academic-session-row,
+.academic-attention-row,
+.academic-roster-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.academic-batch-row > div,
+.academic-session-row > div,
+.academic-roster-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.academic-batch-row strong,
+.academic-batch-row span,
+.academic-session-row strong,
+.academic-session-row span,
+.academic-roster-row strong,
+.academic-roster-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.academic-back {
+  justify-self: start;
+}
+
+.academic-note {
+  display: grid;
+  gap: 6px;
+  margin-top: 16px;
+  border-top: 1px solid var(--color-line);
+  padding-top: 16px;
+}
+
+.academic-note small {
+  color: var(--color-muted);
+  font-weight: 800;
+}
+
+.academic-note p {
+  margin: 0;
+  color: var(--color-ink);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.attendance-chip--unmarked {
+  background: #eef2f6;
+  color: #637083;
+}
+
 @media (max-width: 760px) {
   .trainer-shell {
     padding: 0.75rem;
@@ -2697,6 +2766,25 @@
   .learning-detail-list div,
   .learning-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .academic-batch-row,
+  .academic-session-row,
+  .academic-attention-row,
+  .academic-roster-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .academic-batch-row .button-link,
+  .academic-session-row .button-link,
+  .academic-attention-row .button-link {
+    width: 100%;
+  }
+
+  .academic-roster-row .attendance-chip,
+  .academic-session-row .attendance-chip {
+    justify-self: start;
   }
 }
 
