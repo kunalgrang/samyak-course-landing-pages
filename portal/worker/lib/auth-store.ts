@@ -10,9 +10,12 @@ const REFERRAL_PUBLIC_ORIGIN = "https://go.samyaksion.com";
 
 const PRODUCTION_SESSION_COOKIE = "__Host-samyak_session";
 const LOCAL_DEVELOPMENT_SESSION_COOKIE = "samyak_session";
+const PRODUCTION_TRAINER_SESSION_COOKIE = "__Host-samyak_trainer_session";
+const LOCAL_DEVELOPMENT_TRAINER_SESSION_COOKIE = "samyak_trainer_session";
 const PERSON_ROLE_CODES = new Set(["student", "alumni"]);
 const TRAINER_ROLE_CODE = "trainer";
 export type SessionSubjectType = "person" | "trainer" | "partner";
+export type SessionCookieScope = "default" | "trainer";
 
 export type ProfileChoice = {
   personId: string;
@@ -400,11 +403,15 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
   if (!account) throw new Error("Account bootstrap failed");
 
   const previousLinks = await c.env.DB.prepare(
-    `select person_id, is_available
+    `select distinct login_account_people.person_id, login_account_people.is_available
      from login_account_people
-     where login_account_id = ?`,
+     join person_roles on person_roles.person_id = login_account_people.person_id
+     join roles on roles.id = person_roles.role_id
+       and roles.organisation_id = ?
+       and roles.code in ('student', 'alumni')
+     where login_account_people.login_account_id = ?`,
   )
-    .bind(account.id)
+    .bind(ORG_ID, account.id)
     .all<PreviousProfileLink>();
   const previousByPersonId = new Map((previousLinks.results || []).map((link) => [link.person_id, link]));
   const returnedPersonIds = new Set<string>();
@@ -533,20 +540,28 @@ export async function bootstrapTrainerAccount(c: AppContext, mobile: string, loo
   }
 
   const previousLinks = await c.env.DB.prepare(
-    `select login_account_people.person_id
+    `select login_account_people.person_id,
+       max(case when student_roles.id is null then 0 else 1 end) as has_person_role
      from login_account_people
      join person_roles on person_roles.person_id = login_account_people.person_id
      join roles on roles.id = person_roles.role_id and roles.code = ?
-     where login_account_people.login_account_id = ?`,
+     left join person_roles student_person_roles on student_person_roles.person_id = login_account_people.person_id
+     left join roles student_roles on student_roles.id = student_person_roles.role_id
+       and student_roles.organisation_id = ?
+       and student_roles.code in ('student', 'alumni')
+     where login_account_people.login_account_id = ?
+     group by login_account_people.person_id`,
   )
-    .bind(TRAINER_ROLE_CODE, account.id)
-    .all<{ person_id: string }>();
+    .bind(TRAINER_ROLE_CODE, ORG_ID, account.id)
+    .all<{ person_id: string; has_person_role: number }>();
   for (const previous of previousLinks.results || []) {
     if (returnedPersonIds.has(previous.person_id)) continue;
-    await c.env.DB.prepare("update login_account_people set is_available = 0 where login_account_id = ? and person_id = ?")
-      .bind(account.id, previous.person_id)
-      .run();
-    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ? and coalesce(active_subject_type, 'person') = 'person'")
+    if (!previous.has_person_role) {
+      await c.env.DB.prepare("update login_account_people set is_available = 0 where login_account_id = ? and person_id = ?")
+        .bind(account.id, previous.person_id)
+        .run();
+    }
+    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ? and active_subject_type = 'trainer'")
       .bind(account.id, previous.person_id)
       .run();
   }
@@ -574,30 +589,30 @@ export async function createSession(
   return token;
 }
 
-export function buildSessionCookie(c: AppContext, token: string) {
-  const parts = [`${sessionCookieName(c)}=${token}`, "Path=/"];
+export function buildSessionCookie(c: AppContext, token: string, scope: SessionCookieScope = "default") {
+  const parts = [`${sessionCookieName(c, scope)}=${token}`, "Path=/"];
   if (shouldUseSecureSessionCookie(c)) parts.push("Secure");
   parts.push("HttpOnly", "SameSite=Lax", "Max-Age=2592000");
   return parts.join("; ");
 }
 
-export function clearSessionCookie(c: AppContext) {
-  const parts = [`${sessionCookieName(c)}=`, "Path=/"];
+export function clearSessionCookie(c: AppContext, scope: SessionCookieScope = "default") {
+  const parts = [`${sessionCookieName(c, scope)}=`, "Path=/"];
   if (shouldUseSecureSessionCookie(c)) parts.push("Secure");
   parts.push("HttpOnly", "SameSite=Lax", "Max-Age=0");
   return parts.join("; ");
 }
 
-export function hasSessionCookie(c: AppContext) {
-  return Boolean(getCookie(c.req.header("cookie") || "", sessionCookieName(c)));
+export function hasSessionCookie(c: AppContext, scope: SessionCookieScope = "default") {
+  return Boolean(getCookie(c.req.header("cookie") || "", sessionCookieName(c, scope)));
 }
 
-export async function getSessionFromRequest(c: AppContext): Promise<AuthenticatedSession | null> {
-  return (await getSessionValidationResult(c)).session;
+export async function getSessionFromRequest(c: AppContext, scope: SessionCookieScope = "default"): Promise<AuthenticatedSession | null> {
+  return (await getSessionValidationResult(c, scope)).session;
 }
 
-export async function getSessionValidationResult(c: AppContext): Promise<SessionValidationResult> {
-  const token = getCookie(c.req.header("cookie") || "", sessionCookieName(c));
+export async function getSessionValidationResult(c: AppContext, scope: SessionCookieScope = "default"): Promise<SessionValidationResult> {
+  const token = getCookie(c.req.header("cookie") || "", sessionCookieName(c, scope));
   if (!token) {
     await recordSessionResult(c, "SESSION_COOKIE_MISSING");
     return { session: null, resultCode: "SESSION_COOKIE_MISSING", shouldClearCookie: false };
@@ -647,7 +662,10 @@ export async function getSessionValidationResult(c: AppContext): Promise<Session
   return { session: { record: currentRecord, tokenHash }, resultCode: "SESSION_VALID", shouldClearCookie: false };
 }
 
-export function sessionCookieName(c: AppContext) {
+export function sessionCookieName(c: AppContext, scope: SessionCookieScope = "default") {
+  if (scope === "trainer") {
+    return isLocalDevelopmentRequest(c) ? LOCAL_DEVELOPMENT_TRAINER_SESSION_COOKIE : PRODUCTION_TRAINER_SESSION_COOKIE;
+  }
   if (isLocalDevelopmentRequest(c)) return LOCAL_DEVELOPMENT_SESSION_COOKIE;
   return PRODUCTION_SESSION_COOKIE;
 }
@@ -794,7 +812,7 @@ export async function trainerSessionView(c: AppContext, loginAccountId: string, 
 }
 
 export async function requireAuthenticatedTrainer(c: AppContext) {
-  const session = await getSessionFromRequest(c);
+  const session = await getSessionFromRequest(c, "trainer");
   if (!session?.record.active_person_id || session.record.active_education_partner_id) return null;
   if (session.record.active_subject_type !== "trainer") return null;
   if (!(await isLinkedTrainerAvailable(c, session.record.login_account_id, session.record.active_person_id))) return null;

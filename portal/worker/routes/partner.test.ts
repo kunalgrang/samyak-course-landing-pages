@@ -163,11 +163,11 @@ describe("Education Partner portal security", () => {
       const partnerPersonCookie = "samyak_session=partner-person-token";
       expect((await app.request("http://localhost/api/student/home", { headers: { Cookie: partnerPersonCookie } }, fixture.env)).status).toBe(409);
       await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: partnerPersonCookie } }, fixture.env)).json())
-        .resolves.toMatchObject({ authenticated: false, code: "PARTNER_SESSION_ACTIVE" });
+        .resolves.toMatchObject({ authenticated: false, code: "SESSION_COOKIE_MISSING" });
 
       await seedSessionRow(fixture.sqlite, "sess_trainer_partner", "acct_malformed", null, "epartner_a", "trainer-partner-token");
       fixture.sqlite.prepare("update user_sessions set active_subject_type = 'trainer' where id = 'sess_trainer_partner'").run();
-      const trainerPartnerCookie = "samyak_session=trainer-partner-token";
+      const trainerPartnerCookie = "samyak_trainer_session=trainer-partner-token";
       await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: trainerPartnerCookie } }, fixture.env)).json())
         .resolves.toMatchObject({ authenticated: false, code: "PARTNER_SESSION_ACTIVE" });
       expect((await app.request("http://localhost/api/partner/me", { headers: { Cookie: trainerPartnerCookie } }, fixture.env)).status).toBe(401);
@@ -209,6 +209,47 @@ describe("Education Partner portal security", () => {
         active_education_partner_id: "epartner_a",
         active_subject_type: "partner",
       });
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("keeps Trainer, Partner, and Staff sessions independent in one browser cookie jar", async () => {
+    const fixture = await createFixture();
+    try {
+      installTurnstile();
+      await seedEducationPartner(fixture.sqlite, "epartner_a", PARTNER_MOBILE, { referrerProfileId: "refprof_partner_a" });
+      const trainerCookie = await seedTrainerSession(fixture.sqlite, "acct_trainer", "person_trainer", "trainer-token");
+      seedOwner(fixture.sqlite, "acct_owner");
+      const staffCookie = await seedSession(fixture.sqlite, "acct_owner", "person_owner", null, "owner-token");
+      const partnerCookie = await loginPartner(fixture.env, PARTNER_MOBILE);
+      const trainerPartnerCookies = `${trainerCookie}; ${partnerCookie}`;
+      const trainerStaffCookies = `${trainerCookie}; ${staffCookie}`;
+
+      await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: trainerPartnerCookies } }, fixture.env)).json()).resolves.toMatchObject({
+        authenticated: true,
+        activeTrainer: { personId: "person_trainer" },
+      });
+      expect((await app.request("http://localhost/api/partner/me", { headers: { Cookie: trainerPartnerCookies } }, fixture.env)).status).toBe(200);
+      expect((await app.request("http://localhost/api/staff/education-partners", { headers: { Cookie: trainerStaffCookies } }, fixture.env)).status).toBe(200);
+
+      const trainerLogout = await app.request(
+        "http://localhost/api/trainer/auth/logout",
+        { method: "POST", headers: { Origin: "http://localhost", Cookie: trainerStaffCookies } },
+        fixture.env,
+      );
+      expect(trainerLogout.headers.get("set-cookie")).toContain("samyak_trainer_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+      expect(row(fixture.sqlite, "select revoked_at from user_sessions where id = 'sess_trainer_token'")?.revoked_at).toBeTruthy();
+      expect(row(fixture.sqlite, "select revoked_at from user_sessions where id = 'sess_owner_token'")?.revoked_at).toBeNull();
+      expect((await app.request("http://localhost/api/staff/education-partners", { headers: { Cookie: staffCookie } }, fixture.env)).status).toBe(200);
+
+      const partnerLogout = await app.request(
+        "http://localhost/api/partner/auth/logout",
+        { method: "POST", headers: { Origin: "http://localhost", Cookie: trainerPartnerCookies } },
+        fixture.env,
+      );
+      expect(partnerLogout.headers.get("set-cookie")).toContain("samyak_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+      expect(row(fixture.sqlite, "select revoked_at from user_sessions where id = 'sess_trainer_token'")?.revoked_at).toBeTruthy();
     } finally {
       fixture.close();
     }
@@ -546,6 +587,21 @@ function seedStaffRole(db: DatabaseSync, accountId: string, roleCode: string) {
 async function seedSession(db: DatabaseSync, accountId: string, personId: string | null, partnerId: string | null, token: string) {
   await seedSessionRow(db, `sess_${token.replace(/[^a-z0-9]/gi, "_")}`, accountId, personId, partnerId, token);
   return `samyak_session=${token}`;
+}
+
+async function seedTrainerSession(db: DatabaseSync, accountId: string, personId: string, token: string) {
+  await seedLoginAccount(db, accountId, "9876543999");
+  db.prepare("insert or ignore into roles (id, organisation_id, code, name, created_at) values ('role_trainer', 'org_samyak', 'trainer', 'Trainer', ?)")
+    .run(NOW);
+  db.prepare("insert or ignore into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values (?, 'org_samyak', 'branch_sion', 'Trainer User', 'Trainer', 'active', ?, ?)")
+    .run(personId, NOW, NOW);
+  db.prepare("insert or ignore into person_roles (person_id, role_id, branch_id, branch_key, status, created_at) values (?, 'role_trainer', 'branch_sion', 'branch_sion', 'active', ?)")
+    .run(personId, NOW);
+  db.prepare("insert or ignore into login_account_people (login_account_id, person_id, access_type, is_available, created_at) values (?, ?, 'staff', 1, ?)")
+    .run(accountId, personId, NOW);
+  await seedSessionRow(db, `sess_${token.replace(/[^a-z0-9]/gi, "_")}`, accountId, personId, null, token);
+  db.prepare("update user_sessions set active_subject_type = 'trainer' where id = ?").run(`sess_${token.replace(/[^a-z0-9]/gi, "_")}`);
+  return `samyak_trainer_session=${token}`;
 }
 
 async function seedSessionRow(db: DatabaseSync, sessionId: string, accountId: string, personId: string | null, partnerId: string | null, token = `${sessionId}-token`) {
