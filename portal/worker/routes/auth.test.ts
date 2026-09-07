@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../index";
 import type { WorkerBindings } from "../bindings";
+import { bootstrapTrainerAccount } from "../lib/auth-store";
 import { hmacHex } from "../lib/crypto";
 
 type Row = Record<string, any>;
@@ -234,6 +235,19 @@ class FakeD1Statement {
         results.push({ person_id: person.id, public_name: person.public_name ?? person.full_name, home_branch_id: person.home_branch_id ?? null, branch_name: branch?.name ?? null });
       }
       return { results } as T;
+    }
+    if (sql.includes("select login_account_people.person_id") && sql.includes("student_roles.code in ('student', 'alumni')")) {
+      const [_trainerRoleCode, _organisationId, loginAccountId] = this.values;
+      const personRoleIds = new Set(this.db.roles.filter((role) => ["student", "alumni"].includes(String(role.code))).map((role) => role.id));
+      return {
+        results: this.db.loginAccountPeople
+          .filter((link) => link.login_account_id === loginAccountId)
+          .filter((link) => this.db.personRoles.some((personRole) => personRole.person_id === link.person_id && personRole.role_id === "role_trainer"))
+          .map((link) => ({
+            person_id: link.person_id,
+            has_person_role: this.db.personRoles.some((personRole) => personRole.person_id === link.person_id && personRoleIds.has(personRole.role_id)) ? 1 : 0,
+          })),
+      } as T;
     }
     if (sql.includes("from login_account_roles join roles")) {
       return {
@@ -479,8 +493,13 @@ class FakeD1 {
       const [loginAccountId, personId] = values;
       let changes = 0;
       const personOnly = sql.includes("coalesce(active_subject_type, 'person') = 'person'");
+      const trainerOnly = sql.includes("active_subject_type = 'trainer'");
       for (const session of this.userSessions.filter(
-        (row) => row.login_account_id === loginAccountId && row.active_person_id === personId && (!personOnly || (row.active_subject_type || "person") === "person"),
+        (row) =>
+          row.login_account_id === loginAccountId &&
+          row.active_person_id === personId &&
+          (!personOnly || (row.active_subject_type || "person") === "person") &&
+          (!trainerOnly || row.active_subject_type === "trainer"),
       )) {
         session.active_person_id = null;
         changes += 1;
@@ -556,6 +575,13 @@ function env(db = new FakeD1(), overrides: Partial<WorkerBindings> = {}): Worker
     DEV_OTP: "123456",
     ...overrides,
   };
+}
+
+function testContext(db: FakeD1) {
+  return {
+    env: env(db),
+    req: { url: "http://localhost", header: () => undefined },
+  } as never;
 }
 
 function installFetch(options: {
@@ -1339,6 +1365,54 @@ describe("auth routes", () => {
       authenticated: true,
       activeProfile: { personId: "person_stu1" },
     });
+  });
+
+  it("does not let trainer bootstrap retire a same-account student profile session", async () => {
+    const db = new FakeD1();
+    const mobile = "9876543260";
+    const accountHash = await hmacHex("test-pepper", "mobile", mobile);
+    db.loginAccounts.push({ id: "acct_dual_bootstrap", organisation_id: "org_samyak", mobile_normalized: accountHash, mobile_hash: accountHash, mobile_last_four: mobile.slice(-4), status: "active" });
+    db.people.push({ id: "person_dual_bootstrap", organisation_id: "org_samyak", home_branch_id: "branch_sion", full_name: "Dual Bootstrap", public_name: "Dual", status: "active" });
+    db.referrerProfiles.push({ id: "ref_dual_bootstrap", organisation_id: "org_samyak", person_id: "person_dual_bootstrap", external_referrer_id: "DUAL_BOOT", referral_token: "DUAL_BOOT_TOKEN", personal_link: "https://example.test/r/DUAL_BOOT", active: 1 });
+    db.loginAccountPeople.push({ login_account_id: "acct_dual_bootstrap", person_id: "person_dual_bootstrap", access_type: "self", is_available: 1, created_at: "2026-07-01" });
+    db.personRoles.push({ person_id: "person_dual_bootstrap", role_id: "role_student", branch_id: null, branch_key: "", status: "active", created_at: "2026-07-01" });
+    db.personRoles.push({ person_id: "person_dual_bootstrap", role_id: "role_trainer", branch_id: "branch_sion", branch_key: "branch_sion", status: "active", created_at: "2026-07-01" });
+    await seedTrainerProfile(db, mobile, "test-pepper", { personId: "person_replacement_trainer", publicName: "Replacement" });
+    db.loginAccountPeople.push({ login_account_id: "acct_dual_bootstrap", person_id: "person_replacement_trainer", access_type: "staff", is_available: 1, created_at: "2026-07-01" });
+    db.userSessions.push({
+      id: "sess_student_dual_bootstrap",
+      login_account_id: "acct_dual_bootstrap",
+      active_person_id: "person_dual_bootstrap",
+      active_education_partner_id: null,
+      active_subject_type: "person",
+      token_hash: await hmacHex("test-pepper", "session", "student-dual-bootstrap-token"),
+      created_at: new Date().toISOString(),
+      expires_at: "2999-01-01T00:00:00.000Z",
+      last_seen_at: new Date().toISOString(),
+      revoked_at: null,
+    });
+    db.userSessions.push({
+      id: "sess_trainer_dual_bootstrap",
+      login_account_id: "acct_dual_bootstrap",
+      active_person_id: "person_dual_bootstrap",
+      active_education_partner_id: null,
+      active_subject_type: "trainer",
+      token_hash: await hmacHex("test-pepper", "session", "trainer-dual-bootstrap-token"),
+      created_at: new Date().toISOString(),
+      expires_at: "2999-01-01T00:00:00.000Z",
+      last_seen_at: new Date().toISOString(),
+      revoked_at: null,
+    });
+
+    await bootstrapTrainerAccount(testContext(db), mobile, {
+      success: true,
+      eligible: true,
+      trainers: [{ personId: "person_replacement_trainer", publicName: "Replacement", branchId: "branch_sion", branchName: "Sion", roles: ["trainer"] }],
+    });
+
+    expect(db.loginAccountPeople.find((row) => row.person_id === "person_dual_bootstrap")?.is_available).toBe(1);
+    expect(db.userSessions.find((row) => row.id === "sess_student_dual_bootstrap")?.active_person_id).toBe("person_dual_bootstrap");
+    expect(db.userSessions.find((row) => row.id === "sess_trainer_dual_bootstrap")?.active_person_id).toBeNull();
   });
 
   it("clears a deactivated trainer role immediately without waiting for cookie expiry", async () => {

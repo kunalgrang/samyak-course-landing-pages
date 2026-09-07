@@ -540,20 +540,28 @@ export async function bootstrapTrainerAccount(c: AppContext, mobile: string, loo
   }
 
   const previousLinks = await c.env.DB.prepare(
-    `select login_account_people.person_id
+    `select login_account_people.person_id,
+       max(case when student_roles.id is null then 0 else 1 end) as has_person_role
      from login_account_people
      join person_roles on person_roles.person_id = login_account_people.person_id
      join roles on roles.id = person_roles.role_id and roles.code = ?
-     where login_account_people.login_account_id = ?`,
+     left join person_roles student_person_roles on student_person_roles.person_id = login_account_people.person_id
+     left join roles student_roles on student_roles.id = student_person_roles.role_id
+       and student_roles.organisation_id = ?
+       and student_roles.code in ('student', 'alumni')
+     where login_account_people.login_account_id = ?
+     group by login_account_people.person_id`,
   )
-    .bind(TRAINER_ROLE_CODE, account.id)
-    .all<{ person_id: string }>();
+    .bind(TRAINER_ROLE_CODE, ORG_ID, account.id)
+    .all<{ person_id: string; has_person_role: number }>();
   for (const previous of previousLinks.results || []) {
     if (returnedPersonIds.has(previous.person_id)) continue;
-    await c.env.DB.prepare("update login_account_people set is_available = 0 where login_account_id = ? and person_id = ?")
-      .bind(account.id, previous.person_id)
-      .run();
-    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ? and coalesce(active_subject_type, 'person') = 'person'")
+    if (!previous.has_person_role) {
+      await c.env.DB.prepare("update login_account_people set is_available = 0 where login_account_id = ? and person_id = ?")
+        .bind(account.id, previous.person_id)
+        .run();
+    }
+    await c.env.DB.prepare("update user_sessions set active_person_id = null where login_account_id = ? and active_person_id = ? and active_subject_type = 'trainer'")
       .bind(account.id, previous.person_id)
       .run();
   }
