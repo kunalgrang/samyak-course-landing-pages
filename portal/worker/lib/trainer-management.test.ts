@@ -113,6 +113,71 @@ describe("Trainer Management service", () => {
     expect(count(c, "person_roles where person_id = 'person_student' and status = 'active'")).toBe(1);
   });
 
+  it("rejects forged Person choices outside the exact mobile candidate set and branch scope", async () => {
+    const { c, staff } = await setup();
+    await seedMobile(c, "person_shared", "9876543211");
+    await seedMobile(c, "person_dadar", "9876543211");
+
+    await expect(createManagedTrainer(c, staff, {
+      fullName: "Wrong Mobile",
+      mobile: "9876543211",
+      branchId: "branch_sion",
+      existingPersonId: "person_trainer",
+    })).resolves.toMatchObject({ ok: false, code: "invalid_person_choice" });
+
+    const candidates = await findTrainerPersonCandidates(c, staff, "9876543211");
+    expect(candidates.ok && candidates.candidates.map((candidate) => candidate.personId).sort()).toEqual(["person_shared", "person_student"]);
+    await expect(createManagedTrainer(c, staff, {
+      fullName: "Wrong Branch",
+      mobile: "9876543211",
+      branchId: "branch_sion",
+      existingPersonId: "person_dadar",
+    })).resolves.toMatchObject({ ok: false, code: "invalid_person_choice" });
+  });
+
+  it("reuses an existing Staff Person without changing staff authorization or duplicating login rows", async () => {
+    const { c, staff } = await setup();
+
+    const reused = await createManagedTrainer(c, staff, {
+      fullName: "Staff Trainer",
+      mobile: "9876543233",
+      branchId: "branch_sion",
+      existingPersonId: "person_staff",
+    });
+    const repeated = await createManagedTrainer(c, staff, {
+      fullName: "Staff Trainer",
+      mobile: "9876543233",
+      branchId: "branch_sion",
+      existingPersonId: "person_staff",
+    });
+
+    expect(reused).toMatchObject({ ok: true, reusedPerson: true });
+    expect(repeated).toMatchObject({ ok: true, alreadyTrainer: true });
+    expect(count(c, "people where id = 'person_staff'")).toBe(1);
+    expect(count(c, "person_roles where person_id = 'person_staff' and role_id = 'role_admin'")).toBe(1);
+    expect(count(c, "person_roles where person_id = 'person_staff' and role_id = 'role_trainer'")).toBe(1);
+    expect(count(c, "login_accounts where mobile_last_four = '3233'")).toBe(1);
+    expect(count(c, "login_account_people where person_id = 'person_staff'")).toBe(1);
+  });
+
+  it("ignores role escalation payload pollution and writes only the trainer role", async () => {
+    const { c, staff } = await setup();
+
+    const created = await createManagedTrainer(c, staff, {
+      fullName: "Role Pollution",
+      mobile: "9876543244",
+      branchId: "branch_sion",
+      role: "owner",
+      roles: ["system_admin"],
+      isAdmin: true,
+    } as Parameters<typeof createManagedTrainer>[2] & { role: string; roles: string[]; isAdmin: boolean });
+
+    expect(created).toMatchObject({ ok: true });
+    if (!created.ok) return;
+    expect(count(c, "person_roles where person_id = ? and role_id = 'role_trainer'", created.personId)).toBe(1);
+    expect(count(c, "person_roles where person_id = ? and role_id in ('role_owner', 'role_system_admin', 'role_admin')", created.personId)).toBe(0);
+  });
+
   it("keeps Student identity details aligned when editing a reused Trainer Person", async () => {
     const { c, staff } = await setup();
     await createManagedTrainer(c, staff, {
@@ -183,6 +248,10 @@ describe("Trainer Management service", () => {
     const blocked = await setManagedTrainerStatus(c, staff, personId, "inactive");
     expect(blocked).toMatchObject({ ok: false, code: "active_batch_assignments" });
 
+    c.env.DB.database.prepare("update batches set status = 'inactive' where primary_trainer_person_id = ?").run(personId);
+    const inactiveBlocked = await setManagedTrainerStatus(c, staff, personId, "inactive");
+    expect(inactiveBlocked).toMatchObject({ ok: false, code: "active_batch_assignments" });
+
     c.env.DB.database.prepare("update batches set status = 'completed' where primary_trainer_person_id = ?").run(personId);
     c.env.DB.database.prepare(
       "insert into user_sessions (id, login_account_id, active_person_id, active_education_partner_id, active_subject_type, token_hash, created_at, expires_at, last_seen_at, revoked_at, ip_hash, user_agent_hash) values ('sess_1', 'acct_new', ?, null, 'trainer', 'token', ?, '2099-01-01T00:00:00.000Z', ?, null, null, null)",
@@ -217,6 +286,7 @@ async function setup() {
   const c = { env: { DB: d1, SESSION_PEPPER: "test-pepper" } } as unknown as AppContext & { env: { DB: SqliteD1; SESSION_PEPPER: string } };
   await seedMobile(c, "person_student", "9876543211");
   await seedMobile(c, "person_trainer", "9876543210");
+  await seedMobile(c, "person_staff", "9876543233");
   const staff: StaffContext = { loginAccountId: "acct_admin", activePersonId: "person_admin", roles: ["admin"] };
   return { c, staff };
 }
@@ -248,15 +318,19 @@ function installSchema(db: DatabaseSync) {
 function seedBase(db: DatabaseSync) {
   db.prepare("insert into organisations values ('org_samyak', 'Samyak', 'samyak', 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into branches values ('branch_sion', 'org_samyak', 'Sion', 'SION', 'Asia/Kolkata', 'active', ?, ?)").run(NOW, NOW);
-  db.prepare("insert into roles values ('role_admin', 'org_samyak', 'admin', 'Admin', ?), ('role_trainer', 'org_samyak', 'trainer', 'Trainer', ?)").run(NOW, NOW);
+  db.prepare("insert into branches values ('branch_dadar', 'org_samyak', 'Dadar', 'DDR', 'Asia/Kolkata', 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into roles values ('role_admin', 'org_samyak', 'admin', 'Admin', ?), ('role_trainer', 'org_samyak', 'trainer', 'Trainer', ?), ('role_owner', 'org_samyak', 'owner', 'Owner', ?), ('role_system_admin', 'org_samyak', 'system_admin', 'System Admin', ?)").run(NOW, NOW, NOW, NOW);
   db.prepare("insert into people values ('person_admin', 'org_samyak', 'branch_sion', 'Admin User', 'Admin', null, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into people values ('person_student', 'org_samyak', 'branch_sion', 'Asha Student', 'Asha Student', null, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into people values ('person_shared', 'org_samyak', 'branch_sion', 'Shared Person', 'Shared Person', null, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into people values ('person_trainer', 'org_samyak', 'branch_sion', 'Existing Trainer', 'Existing Trainer', null, 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into people values ('person_staff', 'org_samyak', 'branch_sion', 'Staff Person', 'Staff Person', null, 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into people values ('person_dadar', 'org_samyak', 'branch_dadar', 'Dadar Person', 'Dadar Person', null, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into login_accounts values ('acct_admin', 'org_samyak', 'admin_hash', 'admin_hash', '0000', 1, 'active', null, ?, ?)").run(NOW, NOW);
   db.prepare("insert into login_accounts values ('acct_new', 'org_samyak', 'new_hash', 'new_hash', '3222', 1, 'active', null, ?, ?)").run(NOW, NOW);
   db.prepare("insert into login_account_roles values ('acct_admin', 'role_admin', 'branch_sion', ?)").run(NOW);
   db.prepare("insert into person_roles values ('person_trainer', 'role_trainer', 'branch_sion', 'branch_sion', 'active', ?)").run(NOW);
+  db.prepare("insert into person_roles values ('person_staff', 'role_admin', 'branch_sion', 'branch_sion', 'active', ?)").run(NOW);
   db.prepare("insert into students values ('student_one', 'org_samyak', 'person_student', 'branch_sion', 'SYK-SION-0001', 1, '2026-09-07', 'active', 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into person_identity_details values ('person_student', 'Asha Student', '2000-01-01', ?, ?)").run(NOW, NOW);
   db.prepare("insert into courses values ('course_fsd', 'org_samyak', 'FSD', 'Full Stack')").run();
