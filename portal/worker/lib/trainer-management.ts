@@ -236,6 +236,7 @@ export async function updateManagedTrainer(c: AppContext, staff: StaffContext, p
   const now = new Date().toISOString();
   const statements: D1PreparedStatement[] = [
     c.env.DB.prepare("update people set full_name = ?, public_name = ?, updated_at = ? where id = ? and organisation_id = ?").bind(fullName.value, fullName.value, now, personId, ORG_ID),
+    c.env.DB.prepare("update person_identity_details set official_full_name = ?, updated_at = ? where person_id = ?").bind(fullName.value, now, personId),
   ];
   if (email.value) statements.push(...(await emailContactStatements(c, personId, email.value, now)));
   statements.push(auditStatement(c, staff, current.branch_id || null, "trainer_details_updated", "person", personId, { personId, changedFields: ["fullName", "email"] }));
@@ -347,7 +348,8 @@ async function ensureTrainerLoginLinkage(c: AppContext, personId: string, mobile
 }
 
 async function mobileContactStatements(c: AppContext, personId: string, mobile: string, hash: string, now: string, makePrimary: boolean) {
-  const contactId = createOpaqueId("contact");
+  const existingContact = await c.env.DB.prepare("select id from person_contacts where person_id = ? and contact_type = 'mobile' and normalized_value = ?").bind(personId, hash).first<{ id: string }>();
+  const contactId = existingContact?.id || createOpaqueId("contact");
   const ciphertext = await encryptText(c.env.SESSION_PEPPER, `contact:${contactId}`, mobile);
   return [
     c.env.DB.prepare(
@@ -366,14 +368,15 @@ async function mobileContactStatements(c: AppContext, personId: string, mobile: 
     ).bind(now, now, personId, hash),
     c.env.DB.prepare(
       `insert into person_contact_secrets (contact_id, value_ciphertext, encryption_version, created_at, updated_at)
-       select id, ?, 'v1', ?, ? from person_contacts where person_id = ? and contact_type = 'mobile' and normalized_value = ?
-       on conflict(contact_id) do nothing`,
-    ).bind(ciphertext, now, now, personId, hash),
+       select id, ?, 'v1', ?, ? from person_contacts where person_id = ? and contact_type = 'mobile' and normalized_value = ? and id = ?
+       on conflict(contact_id) do update set value_ciphertext = excluded.value_ciphertext, encryption_version = excluded.encryption_version, updated_at = excluded.updated_at`,
+    ).bind(ciphertext, now, now, personId, hash, contactId),
   ];
 }
 
 async function emailContactStatements(c: AppContext, personId: string, email: string, now: string) {
-  const contactId = createOpaqueId("contact");
+  const existingContact = await c.env.DB.prepare("select id from person_contacts where person_id = ? and contact_type = 'email' and normalized_value = ?").bind(personId, email).first<{ id: string }>();
+  const contactId = existingContact?.id || createOpaqueId("contact");
   const ciphertext = await encryptText(c.env.SESSION_PEPPER, `contact:${contactId}`, email);
   return [
     c.env.DB.prepare("update person_contacts set is_primary = 0, updated_at = ? where person_id = ? and contact_type = 'email' and is_primary = 1").bind(now, personId),
@@ -390,9 +393,9 @@ async function emailContactStatements(c: AppContext, personId: string, email: st
     ).bind(now, now, personId, email),
     c.env.DB.prepare(
       `insert into person_contact_secrets (contact_id, value_ciphertext, encryption_version, created_at, updated_at)
-       select id, ?, 'v1', ?, ? from person_contacts where person_id = ? and contact_type = 'email' and normalized_value = ?
-       on conflict(contact_id) do nothing`,
-    ).bind(ciphertext, now, now, personId, email),
+       select id, ?, 'v1', ?, ? from person_contacts where person_id = ? and contact_type = 'email' and normalized_value = ? and id = ?
+       on conflict(contact_id) do update set value_ciphertext = excluded.value_ciphertext, encryption_version = excluded.encryption_version, updated_at = excluded.updated_at`,
+    ).bind(ciphertext, now, now, personId, email, contactId),
   ];
 }
 
@@ -458,7 +461,7 @@ async function mapTrainerRow(c: AppContext, row: TrainerRow) {
     activeBatchCount: Number(row.active_batch_count || 0),
     teachingBatchCount: Number(row.teaching_batch_count || 0),
     completedBatchCount: Number(row.completed_batch_count || 0),
-    trainerLoginUrl: "/trainer/login",
+    trainerLoginUrl: "https://portal.samyaksion.com/trainer/login",
   };
 }
 

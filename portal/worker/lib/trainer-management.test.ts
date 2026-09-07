@@ -11,6 +11,7 @@ import {
   getManagedTrainer,
   listManagedTrainers,
   setManagedTrainerStatus,
+  updateManagedTrainer,
 } from "./trainer-management";
 import type { TrainerCandidate as ManagedTrainerCandidate } from "./trainer-management";
 
@@ -112,6 +113,42 @@ describe("Trainer Management service", () => {
     expect(count(c, "person_roles where person_id = 'person_student' and status = 'active'")).toBe(1);
   });
 
+  it("keeps Student identity details aligned when editing a reused Trainer Person", async () => {
+    const { c, staff } = await setup();
+    await createManagedTrainer(c, staff, {
+      fullName: "Asha Student",
+      mobile: "9876543211",
+      branchId: "branch_sion",
+      existingPersonId: "person_student",
+    });
+
+    const updated = await updateManagedTrainer(c, staff, "person_student", { fullName: "Asha Trainer", email: "" });
+
+    expect(updated).toMatchObject({ ok: true });
+    expect(row(c, "select full_name, public_name from people where id = 'person_student'")).toMatchObject({ full_name: "Asha Trainer", public_name: "Asha Trainer" });
+    expect(row(c, "select official_full_name from person_identity_details where person_id = 'person_student'")).toMatchObject({ official_full_name: "Asha Trainer" });
+  });
+
+  it("encrypts reused contact secrets with the existing contact id context", async () => {
+    const { c, staff } = await setup();
+    c.env.DB.database
+      .prepare("insert into person_contacts values ('contact_existing_email', 'person_student', 'email', 'legacy@example.com', 'legacy@example.com', null, 1, 0, ?, ?)")
+      .run(NOW, NOW);
+
+    const reused = await createManagedTrainer(c, staff, {
+      fullName: "Asha Student",
+      mobile: "9876543211",
+      email: "legacy@example.com",
+      branchId: "branch_sion",
+      existingPersonId: "person_student",
+    });
+    const detail = await getManagedTrainer(c, staff, "person_student");
+
+    expect(reused).toMatchObject({ ok: true, reusedPerson: true });
+    expect(count(c, "person_contact_secrets where contact_id = 'contact_existing_email'")).toBe(1);
+    expect(detail.ok && detail.trainer.email).toBe("legacy@example.com");
+  });
+
   it("keeps shared mobile Persons separate unless the operator selects one or chooses separate Person", async () => {
     const { c, staff } = await setup();
 
@@ -192,6 +229,7 @@ function installSchema(db: DatabaseSync) {
     create table person_contacts (id text primary key, person_id text, contact_type text, normalized_value text, display_value text, last_four text, is_primary integer, is_verified integer default 0, created_at text, updated_at text, unique(person_id, contact_type, normalized_value));
     create table person_contact_details (contact_id text primary key, belongs_to text, is_whatsapp integer, valid_until text, status text, created_at text, updated_at text);
     create table person_contact_secrets (contact_id text primary key, value_ciphertext text, encryption_version text, created_at text, updated_at text);
+    create table person_identity_details (person_id text primary key, official_full_name text, date_of_birth text, created_at text, updated_at text);
     create table roles (id text primary key, organisation_id text, code text, name text, created_at text);
     create table login_accounts (id text primary key, organisation_id text, mobile_normalized text, mobile_hash text, mobile_last_four text, login_enabled integer, status text, last_login_at text, created_at text, updated_at text, unique(organisation_id, mobile_normalized));
     create table login_account_people (login_account_id text, person_id text, access_type text, is_default integer, is_available integer, created_at text, primary key (login_account_id, person_id));
@@ -220,6 +258,7 @@ function seedBase(db: DatabaseSync) {
   db.prepare("insert into login_account_roles values ('acct_admin', 'role_admin', 'branch_sion', ?)").run(NOW);
   db.prepare("insert into person_roles values ('person_trainer', 'role_trainer', 'branch_sion', 'branch_sion', 'active', ?)").run(NOW);
   db.prepare("insert into students values ('student_one', 'org_samyak', 'person_student', 'branch_sion', 'SYK-SION-0001', 1, '2026-09-07', 'active', 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into person_identity_details values ('person_student', 'Asha Student', '2000-01-01', ?, ?)").run(NOW, NOW);
   db.prepare("insert into courses values ('course_fsd', 'org_samyak', 'FSD', 'Full Stack')").run();
 }
 
@@ -238,4 +277,8 @@ function seedBatch(c: AppContext & { env: { DB: SqliteD1 } }, trainerPersonId: s
 function count(c: AppContext & { env: { DB: SqliteD1 } }, where: string, ...values: unknown[]) {
   const row = c.env.DB.database.prepare(`select count(*) as count from ${where}`).get(...(values as any[])) as { count: number };
   return row.count;
+}
+
+function row(c: AppContext & { env: { DB: SqliteD1 } }, sql: string, ...values: unknown[]) {
+  return c.env.DB.database.prepare(sql).get(...(values as any[]));
 }

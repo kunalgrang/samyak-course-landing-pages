@@ -289,12 +289,13 @@ function TrainerDetailPage({ personId, onNavigate }: { personId: string; onNavig
   }, [personId]);
 
   async function changeStatus(status: "active" | "inactive") {
+    if (status === "inactive" && !window.confirm("Deactivate this trainer? Their Trainer login access will be removed after any active or inactive batches are reassigned.")) return;
     setActionError("");
     try {
       await setManagedTrainerStatus(personId, status);
       await refresh();
     } catch (caught) {
-      setActionError(errorMessage(caught));
+      setActionError(trainerActionErrorMessage(caught));
     }
   }
 
@@ -449,4 +450,22 @@ function label(value: string) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error && error.message ? error.message : "The trainer action could not be completed.";
+}
+
+function trainerActionErrorMessage(error: unknown) {
+  if (error instanceof ApiError && error.code === "active_batch_assignments") {
+    const batches = trainerBatchesFromDetails(error.details);
+    if (batches.length) return `${error.message} Blocking batches: ${batches.map((batch) => `${batch.name} (${label(batch.status)})`).join(", ")}.`;
+  }
+  return errorMessage(error);
+}
+
+function trainerBatchesFromDetails(details: Record<string, unknown> | undefined) {
+  const batches = details?.batches;
+  if (!Array.isArray(batches)) return [];
+  return batches.filter(isTrainerBatch);
+}
+
+function isTrainerBatch(value: unknown): value is ManagedTrainerBatch {
+  return Boolean(value && typeof value === "object" && typeof (value as ManagedTrainerBatch).name === "string" && typeof (value as ManagedTrainerBatch).status === "string");
 }
