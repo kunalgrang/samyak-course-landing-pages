@@ -47,6 +47,7 @@ type TrainerRow = {
   trainer_status: string;
   mobile_last_four: string | null;
   email_contact_id: string | null;
+  email_ciphertext: string | null;
   active_batch_count: number;
   teaching_batch_count: number;
   completed_batch_count: number;
@@ -107,6 +108,7 @@ export async function listManagedTrainers(c: AppContext, staff: StaffContext, qu
        coalesce(person_roles.status, 'active') as trainer_status,
        primary_mobile.last_four as mobile_last_four,
        email_contact.id as email_contact_id,
+       email_secret.value_ciphertext as email_ciphertext,
        coalesce(active_counts.active_batch_count, 0) as active_batch_count,
        coalesce(teaching_counts.teaching_batch_count, 0) as teaching_batch_count,
        coalesce(completed_counts.completed_batch_count, 0) as completed_batch_count
@@ -116,6 +118,7 @@ export async function listManagedTrainers(c: AppContext, staff: StaffContext, qu
      left join branches on branches.id = coalesce(person_roles.branch_id, people.home_branch_id) and branches.organisation_id = people.organisation_id
      left join person_contacts primary_mobile on primary_mobile.person_id = people.id and primary_mobile.contact_type = 'mobile' and primary_mobile.is_primary = 1
      left join person_contacts email_contact on email_contact.person_id = people.id and email_contact.contact_type = 'email' and email_contact.is_primary = 1
+     left join person_contact_secrets email_secret on email_secret.contact_id = email_contact.id
      left join (
        select primary_trainer_person_id, count(*) as active_batch_count
        from batches where organisation_id = ? and status = 'active' group by primary_trainer_person_id
@@ -420,6 +423,7 @@ async function loadTrainer(c: AppContext, personId: string) {
        coalesce(person_roles.status, 'active') as trainer_status,
        primary_mobile.last_four as mobile_last_four,
        email_contact.id as email_contact_id,
+       email_secret.value_ciphertext as email_ciphertext,
        coalesce(active_counts.active_batch_count, 0) as active_batch_count,
        coalesce(teaching_counts.teaching_batch_count, 0) as teaching_batch_count,
        coalesce(completed_counts.completed_batch_count, 0) as completed_batch_count
@@ -429,6 +433,7 @@ async function loadTrainer(c: AppContext, personId: string) {
      left join branches on branches.id = coalesce(person_roles.branch_id, people.home_branch_id) and branches.organisation_id = people.organisation_id
      left join person_contacts primary_mobile on primary_mobile.person_id = people.id and primary_mobile.contact_type = 'mobile' and primary_mobile.is_primary = 1
      left join person_contacts email_contact on email_contact.person_id = people.id and email_contact.contact_type = 'email' and email_contact.is_primary = 1
+     left join person_contact_secrets email_secret on email_secret.contact_id = email_contact.id
      left join (select primary_trainer_person_id, count(*) as active_batch_count from batches where organisation_id = ? and status = 'active' group by primary_trainer_person_id) active_counts on active_counts.primary_trainer_person_id = people.id
      left join (select primary_trainer_person_id, count(*) as teaching_batch_count from batches where organisation_id = ? and status in ('active', 'inactive') group by primary_trainer_person_id) teaching_counts on teaching_counts.primary_trainer_person_id = people.id
      left join (select primary_trainer_person_id, count(*) as completed_batch_count from batches where organisation_id = ? and status = 'completed' group by primary_trainer_person_id) completed_counts on completed_counts.primary_trainer_person_id = people.id
@@ -449,7 +454,7 @@ async function mapTrainerRow(c: AppContext, row: TrainerRow) {
     personStatus: row.person_status,
     trainerStatus: row.trainer_status,
     mobileDisplay: maskMobileByLastFour(row.mobile_last_four || ""),
-    email: row.email_contact_id ? await readContactSecret(c, row.email_contact_id) : "",
+    email: row.email_contact_id && row.email_ciphertext ? await readContactSecret(c, row.email_contact_id, row.email_ciphertext) : "",
     activeBatchCount: Number(row.active_batch_count || 0),
     teachingBatchCount: Number(row.teaching_batch_count || 0),
     completedBatchCount: Number(row.completed_batch_count || 0),
@@ -549,11 +554,9 @@ function auditStatement(c: AppContext, staff: StaffContext, branchId: string | n
   ).bind(createOpaqueId("audit"), ORG_ID, branchId, staff.loginAccountId, staff.activePersonId || null, action, entityType, entityId, JSON.stringify(metadata), new Date().toISOString());
 }
 
-async function readContactSecret(c: AppContext, contactId: string) {
-  const row = await c.env.DB.prepare("select value_ciphertext from person_contact_secrets where contact_id = ?").bind(contactId).first<{ value_ciphertext: string }>();
-  if (!row?.value_ciphertext) return "";
+async function readContactSecret(c: AppContext, contactId: string, ciphertext: string) {
   try {
-    return await decryptText(c.env.SESSION_PEPPER, `contact:${contactId}`, row.value_ciphertext);
+    return await decryptText(c.env.SESSION_PEPPER, `contact:${contactId}`, ciphertext);
   } catch {
     return "";
   }
