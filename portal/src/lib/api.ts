@@ -341,6 +341,55 @@ const batchListSchema = z.object({ success: z.literal(true), batches: z.array(ba
 const batchMutationSchema = z.object({ success: z.literal(true), batchId: z.string() });
 const batchMembershipMutationSchema = z.object({ success: z.literal(true), membershipId: z.string() });
 const trainerListSchema = z.object({ success: z.literal(true), trainers: z.array(z.record(z.string(), z.unknown())) });
+const managedTrainerCandidateSchema = z.object({
+  personId: z.string(),
+  displayName: z.string(),
+  branchId: z.string().nullable(),
+  branchName: z.string(),
+  personStatus: z.string(),
+  roles: z.array(z.string()),
+  studentNumber: z.string().nullable(),
+  trainerStatus: z.string().nullable(),
+  mobileDisplay: z.string(),
+});
+const managedTrainerSchema = z.object({
+  personId: z.string(),
+  fullName: z.string(),
+  publicName: z.string(),
+  branchId: z.string().nullable(),
+  branchName: z.string(),
+  personStatus: z.string(),
+  trainerStatus: z.string(),
+  mobileDisplay: z.string(),
+  email: z.string(),
+  activeBatchCount: z.number(),
+  teachingBatchCount: z.number(),
+  completedBatchCount: z.number(),
+  trainerLoginUrl: z.string(),
+});
+const managedTrainerBatchSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  status: z.string(),
+  branchName: z.string(),
+  courses: z.array(z.object({ id: z.string(), name: z.string() })),
+  daysOfWeek: z.array(z.string()),
+  startTime: z.string(),
+  endTime: z.string(),
+  activeStudents: z.number(),
+});
+const managedTrainerPaginationSchema = z.object({ limit: z.number(), offset: z.number(), hasMore: z.boolean() });
+const managedTrainerListSchema = z.object({ success: z.literal(true), trainers: z.array(managedTrainerSchema), pagination: managedTrainerPaginationSchema });
+const managedTrainerCandidateListSchema = z.object({ success: z.literal(true), candidates: z.array(managedTrainerCandidateSchema) });
+const managedTrainerDetailSchema = z.object({ success: z.literal(true), trainer: managedTrainerSchema, batches: z.array(managedTrainerBatchSchema) });
+const managedTrainerMutationSchema = z.object({
+  success: z.literal(true),
+  personId: z.string(),
+  createdPerson: z.boolean().optional(),
+  reusedPerson: z.boolean().optional(),
+  alreadyTrainer: z.boolean().optional(),
+  idempotent: z.boolean().optional(),
+});
 const eligibleEnrolmentListSchema = z.object({ success: z.literal(true), enrolments: z.array(z.record(z.string(), z.unknown())) });
 const admissionBatchOptionListSchema = z.object({ success: z.literal(true), batches: z.array(admissionBatchOptionSchema) });
 const batchDetailSchema = z.object({
@@ -1222,6 +1271,11 @@ export type StudentSearchResult = z.infer<typeof studentSearchSchema>;
 export type CreateEnquiryResponse = z.infer<typeof createEnquiryResponseSchema>;
 export type StaffCourse = z.infer<typeof courseSchema>;
 export type StaffBatch = z.infer<typeof batchSchema>;
+export type ManagedTrainer = z.infer<typeof managedTrainerSchema>;
+export type ManagedTrainerCandidate = z.infer<typeof managedTrainerCandidateSchema>;
+export type ManagedTrainerBatch = z.infer<typeof managedTrainerBatchSchema>;
+export type ManagedTrainerList = z.infer<typeof managedTrainerListSchema>;
+export type ManagedTrainerDetail = z.infer<typeof managedTrainerDetailSchema>;
 export type AdmissionBatchOption = z.infer<typeof admissionBatchOptionSchema>;
 export type StaffBatchDetail = z.infer<typeof batchDetailSchema>;
 export type TrainerBatch = z.infer<typeof trainerBatchSchema>;
@@ -1497,6 +1551,48 @@ export async function updateStaffBatch(batchId: string, input: Record<string, un
 
 export async function getStaffBatchTrainers(branchId?: string) {
   return getJson(`/api/staff/batches/trainers${queryString({ branchId })}`, trainerListSchema);
+}
+
+export type ManagedTrainerQuery = {
+  q?: string;
+  status?: string;
+  branchId?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export type ManagedTrainerInput = {
+  fullName: string;
+  mobile: string;
+  email?: string;
+  branchId: string;
+  status?: "active" | "inactive";
+  existingPersonId?: string;
+  createSeparatePerson?: boolean;
+};
+
+export async function getManagedTrainers(params: ManagedTrainerQuery = {}) {
+  return getJson(`/api/staff/trainers${queryString(params)}`, managedTrainerListSchema);
+}
+
+export async function getManagedTrainer(personId: string) {
+  return getJson(`/api/staff/trainers/${encodeURIComponent(personId)}`, managedTrainerDetailSchema);
+}
+
+export async function getManagedTrainerCandidates(mobile: string) {
+  return getJson(`/api/staff/trainers/candidates${queryString({ mobile })}`, managedTrainerCandidateListSchema);
+}
+
+export async function createManagedTrainer(input: ManagedTrainerInput) {
+  return postJson("/api/staff/trainers", input, managedTrainerMutationSchema);
+}
+
+export async function updateManagedTrainer(personId: string, input: { fullName: string; email?: string }) {
+  return patchJson(`/api/staff/trainers/${encodeURIComponent(personId)}`, input, managedTrainerMutationSchema);
+}
+
+export async function setManagedTrainerStatus(personId: string, status: "active" | "inactive") {
+  return postJson(`/api/staff/trainers/${encodeURIComponent(personId)}/status`, { status }, managedTrainerMutationSchema);
 }
 
 export async function getEligibleBatchEnrolments(batchId: string, q = "") {

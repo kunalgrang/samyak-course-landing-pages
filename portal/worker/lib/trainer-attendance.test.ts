@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrainerProfileChoice } from "./auth-store";
 import type { AppContext } from "./http";
 import {
@@ -13,6 +13,15 @@ import {
 } from "./trainer-attendance";
 
 const NOW = "2026-09-04T04:30:00.000Z";
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(NOW));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 class SqliteD1Statement {
   private values: unknown[] = [];
@@ -201,7 +210,7 @@ function installSchema(db: DatabaseSync) {
     create table person_identity_details (person_id text primary key, official_full_name text, date_of_birth text, created_at text, updated_at text);
     create table roles (id text primary key, organisation_id text, code text, name text, created_at text);
     create table login_accounts (id text primary key, organisation_id text, mobile_normalized text, mobile_hash text, mobile_last_four text, login_enabled integer, status text, created_at text, updated_at text);
-    create table person_roles (person_id text, role_id text, branch_id text, branch_key text, created_at text);
+    create table person_roles (person_id text, role_id text, branch_id text, branch_key text, status text default 'active', created_at text);
     create table courses (id text primary key, organisation_id text, code text, name text, duration_label text, status text, created_at text, updated_at text);
     create table students (id text primary key, organisation_id text, person_id text, home_branch_id text, student_number text, current_status text, portal_status text, created_at text, updated_at text);
     create table enrolments (id text primary key, student_id text, branch_id text, course_id text, enrolment_number text, joining_date text, status text, created_at text, updated_at text);
@@ -243,8 +252,8 @@ function seed(db: DatabaseSync) {
   for (const [id, name] of [["person_trainer", "Trainer User"], ["person_other_trainer", "Other Trainer"], ["person_asha", "Asha Student"], ["person_late", "Late Joiner"], ["person_transfer", "Transferred Out"], ["person_other", "Other Student"]] as const) {
     db.prepare("insert into people values (?, 'org_samyak', 'branch_sion', ?, ?, null, 'active', ?, ?)").run(id, name, name, NOW, NOW);
   }
-  db.prepare("insert into person_roles values ('person_trainer', 'role_trainer', 'branch_sion', 'branch_sion', ?)").run(NOW);
-  db.prepare("insert into person_roles values ('person_other_trainer', 'role_trainer', 'branch_sion', 'branch_sion', ?)").run(NOW);
+  db.prepare("insert into person_roles values ('person_trainer', 'role_trainer', 'branch_sion', 'branch_sion', 'active', ?)").run(NOW);
+  db.prepare("insert into person_roles values ('person_other_trainer', 'role_trainer', 'branch_sion', 'branch_sion', 'active', ?)").run(NOW);
   db.prepare("insert into courses values ('course_excel', 'org_samyak', 'EXCEL', 'Excel', '1 month', 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into courses values ('course_sql', 'org_samyak', 'SQL', 'SQL', '1 month', 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into batches values ('batch_morning', 'org_samyak', 'branch_sion', 'course_excel', 'Data Analytics Morning', 'person_trainer', '[\"mon\",\"wed\",\"fri\"]', '10:00', '12:00', null, 'active', 'acct_admin', ?, ?)").run(NOW, NOW);

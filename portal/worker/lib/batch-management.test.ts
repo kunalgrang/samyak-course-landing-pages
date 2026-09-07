@@ -392,7 +392,7 @@ function installSchema(db: DatabaseSync) {
     create table roles (id text primary key, organisation_id text, code text, name text, created_at text);
     create table login_accounts (id text primary key, organisation_id text, mobile_normalized text, mobile_last_four text, login_enabled integer, status text, created_at text, updated_at text);
     create table login_account_roles (login_account_id text, role_id text, branch_id text, created_at text);
-    create table person_roles (person_id text, role_id text, branch_id text, branch_key text, created_at text);
+    create table person_roles (person_id text, role_id text, branch_id text, branch_key text, status text default 'active', created_at text);
     create table courses (id text primary key, organisation_id text, code text, name text, duration_label text, duration_months real, default_fee_paise integer, lowest_acceptable_fee_paise integer, admission_configuration_complete integer, nsdc_available integer, status text, created_at text, updated_at text);
     create table students (id text primary key, organisation_id text, person_id text, home_branch_id text, student_number text, sequence_number integer, student_since text, current_status text, portal_status text, created_at text, updated_at text);
     create table enrolments (id text primary key, student_id text, branch_id text, course_id text, enquiry_id text, enrolment_number text, training_mode text, batch_preference text, admission_date text, joining_date text, expected_completion_date text, actual_completion_date text, status text, nsdc_preference text, created_at text, updated_at text);
@@ -430,8 +430,8 @@ function seedBase(db: DatabaseSync) {
   db.prepare("insert into person_identity_details values ('person_other_student', 'Dadar Student', '2000-01-01', ?, ?)").run(NOW, NOW);
   db.prepare("insert into login_accounts values ('acct_admin', 'org_samyak', '+919876543210', '3210', 1, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into login_account_roles values ('acct_admin', 'role_admin', 'branch_sion', ?)").run(NOW);
-  db.prepare("insert into person_roles values ('person_trainer', 'role_trainer', 'branch_sion', 'branch_sion', ?)").run(NOW);
-  db.prepare("insert into person_roles values ('person_inactive_trainer', 'role_trainer', 'branch_sion', 'branch_sion', ?)").run(NOW);
+  db.prepare("insert into person_roles values ('person_trainer', 'role_trainer', 'branch_sion', 'branch_sion', 'active', ?)").run(NOW);
+  db.prepare("insert into person_roles values ('person_inactive_trainer', 'role_trainer', 'branch_sion', 'branch_sion', 'active', ?)").run(NOW);
   db.prepare("insert into courses values ('course_fsd', 'org_samyak', 'FSD', 'Full Stack', '6 months', 6, 5000000, 4000000, 1, 1, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into courses values ('course_dm_ai', 'org_samyak', 'DMAI', 'Digital Marketing with AI', '4 months', 4, 5000000, 4000000, 1, 1, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into courses values ('course_dm_wp', 'org_samyak', 'DMWP', 'Digital Marketing with AI & WordPress', '4 months', 4, 5000000, 4000000, 1, 1, 'active', ?, ?)").run(NOW, NOW);

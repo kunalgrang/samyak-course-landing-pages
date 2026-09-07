@@ -481,6 +481,7 @@ export async function lookupTrainersByMobile(c: AppContext, mobile: string): Pro
        and person_contacts.normalized_value = ?
        and (person_contact_details.status is null or person_contact_details.status = 'active')
        and (person_contact_details.valid_until is null or person_contact_details.valid_until > ?)
+       and coalesce(person_roles.status, 'active') = 'active'
        and (branches.id is null or branches.status = 'active')
      order by public_name collate nocase`,
   )
@@ -771,6 +772,7 @@ export async function trainerSessionView(c: AppContext, loginAccountId: string, 
        and branches.organisation_id = people.organisation_id
      where login_account_people.login_account_id = ?
        and login_account_people.is_available = 1
+       and coalesce(person_roles.status, 'active') = 'active'
        and (branches.id is null or branches.status = 'active')
      order by public_name collate nocase`,
   )
@@ -1510,6 +1512,7 @@ async function isLinkedTrainerAvailable(c: AppContext, loginAccountId: string, p
        and people.organisation_id = ?
        and people.status = 'active'
        and roles.code = ?
+       and coalesce(person_roles.status, 'active') = 'active'
        and (branches.id is null or branches.status = 'active')
      limit 1`,
   )

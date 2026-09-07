@@ -188,6 +188,7 @@ export const personRoles = sqliteTable(
       .references(() => roles.id),
     branchId: text("branch_id").references(() => branches.id),
     branchKey: text("branch_key").notNull().default(""),
+    status: text("status").notNull().default("active"),
     createdAt: text("created_at").notNull(),
   },
   (table) => [
@@ -195,6 +196,8 @@ export const personRoles = sqliteTable(
     index("person_roles_person_id_idx").on(table.personId),
     index("person_roles_role_id_idx").on(table.roleId),
     index("person_roles_branch_id_idx").on(table.branchId),
+    index("person_roles_role_status_branch_idx").on(table.roleId, table.status, table.branchId),
+    check("person_roles_status_check", sql`${table.status} in ('active', 'inactive')`),
   ],
 );
 

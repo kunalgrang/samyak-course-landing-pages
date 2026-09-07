@@ -265,6 +265,7 @@ export async function listTrainers(c: AppContext, staff: StaffContext, branchId?
      join person_roles on person_roles.person_id = people.id
      join roles on roles.id = person_roles.role_id and roles.organisation_id = people.organisation_id
      where ${where} and roles.code = 'trainer'
+       and coalesce(person_roles.status, 'active') = 'active'
      order by name collate nocase`,
   )
     .bind(...bindings)
@@ -569,6 +570,7 @@ async function eligibleTrainer(c: AppContext, personId: string, branchId: string
        and people.organisation_id = ?
        and people.status = 'active'
        and roles.code = 'trainer'
+       and coalesce(person_roles.status, 'active') = 'active'
        and (person_roles.branch_id is null or person_roles.branch_id = ?)
      limit 1`,
   )
