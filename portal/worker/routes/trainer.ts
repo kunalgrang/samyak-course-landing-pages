@@ -178,12 +178,12 @@ export function registerTrainerRoutes(app: PortalHono) {
     await recordAuthEvent(c, "trainer_otp_verify", "LOGIN_SUCCESS", { loginAccountId: accountId, mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
     await recordAuditLog(c, accountId, activeTrainerId, "trainer_login");
     const response = jsonWithRequestId(c, { success: true, session: await trainerSessionView(c, accountId, activeTrainerId) });
-    response.headers.append("Set-Cookie", buildSessionCookie(c, token));
+    response.headers.append("Set-Cookie", buildSessionCookie(c, token, "trainer"));
     return response;
   });
 
   app.get("/api/trainer/session", async (c) => {
-    const validation = await getSessionValidationResult(c);
+    const validation = await getSessionValidationResult(c, "trainer");
     const session = validation.session;
     if (!session) {
       const expired = validation.resultCode === "SESSION_ABSOLUTE_EXPIRED" || validation.resultCode === "SESSION_INACTIVE_EXPIRED";
@@ -194,7 +194,7 @@ export function registerTrainerRoutes(app: PortalHono) {
         code: validation.resultCode,
         ...(expired ? { message: "Your session has expired. Please sign in again." } : {}),
       });
-      if (validation.shouldClearCookie && hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
+      if (validation.shouldClearCookie && hasSessionCookie(c, "trainer")) response.headers.append("Set-Cookie", clearSessionCookie(c, "trainer"));
       return response;
     }
     if (session.record.active_education_partner_id || session.record.active_subject_type === "partner") {
@@ -211,7 +211,7 @@ export function registerTrainerRoutes(app: PortalHono) {
     if (originError) return originError;
     const body = await readJsonBody(c, selectTrainerSchema);
     if (isResponse(body)) return body;
-    const session = await getSessionFromRequest(c);
+    const session = await getSessionFromRequest(c, "trainer");
     if (!session) return jsonWithRequestId(c, { success: false, code: "UNAUTHENTICATED", message: "Please sign in again." }, 401);
     if (session.record.active_education_partner_id || session.record.active_subject_type === "partner") return jsonWithRequestId(c, { success: false, code: "PARTNER_SESSION_ACTIVE", message: "Please use Trainer login." }, 401);
     if ((session.record.active_subject_type || "person") !== "trainer") return jsonWithRequestId(c, { success: false, code: "PERSON_SESSION_ACTIVE", message: "Please use Trainer login." }, 401);
@@ -223,13 +223,13 @@ export function registerTrainerRoutes(app: PortalHono) {
   app.post("/api/trainer/auth/logout", async (c) => {
     const originError = requireSameOrigin(c);
     if (originError) return originError;
-    const session = await getSessionFromRequest(c);
+    const session = await getSessionFromRequest(c, "trainer");
     if (session) {
       await revokeSession(c, session.tokenHash);
       await recordAuthEvent(c, "trainer_logout", "LOGOUT", { loginAccountId: session.record.login_account_id });
     }
     const response = jsonWithRequestId(c, { success: true });
-    response.headers.append("Set-Cookie", clearSessionCookie(c));
+    response.headers.append("Set-Cookie", clearSessionCookie(c, "trainer"));
     return response;
   });
 

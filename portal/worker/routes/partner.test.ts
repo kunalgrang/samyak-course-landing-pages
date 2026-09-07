@@ -163,11 +163,11 @@ describe("Education Partner portal security", () => {
       const partnerPersonCookie = "samyak_session=partner-person-token";
       expect((await app.request("http://localhost/api/student/home", { headers: { Cookie: partnerPersonCookie } }, fixture.env)).status).toBe(409);
       await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: partnerPersonCookie } }, fixture.env)).json())
-        .resolves.toMatchObject({ authenticated: false, code: "PARTNER_SESSION_ACTIVE" });
+        .resolves.toMatchObject({ authenticated: false, code: "SESSION_COOKIE_MISSING" });
 
       await seedSessionRow(fixture.sqlite, "sess_trainer_partner", "acct_malformed", null, "epartner_a", "trainer-partner-token");
       fixture.sqlite.prepare("update user_sessions set active_subject_type = 'trainer' where id = 'sess_trainer_partner'").run();
-      const trainerPartnerCookie = "samyak_session=trainer-partner-token";
+      const trainerPartnerCookie = "samyak_trainer_session=trainer-partner-token";
       await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: trainerPartnerCookie } }, fixture.env)).json())
         .resolves.toMatchObject({ authenticated: false, code: "PARTNER_SESSION_ACTIVE" });
       expect((await app.request("http://localhost/api/partner/me", { headers: { Cookie: trainerPartnerCookie } }, fixture.env)).status).toBe(401);

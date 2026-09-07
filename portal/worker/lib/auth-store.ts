@@ -10,9 +10,12 @@ const REFERRAL_PUBLIC_ORIGIN = "https://go.samyaksion.com";
 
 const PRODUCTION_SESSION_COOKIE = "__Host-samyak_session";
 const LOCAL_DEVELOPMENT_SESSION_COOKIE = "samyak_session";
+const PRODUCTION_TRAINER_SESSION_COOKIE = "__Host-samyak_trainer_session";
+const LOCAL_DEVELOPMENT_TRAINER_SESSION_COOKIE = "samyak_trainer_session";
 const PERSON_ROLE_CODES = new Set(["student", "alumni"]);
 const TRAINER_ROLE_CODE = "trainer";
 export type SessionSubjectType = "person" | "trainer" | "partner";
+export type SessionCookieScope = "default" | "trainer";
 
 export type ProfileChoice = {
   personId: string;
@@ -574,30 +577,30 @@ export async function createSession(
   return token;
 }
 
-export function buildSessionCookie(c: AppContext, token: string) {
-  const parts = [`${sessionCookieName(c)}=${token}`, "Path=/"];
+export function buildSessionCookie(c: AppContext, token: string, scope: SessionCookieScope = "default") {
+  const parts = [`${sessionCookieName(c, scope)}=${token}`, "Path=/"];
   if (shouldUseSecureSessionCookie(c)) parts.push("Secure");
   parts.push("HttpOnly", "SameSite=Lax", "Max-Age=2592000");
   return parts.join("; ");
 }
 
-export function clearSessionCookie(c: AppContext) {
-  const parts = [`${sessionCookieName(c)}=`, "Path=/"];
+export function clearSessionCookie(c: AppContext, scope: SessionCookieScope = "default") {
+  const parts = [`${sessionCookieName(c, scope)}=`, "Path=/"];
   if (shouldUseSecureSessionCookie(c)) parts.push("Secure");
   parts.push("HttpOnly", "SameSite=Lax", "Max-Age=0");
   return parts.join("; ");
 }
 
-export function hasSessionCookie(c: AppContext) {
-  return Boolean(getCookie(c.req.header("cookie") || "", sessionCookieName(c)));
+export function hasSessionCookie(c: AppContext, scope: SessionCookieScope = "default") {
+  return Boolean(getCookie(c.req.header("cookie") || "", sessionCookieName(c, scope)));
 }
 
-export async function getSessionFromRequest(c: AppContext): Promise<AuthenticatedSession | null> {
-  return (await getSessionValidationResult(c)).session;
+export async function getSessionFromRequest(c: AppContext, scope: SessionCookieScope = "default"): Promise<AuthenticatedSession | null> {
+  return (await getSessionValidationResult(c, scope)).session;
 }
 
-export async function getSessionValidationResult(c: AppContext): Promise<SessionValidationResult> {
-  const token = getCookie(c.req.header("cookie") || "", sessionCookieName(c));
+export async function getSessionValidationResult(c: AppContext, scope: SessionCookieScope = "default"): Promise<SessionValidationResult> {
+  const token = getCookie(c.req.header("cookie") || "", sessionCookieName(c, scope));
   if (!token) {
     await recordSessionResult(c, "SESSION_COOKIE_MISSING");
     return { session: null, resultCode: "SESSION_COOKIE_MISSING", shouldClearCookie: false };
@@ -647,7 +650,10 @@ export async function getSessionValidationResult(c: AppContext): Promise<Session
   return { session: { record: currentRecord, tokenHash }, resultCode: "SESSION_VALID", shouldClearCookie: false };
 }
 
-export function sessionCookieName(c: AppContext) {
+export function sessionCookieName(c: AppContext, scope: SessionCookieScope = "default") {
+  if (scope === "trainer") {
+    return isLocalDevelopmentRequest(c) ? LOCAL_DEVELOPMENT_TRAINER_SESSION_COOKIE : PRODUCTION_TRAINER_SESSION_COOKIE;
+  }
   if (isLocalDevelopmentRequest(c)) return LOCAL_DEVELOPMENT_SESSION_COOKIE;
   return PRODUCTION_SESSION_COOKIE;
 }
@@ -794,7 +800,7 @@ export async function trainerSessionView(c: AppContext, loginAccountId: string, 
 }
 
 export async function requireAuthenticatedTrainer(c: AppContext) {
-  const session = await getSessionFromRequest(c);
+  const session = await getSessionFromRequest(c, "trainer");
   if (!session?.record.active_person_id || session.record.active_education_partner_id) return null;
   if (session.record.active_subject_type !== "trainer") return null;
   if (!(await isLinkedTrainerAvailable(c, session.record.login_account_id, session.record.active_person_id))) return null;
