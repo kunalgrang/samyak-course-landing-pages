@@ -56,6 +56,7 @@ function state(overrides: Partial<Parameters<typeof redirectForRouteState>[0]> =
     canAccessEnquiries: false,
     canAccessStudents: false,
     isCourseAdmin: false,
+    canManageTrainers: false,
     isDiscountApprover: false,
     ...overrides,
   };
