@@ -83,7 +83,6 @@ describe("staff academic service", () => {
     expect(overview.needsAttention).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ batchId: "batch_unscheduled", type: "no_class_today" }),
     ]));
-    expect(overview.queryCount).toBe(3);
   });
 
   it("enforces branch scope for overview, batch, session, trainer and student reads", async () => {
@@ -105,10 +104,10 @@ describe("staff academic service", () => {
     expect(detail).toMatchObject({ ok: true });
     if (!detail.ok) throw new Error("expected batch");
 
-    expect(detail.summary).toMatchObject({ classesLogged: 3, present: 3, absent: 1, attendancePercent: 75, materialsShared: 1 });
+    expect(detail.summary).toMatchObject({ classesLogged: 3, present: 3, absent: 1, attendancePercent: 75, materialsShared: 3 });
     expect(detail.sessions.map((session) => session.status)).toContain("open");
     expect(detail.sessions.map((session) => session.status)).toContain("cancelled");
-    expect(detail.sessions.find((session) => session.id === "session_today")?.materialCount).toBe(1);
+    expect(detail.sessions.find((session) => session.id === "session_today")?.materialCount).toBe(3);
     expect(JSON.stringify(detail)).not.toContain("9876543210");
 
     const empty = await getStaffAcademicBatch(c, owner(), "batch_unscheduled");
@@ -127,12 +126,14 @@ describe("staff academic service", () => {
       expect.objectContaining({ studentName: "Late Joiner", attendanceStatus: "absent" }),
     ]));
     expect(JSON.stringify(detail.roster)).not.toContain("fees");
-    expect(detail.materials).toHaveLength(1);
+    expect(detail.materials).toHaveLength(3);
     expect(JSON.stringify(detail.materials)).not.toContain("r2_object_key");
 
     await expect(getStaffAcademicMaterialContent(c, owner(), "mat_today")).resolves.toMatchObject({ ok: true, filename: "notes.pdf", sizeBytes: PDF_BYTES.byteLength });
     await expect(getStaffAcademicMaterialContent(c, owner(), "mat_deleted")).resolves.toMatchObject({ ok: false, code: "material_not_found" });
     await expect(getStaffAcademicMaterialContent(c, admin("branch_sion"), "mat_bandra")).resolves.toMatchObject({ ok: false, code: "material_not_found" });
+    await expect(getStaffAcademicMaterialContent(c, admin("branch_sion"), "mat_mismatched_branch")).resolves.toMatchObject({ ok: false, code: "material_not_found" });
+    await expect(getStaffAcademicMaterialContent(c, owner(), "mat_missing")).resolves.toMatchObject({ ok: false, status: 503, code: "material_missing" });
   });
 
   it("reports trainer activity without scoring and preserves historical session trainer assignment", async () => {
@@ -270,10 +271,15 @@ function seed(db: DatabaseSync, storage: MemoryR2) {
   attendance(db, "att_transfer_new", "session_new_batch", "mem_transfer_new", "enrol_transfer_tally", "person_transfer", "absent");
 
   material(db, "mat_today", "session_today", "batch_morning", "branch_sion", "person_trainer", "notes.pdf", null);
+  material(db, "mat_today_extra", "session_today", "batch_morning", "branch_sion", "person_trainer", "extra.pdf", null);
   material(db, "mat_deleted", "session_today", "batch_morning", "branch_sion", "person_trainer", "deleted.pdf", NOW);
   material(db, "mat_bandra", "session_bandra", "batch_bandra", "branch_bandra", "person_bandra_trainer", "bandra.pdf", null);
+  material(db, "mat_mismatched_branch", "session_bandra", "batch_bandra", "branch_sion", "person_bandra_trainer", "mismatch.pdf", null);
+  material(db, "mat_missing", "session_today", "batch_morning", "branch_sion", "person_trainer", "missing.pdf", null);
   storage.objects.set("key_mat_today", PDF_BYTES);
+  storage.objects.set("key_mat_today_extra", PDF_BYTES);
   storage.objects.set("key_mat_bandra", PDF_BYTES);
+  storage.objects.set("key_mat_mismatched_branch", PDF_BYTES);
 }
 
 function enrolment(db: DatabaseSync, id: string, studentId: string, branchId: string, courseId: string, number: string) {

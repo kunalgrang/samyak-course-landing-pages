@@ -599,7 +599,6 @@ const staffAcademicOverviewSchema = z.object({
     message: z.string(),
   })),
   activeBatches: z.array(staffAcademicBatchSummarySchema),
-  queryCount: z.number(),
 });
 
 const staffAcademicBatchDetailSchema = z.object({
@@ -615,7 +614,6 @@ const staffAcademicBatchDetailSchema = z.object({
   }),
   sessions: z.array(staffAcademicSessionSummarySchema),
   pagination: staffAcademicPaginationSchema,
-  queryCount: z.number(),
 });
 
 const staffAcademicSessionDetailSchema = z.object({
@@ -631,7 +629,6 @@ const staffAcademicSessionDetailSchema = z.object({
     attendanceStatus: z.string().nullable(),
   })),
   materials: z.array(sessionMaterialSchema),
-  queryCount: z.number(),
 });
 
 const staffAcademicTrainerActivitySchema = z.object({
@@ -652,7 +649,6 @@ const staffAcademicTrainerActivitySchema = z.object({
   }),
   sessions: z.array(staffAcademicSessionSummarySchema),
   pagination: staffAcademicPaginationSchema,
-  queryCount: z.number(),
 });
 
 const staffAcademicStudentAttendanceSchema = z.object({
@@ -682,7 +678,6 @@ const staffAcademicStudentAttendanceSchema = z.object({
     courseName: z.string(),
   })),
   pagination: staffAcademicPaginationSchema,
-  queryCount: z.number(),
 });
 
 export type StaffAcademicOverview = z.infer<typeof staffAcademicOverviewSchema>;
@@ -1659,7 +1654,6 @@ export async function getStaffAcademicBatches(params: { q?: string; limit?: numb
     success: z.literal(true),
     batches: z.array(staffAcademicBatchSummarySchema),
     pagination: staffAcademicPaginationSchema,
-    queryCount: z.number(),
   }));
 }
 

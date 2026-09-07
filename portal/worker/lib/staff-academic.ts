@@ -56,6 +56,10 @@ type MaterialContentResult =
   | { ok: true; body: ReadableStream<Uint8Array>; filename: string; sizeBytes?: number }
   | { ok: false; status: number; code: string; message: string };
 
+type MaterialContentRow = SessionMaterialRecord & {
+  session_branch_id: string;
+};
+
 export type AcademicPagination = {
   limit?: number;
   offset?: number;
@@ -170,7 +174,6 @@ export async function getStaffAcademicOverview(c: AppContext, staff: StaffContex
     todayClasses,
     needsAttention,
     activeBatches,
-    queryCount: 3,
   };
 }
 
@@ -201,7 +204,6 @@ export async function listStaffAcademicBatches(c: AppContext, staff: StaffContex
     success: true as const,
     batches: results.slice(0, limit).map(mapBatch),
     pagination: { limit, offset, hasMore: results.length > limit },
-    queryCount: 1,
   };
 }
 
@@ -213,23 +215,49 @@ export async function getStaffAcademicBatch(c: AppContext, staff: StaffContext, 
   const [summary, sessions] = await Promise.all([
     c.env.DB.prepare(
       `select
-         count(distinct case when class_sessions.status = 'completed' then class_sessions.id end) as classes_logged,
-         sum(case when class_sessions.status = 'completed' and attendance_memberships.id is not null and attendance_records.status = 'present' then 1 else 0 end) as present,
-         sum(case when class_sessions.status = 'completed' and attendance_memberships.id is not null and attendance_records.status = 'absent' then 1 else 0 end) as absent,
-         max(case when class_sessions.status != 'cancelled' then class_sessions.session_date end) as last_class_date,
-         count(distinct case when session_materials.deleted_at is null then session_materials.id end) as materials_shared
-       from class_sessions
-       left join attendance_records on attendance_records.class_session_id = class_sessions.id and attendance_records.organisation_id = class_sessions.organisation_id
-       left join batch_memberships attendance_memberships on attendance_memberships.id = attendance_records.batch_membership_id
-        and attendance_memberships.organisation_id = attendance_records.organisation_id
-        and date(attendance_memberships.joined_at) <= date(class_sessions.session_date)
-        and (attendance_memberships.left_at is null or date(attendance_memberships.left_at) >= date(class_sessions.session_date))
-       left join session_materials on session_materials.class_session_id = class_sessions.id and session_materials.organisation_id = class_sessions.organisation_id and session_materials.deleted_at is null
-       where class_sessions.organisation_id = ? and class_sessions.batch_id = ?`,
+         (select count(*)
+          from class_sessions logged_sessions
+          where logged_sessions.organisation_id = ?
+            and logged_sessions.batch_id = ?
+            and logged_sessions.status = 'completed') as classes_logged,
+         (select count(*)
+          from attendance_records
+          join class_sessions attendance_sessions on attendance_sessions.id = attendance_records.class_session_id
+           and attendance_sessions.organisation_id = attendance_records.organisation_id
+          join batch_memberships attendance_memberships on attendance_memberships.id = attendance_records.batch_membership_id
+           and attendance_memberships.organisation_id = attendance_records.organisation_id
+           and date(attendance_memberships.joined_at) <= date(attendance_sessions.session_date)
+           and (attendance_memberships.left_at is null or date(attendance_memberships.left_at) >= date(attendance_sessions.session_date))
+          where attendance_records.organisation_id = ?
+            and attendance_sessions.batch_id = ?
+            and attendance_sessions.status = 'completed'
+            and attendance_records.status = 'present') as present,
+         (select count(*)
+          from attendance_records
+          join class_sessions attendance_sessions on attendance_sessions.id = attendance_records.class_session_id
+           and attendance_sessions.organisation_id = attendance_records.organisation_id
+          join batch_memberships attendance_memberships on attendance_memberships.id = attendance_records.batch_membership_id
+           and attendance_memberships.organisation_id = attendance_records.organisation_id
+           and date(attendance_memberships.joined_at) <= date(attendance_sessions.session_date)
+           and (attendance_memberships.left_at is null or date(attendance_memberships.left_at) >= date(attendance_sessions.session_date))
+          where attendance_records.organisation_id = ?
+            and attendance_sessions.batch_id = ?
+            and attendance_sessions.status = 'completed'
+            and attendance_records.status = 'absent') as absent,
+         (select max(recent_sessions.session_date)
+          from class_sessions recent_sessions
+          where recent_sessions.organisation_id = ?
+            and recent_sessions.batch_id = ?
+            and recent_sessions.status != 'cancelled') as last_class_date,
+         (select count(*)
+          from session_materials
+          where session_materials.organisation_id = ?
+            and session_materials.batch_id = ?
+            and session_materials.deleted_at is null) as materials_shared`,
     )
-      .bind(ORG_ID, batchId)
+      .bind(ORG_ID, batchId, ORG_ID, batchId, ORG_ID, batchId, ORG_ID, batchId, ORG_ID, batchId)
       .first<{ classes_logged: number; present: number | null; absent: number | null; last_class_date: string | null; materials_shared: number }>(),
-    c.env.DB.prepare(sessionSummarySql("class_sessions.batch_id = ?", "class_sessions.session_date desc, class_sessions.scheduled_start_time desc", "limit ? offset ?"))
+    c.env.DB.prepare(sessionSummarySql("class_sessions.batch_id = ?", "class_sessions.session_date desc, class_sessions.scheduled_start_time desc, class_sessions.created_at desc, class_sessions.id desc", "limit ? offset ?"))
       .bind(ORG_ID, ORG_ID, batchId, limit + 1, offset)
       .all<SessionSummaryRow>(),
   ]);
@@ -251,7 +279,6 @@ export async function getStaffAcademicBatch(c: AppContext, staff: StaffContext, 
     },
     sessions: pageRows.map(mapSessionSummary),
     pagination: { limit, offset, hasMore: (sessions.results || []).length > limit },
-    queryCount: 3,
   };
 }
 
@@ -303,7 +330,6 @@ export async function getStaffAcademicSession(c: AppContext, staff: StaffContext
       attendanceStatus: row.attendance_status ? String(row.attendance_status) : null,
     })),
     materials,
-    queryCount: 3,
   };
 }
 
@@ -329,7 +355,7 @@ export async function getStaffTrainerActivity(c: AppContext, staff: StaffContext
     )
       .bind(week.startsOn, week.endsOn, addIndiaDays(indiaDate(), -29), ORG_ID, ORG_ID, personId, ORG_ID)
       .first<{ classes_this_week: number; classes_this_month: number; last_class_date: string | null; active_batches: number }>(),
-    c.env.DB.prepare(sessionSummarySql("class_sessions.trainer_person_id = ? and class_sessions.session_date >= ?", "class_sessions.session_date desc, class_sessions.scheduled_start_time desc", "limit ? offset ?"))
+    c.env.DB.prepare(sessionSummarySql("class_sessions.trainer_person_id = ? and class_sessions.session_date >= ?", "class_sessions.session_date desc, class_sessions.scheduled_start_time desc, class_sessions.created_at desc, class_sessions.id desc", "limit ? offset ?"))
       .bind(ORG_ID, ORG_ID, personId, fromDate, limit + 1, offset)
       .all<SessionSummaryRow>(),
   ]);
@@ -346,7 +372,6 @@ export async function getStaffTrainerActivity(c: AppContext, staff: StaffContext
     },
     sessions: (sessions.results || []).slice(0, limit).map(mapSessionSummary),
     pagination: { limit, offset, hasMore: (sessions.results || []).length > limit },
-    queryCount: 3,
   };
 }
 
@@ -418,7 +443,7 @@ export async function getStaffStudentAttendance(c: AppContext, staff: StaffConte
        ) material_counts on material_counts.class_session_id = class_sessions.id
        where batch_memberships.organisation_id = ?
          and enrolments.student_id = ?
-       order by class_sessions.session_date desc, class_sessions.scheduled_start_time desc
+        order by class_sessions.session_date desc, class_sessions.scheduled_start_time desc, class_sessions.created_at desc, class_sessions.id desc
        limit ? offset ?`,
     )
       .bind(ORG_ID, ORG_ID, studentId, limit + 1, offset)
@@ -438,25 +463,25 @@ export async function getStaffStudentAttendance(c: AppContext, staff: StaffConte
       courseName: String(row.course_name || ""),
     })),
     pagination: { limit, offset, hasMore: (sessions.results || []).length > limit },
-    queryCount: 3,
   };
 }
 
 export async function getStaffAcademicMaterialContent(c: AppContext, staff: StaffContext, materialId: string): Promise<MaterialContentResult> {
   const material = await c.env.DB.prepare(
-    `select session_materials.*
+    `select session_materials.*, class_sessions.branch_id as session_branch_id
      from session_materials
      join class_sessions on class_sessions.id = session_materials.class_session_id
-      and class_sessions.organisation_id = session_materials.organisation_id
+       and class_sessions.organisation_id = session_materials.organisation_id
      where session_materials.id = ?
        and session_materials.organisation_id = ?
        and session_materials.deleted_at is null
      limit 1`,
   )
     .bind(materialId, ORG_ID)
-    .first<SessionMaterialRecord>();
+    .first<MaterialContentRow>();
   if (!material) return notFound("material_not_found", "Material was not found.");
-  if (!(await hasAcademicBranchAccess(c, staff, material.branch_id))) return notFound("material_not_found", "Material was not found.");
+  if (material.branch_id !== material.session_branch_id) return notFound("material_not_found", "Material was not found.");
+  if (!(await hasAcademicBranchAccess(c, staff, material.session_branch_id))) return notFound("material_not_found", "Material was not found.");
   const storage = sessionMaterialStorageFromEnv(c.env);
   if (!storage) return { ok: false, status: 503, code: "material_storage_unavailable", message: "Session material storage is not configured." };
   const object = await storage.get(material.r2_object_key);
