@@ -103,6 +103,16 @@ class FakeD1Statement {
           .map((row) => ({ person_id: row.person_id, is_available: row.is_available })),
       } as T;
     }
+    if (sql.includes("select distinct login_account_people.person_id") && sql.includes("roles.code in ('student', 'alumni')")) {
+      const [_organisationId, loginAccountId] = this.values;
+      const studentRoleIds = new Set(this.db.roles.filter((role) => ["student", "alumni"].includes(String(role.code))).map((role) => role.id));
+      return {
+        results: this.db.loginAccountPeople
+          .filter((link) => link.login_account_id === loginAccountId)
+          .filter((link) => this.db.personRoles.some((role) => role.person_id === link.person_id && studentRoleIds.has(role.role_id)))
+          .map((link) => ({ person_id: link.person_id, is_available: link.is_available })),
+      } as T;
+    }
     if (sql.includes("from person_contacts join people") && sql.includes("join referral_programme_referrer_types")) {
       const [mobileHash, organisationId] = this.values;
       const results: Row[] = [];
@@ -468,7 +478,10 @@ class FakeD1 {
     if (sql.startsWith("update user_sessions set active_person_id = null where login_account_id")) {
       const [loginAccountId, personId] = values;
       let changes = 0;
-      for (const session of this.userSessions.filter((row) => row.login_account_id === loginAccountId && row.active_person_id === personId)) {
+      const personOnly = sql.includes("coalesce(active_subject_type, 'person') = 'person'");
+      for (const session of this.userSessions.filter(
+        (row) => row.login_account_id === loginAccountId && row.active_person_id === personId && (!personOnly || (row.active_subject_type || "person") === "person"),
+      )) {
         session.active_person_id = null;
         changes += 1;
       }
@@ -688,8 +701,10 @@ async function verifyOtp(db: FakeD1, challengeId: string, otp = "000000", cookie
   );
 }
 
-async function requestTrainerOtp(db: FakeD1, mobile = "9876543210", bindings = env(db)) {
-  await seedTrainerProfile(db, mobile, bindings.SESSION_PEPPER);
+async function requestTrainerOtp(db: FakeD1, mobile = "9876543210", bindings = env(db), trainers?: Array<{ personId: string; publicName: string }>) {
+  for (const trainer of trainers ?? [{ personId: "person_trainer", publicName: "Tara" }]) {
+    await seedTrainerProfile(db, mobile, bindings.SESSION_PEPPER, trainer);
+  }
   return app.request(
     "http://localhost/api/trainer/auth/request-otp",
     {
@@ -713,24 +728,27 @@ async function verifyTrainerOtp(db: FakeD1, challengeId: string, otp = "123456",
   );
 }
 
-async function seedTrainerProfile(db: FakeD1, mobile: string, sessionPepper: string) {
+async function seedTrainerProfile(db: FakeD1, mobile: string, sessionPepper: string, options: { personId?: string; publicName?: string } = {}) {
   const mobileHash = await hmacHex(sessionPepper, "mobile", mobile);
-  if (!db.people.some((row) => row.id === "person_trainer")) {
+  const personId = options.personId ?? "person_trainer";
+  const publicName = options.publicName ?? "Tara";
+  if (!db.people.some((row) => row.id === personId)) {
     db.people.push({
-      id: "person_trainer",
+      id: personId,
       organisation_id: "org_samyak",
       home_branch_id: "branch_sion",
-      full_name: "Tara Trainer",
-      public_name: "Tara",
+      full_name: `${publicName} Trainer`,
+      public_name: publicName,
       status: "active",
       created_at: "2026-07-01",
       updated_at: "2026-07-01",
     });
   }
-  if (!db.personContacts.some((row) => row.person_id === "person_trainer" && row.contact_type === "mobile" && row.normalized_value === mobileHash)) {
-    db.personContacts.push({
-      id: "contact_trainer_mobile",
-      person_id: "person_trainer",
+  let contact = db.personContacts.find((row) => row.person_id === personId && row.contact_type === "mobile" && row.normalized_value === mobileHash);
+  if (!contact) {
+    contact = {
+      id: `contact_${personId}_trainer_mobile`,
+      person_id: personId,
       contact_type: "mobile",
       normalized_value: mobileHash,
       last_four: mobile.slice(-4),
@@ -738,13 +756,15 @@ async function seedTrainerProfile(db: FakeD1, mobile: string, sessionPepper: str
       is_verified: 1,
       created_at: "2026-07-01",
       updated_at: "2026-07-01",
-    });
+    };
+    db.personContacts.push(contact);
   }
-  if (!db.personContactDetails.some((row) => row.contact_id === "contact_trainer_mobile")) {
-    db.personContactDetails.push({ contact_id: "contact_trainer_mobile", status: "active" });
+  const contactId = contact.id;
+  if (!db.personContactDetails.some((row) => row.contact_id === contactId)) {
+    db.personContactDetails.push({ contact_id: contactId, status: "active" });
   }
-  if (!db.personRoles.some((row) => row.person_id === "person_trainer" && row.role_id === "role_trainer")) {
-    db.personRoles.push({ person_id: "person_trainer", role_id: "role_trainer", branch_id: "branch_sion", branch_key: "branch_sion", status: "active", created_at: "2026-07-01" });
+  if (!db.personRoles.some((row) => row.person_id === personId && row.role_id === "role_trainer")) {
+    db.personRoles.push({ person_id: personId, role_id: "role_trainer", branch_id: "branch_sion", branch_key: "branch_sion", status: "active", created_at: "2026-07-01" });
   }
 }
 
@@ -1172,6 +1192,172 @@ describe("auth routes", () => {
       env(db),
     );
     expect(trainerLogout.headers.get("set-cookie")).toContain("samyak_trainer_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+  });
+
+  it("keeps trainer sessions valid at 1 hour and 24 hours while expiring only at inactivity or absolute TTL", async () => {
+    const db = new FakeD1();
+    installFetch();
+    const trainerOtp = await requestTrainerOtp(db);
+    const trainerVerify = await verifyTrainerOtp(db, String((await jsonBody(trainerOtp)).challengeId));
+    const trainerCookie = sessionCookie(trainerVerify);
+    const trainerSession = db.userSessions.find((row) => row.active_subject_type === "trainer")!;
+
+    trainerSession.last_seen_at = new Date(Date.now() - 60 * 60_000).toISOString();
+    await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: trainerCookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: true,
+      activeTrainer: { personId: "person_trainer" },
+    });
+
+    trainerSession.last_seen_at = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+    await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: trainerCookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: true,
+      activeTrainer: { personId: "person_trainer" },
+    });
+
+    trainerSession.last_seen_at = new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString();
+    await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: trainerCookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: false,
+      code: "SESSION_INACTIVE_EXPIRED",
+    });
+
+    trainerSession.last_seen_at = new Date().toISOString();
+    trainerSession.expires_at = "2000-01-01T00:00:00.000Z";
+    await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: trainerCookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: false,
+      code: "SESSION_ABSOLUTE_EXPIRED",
+    });
+  });
+
+  it("selects among multiple trainer profiles through the trainer cookie without touching the default session", async () => {
+    const db = new FakeD1();
+    installFetch();
+    const trainers = [
+      { personId: "person_trainer_a", publicName: "Trainer A" },
+      { personId: "person_trainer_b", publicName: "Trainer B" },
+    ];
+    const trainerOtp = await requestTrainerOtp(db, "9876543230", env(db), trainers);
+    const trainerVerify = await verifyTrainerOtp(db, String((await jsonBody(trainerOtp)).challengeId));
+    const trainerCookie = sessionCookie(trainerVerify);
+    await expect(trainerVerify.json()).resolves.toMatchObject({ session: { activeTrainer: null, trainers: expect.arrayContaining([expect.objectContaining({ personId: "person_trainer_b" })]) } });
+
+    const studentOtp = await requestOtp(db, "9876543220");
+    const studentVerify = await verifyOtp(db, String((await jsonBody(studentOtp)).challengeId), "123456");
+    const studentCookie = sessionCookie(studentVerify);
+    const selected = await app.request(
+      "http://localhost/api/trainer/auth/select-profile",
+      {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: `${trainerCookie}; ${studentCookie}` },
+        body: JSON.stringify({ personId: "person_trainer_b" }),
+      },
+      env(db),
+    );
+    expect(selected.status).toBe(200);
+    expect(db.userSessions.find((row) => row.active_subject_type === "trainer")?.active_person_id).toBe("person_trainer_b");
+    expect(db.userSessions.find((row) => row.active_subject_type === "person")?.active_person_id).toBe("person_stu1");
+  });
+
+  it("allows the same person to hold independent student and trainer sessions in one browser", async () => {
+    const db = new FakeD1();
+    installFetch({ profiles: [profile("DUAL", "Dual Role User", "Dual", "Student")] });
+    const mobile = "9876543240";
+    const studentOtp = await requestOtp(db, mobile);
+    const studentVerify = await verifyOtp(db, String((await jsonBody(studentOtp)).challengeId), "123456");
+    const studentCookie = sessionCookie(studentVerify);
+    await seedTrainerProfile(db, mobile, "test-pepper", { personId: "person_dual", publicName: "Dual" });
+    const accountId = String(db.loginAccounts[0].id);
+    const trainerToken = "dual-trainer-token";
+    db.userSessions.push({
+      id: "sess_dual_trainer",
+      login_account_id: accountId,
+      active_person_id: "person_dual",
+      active_education_partner_id: null,
+      active_subject_type: "trainer",
+      token_hash: await hmacHex("test-pepper", "session", trainerToken),
+      created_at: new Date().toISOString(),
+      expires_at: "2999-01-01T00:00:00.000Z",
+      last_seen_at: new Date().toISOString(),
+      revoked_at: null,
+    });
+    const trainerCookie = `samyak_trainer_session=${trainerToken}`;
+
+    await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: `${studentCookie}; ${trainerCookie}` } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: true,
+      activeProfile: { personId: "person_dual" },
+    });
+    await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: `${studentCookie}; ${trainerCookie}` } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: true,
+      activeTrainer: { personId: "person_dual" },
+    });
+  });
+
+  it("keeps shared-mobile student and trainer people independent and revokes only the targeted token", async () => {
+    const db = new FakeD1();
+    installFetch();
+    const mobile = "9876543250";
+    const accountHash = await hmacHex("test-pepper", "mobile", mobile);
+    await seedTrainerProfile(db, mobile, "test-pepper", { personId: "person_shared_trainer", publicName: "Shared Trainer" });
+    db.loginAccounts.push({ id: "acct_shared_mobile", organisation_id: "org_samyak", mobile_normalized: accountHash, mobile_hash: accountHash, mobile_last_four: mobile.slice(-4), status: "active" });
+    db.loginAccountPeople.push({ login_account_id: "acct_shared_mobile", person_id: "person_shared_trainer", access_type: "staff", is_available: 1, created_at: "2026-07-01" });
+    const trainerToken = "shared-mobile-trainer-token";
+    db.userSessions.push({
+      id: "sess_shared_mobile_trainer",
+      login_account_id: "acct_shared_mobile",
+      active_person_id: "person_shared_trainer",
+      active_education_partner_id: null,
+      active_subject_type: "trainer",
+      token_hash: await hmacHex("test-pepper", "session", trainerToken),
+      created_at: new Date().toISOString(),
+      expires_at: "2999-01-01T00:00:00.000Z",
+      last_seen_at: new Date().toISOString(),
+      revoked_at: null,
+    });
+    const trainerCookie = `samyak_trainer_session=${trainerToken}`;
+    const studentOtp = await requestOtp(db, mobile);
+    const studentVerify = await verifyOtp(db, String((await jsonBody(studentOtp)).challengeId), "123456");
+    const studentVerifyBody = await jsonBody(studentVerify);
+    expect(studentVerifyBody).toMatchObject({ success: true });
+    expect(studentVerify.status).toBe(200);
+    const studentCookie = sessionCookie(studentVerify);
+    const trainerSession = db.userSessions.find((row) => row.active_subject_type === "trainer")!;
+    const studentSession = db.userSessions.find((row) => row.active_subject_type === "person")!;
+
+    expect(trainerSession.id).not.toBe(studentSession.id);
+    expect(trainerSession.token_hash).not.toBe(studentSession.token_hash);
+    expect(trainerSession.active_person_id).toBe("person_shared_trainer");
+    expect(studentSession.active_person_id).toBe("person_stu1");
+    expect(db.loginAccountPeople.find((row) => row.person_id === "person_shared_trainer")?.is_available).toBe(1);
+
+    await app.request(
+      "http://localhost/api/trainer/auth/logout",
+      { method: "POST", headers: { Origin: "http://localhost", Cookie: `${trainerCookie}; ${studentCookie}` } },
+      env(db),
+    );
+    expect(trainerSession.revoked_at).toBeTruthy();
+    expect(studentSession.revoked_at).toBeNull();
+    await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: studentCookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: true,
+      activeProfile: { personId: "person_stu1" },
+    });
+  });
+
+  it("clears a deactivated trainer role immediately without waiting for cookie expiry", async () => {
+    const db = new FakeD1();
+    installFetch();
+    const trainerOtp = await requestTrainerOtp(db);
+    const trainerVerify = await verifyTrainerOtp(db, String((await jsonBody(trainerOtp)).challengeId));
+    const trainerCookie = sessionCookie(trainerVerify);
+
+    db.personRoles.find((row) => row.person_id === "person_trainer" && row.role_id === "role_trainer")!.status = "inactive";
+
+    await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: trainerCookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: true,
+      activeTrainer: null,
+      trainers: [],
+    });
+    expect(db.userSessions.find((row) => row.active_subject_type === "trainer")?.active_person_id).toBeNull();
+    expect(authResultCodes(db)).toContain("SESSION_PROFILE_CLEARED");
+    expect((await app.request("http://localhost/api/trainer/batches", { headers: { Cookie: trainerCookie } }, env(db))).status).toBe(401);
   });
 
   it("accepts a session after simulated Worker restart and ordinary deployment when SESSION_PEPPER is stable", async () => {

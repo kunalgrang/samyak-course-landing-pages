@@ -403,11 +403,15 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
   if (!account) throw new Error("Account bootstrap failed");
 
   const previousLinks = await c.env.DB.prepare(
-    `select person_id, is_available
+    `select distinct login_account_people.person_id, login_account_people.is_available
      from login_account_people
-     where login_account_id = ?`,
+     join person_roles on person_roles.person_id = login_account_people.person_id
+     join roles on roles.id = person_roles.role_id
+       and roles.organisation_id = ?
+       and roles.code in ('student', 'alumni')
+     where login_account_people.login_account_id = ?`,
   )
-    .bind(account.id)
+    .bind(ORG_ID, account.id)
     .all<PreviousProfileLink>();
   const previousByPersonId = new Map((previousLinks.results || []).map((link) => [link.person_id, link]));
   const returnedPersonIds = new Set<string>();
