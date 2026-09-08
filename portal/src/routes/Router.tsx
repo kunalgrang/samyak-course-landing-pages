@@ -25,12 +25,13 @@ import { DiscountApprovalsPage } from "../features/staff/DiscountApprovalsPage";
 import { EnquiryDetailPage } from "../features/staff/EnquiryDetailPage";
 import { StudentProfilePage } from "../features/staff/StudentProfilePage";
 import { PaymentsLedgerPage } from "../features/staff/PaymentsLedgerPage";
+import { CollectionsPage } from "../features/staff/CollectionsPage";
 import { RulesPage } from "./RulesPage";
 import { ShellHomePage } from "./ShellHomePage";
 import { AppShell } from "./AppShell";
 import type { AppRoute, RoutePath, StudentRoute } from "./types";
 
-const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/students", "/app/batches", "/app/academic", "/app/trainers", "/app/trainers/new", "/app/education-partners", "/app/referral-operations", "/app/courses", "/app/discount-approvals", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
+const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/students", "/app/collections", "/app/batches", "/app/academic", "/app/trainers", "/app/trainers/new", "/app/education-partners", "/app/referral-operations", "/app/courses", "/app/discount-approvals", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
 const studentRoutes = new Set<RoutePath>(["/student/dashboard", "/student/learning", "/student/certificates", "/student/referrals", "/student/rules", "/student/profile"]);
 const staffBlockedSelfServiceRoutes = new Set<RoutePath>(["/app", "/app/referrals", "/app/rules", "/app/profile"]);
 const staffRoles = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
@@ -65,6 +66,7 @@ export function normalizePath(pathname: string): RoutePath {
   if (/^\/app\/enquiries\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/referral-operations\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/students\/[^/]+$/.test(pathname)) return pathname as RoutePath;
+  if (/^\/app\/collections\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/batches\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/academic\/batches\/[^/]+$/.test(pathname)) return pathname as RoutePath;
   if (/^\/app\/academic\/sessions\/[^/]+$/.test(pathname)) return pathname as RoutePath;
@@ -127,6 +129,7 @@ export function Router() {
   const enquiryDetailMatch = activeAppPath.match(/^\/app\/enquiries\/([^/]+)$/);
   const referralOperationsMatch = activeAppPath.match(/^\/app\/referral-operations\/([^/]+)$/);
   const studentProfileMatch = activeAppPath.match(/^\/app\/students\/([^/]+)$/);
+  const collectionsMatch = activeAppPath.match(/^\/app\/collections\/([^/]+)$/);
   const batchMatch = activeAppPath.match(/^\/app\/batches\/([^/]+)$/);
   const academicBatchMatch = activeAppPath.match(/^\/app\/academic\/batches\/([^/]+)$/);
   const academicSessionMatch = activeAppPath.match(/^\/app\/academic\/sessions\/([^/]+)$/);
@@ -219,6 +222,7 @@ export function Router() {
       {activeAppPath === "/app" ? <ShellHomePage /> : null}
       {activeAppPath === "/app/enquiries" && canAccessEnquiries ? <EnquiriesPage /> : null}
       {activeAppPath === "/app/students" && canAccessStudents ? <StudentsPage /> : null}
+      {activeAppPath === "/app/collections" && isStaff ? <CollectionsPage onNavigate={navigate} /> : null}
       {activeAppPath === "/app/batches" && isStaff ? <BatchManagementPage /> : null}
       {activeAppPath === "/app/academic" && canAccessAcademic ? <AcademicOperationsPage onNavigate={navigate} /> : null}
       {activeAppPath === "/app/trainers" && canManageTrainers ? <TrainerManagementPage onNavigate={navigate} /> : null}
@@ -232,6 +236,7 @@ export function Router() {
       {enquiryAdmissionMatch && isStaff ? <AdmissionPage enquiryId={enquiryAdmissionMatch[1]} /> : null}
       {referralOperationsMatch && isStaff ? <ReferralOperationsDetailPage referralId={referralOperationsMatch[1]} onNavigate={navigate} isOwner={isDiscountApprover} /> : null}
       {studentProfileMatch && isStaff ? <StudentProfilePage studentId={studentProfileMatch[1]} /> : null}
+      {collectionsMatch && isStaff ? <CollectionsPage enrolmentId={collectionsMatch[1]} onNavigate={navigate} /> : null}
       {batchMatch && isStaff ? <BatchManagementPage batchId={batchMatch[1]} /> : null}
       {academicBatchMatch && canAccessAcademic ? <AcademicOperationsPage mode="batch" batchId={academicBatchMatch[1]} onNavigate={navigate} /> : null}
       {academicSessionMatch && canAccessAcademic ? <AcademicOperationsPage mode="session" sessionId={academicSessionMatch[1]} onNavigate={navigate} /> : null}
@@ -291,7 +296,7 @@ export function redirectForRouteState({
   if (!isStaff && studentRoute) return studentRoute;
   if ((path === "/app/enquiries" || path.startsWith("/app/enquiries/")) && !canAccessEnquiries) return isStaff ? "/app" : "/student/dashboard";
   if ((path === "/app/students" || path.startsWith("/app/students/")) && !canAccessStudents) return isStaff ? "/app" : "/student/dashboard";
-  if ((path === "/app/education-partners" || path === "/app/referral-operations" || path === "/app/batches" || path === "/app/academic" || path === "/app/trainers" || path === "/app/trainers/new" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/education-partners/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/batches/") || path.startsWith("/app/academic/") || path.startsWith("/app/trainers/") || path.startsWith("/app/enrolments/")) && !isStaff) {
+  if ((path === "/app/education-partners" || path === "/app/referral-operations" || path === "/app/collections" || path === "/app/batches" || path === "/app/academic" || path === "/app/trainers" || path === "/app/trainers/new" || path === "/app/courses" || path === "/app/discount-approvals" || path.startsWith("/app/education-partners/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/collections/") || path.startsWith("/app/batches/") || path.startsWith("/app/academic/") || path.startsWith("/app/trainers/") || path.startsWith("/app/enrolments/")) && !isStaff) {
     return "/student/dashboard";
   }
   if ((path === "/app/academic" || path.startsWith("/app/academic/")) && !canAccessAcademic) return "/app/enquiries";

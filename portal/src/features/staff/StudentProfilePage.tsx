@@ -170,9 +170,10 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
           <article className="table-row" key={String(enrolment.id)}>
             <strong>{String(enrolment.enrolment_number)}</strong>
             <span>{String(enrolment.course_name)} · Joining {String(enrolment.joining_date)}</span>
-            <small>Batch {currentBatchLabel(enrolment)} · Fee {formatMoney(Number(enrolment.final_agreed_fee_paise || 0))} · {String(enrolment.payment_plan_type || "No plan")} · NSDC {String(enrolment.nsdc_status || "Not requested")}</small>
+            <small>Batch {currentBatchLabel(enrolment)} · Fee {formatMoney(Number(enrolment.final_agreed_fee_paise || 0))} · Outstanding {formatMoney(Number(enrolment.outstanding_paise || 0))} · {String(enrolment.payment_plan_type || "No plan")} · NSDC {String(enrolment.nsdc_status || "Not requested")}</small>
             {enrolment.current_batch_id ? <a className="button-link" href={openBatchHref(enrolment)}>Open Batch</a> : <button className="button-link" type="button" onClick={() => void openBatchAssignment(enrolment)}>Assign Batch</button>}
             {enrolment.final_agreed_fee_paise ? <a className="button-link" href={`/app/enrolments/${String(enrolment.id)}/payments`}>Payments</a> : null}
+            {enrolment.final_agreed_fee_paise ? <a className="button-link" href={`/app/collections/${String(enrolment.id)}`}>Collections</a> : null}
             {batchPanelEnrolmentId === String(enrolment.id) ? (
               <BatchAssignmentPanel
                 enrolmentId={String(enrolment.id)}
