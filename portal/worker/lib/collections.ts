@@ -186,6 +186,7 @@ export async function listCollections(c: AppContext, staff: StaffContext, query:
     followupsByEnrolment(c, enrolmentIds),
     collectedSince(c, staff, monthStart),
   ]);
+  const overview = await overviewMetrics(c, staff, today, monthStart, collectedThisMonth);
   const allItems = base.map((row) => mapCollectionItem(row, instalments.get(row.fee_agreement_id) || [], receipts.get(row.enrolment_id) || [], followups.get(row.enrolment_id) || [], today));
   const filtered = allItems.filter((item) => matchesOperationalFilter(item, query.status, query.agingBucket || ""));
   const page = filtered.slice(query.offset, query.offset + query.limit);
@@ -200,13 +201,7 @@ export async function listCollections(c: AppContext, staff: StaffContext, query:
       hasMore: filtered.length > query.offset + query.limit || base.length > query.limit + query.offset,
       total: filtered.length,
     },
-    overview: {
-      totalOutstandingPaise: sum(overviewItems, (item) => item.summary.outstandingPaise),
-      dueTodayPaise: sum(overviewItems, (item) => item.summary.dueTodayPaise),
-      overduePaise: sum(overviewItems, (item) => item.summary.overduePaise),
-      collectedThisMonthPaise: collectedThisMonth,
-      promisesDueToday: overviewItems.filter((item) => item.summary.promiseDate === today).length,
-    },
+    overview,
     sections: {
       needsAttention: overviewItems.filter((item) => item.flags.length > 0).slice(0, 8),
       dueToday: overviewItems.filter((item) => item.summary.dueTodayPaise > 0).slice(0, 8),
@@ -500,6 +495,79 @@ async function collectedSince(c: AppContext, staff: StaffContext, fromDate: stri
        ${branchScopeSql(staff, "enrolments.branch_id", bindings)}`,
   ).bind(...bindings).first<{ total: number }>();
   return Number(row?.total || 0);
+}
+
+async function overviewMetrics(c: AppContext, staff: StaffContext, today: string, monthStart: string, collectedThisMonthPaise: number) {
+  const balanceBindings: unknown[] = [ORG_ID];
+  const balance = await c.env.DB.prepare(
+    `select
+       coalesce(sum(fee_agreements.final_agreed_fee_paise), 0) - coalesce(sum(receipt_totals.total_received_paise), 0) as outstanding
+     from fee_agreements
+     join enrolments on enrolments.id = fee_agreements.enrolment_id
+     left join (
+       select enrolment_id, fee_agreement_id, sum(amount_paise) as total_received_paise
+       from receipts
+       where organisation_id = ? and status = 'recorded'
+       group by enrolment_id, fee_agreement_id
+     ) receipt_totals on receipt_totals.enrolment_id = enrolments.id and receipt_totals.fee_agreement_id = fee_agreements.id
+     where fee_agreements.status = 'active'
+       ${branchScopeSql(staff, "enrolments.branch_id", balanceBindings)}`,
+  ).bind(...balanceBindings).first<{ outstanding: number | null }>();
+
+  const dueBindings: unknown[] = [ORG_ID, today, today];
+  const due = await c.env.DB.prepare(
+    `with active_instalments as (
+       select enrolments.branch_id, fee_agreement_instalments.fee_agreement_id, fee_agreement_instalments.due_date,
+              fee_agreement_instalments.amount_paise,
+              coalesce(receipt_totals.total_received_paise, 0) as received,
+              coalesce(sum(fee_agreement_instalments.amount_paise) over (
+                partition by fee_agreement_instalments.fee_agreement_id
+                order by fee_agreement_instalments.instalment_number
+                rows between unbounded preceding and 1 preceding
+              ), 0) as prior_due
+       from fee_agreement_instalments
+       join fee_agreements on fee_agreements.id = fee_agreement_instalments.fee_agreement_id and fee_agreements.status = 'active'
+       join enrolments on enrolments.id = fee_agreements.enrolment_id
+       left join (
+         select fee_agreement_id, sum(amount_paise) as total_received_paise
+         from receipts
+         where organisation_id = ? and status = 'recorded'
+         group by fee_agreement_id
+       ) receipt_totals on receipt_totals.fee_agreement_id = fee_agreements.id
+     )
+     select
+       coalesce(sum(case when due_date = ? then max(0, amount_paise - min(amount_paise, max(0, received - prior_due))) else 0 end), 0) as due_today,
+       coalesce(sum(case when due_date < ? then max(0, amount_paise - min(amount_paise, max(0, received - prior_due))) else 0 end), 0) as overdue
+     from active_instalments
+     where 1 = 1
+       ${branchScopeSql(staff, "branch_id", dueBindings)}`,
+  ).bind(...dueBindings).first<{ due_today: number | null; overdue: number | null }>();
+
+  const promiseBindings: unknown[] = [ORG_ID, today];
+  const promises = await c.env.DB.prepare(
+    `select count(distinct collection_followups.enrolment_id) as count
+     from collection_followups
+     join enrolments on enrolments.id = collection_followups.enrolment_id
+     join fee_agreements on fee_agreements.enrolment_id = enrolments.id and fee_agreements.status = 'active'
+     left join (
+       select fee_agreement_id, sum(amount_paise) as total_received_paise
+       from receipts
+       where organisation_id = ? and status = 'recorded'
+       group by fee_agreement_id
+     ) receipt_totals on receipt_totals.fee_agreement_id = fee_agreements.id
+     where collection_followups.organisation_id = ?
+       and collection_followups.promised_payment_date = ?
+       and fee_agreements.final_agreed_fee_paise > coalesce(receipt_totals.total_received_paise, 0)
+       ${branchScopeSql(staff, "enrolments.branch_id", promiseBindings)}`,
+  ).bind(ORG_ID, ...promiseBindings).first<{ count: number | null }>();
+
+  return {
+    totalOutstandingPaise: Math.max(0, Number(balance?.outstanding || 0)),
+    dueTodayPaise: Number(due?.due_today || 0),
+    overduePaise: Number(due?.overdue || 0),
+    collectedThisMonthPaise,
+    promisesDueToday: Number(promises?.count || 0),
+  };
 }
 
 function branchScopeSql(staff: StaffContext, column: string, bindings: unknown[]) {
