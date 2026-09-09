@@ -2,6 +2,7 @@ import type { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { fieldErrorsFromIssues } from "../lib/admission-service";
+import { requireSameOrigin } from "../lib/http";
 import {
   COLLECTION_STAFF_ROLES,
   collectionQuerySchema,
@@ -44,6 +45,8 @@ export function registerStaffCollectionRoutes(app: PortalHono) {
   });
 
   app.post("/api/staff/collections/:enrolmentId/follow-ups", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
     const staff = await requireStaffRoles(c, COLLECTION_STAFF_ROLES);
     if (!staff) return forbidden(c);
     const parsed = createCollectionFollowupSchema.safeParse(await c.req.json().catch(() => null));

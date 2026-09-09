@@ -63,16 +63,31 @@ describe("staff payment routes", () => {
     const app = routeApp();
     authenticateAs(["counsellor"]);
     expect((await app.request("/api/staff/enrolments/enrol_a/payments")).status).toBe(200);
-    expect((await app.request("/api/staff/enrolments/enrol_a/receipts", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status).toBe(201);
+    expect((await app.request("http://portal.test/api/staff/enrolments/enrol_a/receipts", { method: "POST", headers: { "Content-Type": "application/json", Origin: "http://portal.test" }, body: "{}" })).status).toBe(201);
     expect(mocks.getPaymentLedger).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ roles: ["counsellor"] }), "enrol_a");
     expect(mocks.recordEnrolmentReceipt).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ roles: ["counsellor"] }), "enrol_a", expect.objectContaining({ idempotencyKey: "pay_test" }));
+  });
+
+  it("requires same-origin for receipt creation before service execution", async () => {
+    const app = routeApp();
+    authenticateAs(["owner"]);
+
+    const response = await app.request("http://portal.test/api/staff/enrolments/enrol_a/receipts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://evil.test" },
+      body: "{}",
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_origin" } });
+    expect(mocks.recordEnrolmentReceipt).not.toHaveBeenCalled();
   });
 
   it("returns structured route validation errors and service failures", async () => {
     const app = routeApp();
     authenticateAs(["owner"]);
     vi.mocked(paymentsLedger.recordEnrolmentReceiptSchema.safeParse).mockReturnValueOnce({ success: false, error: { issues: [{ path: ["amountPaise"], message: "Required" }] } } as never);
-    const invalid = await app.request("/api/staff/enrolments/enrol_a/receipts", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const invalid = await app.request("http://portal.test/api/staff/enrolments/enrol_a/receipts", { method: "POST", headers: { "Content-Type": "application/json", Origin: "http://portal.test" }, body: "{}" });
     expect(invalid.status).toBe(400);
     await expect(invalid.json()).resolves.toMatchObject({ error: { code: "invalid_receipt", fieldErrors: { amountPaise: ["Required"] } } });
 
