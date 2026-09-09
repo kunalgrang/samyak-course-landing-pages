@@ -371,7 +371,7 @@ async function validateReceiptPaymentFields(c: AppContext, input: ReceiptInput, 
   if (input.paymentMode === "other" && !notes) {
     return { ok: false, status: 400, code: "receipt_notes_required", message: "Notes are required for other payment mode.", fieldErrors: { notes: ["Notes are required for other payment mode."] } };
   }
-  if (input.receivedAt && Number.isNaN(Date.parse(input.receivedAt))) {
+  if (input.receivedAt && !strictDateTime(input.receivedAt)) {
     return { ok: false, status: 400, code: "invalid_receipt_date", message: "Enter a valid receipt date.", fieldErrors: { receivedAt: ["Enter a valid receipt date."] } };
   }
   const receivedAt = normalizedReceivedAt(input.receivedAt);
@@ -421,8 +421,17 @@ async function receiptByIdempotencyKey(c: AppContext, staff: StaffContext, idemp
 function normalizedReceivedAt(value: string | undefined) {
   if (!value) return new Date().toISOString();
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return new Date().toISOString();
+  if (!strictDateTime(value)) return new Date().toISOString();
   return parsed.toISOString();
+}
+
+function strictDateTime(value: string) {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return false;
+  const datePart = value.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return false;
+  const date = new Date(`${datePart}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === datePart;
 }
 
 function receiptYearFor(receivedAt: string, timeZone: string) {

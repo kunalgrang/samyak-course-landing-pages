@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkerBindings } from "../bindings";
 import type { AppContext } from "./http";
 import type { StaffContext } from "./staff-auth";
-import { agingBucket, collectionInstallments, createCollectionFollowup, getCollectionDetail, listCollections } from "./collections";
+import { agingBucket, collectionInstallments, createCollectionFollowup, createCollectionFollowupSchema, getCollectionDetail, listCollections } from "./collections";
 
 const NOW = "2026-09-08T00:00:00.000Z";
 
@@ -141,6 +141,25 @@ describe("Payments / Collections V2", () => {
     }
   });
 
+  it("keeps other organisation fee agreements out of owner overview aggregates", async () => {
+    const db = seededDb();
+    try {
+      seedOtherOrgCollectionData(db);
+
+      const result = await listCollections(context(db), ownerStaff(), { status: "all", limit: 25, offset: 0 });
+
+      expect(result.items.map((item) => item.enrolmentId)).toEqual(["enrol_b", "enrol_a"]);
+      expect(result.overview).toMatchObject({
+        totalOutstandingPaise: 1300000,
+        overduePaise: 300000,
+        dueTodayPaise: 300000,
+        collectedThisMonthPaise: 200000,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("records immutable follow-ups, requires promise dates and flags missed promises", async () => {
     const db = seededDb();
     try {
@@ -161,6 +180,66 @@ describe("Payments / Collections V2", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("lets newer follow-ups supersede old missed promises and scheduled callbacks", async () => {
+    const db = seededDb();
+    try {
+      const c = context(db);
+      await createCollectionFollowup(c, ownerStaff(), "enrol_a", {
+        followupType: "call",
+        outcome: "promised_payment",
+        note: "Student promised payment.",
+        promisedPaymentDate: "2026-09-05",
+        promisedAmountPaise: 300000,
+        nextFollowUpAt: "2026-09-06T10:00",
+      });
+      vi.setSystemTime(new Date("2026-09-08T01:00:00.000Z"));
+      await createCollectionFollowup(c, ownerStaff(), "enrol_a", {
+        followupType: "whatsapp",
+        outcome: "contacted",
+        note: "Followed up after missed promise.",
+      });
+
+      const detail = await getCollectionDetail(c, ownerStaff(), "enrol_a");
+
+      expect(detail.ok && detail.item.summary.promiseMissed).toBe(false);
+      expect(detail.ok && detail.item.summary.promiseDate).toBeNull();
+      expect(detail.ok && detail.item.summary.nextFollowUpAt).toBeNull();
+      expect(detail.ok && detail.item.flags).not.toContain("Promise missed");
+      expect(detail.ok && detail.item.flags).not.toContain("Follow-up due");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("counts only current promised payments in overview promises due today", async () => {
+    const db = seededDb();
+    try {
+      const c = context(db);
+      await createCollectionFollowup(c, ownerStaff(), "enrol_a", {
+        followupType: "call",
+        outcome: "promised_payment",
+        promisedPaymentDate: "2026-09-08",
+        promisedAmountPaise: 300000,
+      });
+      vi.setSystemTime(new Date("2026-09-08T01:00:00.000Z"));
+      await createCollectionFollowup(c, ownerStaff(), "enrol_a", {
+        followupType: "call",
+        outcome: "contacted",
+      });
+
+      const result = await listCollections(c, ownerStaff(), { status: "all", limit: 25, offset: 0 });
+
+      expect(result.overview.promisesDueToday).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects impossible promise and next-follow-up dates", () => {
+    expect(createCollectionFollowupSchema.safeParse({ followupType: "call", outcome: "promised_payment", promisedPaymentDate: "2026-02-31" }).success).toBe(false);
+    expect(createCollectionFollowupSchema.safeParse({ followupType: "call", outcome: "follow_up_later", nextFollowUpAt: "2026-02-31T10:00" }).success).toBe(false);
   });
 
   it("keeps branch and enrolment data isolated", async () => {
@@ -238,6 +317,29 @@ function seededDb() {
       ('receipt_a2', 'org_samyak', 'branch_sion', 'RCP-SION-2026-000002', 2026, 'person_a', 'student_a', 'enrol_a', 'fee_a', 200000, '2026-09-02T09:00:00.000Z', 'upi', 'recorded', 'acct_owner', 'idem_a2', 'fp_a2', '2026-09-02T09:00:00.000Z', '2026-09-02T09:00:00.000Z');
   `);
   return db;
+}
+
+function seedOtherOrgCollectionData(db: SqliteD1) {
+  db.database.exec(`
+    insert into organisations (id, name, slug, status, created_at, updated_at)
+    values ('org_other', 'Other Org', 'other', 'active', '${NOW}', '${NOW}');
+    insert into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at)
+    values ('branch_other', 'org_other', 'Other', 'OTH', 'Asia/Kolkata', 'active', '${NOW}', '${NOW}');
+    insert into people (id, organisation_id, home_branch_id, full_name, public_name, date_of_birth, status, created_at, updated_at)
+    values ('person_other', 'org_other', 'branch_other', 'Other Student', 'Other', null, 'active', '${NOW}', '${NOW}');
+    insert into courses (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
+    values ('course_other', 'org_other', 'OTH', 'Other Course', '6 months', 6, 9000000, 8000000, 1, 0, 'active', '${NOW}', '${NOW}');
+    insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at)
+    values ('student_other', 'org_other', 'person_other', 'branch_other', 'OTH-0001', 1, '2026-08-01', 'active', 'active', '${NOW}', '${NOW}');
+    insert into enrolments (id, student_id, branch_id, course_id, enrolment_number, training_mode, admission_date, joining_date, status, nsdc_preference, created_at, updated_at)
+    values ('enrol_other', 'student_other', 'branch_other', 'course_other', 'ENR-OTH-0001', 'classroom', '2026-08-01', '2026-08-02', 'confirmed', 'no', '${NOW}', '${NOW}');
+    insert into fee_agreements (id, enrolment_id, standard_fee_paise, final_agreed_fee_paise, discount_paise, payment_plan_type, number_of_instalments, initial_payment_expected_paise, status, created_at, updated_at)
+    values ('fee_other', 'enrol_other', 9000000, 9000000, 0, 'custom', 6, 1500000, 'active', '${NOW}', '${NOW}');
+    insert into fee_agreement_instalments (id, fee_agreement_id, instalment_number, amount_paise, due_date, created_at)
+    values ('inst_other_1', 'fee_other', 1, 9000000, '2026-09-08', '${NOW}');
+    insert into receipts (id, organisation_id, branch_id, receipt_number, receipt_year, person_id, student_id, enrolment_id, fee_agreement_id, amount_paise, received_at, payment_mode, status, created_by_login_account_id, idempotency_key, payload_fingerprint, created_at, updated_at)
+    values ('receipt_other', 'org_other', 'branch_other', 'RCP-OTH-2026-000001', 2026, 'person_other', 'student_other', 'enrol_other', 'fee_other', 1000000, '2026-09-02T09:00:00.000Z', 'cash', 'recorded', 'acct_owner', 'idem_other', 'fp_other', '2026-09-02T09:00:00.000Z', '2026-09-02T09:00:00.000Z');
+  `);
 }
 
 function context(db: SqliteD1): AppContext {

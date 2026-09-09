@@ -11,7 +11,7 @@ const COLLECTION_SCAN_LIMIT = 500;
 
 const followupTypeSchema = z.enum(["call", "whatsapp", "in_person", "other"]);
 const followupOutcomeSchema = z.enum(["contacted", "not_reachable", "promised_payment", "paid_or_receipt_pending", "dispute_or_query", "follow_up_later"]);
-const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(strictIsoDate, "Enter a real date.");
 
 export const collectionQuerySchema = z.object({
   status: z.enum(["due_today", "overdue", "upcoming", "promise_due", "no_follow_up", "paid", "all"]).default("overdue"),
@@ -36,7 +36,7 @@ export const createCollectionFollowupSchema = z
     if (value.outcome === "promised_payment" && !value.promisedPaymentDate) {
       ctx.addIssue({ code: "custom", path: ["promisedPaymentDate"], message: "Promise date is required." });
     }
-    if (value.nextFollowUpAt && Number.isNaN(Date.parse(value.nextFollowUpAt))) {
+    if (value.nextFollowUpAt && !strictDateTime(value.nextFollowUpAt)) {
       ctx.addIssue({ code: "custom", path: ["nextFollowUpAt"], message: "Enter a valid follow-up date." });
     }
   });
@@ -315,8 +315,8 @@ function mapCollectionItem(row: EnrolmentCollectionRow, instalments: InstalmentR
   const installments = collectionInstallments(Number(row.final_agreed_fee_paise || 0), instalments, receipts, today);
   const summary = financialSummaryFromReceipts(Number(row.final_agreed_fee_paise || 0), instalments.map((item) => ({ instalmentNumber: Number(item.instalment_number), amountPaise: Number(item.amount_paise), dueDate: item.due_date || null })), receipts);
   const latestFollowup = followups[0] || null;
-  const latestPromise = followups.find((item) => item.outcome === "promised_payment" && item.promised_payment_date) || null;
-  const nextFollowUpAt = followups.map((item) => item.next_follow_up_at).filter(Boolean).sort()[0] || null;
+  const latestPromise = latestFollowup?.outcome === "promised_payment" && latestFollowup.promised_payment_date ? latestFollowup : null;
+  const nextFollowUpAt = latestFollowup?.next_follow_up_at || null;
   const dueTodayPaise = sum(installments.filter((item) => item.dueDate === today && item.balancePaise > 0), (item) => item.balancePaise);
   const overdueInstallments = installments.filter((item) => item.daysOverdue > 0 && item.balancePaise > 0);
   const daysOverdue = overdueInstallments.reduce((max, item) => Math.max(max, item.daysOverdue), 0);
@@ -498,12 +498,13 @@ async function collectedSince(c: AppContext, staff: StaffContext, fromDate: stri
 }
 
 async function overviewMetrics(c: AppContext, staff: StaffContext, today: string, monthStart: string, collectedThisMonthPaise: number) {
-  const balanceBindings: unknown[] = [ORG_ID];
+  const balanceBindings: unknown[] = [ORG_ID, ORG_ID];
   const balance = await c.env.DB.prepare(
     `select
        coalesce(sum(fee_agreements.final_agreed_fee_paise), 0) - coalesce(sum(receipt_totals.total_received_paise), 0) as outstanding
      from fee_agreements
      join enrolments on enrolments.id = fee_agreements.enrolment_id
+     join students on students.id = enrolments.student_id and students.organisation_id = ?
      left join (
        select enrolment_id, fee_agreement_id, sum(amount_paise) as total_received_paise
        from receipts
@@ -514,7 +515,7 @@ async function overviewMetrics(c: AppContext, staff: StaffContext, today: string
        ${branchScopeSql(staff, "enrolments.branch_id", balanceBindings)}`,
   ).bind(...balanceBindings).first<{ outstanding: number | null }>();
 
-  const dueBindings: unknown[] = [ORG_ID, today, today];
+  const dueBindings: unknown[] = [ORG_ID, ORG_ID, today, today];
   const due = await c.env.DB.prepare(
     `with active_instalments as (
        select enrolments.branch_id, fee_agreement_instalments.fee_agreement_id, fee_agreement_instalments.due_date,
@@ -528,6 +529,7 @@ async function overviewMetrics(c: AppContext, staff: StaffContext, today: string
        from fee_agreement_instalments
        join fee_agreements on fee_agreements.id = fee_agreement_instalments.fee_agreement_id and fee_agreements.status = 'active'
        join enrolments on enrolments.id = fee_agreements.enrolment_id
+       join students on students.id = enrolments.student_id and students.organisation_id = ?
        left join (
          select fee_agreement_id, sum(amount_paise) as total_received_paise
          from receipts
@@ -543,11 +545,12 @@ async function overviewMetrics(c: AppContext, staff: StaffContext, today: string
        ${branchScopeSql(staff, "branch_id", dueBindings)}`,
   ).bind(...dueBindings).first<{ due_today: number | null; overdue: number | null }>();
 
-  const promiseBindings: unknown[] = [ORG_ID, today];
+  const promiseBindings: unknown[] = [ORG_ID, ORG_ID, ORG_ID, today];
   const promises = await c.env.DB.prepare(
     `select count(distinct collection_followups.enrolment_id) as count
      from collection_followups
      join enrolments on enrolments.id = collection_followups.enrolment_id
+     join students on students.id = enrolments.student_id and students.organisation_id = ?
      join fee_agreements on fee_agreements.enrolment_id = enrolments.id and fee_agreements.status = 'active'
      left join (
        select fee_agreement_id, sum(amount_paise) as total_received_paise
@@ -556,10 +559,18 @@ async function overviewMetrics(c: AppContext, staff: StaffContext, today: string
        group by fee_agreement_id
      ) receipt_totals on receipt_totals.fee_agreement_id = fee_agreements.id
      where collection_followups.organisation_id = ?
+       and collection_followups.outcome = 'promised_payment'
        and collection_followups.promised_payment_date = ?
        and fee_agreements.final_agreed_fee_paise > coalesce(receipt_totals.total_received_paise, 0)
+       and not exists (
+         select 1
+         from collection_followups newer_followups
+         where newer_followups.organisation_id = collection_followups.organisation_id
+           and newer_followups.enrolment_id = collection_followups.enrolment_id
+           and newer_followups.created_at > collection_followups.created_at
+       )
        ${branchScopeSql(staff, "enrolments.branch_id", promiseBindings)}`,
-  ).bind(ORG_ID, ...promiseBindings).first<{ count: number | null }>();
+  ).bind(...promiseBindings).first<{ count: number | null }>();
 
   return {
     totalOutstandingPaise: Math.max(0, Number(balance?.outstanding || 0)),
@@ -668,7 +679,18 @@ function whatsappUrl(mobile: string, name: string) {
 
 function normalizeDateTime(value: string) {
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  return strictDateTime(value) ? parsed.toISOString() : null;
+}
+
+function strictIsoDate(value: string) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function strictDateTime(value: string) {
+  const datePart = value.slice(0, 10);
+  if (!strictIsoDate(datePart)) return false;
+  return !Number.isNaN(Date.parse(value));
 }
 
 function daysBetween(from: string, to: string) {
