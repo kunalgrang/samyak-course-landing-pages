@@ -2,7 +2,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkerBindings } from "../bindings";
 import type { AppContext } from "./http";
 import type { StaffContext } from "./staff-auth";
@@ -40,6 +40,15 @@ class SqliteD1 {
 }
 
 describe("Payments / Collections V2", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("derives collection balances, due states, aging and FIFO allocation from receipts", async () => {
     const db = seededDb();
     try {
@@ -66,6 +75,47 @@ describe("Payments / Collections V2", () => {
   it("handles no-schedule agreements without marking them overdue", () => {
     const installments = collectionInstallments(800000, [], [], "2026-09-08");
     expect(installments).toMatchObject([{ requiredPaise: 800000, balancePaise: 800000, dueDate: null, label: "Pending" }]);
+  });
+
+  it("returns all four scheduled instalments with overdue and next-due state", () => {
+    const installments = collectionInstallments(
+      1000000,
+      [
+        { fee_agreement_id: "fee_four", instalment_number: 1, amount_paise: 250000, due_date: "2026-09-01" },
+        { fee_agreement_id: "fee_four", instalment_number: 2, amount_paise: 250000, due_date: "2026-09-08" },
+        { fee_agreement_id: "fee_four", instalment_number: 3, amount_paise: 250000, due_date: "2026-10-08" },
+        { fee_agreement_id: "fee_four", instalment_number: 4, amount_paise: 250000, due_date: "2026-11-08" },
+      ],
+      [{ id: "r1", receipt_number: "R1", amount_paise: 300000, received_at: "2026-09-02T09:00:00.000Z", payment_mode: "cash", payment_reference: null, notes: null, status: "recorded", payload_fingerprint: "fp", created_at: "2026-09-02T09:00:00.000Z", recorded_by: null }],
+      "2026-09-08",
+    );
+
+    expect(installments).toHaveLength(4);
+    expect(installments.map((item) => `${item.label}:${item.allocatedReceivedPaise}:${item.balancePaise}`)).toEqual(["Paid:250000:0", "Due Today:50000:200000", "Upcoming:0:250000", "Upcoming:0:250000"]);
+  });
+
+  it("returns all six scheduled instalments and allocates overdue receipts FIFO", () => {
+    const installments = collectionInstallments(
+      600000,
+      Array.from({ length: 6 }, (_item, index) => ({
+        instalment_number: index + 1,
+        fee_agreement_id: "fee_six",
+        amount_paise: 100000,
+        due_date: `2026-09-0${index + 1}`,
+      })),
+      [{ id: "r1", receipt_number: "R1", amount_paise: 350000, received_at: "2026-09-07T09:00:00.000Z", payment_mode: "cash", payment_reference: null, notes: null, status: "recorded", payload_fingerprint: "fp", created_at: "2026-09-07T09:00:00.000Z", recorded_by: null }],
+      "2026-09-08",
+    );
+
+    expect(installments).toHaveLength(6);
+    expect(installments.map((item) => `${item.instalmentNumber}:${item.label}:${item.allocatedReceivedPaise}:${item.balancePaise}`)).toEqual([
+      "1:Paid:100000:0",
+      "2:Paid:100000:0",
+      "3:Paid:100000:0",
+      "4:Overdue:50000:50000",
+      "5:Overdue:0:100000",
+      "6:Overdue:0:100000",
+    ]);
   });
 
   it("classifies aging bucket boundaries", () => {

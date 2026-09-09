@@ -39,6 +39,7 @@ export type AdmissionPayload = {
 
 export const ADMISSION_CONFIGURATION_MISSING_MESSAGE = "Admission settings are incomplete. Ask an owner or administrator to configure admission options.";
 export const PAYMENT_PLAN_MISSING_MESSAGE = "No payment plan is configured for this course duration.";
+export const INSTALLMENT_SELECTION_RESET_MESSAGE = "Select instalments again for the new course duration.";
 
 export const ADMISSION_FIELD_LABELS: Record<string, string> = {
   "identity.officialFullName": "Full name as per Aadhaar",
@@ -149,6 +150,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const review = useMemo(() => admissionReview(payload, reviewCourse), [payload, reviewCourse]);
   const optionGroups = useMemo(() => groupOptions(configuration), [configuration]);
   const allowedPaymentRules = useMemo(() => allowedPaymentRulesForCourse(selectedCourse, configuration.paymentPlanRules), [configuration.paymentPlanRules, selectedCourse]);
+  const installmentOptions = useMemo(() => installmentOptionsForCourse(selectedCourse), [selectedCourse]);
+  const maxInstallments = maximumInstallmentsForCourse(selectedCourse);
   const paymentPlanNotice = paymentPlanPolicyMessage(selectedCourse, configuration.paymentPlanRules, allowedPaymentRules);
   const configurationReady = isAdmissionConfigurationReady(configuration);
   const tokenReceipt = financialSummary?.tokenReceipt || null;
@@ -173,6 +176,22 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       },
     }));
   }, [isLocked, selectedCourse]);
+
+  useEffect(() => {
+    if (!selectedCourse || isLocked || commercialLocked) return;
+    const selectedCount = Number(payload.fee.numberOfInstalments || 0);
+    const maxCount = maximumInstallmentsForCourse(selectedCourse);
+    if (!selectedCount || selectedCount <= maxCount) return;
+    setPayload((current) => ({
+      ...current,
+      fee: {
+        ...current.fee,
+        paymentPlanType: "",
+        numberOfInstalments: "",
+      },
+    }));
+    setSaved(INSTALLMENT_SELECTION_RESET_MESSAGE);
+  }, [commercialLocked, isLocked, payload.fee.numberOfInstalments, selectedCourse]);
 
   useEffect(() => {
     const branchId = String(payload.course.branchId || "");
@@ -279,6 +298,21 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
     setPayload((current) => normalizeDependentFields({ ...current, [section]: { ...current[section], [key]: value } } as AdmissionPayload, section, key));
     setSaved(null);
     clearFieldErrors(errorPathsForChange(section, key));
+  }
+
+  function setInstallmentCount(value: string) {
+    if (isLocked) return;
+    const count = Number(value || 0);
+    setPayload((current) => ({
+      ...current,
+      fee: {
+        ...current.fee,
+        numberOfInstalments: value ? count : "",
+        paymentPlanType: value ? paymentPlanTypeForInstallmentCount(count) : "",
+      },
+    }));
+    setSaved(null);
+    clearFieldErrors(["fee.paymentPlanType", "fee.numberOfInstalments"]);
   }
 
   function setOption(section: keyof AdmissionPayload, codeKey: string, labelKey: string, category: string, code: string) {
@@ -538,14 +572,14 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
           onCustomLabelChange={(value) => setSection("fee", "discountReason", value)}
           error={errorFor("fee.discountReasonCode") || errorFor("fee.discountReason")}
         />
-        <PaymentPlanField
-          path="fee.paymentPlanType"
-          value={String(payload.fee.paymentPlanType)}
-          rules={allowedPaymentRules}
-          message={paymentPlanNotice || errorFor("fee.paymentPlanType")}
-          onChange={(value) => setSection("fee", "paymentPlanType", value)}
+        <InstallmentCountField
+          path="fee.numberOfInstalments"
+          value={String(payload.fee.numberOfInstalments || "")}
+          options={installmentOptions}
+          maxInstallments={maxInstallments}
+          message={paymentPlanNotice || errorFor("fee.paymentPlanType") || errorFor("fee.numberOfInstalments")}
+          onChange={setInstallmentCount}
         />
-        <label>Number of instalments<input {...controlProps("fee.numberOfInstalments")} type="number" min="1" value={String(payload.fee.numberOfInstalments)} onChange={(e) => setSection("fee", "numberOfInstalments", Number(e.target.value || 1))} disabled={String(payload.fee.paymentPlanType) !== "custom"} /><FieldMessage id={admissionFieldErrorId("fee.numberOfInstalments")} message={errorFor("fee.numberOfInstalments")} /></label>
         <label>Initial payment expected<input type="number" min="0" value={Number(payload.fee.initialPaymentExpectedPaise || 0) / 100} onChange={(e) => setSection("fee", "initialPaymentExpectedPaise", Math.round(Number(e.target.value || 0) * 100))} /></label>
         {review.ownerApprovalRequired ? <div className="staff-form-actions"><button type="button" className="secondary-button" disabled={isSaving} onClick={() => void handleRequestApproval()}>{approvalStatus || "Request owner approval"}</button></div> : null}
       </AdmissionSection>
@@ -797,16 +831,28 @@ export function paymentPlanPolicyMessage(course: StaffCourse | undefined, rules:
   return PAYMENT_PLAN_MISSING_MESSAGE;
 }
 
+export function maximumInstallmentsForCourse(course: Pick<StaffCourse, "duration_months"> | undefined) {
+  const durationMonths = Number(course?.duration_months);
+  return Number.isInteger(durationMonths) && durationMonths >= 1 ? durationMonths : 3;
+}
+
+export function installmentOptionsForCourse(course: StaffCourse | undefined) {
+  if (!course) return [];
+  return Array.from({ length: maximumInstallmentsForCourse(course) }, (_item, index) => index + 1);
+}
+
+export function paymentPlanTypeForInstallmentCount(count: number) {
+  if (count === 1) return "full";
+  if (count === 2) return "two_instalments";
+  if (count === 3) return "three_instalments";
+  return "custom";
+}
+
 function normalizeDependentFields(payload: AdmissionPayload, section: keyof AdmissionPayload, key: string) {
   const next = { ...payload, education: { ...payload.education }, fee: { ...payload.fee } };
   if (section === "education" && key === "currentlyPursuing") {
     if (next.education.currentlyPursuing) next.education.passingYear = null;
     else next.education.currentYearSemester = "";
-  }
-  if (section === "fee" && key === "paymentPlanType") {
-    if (next.fee.paymentPlanType === "full") next.fee.numberOfInstalments = 1;
-    if (next.fee.paymentPlanType === "two_instalments") next.fee.numberOfInstalments = 2;
-    if (next.fee.paymentPlanType === "three_instalments") next.fee.numberOfInstalments = 3;
   }
   return next;
 }
@@ -957,6 +1003,28 @@ export function PaymentPlanField({ path, value, rules, message, onChange }: { pa
         <option value="">Select plan</option>
         {rules.map((rule) => <option key={rule.plan_type} value={rule.plan_type}>{paymentPlanLabel(rule.plan_type)}</option>)}
       </select>
+      <FieldMessage id={errorId} message={message} />
+    </label>
+  );
+}
+
+export function InstallmentCountField({ path, value, options, maxInstallments, message, onChange }: { path?: string; value: string; options: number[]; maxInstallments: number; message?: string; onChange: (value: string) => void }) {
+  const errorId = path ? admissionFieldErrorId(path) : undefined;
+  return (
+    <label>
+      Number of instalments<RequiredMark />
+      <select
+        id={path ? admissionFieldId(path) : undefined}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        aria-invalid={Boolean(message)}
+        aria-describedby={message ? errorId : undefined}
+        disabled={!options.length}
+      >
+        <option value="">Select instalments</option>
+        {options.map((count) => <option key={count} value={count}>{count}</option>)}
+      </select>
+      {options.length ? <small>Maximum {maxInstallments}</small> : null}
       <FieldMessage id={errorId} message={message} />
     </label>
   );

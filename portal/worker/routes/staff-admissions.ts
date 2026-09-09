@@ -4,6 +4,7 @@ import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { ORG_ID, mobileHash } from "../lib/auth-store";
 import {
   confirmAdmission,
+  admissionDraftPayloadForStaff,
   decideDiscountApproval,
   fieldErrorsFromIssues,
   getAdmissionConfiguration,
@@ -248,7 +249,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
             id: draft.id,
             currentStep: draft.current_step,
             status: draft.status,
-            payload: JSON.parse(draft.payload_json),
+            payload: await admissionDraftPayloadForStaff(c, draft),
             confirmedAt: draft.confirmed_at,
             confirmationLockedAt: draft.confirmation_locked_at,
             confirmationSnapshotVersion: draft.confirmation_snapshot_version,

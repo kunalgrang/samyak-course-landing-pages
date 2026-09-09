@@ -61,6 +61,19 @@ describe("Payments / Receipts Ledger V1", () => {
     expect(statuses(allocateInstalments(500001, schedule))).toEqual(["paid:500000", "part_paid:1", "pending:0"]);
   });
 
+  it("allocates FIFO across four and six instalment schedules", () => {
+    const four = [
+      { instalmentNumber: 1, amountPaise: 250000, dueDate: null },
+      { instalmentNumber: 2, amountPaise: 250000, dueDate: null },
+      { instalmentNumber: 3, amountPaise: 250000, dueDate: null },
+      { instalmentNumber: 4, amountPaise: 250000, dueDate: null },
+    ];
+    const six = Array.from({ length: 6 }, (_item, index) => ({ instalmentNumber: index + 1, amountPaise: 100000, dueDate: null }));
+
+    expect(statuses(allocateInstalments(625000, four))).toEqual(["paid:250000", "paid:250000", "part_paid:125000", "pending:0"]);
+    expect(statuses(allocateInstalments(450000, six))).toEqual(["paid:100000", "paid:100000", "paid:100000", "paid:100000", "part_paid:50000", "pending:0"]);
+  });
+
   it("summarises first instalment, overall balance, class readiness and fully paid state", () => {
     const fullSchedule = [{ instalmentNumber: 1, amountPaise: 1400000, dueDate: null }];
     expect(financialSummaryFromReceipts(1400000, fullSchedule, [receipt("r1", 1300000)])).toMatchObject({
