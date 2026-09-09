@@ -52,9 +52,12 @@ import {
   emptyAdmissionConfiguration,
   isAdmissionLockedError,
   isAdmissionConfigurationReady,
+  installmentOptionsForCourse,
   mergeDraftResponsePayload,
   mergeAdmissionPayload,
+  maximumInstallmentsForCourse,
   paymentPlanPolicyMessage,
+  paymentPlanTypeForInstallmentCount,
   shouldSaveDraftBeforeConfirm,
 } from "./AdmissionPage";
 import { ApiError } from "../../lib/api";
@@ -302,6 +305,32 @@ describe("AdmissionPage helpers", () => {
     expect(allowedPaymentRulesForCourse({ ...course, duration_months: 7 }, rules).map((rule) => rule.plan_type)).toEqual(["full", "two_instalments", "three_instalments", "custom"]);
   });
 
+  it.each([
+    [1, [1]],
+    [2, [1, 2]],
+    [3, [1, 2, 3]],
+    [4, [1, 2, 3, 4]],
+    [6, [1, 2, 3, 4, 5, 6]],
+  ])("derives %s-month course instalment options from structured duration", (durationMonths, expected) => {
+    expect(maximumInstallmentsForCourse({ ...course, duration_months: durationMonths })).toBe(durationMonths);
+    expect(installmentOptionsForCourse({ ...course, duration_months: durationMonths })).toEqual(expected);
+  });
+
+  it("falls back to the existing three-instalment maximum for non-month course duration data", () => {
+    expect(maximumInstallmentsForCourse({ ...course, duration_months: 1.5 })).toBe(3);
+    expect(installmentOptionsForCourse({ ...course, duration_months: null })).toEqual([1, 2, 3]);
+  });
+
+  it.each([
+    [1, "full"],
+    [2, "two_instalments"],
+    [3, "three_instalments"],
+    [4, "custom"],
+    [6, "custom"],
+  ])("maps %s selected instalments to the persisted payment plan type", (count, expected) => {
+    expect(paymentPlanTypeForInstallmentCount(count)).toBe(expected);
+  });
+
   it("counts unique draft warning fields in the saved message", () => {
     expect(draftSavedMessage({})).toBe("Draft saved.");
     expect(draftSavedMessage({ "identity.officialFullName": ["Required"] })).toBe("Draft saved. 1 field is still required before confirmation.");
@@ -441,6 +470,25 @@ describe("AdmissionPage draft validation interactions", () => {
     expect(apiMocks.saveAdmissionDraft).toHaveBeenCalledWith(
       "enq_first",
       expect.objectContaining({ course: expect.objectContaining({ batchId: "batch_morning" }) }),
+      expect.any(String),
+    );
+  });
+
+  it("saves six selected instalments as a custom payment plan for a six-month course", async () => {
+    const container = await renderAdmissionPage(roots);
+    const courseSelect = windowRef.document.getElementById(admissionFieldId("course.courseId")) as unknown as HTMLSelectElement;
+    await changeValue(courseSelect as unknown as HTMLInputElement, "course_full_stack");
+    const instalments = windowRef.document.getElementById(admissionFieldId("fee.numberOfInstalments")) as unknown as HTMLSelectElement;
+
+    expect(Array.from(instalments.options).map((option) => option.value)).toEqual(["", "1", "2", "3", "4", "5", "6"]);
+    await changeValue(instalments as unknown as HTMLInputElement, "6");
+    await click(buttonByText(container, "Save Draft"));
+
+    expect(apiMocks.saveAdmissionDraft).toHaveBeenCalledWith(
+      "enq_first",
+      expect.objectContaining({
+        fee: expect.objectContaining({ paymentPlanType: "custom", numberOfInstalments: 6 }),
+      }),
       expect.any(String),
     );
   });

@@ -61,6 +61,19 @@ describe("Payments / Receipts Ledger V1", () => {
     expect(statuses(allocateInstalments(500001, schedule))).toEqual(["paid:500000", "part_paid:1", "pending:0"]);
   });
 
+  it("allocates FIFO across four and six instalment schedules", () => {
+    const four = [
+      { instalmentNumber: 1, amountPaise: 250000, dueDate: null },
+      { instalmentNumber: 2, amountPaise: 250000, dueDate: null },
+      { instalmentNumber: 3, amountPaise: 250000, dueDate: null },
+      { instalmentNumber: 4, amountPaise: 250000, dueDate: null },
+    ];
+    const six = Array.from({ length: 6 }, (_item, index) => ({ instalmentNumber: index + 1, amountPaise: 100000, dueDate: null }));
+
+    expect(statuses(allocateInstalments(625000, four))).toEqual(["paid:250000", "paid:250000", "part_paid:125000", "pending:0"]);
+    expect(statuses(allocateInstalments(450000, six))).toEqual(["paid:100000", "paid:100000", "paid:100000", "paid:100000", "part_paid:50000", "pending:0"]);
+  });
+
   it("summarises first instalment, overall balance, class readiness and fully paid state", () => {
     const fullSchedule = [{ instalmentNumber: 1, amountPaise: 1400000, dueDate: null }];
     expect(financialSummaryFromReceipts(1400000, fullSchedule, [receipt("r1", 1300000)])).toMatchObject({
@@ -188,6 +201,7 @@ describe("Payments / Receipts Ledger V1", () => {
       expect(await recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 1000, paymentMode: "upi", idempotencyKey: "pay_upi_missing" })).toMatchObject({ ok: false, code: "payment_reference_required" });
       expect(await recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 1000, paymentMode: "other", idempotencyKey: "pay_other_missing" })).toMatchObject({ ok: false, code: "receipt_notes_required" });
       expect(await recordEnrolmentReceipt(c, staffForRole("telecaller"), "enrol_a", { amountPaise: 1000, paymentMode: "cash", idempotencyKey: "pay_telecaller" })).toMatchObject({ ok: false, code: "forbidden" });
+      expect(await recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 1000, receivedAt: "2026-02-31T00:00:00.000Z", paymentMode: "cash", idempotencyKey: "pay_invalid_date" })).toMatchObject({ ok: false, code: "invalid_receipt_date" });
       expect(await recordEnrolmentReceipt(c, staffForRole("counsellor"), "enrol_a", { amountPaise: 1000, receivedAt: "2020-01-01T00:00:00.000Z", paymentMode: "cash", idempotencyKey: "pay_backdate_counsellor" })).toMatchObject({ ok: false, code: "receipt_backdate_forbidden" });
       expect(await recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 1000, receivedAt: "2999-01-01T00:00:00.000Z", paymentMode: "cash", idempotencyKey: "pay_future_owner" })).toMatchObject({ ok: false, code: "future_receipt_date" });
       expect(await recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 1000, receivedAt: "2020-01-01T00:00:00.000Z", paymentMode: "cash", idempotencyKey: "pay_backdate_owner" })).toMatchObject({ ok: true });

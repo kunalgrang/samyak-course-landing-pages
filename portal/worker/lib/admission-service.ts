@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { AppContext } from "./http";
 import { ORG_ID, mobileHash } from "./auth-store";
 import { assignBatchOnAdmissionConfirmation, validateAdmissionBatchSelection } from "./batch-management";
-import { createOpaqueId, encryptText, hmacHex } from "./crypto";
+import { createOpaqueId, decryptText, encryptText, hmacHex } from "./crypto";
 import { DISCOUNT_APPROVER_ROLES, canBackdateReceipts, canRecordReceipts, type StaffContext } from "./staff-auth";
 import { normalizeIndianMobile } from "./mobile";
 import { financialSummaryFromReceipts, type FinancialSummary } from "./payments-ledger";
@@ -366,6 +366,19 @@ export async function getAdmissionDraft(c: AppContext, enquiryId: string) {
   )
     .bind(ORG_ID, enquiryId)
     .first<DraftRecord>();
+}
+
+export async function admissionDraftPayloadForStaff(c: AppContext, draft: DraftRecord): Promise<AdmissionPayload> {
+  const payload = JSON.parse(draft.payload_json) as AdmissionPayload;
+  const contacts = await fullAdmissionMobileContacts(c, draft.person_id);
+  return {
+    ...payload,
+    contact: {
+      ...(payload.contact || {}),
+      primaryMobile: contacts.primaryMobile || "",
+      alternateMobile: contacts.alternateMobile || "",
+    },
+  };
 }
 
 export async function saveAdmissionDraft(c: AppContext, staff: StaffContext, enquiryId: string, input: z.infer<typeof saveAdmissionDraftSchema>) {
@@ -1673,25 +1686,17 @@ function courseConfigurationFieldErrors(course: CourseRecord) {
 
 async function paymentPlanFieldErrors(c: AppContext, payload: AdmissionPayload, course: CourseRecord) {
   const fieldErrors: FieldErrors = {};
-  const rules = await c.env.DB.prepare(
-    `select plan_type, fixed_instalments
-     from payment_plan_rules
-     where organisation_id = ?
-       and is_active = 1
-       and min_duration_months <= ?
-       and (max_duration_months is null or max_duration_months >= ?)
-     order by fixed_instalments`,
-  )
-    .bind(ORG_ID, Number(course.duration_months || 0), Number(course.duration_months || 0))
-    .all<PaymentPlanRuleRecord>();
   const selected = String(payload.fee?.paymentPlanType || "");
-  const rule = (rules.results || []).find((item) => item.plan_type === selected);
-  if (!rule) {
-    addFieldError(fieldErrors, "fee.paymentPlanType", "Select a payment plan allowed for the course duration.");
+  if (!selected) {
+    addFieldError(fieldErrors, "fee.paymentPlanType", "Select the number of instalments.");
     return fieldErrors;
   }
-  if (rule.fixed_instalments !== null && Number(payload.fee?.numberOfInstalments || rule.fixed_instalments) !== Number(rule.fixed_instalments)) {
-    addFieldError(fieldErrors, "fee.numberOfInstalments", `${paymentPlanLabel(selected)} uses ${rule.fixed_instalments} instalment${rule.fixed_instalments === 1 ? "" : "s"}.`);
+  const count = instalmentsFor(selected, Number(payload.fee?.numberOfInstalments || 0));
+  const maxInstallments = maximumInstallmentsForCourse(course);
+  if (!Number.isInteger(count) || count < 1) {
+    addFieldError(fieldErrors, "fee.numberOfInstalments", "Select at least one instalment.");
+  } else if (count > maxInstallments) {
+    addFieldError(fieldErrors, "fee.numberOfInstalments", `Selected course allows a maximum of ${maxInstallments} instalment${maxInstallments === 1 ? "" : "s"}.`);
   }
   return fieldErrors;
 }
@@ -1906,6 +1911,7 @@ async function upsertCanonicalPerson(c: AppContext, personId: string, identity: 
 }
 
 async function upsertAdmissionContacts(c: AppContext, personId: string, contact: AdmissionPayload["contact"], now: string) {
+  const contactInput = (contact || {}) as Record<string, unknown>;
   const primaryMobile = contact?.primaryMobile?.trim();
   const alternateMobile = contact?.alternateMobile?.trim();
   const normalizedPrimary = primaryMobile ? normalizeIndianMobile(primaryMobile) : null;
@@ -1918,6 +1924,9 @@ async function upsertAdmissionContacts(c: AppContext, personId: string, contact:
       isPrimary: true,
       now,
     });
+  }
+  if (Object.prototype.hasOwnProperty.call(contactInput, "alternateMobile")) {
+    await deactivateOtherAlternateMobileContacts(c, personId, normalizedAlternate && normalizedAlternate !== normalizedPrimary ? normalizedAlternate : null, now);
   }
   if (alternateMobile && normalizedAlternate !== normalizedPrimary) {
     await upsertMobileContact(c, personId, {
@@ -1972,6 +1981,62 @@ async function upsertMobileContact(
     ).bind(contactId, ciphertext, input.now, input.now),
   ];
   await c.env.DB.batch(statements);
+}
+
+async function deactivateOtherAlternateMobileContacts(c: AppContext, personId: string, keepNormalizedMobile: string | null, now: string) {
+  const keepHash = keepNormalizedMobile ? await mobileHash(c, keepNormalizedMobile) : null;
+  const query = keepHash
+    ? `update person_contact_details
+       set status = 'previous', valid_until = coalesce(valid_until, ?), updated_at = ?
+       where contact_id in (
+         select person_contacts.id
+         from person_contacts
+         where person_contacts.person_id = ?
+           and person_contacts.contact_type = 'mobile'
+           and person_contacts.is_primary = 0
+           and person_contacts.normalized_value != ?
+       )
+       and status = 'active'`
+    : `update person_contact_details
+       set status = 'previous', valid_until = coalesce(valid_until, ?), updated_at = ?
+       where contact_id in (
+         select person_contacts.id
+         from person_contacts
+         where person_contacts.person_id = ?
+           and person_contacts.contact_type = 'mobile'
+           and person_contacts.is_primary = 0
+       )
+       and status = 'active'`;
+  const statement = c.env.DB.prepare(query);
+  if (keepHash) await statement.bind(now, now, personId, keepHash).run();
+  else await statement.bind(now, now, personId).run();
+}
+
+async function fullAdmissionMobileContacts(c: AppContext, personId: string) {
+  const rows = await c.env.DB.prepare(
+    `select person_contacts.id, person_contacts.is_primary, person_contact_secrets.value_ciphertext
+     from person_contacts
+     left join person_contact_details on person_contact_details.contact_id = person_contacts.id
+     left join person_contact_secrets on person_contact_secrets.contact_id = person_contacts.id
+     where person_contacts.person_id = ?
+       and person_contacts.contact_type = 'mobile'
+       and coalesce(person_contact_details.status, 'active') = 'active'
+       and (person_contact_details.valid_until is null or person_contact_details.valid_until > ?)
+     order by person_contacts.is_primary desc, person_contacts.updated_at desc, person_contacts.created_at desc`,
+  )
+    .bind(personId, new Date().toISOString())
+    .all<{ id: string; is_primary: number; value_ciphertext: string | null }>();
+  let primaryMobile: string | null = null;
+  let alternateMobile: string | null = null;
+  for (const contact of rows.results || []) {
+    if (!contact.value_ciphertext) continue;
+    const value = await decryptText(c.env.SESSION_PEPPER, `contact:${contact.id}`, contact.value_ciphertext).catch(() => null);
+    const mobile = value ? normalizeIndianMobile(value) : null;
+    if (!mobile) continue;
+    if (contact.is_primary && !primaryMobile) primaryMobile = mobile;
+    else if (!alternateMobile) alternateMobile = mobile;
+  }
+  return { primaryMobile, alternateMobile };
 }
 
 async function upsertLocality(c: AppContext, draftId: string, personId: string, locality: NonNullable<AdmissionPayload["locality"]>, now: string) {
@@ -2181,6 +2246,11 @@ function instalmentsFor(paymentPlanType: string | undefined, custom: number | nu
   if (paymentPlanType === "two_instalments") return 2;
   if (paymentPlanType === "three_instalments") return 3;
   return custom || 1;
+}
+
+export function maximumInstallmentsForCourse(course: Pick<CourseRecord, "duration_months">) {
+  const durationMonths = Number(course.duration_months);
+  return Number.isInteger(durationMonths) && durationMonths >= 1 ? durationMonths : 3;
 }
 
 function sanitizeAdmissionDraftPayload(payload: AdmissionPayload): AdmissionPayload {

@@ -1,6 +1,7 @@
 import type { Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { fieldErrorsFromIssues } from "../lib/admission-service";
+import { requireSameOrigin } from "../lib/http";
 import { getPaymentLedger, recordEnrolmentReceipt, recordEnrolmentReceiptSchema } from "../lib/payments-ledger";
 import { ADMISSION_STAFF_ROLES, requireStaffRoles } from "../lib/staff-auth";
 import { jsonError, jsonPlain } from "../lib/json-response";
@@ -20,6 +21,8 @@ export function registerStaffPaymentRoutes(app: PortalHono) {
   });
 
   app.post("/api/staff/enrolments/:enrolmentId/receipts", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
     const parsed = recordEnrolmentReceiptSchema.safeParse(await c.req.json().catch(() => null));

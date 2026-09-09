@@ -283,6 +283,7 @@ function installStudentProfileSchema(db: DatabaseSync) {
     create table enrolments (id text primary key, student_id text, course_id text, enrolment_number text, joining_date text, created_at text);
     create table courses (id text primary key, name text);
     create table fee_agreements (id text primary key, enrolment_id text, final_agreed_fee_paise integer, payment_plan_type text);
+    create table receipts (id text primary key, enrolment_id text, amount_paise integer, status text);
     create table nsdc_profiles (id text primary key, enrolment_id text, status text);
     create table batches (id text primary key, branch_id text, course_id text, name text, primary_trainer_person_id text, days_of_week_json text, start_time text, end_time text, capacity integer, status text, created_at text, updated_at text);
     create table batch_memberships (id text primary key, batch_id text, enrolment_id text, joined_at text, left_at text, status text);

@@ -8,10 +8,13 @@ import type { StaffContext } from "./staff-auth";
 import type { WorkerBindings } from "../bindings";
 import { decryptText } from "./crypto";
 import {
+  admissionDraftPayloadForStaff,
   confirmAdmission,
   decideDiscountApproval,
   getAdmissionConfiguration,
+  getAdmissionDraft,
   listDiscountApprovals,
+  maximumInstallmentsForCourse,
   recordAdmissionReceipt,
   requestDiscountApproval,
   saveAdmissionDraft,
@@ -228,6 +231,72 @@ describe("saveAdmissionDraft incomplete draft behavior", () => {
 
     expect(saved.ok).toBe(false);
     expect(count(db, "admission_drafts where enquiry_id = 'enq_first'")).toBe(0);
+    db.close();
+  });
+
+  it("rehydrates saved primary and alternate mobiles from encrypted contact rows when a draft is reopened", async () => {
+    const db = testDb();
+    const c = context(db);
+    const payload = validPayload();
+    payload.contact.primaryMobile = "9876543210";
+    payload.contact.alternateMobile = "9123456780";
+
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
+    const draft = await getAdmissionDraft(c, "enq_first");
+    if (!draft) throw new Error("Expected draft");
+    const reopened = await admissionDraftPayloadForStaff(c, draft);
+
+    expect(reopened.contact?.primaryMobile).toBe("9876543210");
+    expect(reopened.contact?.alternateMobile).toBe("9123456780");
+    expect(row(db, "select payload_json from admission_drafts where enquiry_id = 'enq_first'")?.payload_json).not.toContain("9876543210");
+    expect(row(db, "select payload_json from admission_drafts where enquiry_id = 'enq_first'")?.payload_json).not.toContain("9123456780");
+    db.close();
+  });
+
+  it("keeps draft contact values stable across save reopen save reopen without duplicate contacts", async () => {
+    const db = testDb();
+    const c = context(db);
+    const payload = validPayload();
+    payload.contact.primaryMobile = "9876543210";
+    payload.contact.alternateMobile = "9123456780";
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
+    const firstDraft = await getAdmissionDraft(c, "enq_first");
+    if (!firstDraft) throw new Error("Expected draft");
+    const firstReopened = await admissionDraftPayloadForStaff(c, firstDraft);
+
+    await saveAdmissionDraft(c, staff, "enq_first", { payload: firstReopened, currentStep: "contact" });
+    const secondDraft = await getAdmissionDraft(c, "enq_first");
+    if (!secondDraft) throw new Error("Expected draft");
+    const secondReopened = await admissionDraftPayloadForStaff(c, secondDraft);
+
+    expect(secondReopened.contact?.primaryMobile).toBe("9876543210");
+    expect(secondReopened.contact?.alternateMobile).toBe("9123456780");
+    expect(count(db, "person_contacts where contact_type = 'mobile'")).toBe(2);
+    db.close();
+  });
+
+  it("persists an edited alternate mobile and keeps an intentionally blank alternate blank", async () => {
+    const db = testDb();
+    const c = context(db);
+    const payload = validPayload();
+    payload.contact.primaryMobile = "9876543210";
+    payload.contact.alternateMobile = "9123456780";
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
+
+    const edited = validPayload();
+    edited.contact.primaryMobile = "9876543210";
+    edited.contact.alternateMobile = "9000000000";
+    await saveAdmissionDraft(c, staff, "enq_first", { payload: edited, currentStep: "contact" });
+    const editedDraft = await getAdmissionDraft(c, "enq_first");
+    if (!editedDraft) throw new Error("Expected draft");
+    expect((await admissionDraftPayloadForStaff(c, editedDraft)).contact?.alternateMobile).toBe("9000000000");
+
+    edited.contact.alternateMobile = "";
+    await saveAdmissionDraft(c, staff, "enq_first", { payload: edited, currentStep: "contact" });
+    const blankDraft = await getAdmissionDraft(c, "enq_first");
+    if (!blankDraft) throw new Error("Expected draft");
+    expect((await admissionDraftPayloadForStaff(c, blankDraft)).contact?.alternateMobile).toBe("");
+    expect(count(db, "person_contact_details where status = 'active'")).toBe(1);
     db.close();
   });
 });
@@ -797,18 +866,17 @@ describe("confirmAdmission service integration", () => {
     db.close();
   });
 
-  it("rejects payment plans not allowed by the course duration rules", async () => {
+  it("rejects forged instalment counts above the course duration", async () => {
     const db = testDb();
     const c = context(db);
     const payload = validPayload();
     payload.fee.paymentPlanType = "custom";
-    payload.fee.numberOfInstalments = 4;
+    payload.fee.numberOfInstalments = 7;
     await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
 
     const confirmed = await confirmAdmission(c, staff, "enq_first");
-    expect(confirmed.ok).toBe(false);
-    if (confirmed.ok) throw new Error("Expected disallowed payment plan to fail");
-    expect(confirmed.fieldErrors?.["fee.paymentPlanType"]?.[0]).toContain("allowed");
+    expect(confirmed).toMatchObject({ ok: false, status: 400, code: "invalid_admission" });
+    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.numberOfInstalments"]?.[0]).toContain("maximum of 6");
     db.close();
   });
 
@@ -821,23 +889,97 @@ describe("confirmAdmission service integration", () => {
     const confirmed = await confirmAdmission(c, staff, "enq_first");
 
     expect(confirmed).toMatchObject({ ok: false, status: 400, code: "invalid_admission" });
-    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.paymentPlanType"]?.[0]).toContain("allowed");
+    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.numberOfInstalments"]?.[0]).toContain("maximum of 1");
     db.close();
   });
 
-  it("accepts a two-instalment plan for a two-month course", async () => {
+  it.each([
+    [1, "full", 1],
+    [2, "two_instalments", 2],
+    [3, "three_instalments", 3],
+    [4, "custom", 4],
+    [6, "custom", 6],
+  ])("accepts %s instalment(s) for a six-month course", async (_label, paymentPlanType, numberOfInstalments) => {
     const db = testDb();
     const c = context(db);
-    db.database.exec("update courses set duration_label = '2 months', duration_months = 2 where id = 'course_full_stack'");
-    await createAdmissionDraft(c, "enq_first");
+    const payload = validPayload();
+    payload.fee.paymentPlanType = paymentPlanType;
+    payload.fee.numberOfInstalments = numberOfInstalments;
+    await createAdmissionDraft(c, "enq_first", payload);
 
     const confirmed = await expectOk(confirmAdmission(c, staff, "enq_first"));
 
     expect(confirmed.enrolmentNumber).toMatch(/^ENR-SION-2026-/);
     expect(row(db, "select payment_plan_type, number_of_instalments from fee_agreements")).toMatchObject({
-      payment_plan_type: "two_instalments",
-      number_of_instalments: 2,
+      payment_plan_type: paymentPlanType,
+      number_of_instalments: numberOfInstalments,
     });
+    expect(count(db, "fee_agreement_instalments")).toBe(numberOfInstalments);
+    db.close();
+  });
+
+  it.each([
+    [1, 1],
+    [2, 2],
+    [3, 3],
+    [4, 4],
+    [6, 6],
+  ])("uses course duration %s as the maximum instalment count", (durationMonths, expected) => {
+    expect(maximumInstallmentsForCourse({ duration_months: durationMonths })).toBe(expected);
+  });
+
+  it("allows fewer instalments than the course duration", async () => {
+    const db = testDb();
+    const c = context(db);
+    const payload = validPayload();
+    payload.fee.paymentPlanType = "two_instalments";
+    payload.fee.numberOfInstalments = 2;
+    await createAdmissionDraft(c, "enq_first", payload);
+
+    const confirmed = await expectOk(confirmAdmission(c, staff, "enq_first"));
+
+    expect(confirmed.enrolmentNumber).toMatch(/^ENR-SION-2026-/);
+    expect(count(db, "fee_agreement_instalments")).toBe(2);
+    db.close();
+  });
+
+  it("rejects a forged twelve-instalment client count for a four-month course", async () => {
+    const db = testDb();
+    const c = context(db);
+    db.database.exec("update courses set duration_label = '4 months', duration_months = 4 where id = 'course_full_stack'");
+    const payload = validPayload();
+    payload.fee.paymentPlanType = "custom";
+    payload.fee.numberOfInstalments = 12;
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
+
+    const confirmed = await confirmAdmission(c, staff, "enq_first");
+
+    expect(confirmed).toMatchObject({ ok: false, status: 400, code: "invalid_admission" });
+    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.numberOfInstalments"]?.[0]).toContain("maximum of 4");
+    db.close();
+  });
+
+  it.each([
+    [4, 1000000],
+    [6, 1000000],
+    [6, 1000001],
+  ])("generates %s instalments that sum exactly to the agreed fee of %s paise", async (numberOfInstalments, finalFeePaise) => {
+    const db = testDb();
+    const c = context(db);
+    const payload = validPayload();
+    payload.fee.paymentPlanType = "custom";
+    payload.fee.numberOfInstalments = numberOfInstalments;
+    payload.fee.finalAgreedFeePaise = finalFeePaise;
+    payload.fee.standardFeePaise = finalFeePaise;
+    payload.fee.initialPaymentExpectedPaise = 0;
+    db.database.exec(`update courses set default_fee_paise = ${finalFeePaise}, lowest_acceptable_fee_paise = ${finalFeePaise} where id = 'course_full_stack'`);
+    await createAdmissionDraft(c, "enq_first", payload);
+
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
+    const total = all(db, "select amount_paise from fee_agreement_instalments").reduce((sum, item) => sum + Number(item.amount_paise), 0);
+
+    expect(total).toBe(finalFeePaise);
+    expect(count(db, "fee_agreement_instalments")).toBe(numberOfInstalments);
     db.close();
   });
 

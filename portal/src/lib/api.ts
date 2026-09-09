@@ -741,6 +741,110 @@ const paymentLedgerSchema = z.object({
   receipts: z.array(paymentReceiptSchema),
 });
 
+const collectionSummarySchema = z.object({
+  agreedFeePaise: z.number(),
+  receivedPaise: z.number(),
+  outstandingPaise: z.number(),
+  overduePaise: z.number(),
+  dueTodayPaise: z.number(),
+  nextDueDate: z.string().nullable(),
+  daysOverdue: z.number(),
+  agingBucket: z.string().nullable(),
+  lastPaymentAt: z.string().nullable(),
+  lastFollowUpAt: z.string().nullable(),
+  nextFollowUpAt: z.string().nullable(),
+  promiseDate: z.string().nullable(),
+  promiseAmountPaise: z.number().nullable(),
+  promiseMissed: z.boolean(),
+  fullyPaid: z.boolean(),
+});
+
+const collectionItemSchema = z.object({
+  enrolmentId: z.string(),
+  enrolmentNumber: z.string(),
+  enrolmentStatus: z.string(),
+  branchId: z.string(),
+  branchName: z.string(),
+  studentId: z.string(),
+  studentNumber: z.string(),
+  studentName: z.string(),
+  studentStatus: z.string(),
+  courseId: z.string(),
+  courseName: z.string(),
+  mobileDisplay: z.string().nullable(),
+  callUrl: z.string().nullable(),
+  whatsappUrl: z.string().nullable(),
+  summary: collectionSummarySchema,
+  flags: z.array(z.string()),
+});
+
+const collectionFollowupSchema = z.object({
+  id: z.string(),
+  followupType: z.string(),
+  outcome: z.string(),
+  note: z.string(),
+  promisedPaymentDate: z.string().nullable(),
+  promisedAmountPaise: z.number().nullable(),
+  nextFollowUpAt: z.string().nullable(),
+  createdAt: z.string(),
+  recordedBy: z.string().nullable(),
+});
+
+const collectionListSchema = z.object({
+  success: z.literal(true),
+  today: z.string(),
+  filters: z.record(z.string(), z.unknown()),
+  pagination: z.object({ limit: z.number(), offset: z.number(), total: z.number(), hasMore: z.boolean() }),
+  overview: z.object({
+    totalOutstandingPaise: z.number(),
+    dueTodayPaise: z.number(),
+    overduePaise: z.number(),
+    collectedThisMonthPaise: z.number(),
+    promisesDueToday: z.number(),
+  }),
+  sections: z.object({
+    needsAttention: z.array(collectionItemSchema),
+    dueToday: z.array(collectionItemSchema),
+    overdue: z.array(collectionItemSchema),
+    upcoming: z.array(collectionItemSchema),
+    recentCollections: z.array(paymentReceiptSchema),
+  }),
+  items: z.array(collectionItemSchema),
+});
+
+const collectionDetailSchema = z.object({
+  success: z.literal(true),
+  today: z.string(),
+  item: collectionItemSchema,
+  installments: z.array(z.object({
+    instalmentNumber: z.number(),
+    requiredPaise: z.number(),
+    allocatedReceivedPaise: z.number(),
+    balancePaise: z.number(),
+    status: z.string(),
+    dueDate: z.string().nullable(),
+    label: z.string(),
+    daysOverdue: z.number(),
+  })),
+  receipts: z.array(paymentReceiptSchema),
+  followups: z.array(collectionFollowupSchema),
+  timeline: z.array(z.object({
+    id: z.string(),
+    type: z.string(),
+    occurredAt: z.string(),
+    label: z.string(),
+    amountPaise: z.number().nullable(),
+    note: z.string().nullable(),
+    metadata: z.record(z.string(), z.unknown()),
+  })),
+  receiptCorrection: z.object({ supported: z.literal(false), message: z.string() }),
+});
+
+const collectionFollowupMutationSchema = z.object({
+  success: z.literal(true),
+  followup: collectionFollowupSchema,
+});
+
 const admissionDraftSchema = z.object({
   draft: z
     .object({
@@ -1445,6 +1549,9 @@ export type AdmissionFinancialSummary = z.infer<typeof receiptSummarySchema>;
 export type AdmissionReceipt = NonNullable<AdmissionFinancialSummary["tokenReceipt"]>;
 export type PaymentLedger = z.infer<typeof paymentLedgerSchema>;
 export type PaymentReceipt = z.infer<typeof paymentReceiptSchema>;
+export type CollectionList = z.infer<typeof collectionListSchema>;
+export type CollectionItem = z.infer<typeof collectionItemSchema>;
+export type CollectionDetail = z.infer<typeof collectionDetailSchema>;
 export type StaffStudentProfile = z.infer<typeof studentProfileSchema>;
 export type StaffStudentDirectory = z.infer<typeof staffStudentDirectorySchema>;
 export type StaffStudentDirectoryItem = z.infer<typeof staffStudentDirectoryItemSchema>;
@@ -1876,6 +1983,28 @@ export async function getPaymentLedger(enrolmentId: string) {
 
 export async function recordEnrolmentReceipt(enrolmentId: string, input: Record<string, unknown>) {
   return postJson(`/api/staff/enrolments/${encodeURIComponent(enrolmentId)}/receipts`, input, admissionReceiptResponseSchema);
+}
+
+export type CollectionQuery = {
+  status?: "due_today" | "overdue" | "upcoming" | "promise_due" | "no_follow_up" | "paid" | "all";
+  agingBucket?: string;
+  branchId?: string;
+  courseId?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export async function getCollections(params: CollectionQuery = {}) {
+  return getJson(`/api/staff/collections${queryString(params)}`, collectionListSchema);
+}
+
+export async function getCollectionDetail(enrolmentId: string) {
+  return getJson(`/api/staff/collections/${encodeURIComponent(enrolmentId)}`, collectionDetailSchema);
+}
+
+export async function recordCollectionFollowup(enrolmentId: string, input: Record<string, unknown>) {
+  return postJson(`/api/staff/collections/${encodeURIComponent(enrolmentId)}/follow-ups`, input, collectionFollowupMutationSchema);
 }
 
 export async function linkAdmissionEnquiryPerson(enquiryId: string, input: { mode: "existing"; personId: string } | { mode: "create"; idempotencyKey: string }) {

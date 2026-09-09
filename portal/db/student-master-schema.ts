@@ -595,6 +595,44 @@ export const feeAgreementInstalments = sqliteTable(
   ],
 );
 
+export const collectionFollowups = sqliteTable(
+  "collection_followups",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branches.id),
+    studentId: text("student_id")
+      .notNull()
+      .references(() => students.id),
+    enrolmentId: text("enrolment_id")
+      .notNull()
+      .references(() => enrolments.id),
+    followupType: text("followup_type").notNull(),
+    outcome: text("outcome").notNull(),
+    note: text("note").notNull().default(""),
+    promisedPaymentDate: text("promised_payment_date"),
+    promisedAmountPaise: integer("promised_amount_paise"),
+    nextFollowUpAt: text("next_follow_up_at"),
+    createdByLoginAccountId: text("created_by_login_account_id")
+      .notNull()
+      .references(() => loginAccounts.id),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("collection_followups_org_branch_next_idx").on(table.organisationId, table.branchId, table.nextFollowUpAt),
+    index("collection_followups_org_enrolment_created_idx").on(table.organisationId, table.enrolmentId, table.createdAt),
+    index("collection_followups_org_promise_idx").on(table.organisationId, table.promisedPaymentDate),
+    check("collection_followups_type_check", sql`${table.followupType} in ('call', 'whatsapp', 'in_person', 'other')`),
+    check("collection_followups_outcome_check", sql`${table.outcome} in ('contacted', 'not_reachable', 'promised_payment', 'paid_or_receipt_pending', 'dispute_or_query', 'follow_up_later')`),
+    check("collection_followups_promise_date_check", sql`${table.outcome} <> 'promised_payment' or ${table.promisedPaymentDate} is not null`),
+    check("collection_followups_promise_amount_check", sql`${table.promisedAmountPaise} is null or ${table.promisedAmountPaise} > 0`),
+  ],
+);
+
 export const nsdcProfiles = sqliteTable(
   "nsdc_profiles",
   {

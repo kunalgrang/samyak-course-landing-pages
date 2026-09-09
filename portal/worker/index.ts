@@ -16,6 +16,7 @@ import { registerStaffEducationPartnerRoutes } from "./routes/staff-education-pa
 import { registerStaffBatchRoutes } from "./routes/staff-batches";
 import { registerStaffTrainerRoutes } from "./routes/staff-trainers";
 import { registerStaffAcademicRoutes } from "./routes/staff-academic";
+import { registerStaffCollectionRoutes } from "./routes/staff-collections";
 import { registerStudentRoutes } from "./routes/student";
 import { registerPublicReferralRoutes } from "./routes/public-referrals";
 import { registerPartnerRoutes } from "./routes/partner";
@@ -53,6 +54,7 @@ registerStaffEducationPartnerRoutes(app);
 registerStaffBatchRoutes(app);
 registerStaffTrainerRoutes(app);
 registerStaffAcademicRoutes(app);
+registerStaffCollectionRoutes(app);
 registerCertificateRoutes(app);
 
 app.notFound((c) =>

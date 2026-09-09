@@ -4,6 +4,7 @@ import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { ORG_ID, mobileHash } from "../lib/auth-store";
 import {
   confirmAdmission,
+  admissionDraftPayloadForStaff,
   decideDiscountApproval,
   fieldErrorsFromIssues,
   getAdmissionConfiguration,
@@ -248,7 +249,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
             id: draft.id,
             currentStep: draft.current_step,
             status: draft.status,
-            payload: JSON.parse(draft.payload_json),
+            payload: await admissionDraftPayloadForStaff(c, draft),
             confirmedAt: draft.confirmed_at,
             confirmationLockedAt: draft.confirmation_locked_at,
             confirmationSnapshotVersion: draft.confirmation_snapshot_version,
@@ -650,6 +651,8 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], sta
     c.env.DB.prepare("select * from education_records where person_id = ? order by created_at desc limit 1").bind(student.person_id).all(),
     c.env.DB.prepare(
       `select enrolments.*, courses.name as course_name, fee_agreements.final_agreed_fee_paise, fee_agreements.payment_plan_type,
+              coalesce(receipt_totals.total_received_paise, 0) as total_received_paise,
+              max(0, coalesce(fee_agreements.final_agreed_fee_paise, 0) - coalesce(receipt_totals.total_received_paise, 0)) as outstanding_paise,
               nsdc_profiles.status as nsdc_status,
               batch_memberships.id as current_batch_membership_id,
               batches.id as current_batch_id,
@@ -661,6 +664,12 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], sta
        from enrolments
        join courses on courses.id = enrolments.course_id
        left join fee_agreements on fee_agreements.enrolment_id = enrolments.id
+       left join (
+         select enrolment_id, sum(amount_paise) as total_received_paise
+         from receipts
+         where status = 'recorded'
+         group by enrolment_id
+       ) receipt_totals on receipt_totals.enrolment_id = enrolments.id
        left join nsdc_profiles on nsdc_profiles.enrolment_id = enrolments.id
        left join batch_memberships on batch_memberships.enrolment_id = enrolments.id and batch_memberships.status = 'active' and batch_memberships.left_at is null
        left join batches on batches.id = batch_memberships.batch_id
