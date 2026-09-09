@@ -5,13 +5,21 @@ import { assignBatchOnAdmissionConfirmation, validateAdmissionBatchSelection } f
 import { createOpaqueId, decryptText, encryptText, hmacHex } from "./crypto";
 import { DISCOUNT_APPROVER_ROLES, canBackdateReceipts, canRecordReceipts, type StaffContext } from "./staff-auth";
 import { normalizeIndianMobile } from "./mobile";
+import { maximumInstallmentsForCourse } from "./payment-schedule-policy";
 import { financialSummaryFromReceipts, type FinancialSummary } from "./payments-ledger";
+
+export { maximumInstallmentsForCourse } from "./payment-schedule-policy";
 
 const nameSchema = z.string().trim().min(2).max(140).regex(/^[^\d]+$/, "Name cannot contain numbers.");
 const optionalNameSchema = z.string().trim().max(140).regex(/^[^\d]*$/, "Name cannot contain numbers.").optional().or(z.literal(""));
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const paiseSchema = z.coerce.number().int().min(0);
 const positivePaiseSchema = z.coerce.number().int().positive();
+const instalmentScheduleInputSchema = z.array(z.object({
+  instalmentNumber: z.coerce.number().int().min(1).max(24),
+  amountPaise: paiseSchema,
+  dueDate: dateSchema.nullable().optional().or(z.literal("")),
+})).max(24);
 
 export const recordAdmissionReceiptSchema = z.object({
   admissionDraftId: z.string().trim().min(1).max(140),
@@ -105,6 +113,7 @@ export const admissionPayloadSchema = z.object({
       discountReasonCode: z.string().trim().max(60).optional(),
       paymentPlanType: z.enum(["full", "two_instalments", "three_instalments", "custom"]).optional(),
       numberOfInstalments: z.coerce.number().int().min(1).max(24).optional().nullable(),
+      installmentSchedule: instalmentScheduleInputSchema.optional(),
       initialPaymentExpectedPaise: paiseSchema.optional(),
       feeRemarks: z.string().trim().max(500).optional(),
     })
@@ -1367,6 +1376,14 @@ function buildInstalmentSchedule(payload: AdmissionPayload): Instalment[] {
   const finalFee = Number(fee.finalAgreedFeePaise || 0);
   if (!Number.isInteger(finalFee) || finalFee <= 0) return [];
   const count = instalmentsFor(String(fee.paymentPlanType || "full"), Number(fee.numberOfInstalments || 0));
+  const customSchedule = Array.isArray(fee.installmentSchedule) ? fee.installmentSchedule : [];
+  if (customSchedule.length > 0) {
+    return customSchedule.map((item, index) => ({
+      instalmentNumber: index + 1,
+      amountPaise: Number(item.amountPaise || 0),
+      dueDate: typeof item.dueDate === "string" && item.dueDate.trim() ? item.dueDate.trim() : null,
+    }));
+  }
   if (count > finalFee) return [];
   if (count <= 1) return [{ instalmentNumber: 1, amountPaise: finalFee, dueDate: null }];
   const requestedFirst = Number(fee.initialPaymentExpectedPaise || 0);
@@ -1385,7 +1402,13 @@ function buildInstalmentSchedule(payload: AdmissionPayload): Instalment[] {
 }
 
 function instalmentScheduleIsValid(instalments: Instalment[]) {
-  return instalments.length > 0 && instalments.every((instalment, index) => instalment.instalmentNumber === index + 1 && Number.isInteger(instalment.amountPaise) && instalment.amountPaise > 0);
+  return instalments.length > 0 && instalments.every((instalment, index) => (
+    instalment.instalmentNumber === index + 1 &&
+    Number.isInteger(instalment.amountPaise) &&
+    instalment.amountPaise > 0 &&
+    (!instalment.dueDate || validIsoDate(instalment.dueDate)) &&
+    (!index || !instalment.dueDate || !instalments[index - 1].dueDate || instalment.dueDate >= instalments[index - 1].dueDate!)
+  ));
 }
 
 function scheduleFromSnapshot(snapshot: ConfirmationSnapshot | null): Instalment[] {
@@ -1542,6 +1565,13 @@ function commercialTermsFingerprint(payload: AdmissionPayload) {
       paymentPlanType: payload.fee?.paymentPlanType || "",
       numberOfInstalments: Number(payload.fee?.numberOfInstalments || 0),
       initialPaymentExpectedPaise: Number(payload.fee?.initialPaymentExpectedPaise || 0),
+      installmentSchedule: Array.isArray(payload.fee?.installmentSchedule)
+        ? payload.fee.installmentSchedule.map((item) => ({
+            instalmentNumber: Number(item.instalmentNumber || 0),
+            amountPaise: Number(item.amountPaise || 0),
+            dueDate: typeof item.dueDate === "string" ? item.dueDate : null,
+          }))
+        : [],
     },
   });
 }
@@ -1697,6 +1727,17 @@ async function paymentPlanFieldErrors(c: AppContext, payload: AdmissionPayload, 
     addFieldError(fieldErrors, "fee.numberOfInstalments", "Select at least one instalment.");
   } else if (count > maxInstallments) {
     addFieldError(fieldErrors, "fee.numberOfInstalments", `Selected course allows a maximum of ${maxInstallments} instalment${maxInstallments === 1 ? "" : "s"}.`);
+  }
+  const schedule = buildInstalmentSchedule(payload);
+  const finalFee = Number(payload.fee?.finalAgreedFeePaise || 0);
+  if (!schedule.length) {
+    addFieldError(fieldErrors, "fee.installmentSchedule", "Enter at least one positive instalment.");
+  } else if (schedule.length !== count) {
+    addFieldError(fieldErrors, "fee.installmentSchedule", "Instalment rows must match the selected count.");
+  } else if (schedule.reduce((total, instalment) => total + instalment.amountPaise, 0) !== finalFee) {
+    addFieldError(fieldErrors, "fee.installmentSchedule", "Instalment amounts must equal the final agreed fee exactly.");
+  } else if (!instalmentScheduleIsValid(schedule)) {
+    addFieldError(fieldErrors, "fee.installmentSchedule", "Instalments must be positive, sequential, and use real non-decreasing due dates.");
   }
   return fieldErrors;
 }
@@ -2246,11 +2287,6 @@ function instalmentsFor(paymentPlanType: string | undefined, custom: number | nu
   if (paymentPlanType === "two_instalments") return 2;
   if (paymentPlanType === "three_instalments") return 3;
   return custom || 1;
-}
-
-export function maximumInstallmentsForCourse(course: Pick<CourseRecord, "duration_months">) {
-  const durationMonths = Number(course.duration_months);
-  return Number.isInteger(durationMonths) && durationMonths >= 1 ? durationMonths : 3;
 }
 
 function sanitizeAdmissionDraftPayload(payload: AdmissionPayload): AdmissionPayload {

@@ -493,6 +493,78 @@ describe("AdmissionPage draft validation interactions", () => {
     );
   });
 
+  it("saves custom unequal instalment amounts and due dates in the Admission draft", async () => {
+    const container = await renderAdmissionPage(roots);
+    const courseSelect = windowRef.document.getElementById(admissionFieldId("course.courseId")) as unknown as HTMLSelectElement;
+    const feeInput = windowRef.document.getElementById(admissionFieldId("fee.finalAgreedFeePaise")) as unknown as HTMLInputElement;
+    const instalments = windowRef.document.getElementById(admissionFieldId("fee.numberOfInstalments")) as unknown as HTMLSelectElement;
+
+    await changeValue(courseSelect as unknown as HTMLInputElement, "course_full_stack");
+    await changeValue(feeInput, "20000");
+    await changeValue(instalments as unknown as HTMLInputElement, "4");
+    await flushAdmissionPage();
+    const amountInputs = Array.from(container.querySelectorAll(".admission-schedule-editor input[type='number']")) as HTMLInputElement[];
+    const dateInputs = Array.from(container.querySelectorAll(".admission-schedule-editor input[type='date']")) as HTMLInputElement[];
+    for (const [index, value] of ["6000", "6000", "5000", "3000"].entries()) {
+      await changeValue(amountInputs[index], value);
+      await changeValue(dateInputs[index], `2026-${String(index + 9).padStart(2, "0")}-10`);
+    }
+    await click(buttonByText(container, "Save Draft"));
+
+    expect(apiMocks.saveAdmissionDraft).toHaveBeenCalledWith(
+      "enq_first",
+      expect.objectContaining({
+        fee: expect.objectContaining({
+          finalAgreedFeePaise: 2000000,
+          paymentPlanType: "custom",
+          numberOfInstalments: 4,
+          installmentSchedule: [
+            { instalmentNumber: 1, amountPaise: 600000, dueDate: "2026-09-10" },
+            { instalmentNumber: 2, amountPaise: 600000, dueDate: "2026-10-10" },
+            { instalmentNumber: 3, amountPaise: 500000, dueDate: "2026-11-10" },
+            { instalmentNumber: 4, amountPaise: 300000, dueDate: "2026-12-10" },
+          ],
+        }),
+      }),
+      expect.any(String),
+    );
+  });
+
+  it("clears a stale custom schedule when a shorter course invalidates the selected count", async () => {
+    apiMocks.getActiveCourses.mockResolvedValue({
+      courses: [
+        course,
+        { ...course, id: "course_four_months", name: "Four Month Course", duration_label: "4 months", duration_months: 4 },
+      ],
+    });
+    const container = await renderAdmissionPage(roots);
+    const courseSelect = windowRef.document.getElementById(admissionFieldId("course.courseId")) as unknown as HTMLSelectElement;
+    const feeInput = windowRef.document.getElementById(admissionFieldId("fee.finalAgreedFeePaise")) as unknown as HTMLInputElement;
+    const instalments = windowRef.document.getElementById(admissionFieldId("fee.numberOfInstalments")) as unknown as HTMLSelectElement;
+
+    await changeValue(courseSelect as unknown as HTMLInputElement, "course_full_stack");
+    await changeValue(feeInput, "30000");
+    await changeValue(instalments as unknown as HTMLInputElement, "6");
+    await flushAdmissionPage();
+    expect(container.querySelectorAll(".admission-schedule-editor input[type='number']")).toHaveLength(6);
+
+    await changeValue(courseSelect as unknown as HTMLInputElement, "course_four_months");
+    await flushAdmissionPage();
+    await click(buttonByText(container, "Save Draft"));
+
+    expect(apiMocks.saveAdmissionDraft).toHaveBeenCalledWith(
+      "enq_first",
+      expect.objectContaining({
+        fee: expect.objectContaining({
+          paymentPlanType: "",
+          numberOfInstalments: "",
+          installmentSchedule: [],
+        }),
+      }),
+      expect.any(String),
+    );
+  });
+
   it("preserves typed values when draft save returns an API error", async () => {
     apiMocks.saveAdmissionDraft.mockRejectedValueOnce(new ApiError("Temporary network failure", undefined, "network_error"));
     const container = await renderAdmissionPage(roots);
