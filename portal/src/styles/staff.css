@@ -920,6 +920,85 @@
   justify-self: start;
 }
 
+.admission-schedule-editor,
+.payment-schedule-form,
+.schedule-editor-table,
+.payment-schedule-table {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.admission-schedule-editor {
+  grid-column: 1 / -1;
+}
+
+.admission-schedule-editor .section-heading,
+.payment-schedule-form .staff-form-actions {
+  align-items: center;
+}
+
+.schedule-editor-row,
+.payment-schedule-row {
+  display: grid;
+  gap: 10px;
+  align-items: end;
+  min-width: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 12px;
+  background: #fff;
+}
+
+.schedule-editor-row {
+  grid-template-columns: minmax(120px, 0.7fr) minmax(150px, 1fr) minmax(150px, 1fr);
+}
+
+.payment-schedule-row {
+  grid-template-columns: minmax(112px, 0.85fr) minmax(126px, 1fr) minmax(136px, 1fr) minmax(92px, 0.7fr) minmax(104px, 0.8fr) minmax(98px, 0.75fr) auto;
+}
+
+.schedule-editor-row label,
+.payment-schedule-row label,
+.payment-schedule-form label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.payment-schedule-row > span,
+.payment-schedule-summary span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.payment-schedule-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.payment-schedule-summary span {
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.payment-schedule-summary small,
+.payment-schedule-row small,
+.schedule-editor-row small {
+  color: var(--color-muted);
+  font-weight: 800;
+}
+
+.payment-schedule-form textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
 .notification-toast {
   position: sticky;
   top: 12px;
@@ -2205,6 +2284,12 @@
 
   .collection-toolbar,
   .collection-row {
+    grid-template-columns: 1fr;
+  }
+
+  .schedule-editor-row,
+  .payment-schedule-row,
+  .payment-schedule-summary {
     grid-template-columns: 1fr;
   }
 

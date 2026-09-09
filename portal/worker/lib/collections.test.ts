@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkerBindings } from "../bindings";
 import type { AppContext } from "./http";
 import type { StaffContext } from "./staff-auth";
-import { agingBucket, collectionInstallments, createCollectionFollowup, createCollectionFollowupSchema, getCollectionDetail, listCollections } from "./collections";
+import { agingBucket, collectionInstallments, createCollectionFollowup, createCollectionFollowupSchema, getCollectionDetail, listCollections, updatePaymentSchedule } from "./collections";
 
 const NOW = "2026-09-08T00:00:00.000Z";
 
@@ -33,6 +33,20 @@ class SqliteD1 {
   readonly database = new DatabaseSync(":memory:");
   prepare(sql: string) {
     return new SqliteD1Statement(this, sql);
+  }
+  async batch(statements: SqliteD1Statement[]) {
+    this.database.exec("begin");
+    try {
+      const results = [];
+      for (const statement of statements) {
+        results.push(await statement.run());
+      }
+      this.database.exec("commit");
+      return results;
+    } catch (reason) {
+      this.database.exec("rollback");
+      throw reason;
+    }
   }
   close() {
     this.database.close();
@@ -250,6 +264,165 @@ describe("Payments / Collections V2", () => {
       expect(sion.items.map((item) => item.enrolmentId)).toEqual(["enrol_b", "enrol_a"]);
       await expect(getCollectionDetail(c, staffForRole("counsellor", "acct_wadala"), "enrol_a")).resolves.toMatchObject({ ok: false, code: "collection_not_found" });
       await expect(createCollectionFollowup(c, staffForRole("counsellor", "acct_wadala"), "enrol_a", { followupType: "call", outcome: "contacted", note: "" })).resolves.toMatchObject({ ok: false, code: "collection_not_found" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("accepts custom admission-style schedules, equal schedules, and rejects total/count/amount violations", async () => {
+    const db = seededDb();
+    try {
+      db.database.exec("update courses set duration_months = 4 where id = 'course_excel'; update fee_agreements set final_agreed_fee_paise = 2000000, updated_at = '2026-09-08T01:00:00.000Z' where id = 'fee_b';");
+      const c = context(db);
+      const detail = await getCollectionDetail(c, ownerStaff(), "enrol_b");
+      if (!detail.ok) throw new Error(detail.message);
+
+      await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_b", {
+        expectedVersion: detail.paymentSchedule.version,
+        reason: "Student requested custom payment plan",
+        installments: [
+          { amountPaise: 600000, dueDate: "2026-09-10" },
+          { amountPaise: 600000, dueDate: "2026-10-10" },
+          { amountPaise: 500000, dueDate: "2026-11-10" },
+          { amountPaise: 300000, dueDate: "2026-12-10" },
+        ],
+      })).resolves.toMatchObject({ ok: true });
+      expect(db.database.prepare("select group_concat(amount_paise, ',') as amounts from fee_agreement_instalments where fee_agreement_id = 'fee_b' order by instalment_number").get()).toMatchObject({ amounts: "600000,600000,500000,300000" });
+
+      const equalVersion = (await getCollectionDetail(c, ownerStaff(), "enrol_b"));
+      if (!equalVersion.ok) throw new Error(equalVersion.message);
+      await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_b", {
+        expectedVersion: equalVersion.paymentSchedule.version,
+        reason: "Split equally after owner review",
+        installments: [
+          { amountPaise: 500000, dueDate: "2026-09-10" },
+          { amountPaise: 500000, dueDate: "2026-10-10" },
+          { amountPaise: 500000, dueDate: "2026-11-10" },
+          { amountPaise: 500000, dueDate: "2026-12-10" },
+        ],
+      })).resolves.toMatchObject({ ok: true });
+
+      const version = (await getCollectionDetail(c, ownerStaff(), "enrol_b"));
+      if (!version.ok) throw new Error(version.message);
+      await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_b", { expectedVersion: version.paymentSchedule.version, reason: "Too low", installments: [{ amountPaise: 1999900, dueDate: "2026-09-10" }] })).resolves.toMatchObject({ ok: false, code: "schedule_total_mismatch" });
+      await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_b", { expectedVersion: version.paymentSchedule.version, reason: "Too high", installments: [{ amountPaise: 2000100, dueDate: "2026-09-10" }] })).resolves.toMatchObject({ ok: false, code: "schedule_total_mismatch" });
+      await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_b", { expectedVersion: version.paymentSchedule.version, reason: "Zero", installments: [{ amountPaise: 0, dueDate: "2026-09-10" }] })).resolves.toMatchObject({ ok: false, code: "invalid_schedule" });
+      await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_b", { expectedVersion: version.paymentSchedule.version, reason: "Negative", installments: [{ amountPaise: -2000000, dueDate: "2026-09-10" }] })).resolves.toMatchObject({ ok: false, code: "invalid_schedule" });
+      await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_b", {
+        expectedVersion: version.paymentSchedule.version,
+        reason: "Too many rows",
+        installments: Array.from({ length: 5 }, () => ({ amountPaise: 400000, dueDate: "2026-09-10" })),
+      })).resolves.toMatchObject({ ok: false, code: "invalid_schedule" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("revises unpaid schedules with history, stale protection, and FIFO recalculation", async () => {
+    const db = seededDb();
+    try {
+      const c = context(db);
+      const before = await getCollectionDetail(c, ownerStaff(), "enrol_a");
+      if (!before.ok) throw new Error(before.message);
+
+      const result = await updatePaymentSchedule(c, ownerStaff(), "enrol_a", {
+        expectedVersion: before.paymentSchedule.version,
+        reason: "Extend remaining payment plan",
+        installments: [
+          { amountPaise: 500000, dueDate: "2026-08-01" },
+          { amountPaise: 300000, dueDate: "2026-09-15" },
+          { amountPaise: 200000, dueDate: "2026-10-15" },
+        ],
+      });
+
+      expect(result).toMatchObject({ ok: true });
+      if (!result.ok) throw new Error(result.message);
+      expect(result.detail.installments.map((item) => `${item.instalmentNumber}:${item.requiredPaise}:${item.allocatedReceivedPaise}:${item.balancePaise}`)).toEqual(["1:500000:500000:0", "2:300000:200000:100000", "3:200000:0:200000"]);
+      expect(result.detail.item.summary.outstandingPaise).toBe(300000);
+      expect(db.database.prepare("select count(*) as count from fee_schedule_revisions where fee_agreement_id = 'fee_a'").get()).toMatchObject({ count: 1 });
+      expect(db.database.prepare("select count(*) as count from audit_logs where action = 'fee_schedule_revised'").get()).toMatchObject({ count: 1 });
+      expect(db.database.prepare("select sum(amount_paise) as total from receipts where enrolment_id = 'enrol_a'").get()).toMatchObject({ total: 700000 });
+
+      await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_a", {
+        expectedVersion: before.paymentSchedule.version,
+        reason: "Stale overwrite",
+        installments: [
+          { amountPaise: 500000, dueDate: "2026-08-01" },
+          { amountPaise: 500000, dueDate: "2026-11-15" },
+        ],
+      })).resolves.toMatchObject({ ok: false, code: "stale_schedule" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rolls back schedule rows, revision history, and audit together when a save statement fails", async () => {
+    const db = seededDb();
+    try {
+      const c = context(db);
+      const before = await getCollectionDetail(c, ownerStaff(), "enrol_b");
+      if (!before.ok) throw new Error(before.message);
+      db.database.exec(`
+        create trigger fail_fee_schedule_audit
+        before insert on audit_logs
+        when new.action = 'fee_schedule_revised'
+        begin
+          select raise(abort, 'forced schedule audit failure');
+        end;
+      `);
+
+      await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_b", {
+        expectedVersion: before.paymentSchedule.version,
+        reason: "Forced rollback test",
+        installments: [
+          { amountPaise: 400000, dueDate: "2026-09-08" },
+          { amountPaise: 600000, dueDate: "2026-10-08" },
+        ],
+      })).rejects.toThrow("forced schedule audit failure");
+
+      expect(db.database.prepare("select group_concat(instalment_number || ':' || amount_paise || ':' || due_date, ',') as rows from fee_agreement_instalments where fee_agreement_id = 'fee_b' order by instalment_number").get())
+        .toMatchObject({ rows: "1:300000:2026-09-08,2:700000:2026-09-15" });
+      expect(db.database.prepare("select updated_at from fee_agreements where id = 'fee_b'").get()).toMatchObject({ updated_at: NOW });
+      expect(db.database.prepare("select count(*) as count from fee_schedule_revisions where fee_agreement_id = 'fee_b'").get()).toMatchObject({ count: 0 });
+      expect(db.database.prepare("select count(*) as count from audit_logs where action = 'fee_schedule_revised'").get()).toMatchObject({ count: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("protects paid rows and rejects unauthorized schedule editors", async () => {
+    const db = seededDb();
+    try {
+      const c = context(db);
+      const detail = await getCollectionDetail(c, ownerStaff(), "enrol_a");
+      if (!detail.ok) throw new Error(detail.message);
+      await expect(updatePaymentSchedule(c, staffForRole("counsellor", "acct_counsellor"), "enrol_a", {
+        expectedVersion: detail.paymentSchedule.version,
+        reason: "Counsellor edit",
+        installments: [{ amountPaise: 1000000, dueDate: "2026-09-10" }],
+      })).resolves.toMatchObject({ ok: false, code: "forbidden" });
+      await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_a", {
+        expectedVersion: detail.paymentSchedule.version,
+        reason: "Remove paid row",
+        installments: [{ amountPaise: 1000000, dueDate: "2026-09-10" }],
+      })).resolves.toMatchObject({ ok: false, code: "paid_instalment_locked" });
+      await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_a", {
+        expectedVersion: detail.paymentSchedule.version,
+        reason: "Change paid date",
+        installments: [
+          { amountPaise: 500000, dueDate: "2026-08-02" },
+          { amountPaise: 500000, dueDate: "2026-09-10" },
+        ],
+      })).resolves.toMatchObject({ ok: false, code: "paid_instalment_locked" });
+      await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_a", {
+        expectedVersion: detail.paymentSchedule.version,
+        reason: "Reduce below paid",
+        installments: [
+          { amountPaise: 500000, dueDate: "2026-08-01" },
+          { amountPaise: 100000, dueDate: "2026-09-10" },
+          { amountPaise: 400000, dueDate: "2026-10-10" },
+        ],
+      })).resolves.toMatchObject({ ok: false, code: "paid_amount_protected" });
     } finally {
       db.close();
     }

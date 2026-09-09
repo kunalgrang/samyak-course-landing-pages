@@ -5,6 +5,7 @@ import {
   getCollectionDetail,
   getCollections,
   recordCollectionFollowup,
+  updateCollectionPaymentSchedule,
   type CollectionDetail,
   type CollectionItem,
   type CollectionList,
@@ -19,6 +20,11 @@ type FollowupForm = {
   promisedPaymentDate: string;
   promisedAmount: string;
   nextFollowUpAt: string;
+};
+
+type ScheduleDraftRow = {
+  amountPaise: number;
+  dueDate: string | null;
 };
 
 const statuses: Array<{ value: NonNullable<CollectionQuery["status"]>; label: string }> = [
@@ -124,6 +130,11 @@ function CollectionDetailPage({ enrolmentId, onNavigate }: { enrolmentId: string
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<FollowupForm>(() => defaultFollowupForm());
   const [saving, setSaving] = useState(false);
+  const [savingSchedule, setSavingSchedule] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState(false);
+  const [scheduleRows, setScheduleRows] = useState<ScheduleDraftRow[]>([]);
+  const [scheduleReason, setScheduleReason] = useState("");
+  const [scheduleMessage, setScheduleMessage] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   async function refresh() {
@@ -144,6 +155,11 @@ function CollectionDetailPage({ enrolmentId, onNavigate }: { enrolmentId: string
       cancelled = true;
     };
   }, [enrolmentId]);
+
+  useEffect(() => {
+    if (!detail || editingSchedule) return;
+    setScheduleRows(detail.installments.map((installment) => ({ amountPaise: installment.requiredPaise, dueDate: installment.dueDate })));
+  }, [detail, editingSchedule]);
 
   async function submitFollowup(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -166,6 +182,45 @@ function CollectionDetailPage({ enrolmentId, onNavigate }: { enrolmentId: string
     } finally {
       setSaving(false);
     }
+  }
+
+  async function submitSchedule(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!detail) return;
+    setSavingSchedule(true);
+    setScheduleMessage(null);
+    try {
+      const result = await updateCollectionPaymentSchedule(enrolmentId, {
+        expectedVersion: detail.paymentSchedule.version,
+        reason: scheduleReason,
+        installments: scheduleRows,
+      });
+      setDetail(result);
+      setEditingSchedule(false);
+      setScheduleReason("");
+      setScheduleMessage("Payment schedule saved.");
+    } catch (reason) {
+      setScheduleMessage(reason instanceof Error ? reason.message : "Could not save payment schedule.");
+    } finally {
+      setSavingSchedule(false);
+    }
+  }
+
+  function beginScheduleEdit() {
+    if (!detail) return;
+    setScheduleRows(detail.installments.map((installment) => ({ amountPaise: installment.requiredPaise, dueDate: installment.dueDate })));
+    setScheduleReason("");
+    setScheduleMessage(null);
+    setEditingSchedule(true);
+  }
+
+  function splitRemainingEqually() {
+    if (!detail) return;
+    const protectedRows = detail.installments.filter((installment) => installment.allocatedReceivedPaise > 0);
+    const protectedTotal = protectedRows.reduce((total, installment) => total + installment.requiredPaise, 0);
+    const editableIndexes = scheduleRows.map((_row, index) => index).filter((index) => !protectedRows.some((installment) => installment.instalmentNumber === index + 1));
+    const split = equalAmounts(Math.max(0, detail.paymentSchedule.finalAgreedFeePaise - protectedTotal), editableIndexes.length);
+    setScheduleRows((current) => current.map((row, index) => editableIndexes.includes(index) ? { ...row, amountPaise: split[editableIndexes.indexOf(index)] || 0 } : row));
   }
 
   if (error) return <ErrorState title="Could not load collection" message={error} />;
@@ -193,12 +248,35 @@ function CollectionDetailPage({ enrolmentId, onNavigate }: { enrolmentId: string
         <div className="section-heading"><h2>Actions</h2><span>{item.mobileDisplay || "No mobile"}</span></div>
         <div className="crm-actions">
           <a className="button-link" href={`/app/enrolments/${item.enrolmentId}/payments`}>Record Payment</a>
+          {detail.paymentSchedule.canManage ? <button type="button" className="button-link" onClick={beginScheduleEdit}>{detail.installments.length ? "Manage Instalments" : "Create Payment Schedule"}</button> : null}
           {item.whatsappUrl ? <a className="button-link" href={item.whatsappUrl} target="_blank" rel="noreferrer">WhatsApp</a> : null}
           {item.callUrl ? <a className="button-link" href={item.callUrl}>Call</a> : null}
           <a className="button-link" href={`/app/students/${item.studentId}`}>Student Profile</a>
         </div>
         <p className="staff-empty">{detail.receiptCorrection.message}</p>
       </section>
+
+      {detail.paymentSchedule.canManage || editingSchedule || scheduleMessage ? (
+        <section className="staff-card">
+          <div className="section-heading"><h2>Payment Schedule</h2><span>{detail.paymentSchedule.maxInstallments} max</span></div>
+          {scheduleMessage ? <p className="form-message">{scheduleMessage}</p> : null}
+          {editingSchedule ? (
+            <PaymentScheduleEditor
+              detail={detail}
+              rows={scheduleRows}
+              reason={scheduleReason}
+              saving={savingSchedule}
+              onRowsChange={setScheduleRows}
+              onReasonChange={setScheduleReason}
+              onSplitRemaining={splitRemainingEqually}
+              onCancel={() => setEditingSchedule(false)}
+              onSubmit={submitSchedule}
+            />
+          ) : (
+            <p className="staff-empty">{detail.paymentSchedule.fullyPaid ? "Fully settled schedules are read-only." : "Owner and admin staff can revise unpaid schedule amounts and due dates."}</p>
+          )}
+        </section>
+      ) : null}
 
       <section className="staff-card">
         <div className="section-heading"><h2>Add Follow-up</h2><span>Immutable history</span></div>
@@ -270,6 +348,90 @@ function CollectionSection({ title, items, onNavigate }: { title: string; items:
   );
 }
 
+function PaymentScheduleEditor({
+  detail,
+  rows,
+  reason,
+  saving,
+  onRowsChange,
+  onReasonChange,
+  onSplitRemaining,
+  onCancel,
+  onSubmit,
+}: {
+  detail: CollectionDetail;
+  rows: ScheduleDraftRow[];
+  reason: string;
+  saving: boolean;
+  onRowsChange: (rows: ScheduleDraftRow[]) => void;
+  onReasonChange: (value: string) => void;
+  onSplitRemaining: () => void;
+  onCancel: () => void;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  const total = rows.reduce((sum, row) => sum + Number(row.amountPaise || 0), 0);
+  const difference = total - detail.paymentSchedule.finalAgreedFeePaise;
+  const invalid = difference !== 0 || !reason.trim() || rows.length < 1 || rows.length > detail.paymentSchedule.maxInstallments || rows.some((row) => !Number.isInteger(row.amountPaise) || row.amountPaise <= 0);
+
+  function updateRow(index: number, patch: Partial<ScheduleDraftRow>) {
+    onRowsChange(rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row));
+  }
+
+  function addRow() {
+    if (rows.length >= detail.paymentSchedule.maxInstallments) return;
+    onRowsChange([...rows, { amountPaise: 0, dueDate: null }]);
+  }
+
+  function removeRow(index: number) {
+    onRowsChange(rows.filter((_row, rowIndex) => rowIndex !== index));
+  }
+
+  return (
+    <form className="staff-form payment-schedule-form" onSubmit={onSubmit}>
+      <div className="payment-schedule-table">
+        {rows.map((row, index) => {
+          const current = detail.installments[index];
+          const locked = current?.status === "paid";
+          const protectedPaid = Number(current?.allocatedReceivedPaise || 0) > 0;
+          const removable = !protectedPaid && rows.length > 1;
+          return (
+            <div className="payment-schedule-row" key={index}>
+              <strong>Instalment {index + 1}</strong>
+              <label>
+                <small>Amount</small>
+                <input type="number" min={protectedPaid ? Math.ceil(Number(current?.allocatedReceivedPaise || 0) / 100) : 1} step="1" value={row.amountPaise ? row.amountPaise / 100 : ""} disabled={locked} onChange={(event) => updateRow(index, { amountPaise: Math.round(Number(event.target.value || 0) * 100) })} />
+              </label>
+              <label>
+                <small>Due date</small>
+                <input type="date" value={row.dueDate || ""} disabled={locked} onChange={(event) => updateRow(index, { dueDate: event.target.value || null })} />
+              </label>
+              <span><small>Paid</small>{formatMoney(Number(current?.allocatedReceivedPaise || 0))}</span>
+              <span><small>Remaining</small>{formatMoney(Math.max(0, row.amountPaise - Number(current?.allocatedReceivedPaise || 0)))}</span>
+              <span><small>Status</small>{locked ? "Paid - locked" : protectedPaid ? "Part paid" : "Editable"}</span>
+              <button type="button" className="secondary-button" disabled={!removable} onClick={() => removeRow(index)}>Remove</button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="staff-form-actions">
+        <button type="button" className="secondary-button" disabled={rows.length >= detail.paymentSchedule.maxInstallments} onClick={addRow}>Add Instalment</button>
+        <button type="button" className="secondary-button" onClick={onSplitRemaining}>Split Remaining Equally</button>
+      </div>
+      <div className="payment-schedule-summary">
+        <span><small>Final Agreed Fee</small><strong>{formatMoney(detail.paymentSchedule.finalAgreedFeePaise)}</strong></span>
+        <span><small>Schedule Total</small><strong>{formatMoney(total)}</strong></span>
+        <span><small>Difference</small><strong>{formatMoney(difference)}</strong></span>
+        <span><small>Instalments</small><strong>{rows.length} / {detail.paymentSchedule.maxInstallments}</strong></span>
+      </div>
+      <label>Reason for change<textarea maxLength={500} value={reason} onChange={(event) => onReasonChange(event.target.value)} required /></label>
+      <div className="staff-form-actions">
+        <button type="button" className="secondary-button" disabled={saving} onClick={onCancel}>Cancel</button>
+        <button type="submit" disabled={saving || invalid}>{saving ? "Saving..." : "Save Changes"}</button>
+      </div>
+    </form>
+  );
+}
+
 function CollectionRow({ item, onOpen }: { item: CollectionItem; onOpen: () => void }) {
   return (
     <article className="collection-row">
@@ -315,6 +477,17 @@ function formatDisplayDateTime(value: string) {
 function localDateTimeToIso(value: string) {
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+}
+
+function equalAmounts(totalPaise: number, count: number) {
+  if (!Number.isInteger(count) || count <= 0) return [];
+  const base = Math.floor(totalPaise / count);
+  let remainder = totalPaise - base * count;
+  return Array.from({ length: count }, () => {
+    const extra = remainder > 0 ? 1 : 0;
+    remainder -= extra;
+    return base + extra;
+  });
 }
 
 function titleCase(value: string) {

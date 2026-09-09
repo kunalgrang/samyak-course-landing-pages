@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   listCollections: vi.fn(),
   getCollectionDetail: vi.fn(),
   createCollectionFollowup: vi.fn(),
+  updatePaymentSchedule: vi.fn(),
 }));
 
 vi.mock("../lib/auth-store", () => ({
@@ -27,6 +28,7 @@ vi.mock("../lib/collections", async (importOriginal) => {
     listCollections: mocks.listCollections,
     getCollectionDetail: mocks.getCollectionDetail,
     createCollectionFollowup: mocks.createCollectionFollowup,
+    updatePaymentSchedule: mocks.updatePaymentSchedule,
   };
 });
 
@@ -49,6 +51,7 @@ describe("staff collection routes", () => {
     mocks.listCollections.mockResolvedValue({ success: true, items: [], overview: {}, sections: {}, pagination: {} });
     mocks.getCollectionDetail.mockResolvedValue({ ok: true, success: true, item: {}, installments: [], receipts: [], followups: [], timeline: [], receiptCorrection: {} });
     mocks.createCollectionFollowup.mockResolvedValue({ ok: true, success: true, followup: { id: "fu_1" } });
+    mocks.updatePaymentSchedule.mockResolvedValue({ ok: true, success: true, detail: { success: true, item: {}, installments: [], receipts: [], followups: [], timeline: [], receiptCorrection: {}, paymentSchedule: {} } });
   });
 
   it("denies unauthenticated and non-admission roles before service execution", async () => {
@@ -62,6 +65,41 @@ describe("staff collection routes", () => {
     expect((await app.request("http://portal.test/api/staff/collections/enrol_a/follow-ups", { method: "POST", headers: { "Content-Type": "application/json", Origin: "http://portal.test" }, body: "{}" })).status).toBe(403);
     expect(mocks.listCollections).not.toHaveBeenCalled();
     expect(mocks.createCollectionFollowup).not.toHaveBeenCalled();
+  });
+
+  it("requires same-origin and manager-level staff for schedule edits before service execution", async () => {
+    const app = routeApp();
+    authenticateAs(["owner"]);
+    const crossOrigin = await app.request("http://portal.test/api/staff/collections/enrol_a/schedule", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Origin: "http://evil.test" },
+      body: JSON.stringify({ expectedVersion: "version_1234567890abcdef", reason: "Correct schedule", installments: [{ amountPaise: 1000, dueDate: "2026-09-10" }] }),
+    });
+    expect(crossOrigin.status).toBe(403);
+    await expect(crossOrigin.json()).resolves.toMatchObject({ error: { code: "invalid_origin" } });
+
+    authenticateAs(["counsellor"]);
+    const counsellor = await app.request("http://portal.test/api/staff/collections/enrol_a/schedule", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Origin: "http://portal.test" },
+      body: JSON.stringify({ expectedVersion: "version_1234567890abcdef", reason: "Correct schedule", installments: [{ amountPaise: 1000, dueDate: "2026-09-10" }] }),
+    });
+
+    expect(counsellor.status).toBe(403);
+    expect(mocks.updatePaymentSchedule).not.toHaveBeenCalled();
+  });
+
+  it("allows owner schedule edits and returns refreshed collection detail", async () => {
+    const app = routeApp();
+    authenticateAs(["owner"]);
+    const response = await app.request("http://portal.test/api/staff/collections/enrol_a/schedule", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Origin: "http://portal.test" },
+      body: JSON.stringify({ expectedVersion: "version_1234567890abcdef", reason: "Correct schedule", installments: [{ amountPaise: 1000, dueDate: "2026-09-10" }] }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(mocks.updatePaymentSchedule).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ roles: ["owner"] }), "enrol_a", expect.objectContaining({ reason: "Correct schedule" }));
   });
 
   it("allows admission staff and delegates branch and enrolment checks to the service", async () => {

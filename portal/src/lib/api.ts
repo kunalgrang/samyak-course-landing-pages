@@ -838,6 +838,16 @@ const collectionDetailSchema = z.object({
     metadata: z.record(z.string(), z.unknown()),
   })),
   receiptCorrection: z.object({ supported: z.literal(false), message: z.string() }),
+  paymentSchedule: z.object({
+    canManage: z.boolean(),
+    reasonRequired: z.literal(true),
+    version: z.string(),
+    courseDurationMonths: z.number().nullable(),
+    maxInstallments: z.number(),
+    finalAgreedFeePaise: z.number(),
+    totalReceivedPaise: z.number(),
+    fullyPaid: z.boolean(),
+  }),
 });
 
 const collectionFollowupMutationSchema = z.object({
@@ -2007,6 +2017,10 @@ export async function recordCollectionFollowup(enrolmentId: string, input: Recor
   return postJson(`/api/staff/collections/${encodeURIComponent(enrolmentId)}/follow-ups`, input, collectionFollowupMutationSchema);
 }
 
+export async function updateCollectionPaymentSchedule(enrolmentId: string, input: Record<string, unknown>) {
+  return putJson(`/api/staff/collections/${encodeURIComponent(enrolmentId)}/schedule`, input, collectionDetailSchema);
+}
+
 export async function linkAdmissionEnquiryPerson(enquiryId: string, input: { mode: "existing"; personId: string } | { mode: "create"; idempotencyKey: string }) {
   return postJson(`/api/staff/enquiries/${encodeURIComponent(enquiryId)}/person-link`, input, admissionPersonLinkResponseSchema);
 }
@@ -2226,6 +2240,21 @@ async function postForm<T extends z.ZodType>(url: string, body: FormData, schema
 async function patchJson<T extends z.ZodType>(url: string, body: Record<string, unknown>, schema: T): Promise<z.infer<T>> {
   const response = await fetch(url, {
     method: "PATCH",
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const data: unknown = await response.json();
+  if (!response.ok) throw apiError(data);
+  return schema.parse(data);
+}
+
+async function putJson<T extends z.ZodType>(url: string, body: Record<string, unknown>, schema: T): Promise<z.infer<T>> {
+  const response = await fetch(url, {
+    method: "PUT",
     credentials: "same-origin",
     headers: {
       Accept: "application/json",

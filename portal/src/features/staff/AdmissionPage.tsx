@@ -33,8 +33,14 @@ export type AdmissionPayload = {
   locality: Record<string, string>;
   education: Record<string, string | boolean | number | null>;
   course: Record<string, string | boolean>;
-  fee: Record<string, string | number>;
+  fee: Record<string, string | number | AdmissionScheduleRow[]>;
   declarations: Record<string, boolean>;
+};
+
+type AdmissionScheduleRow = {
+  instalmentNumber: number;
+  amountPaise: number;
+  dueDate: string | null;
 };
 
 export const ADMISSION_CONFIGURATION_MISSING_MESSAGE = "Admission settings are incomplete. Ask an owner or administrator to configure admission options.";
@@ -68,6 +74,7 @@ export const ADMISSION_FIELD_LABELS: Record<string, string> = {
   "fee.discountReason": "Discount reason",
   "fee.paymentPlanType": "Payment plan",
   "fee.numberOfInstalments": "Number of instalments",
+  "fee.installmentSchedule": "Payment schedule",
   amountPaise: "Amount received",
   receivedAt: "Received date/time",
   paymentMode: "Payment mode",
@@ -152,6 +159,9 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const allowedPaymentRules = useMemo(() => allowedPaymentRulesForCourse(selectedCourse, configuration.paymentPlanRules), [configuration.paymentPlanRules, selectedCourse]);
   const installmentOptions = useMemo(() => installmentOptionsForCourse(selectedCourse), [selectedCourse]);
   const maxInstallments = maximumInstallmentsForCourse(selectedCourse);
+  const admissionSchedule = useMemo(() => admissionScheduleRows(payload), [payload]);
+  const admissionScheduleTotal = useMemo(() => sumPaise(admissionSchedule), [admissionSchedule]);
+  const admissionScheduleDifference = admissionScheduleTotal - Number(payload.fee.finalAgreedFeePaise || 0);
   const paymentPlanNotice = paymentPlanPolicyMessage(selectedCourse, configuration.paymentPlanRules, allowedPaymentRules);
   const configurationReady = isAdmissionConfigurationReady(configuration);
   const tokenReceipt = financialSummary?.tokenReceipt || null;
@@ -188,6 +198,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         ...current.fee,
         paymentPlanType: "",
         numberOfInstalments: "",
+        installmentSchedule: [],
       },
     }));
     setSaved(INSTALLMENT_SELECTION_RESET_MESSAGE);
@@ -293,7 +304,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
     }
   }
 
-  function setSection(section: keyof AdmissionPayload, key: string, value: string | boolean | number | null) {
+  function setSection(section: keyof AdmissionPayload, key: string, value: string | boolean | number | null | AdmissionScheduleRow[]) {
     if (isLocked) return;
     setPayload((current) => normalizeDependentFields({ ...current, [section]: { ...current[section], [key]: value } } as AdmissionPayload, section, key));
     setSaved(null);
@@ -309,10 +320,32 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
         ...current.fee,
         numberOfInstalments: value ? count : "",
         paymentPlanType: value ? paymentPlanTypeForInstallmentCount(count) : "",
+        installmentSchedule: value ? resizeAdmissionSchedule(admissionScheduleRows(current), count, Number(current.fee.finalAgreedFeePaise || 0)) : [],
       },
     }));
     setSaved(null);
-    clearFieldErrors(["fee.paymentPlanType", "fee.numberOfInstalments"]);
+    clearFieldErrors(["fee.paymentPlanType", "fee.numberOfInstalments", "fee.installmentSchedule"]);
+  }
+
+  function setAdmissionScheduleRow(index: number, patch: Partial<AdmissionScheduleRow>) {
+    if (isLocked) return;
+    setPayload((current) => {
+      const rows = admissionScheduleRows(current).slice();
+      rows[index] = { ...rows[index], ...patch, instalmentNumber: index + 1 };
+      return { ...current, fee: { ...current.fee, installmentSchedule: rows } };
+    });
+    setSaved(null);
+    clearFieldErrors(["fee.installmentSchedule"]);
+  }
+
+  function splitAdmissionScheduleEqually() {
+    if (isLocked) return;
+    setPayload((current) => {
+      const count = Number(current.fee.numberOfInstalments || 1);
+      return { ...current, fee: { ...current.fee, installmentSchedule: equalSchedule(Number(current.fee.finalAgreedFeePaise || 0), count) } };
+    });
+    setSaved(null);
+    clearFieldErrors(["fee.installmentSchedule"]);
   }
 
   function setOption(section: keyof AdmissionPayload, codeKey: string, labelKey: string, category: string, code: string) {
@@ -580,6 +613,16 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
           message={paymentPlanNotice || errorFor("fee.paymentPlanType") || errorFor("fee.numberOfInstalments")}
           onChange={setInstallmentCount}
         />
+        <AdmissionScheduleEditor
+          rows={admissionSchedule}
+          finalFeePaise={Number(payload.fee.finalAgreedFeePaise || 0)}
+          scheduleTotalPaise={admissionScheduleTotal}
+          differencePaise={admissionScheduleDifference}
+          maxInstallments={maxInstallments}
+          error={errorFor("fee.installmentSchedule")}
+          onRowChange={setAdmissionScheduleRow}
+          onSplitEqually={splitAdmissionScheduleEqually}
+        />
         <label>Initial payment expected<input type="number" min="0" value={Number(payload.fee.initialPaymentExpectedPaise || 0) / 100} onChange={(e) => setSection("fee", "initialPaymentExpectedPaise", Math.round(Number(e.target.value || 0) * 100))} /></label>
         {review.ownerApprovalRequired ? <div className="staff-form-actions"><button type="button" className="secondary-button" disabled={isSaving} onClick={() => void handleRequestApproval()}>{approvalStatus || "Request owner approval"}</button></div> : null}
       </AdmissionSection>
@@ -665,7 +708,7 @@ export function defaultAdmissionPayload(detail?: EnquiryDetail | null): Admissio
     locality: { locality: "", city: "", postalCode: "", state: "Maharashtra", residenceType: "", fullAddress: "", homeLocality: "" },
     education: { qualificationLevel: "", qualificationLevelCode: "", qualificationName: "", stream: "", streamCode: "", institutionName: "", currentlyPursuing: false, currentYearSemester: "", passingYear: null, occupationStatus: "", occupationStatusCode: "" },
     course: { courseId: String(detail?.enquiry.course_id || ""), branchId: String(detail?.enquiry.branch_id || ""), trainingMode: "classroom", batchPreference: "", batchPreferenceCode: "", batchId: "", admissionDate: today, joiningDate: today, expectedCompletionDate: "", nsdcPreference: "no", placementSupport: false },
-    fee: { standardFeePaise: 0, finalAgreedFeePaise: 0, discountReason: "", discountReasonCode: "", paymentPlanType: "full", numberOfInstalments: 1, initialPaymentExpectedPaise: 0, feeRemarks: "" },
+    fee: { standardFeePaise: 0, finalAgreedFeePaise: 0, discountReason: "", discountReasonCode: "", paymentPlanType: "full", numberOfInstalments: 1, installmentSchedule: [], initialPaymentExpectedPaise: 0, feeRemarks: "" },
     declarations: {
       informationCorrect: false,
       nameDobMatchesAadhaar: false,
@@ -785,7 +828,7 @@ export function configuredAdmissionCourses(courses: StaffCourse[]) {
 }
 
 export function mergeAdmissionPayload(base: AdmissionPayload, incoming: Record<string, unknown>): AdmissionPayload {
-  return {
+  const merged = {
     ...base,
     ...incoming,
     identity: { ...base.identity, ...((incoming.identity as Record<string, unknown>) || {}) },
@@ -796,6 +839,11 @@ export function mergeAdmissionPayload(base: AdmissionPayload, incoming: Record<s
     fee: { ...base.fee, ...((incoming.fee as Record<string, unknown>) || {}) },
     declarations: { ...base.declarations, ...((incoming.declarations as Record<string, unknown>) || {}) },
   } as AdmissionPayload;
+  const selectedCount = Number(merged.fee.numberOfInstalments || 0);
+  if (!Array.isArray(merged.fee.installmentSchedule) && selectedCount > 0) {
+    merged.fee.installmentSchedule = resizeAdmissionSchedule([], selectedCount, Number(merged.fee.finalAgreedFeePaise || 0));
+  }
+  return merged;
 }
 
 export function mergeDraftResponsePayload(base: AdmissionPayload, incoming: Record<string, unknown>): AdmissionPayload {
@@ -846,6 +894,39 @@ export function paymentPlanTypeForInstallmentCount(count: number) {
   if (count === 2) return "two_instalments";
   if (count === 3) return "three_instalments";
   return "custom";
+}
+
+function admissionScheduleRows(payload: AdmissionPayload): AdmissionScheduleRow[] {
+  const rows = Array.isArray(payload.fee.installmentSchedule) ? payload.fee.installmentSchedule : [];
+  const count = Number(payload.fee.numberOfInstalments || 0);
+  return resizeAdmissionSchedule(rows as AdmissionScheduleRow[], count, Number(payload.fee.finalAgreedFeePaise || 0));
+}
+
+function resizeAdmissionSchedule(rows: AdmissionScheduleRow[], count: number, finalFeePaise: number): AdmissionScheduleRow[] {
+  if (!Number.isInteger(count) || count < 1) return [];
+  const next = rows.slice(0, count).map((row, index) => ({
+    instalmentNumber: index + 1,
+    amountPaise: Number(row.amountPaise || 0),
+    dueDate: row.dueDate || null,
+  }));
+  if (!next.length) next.push({ instalmentNumber: 1, amountPaise: finalFeePaise, dueDate: null });
+  while (next.length < count) next.push({ instalmentNumber: next.length + 1, amountPaise: 0, dueDate: null });
+  return next.map((row, index) => ({ ...row, instalmentNumber: index + 1 }));
+}
+
+function equalSchedule(finalFeePaise: number, count: number): AdmissionScheduleRow[] {
+  if (!Number.isInteger(count) || count < 1 || !Number.isInteger(finalFeePaise) || finalFeePaise <= 0) return resizeAdmissionSchedule([], Math.max(1, count || 1), finalFeePaise);
+  const base = Math.floor(finalFeePaise / count);
+  let remainder = finalFeePaise - base * count;
+  return Array.from({ length: count }, (_item, index) => {
+    const extra = remainder > 0 ? 1 : 0;
+    remainder -= extra;
+    return { instalmentNumber: index + 1, amountPaise: base + extra, dueDate: null };
+  });
+}
+
+function sumPaise(rows: Array<{ amountPaise: number }>) {
+  return rows.reduce((total, row) => total + Number(row.amountPaise || 0), 0);
 }
 
 function normalizeDependentFields(payload: AdmissionPayload, section: keyof AdmissionPayload, key: string) {
@@ -1027,6 +1108,63 @@ export function InstallmentCountField({ path, value, options, maxInstallments, m
       {options.length ? <small>Maximum {maxInstallments}</small> : null}
       <FieldMessage id={errorId} message={message} />
     </label>
+  );
+}
+
+function AdmissionScheduleEditor({
+  rows,
+  finalFeePaise,
+  scheduleTotalPaise,
+  differencePaise,
+  maxInstallments,
+  error,
+  onRowChange,
+  onSplitEqually,
+}: {
+  rows: AdmissionScheduleRow[];
+  finalFeePaise: number;
+  scheduleTotalPaise: number;
+  differencePaise: number;
+  maxInstallments: number;
+  error: string;
+  onRowChange: (index: number, patch: Partial<AdmissionScheduleRow>) => void;
+  onSplitEqually: () => void;
+}) {
+  return (
+    <div className="admission-schedule-editor">
+      <div className="section-heading">
+        <h3>Payment schedule</h3>
+        <button type="button" className="secondary-button" onClick={onSplitEqually}>Split Equally</button>
+      </div>
+      <div className="schedule-editor-table">
+        {rows.map((row, index) => (
+          <div className="schedule-editor-row" key={row.instalmentNumber}>
+            <strong>Instalment {row.instalmentNumber}</strong>
+            <label>
+              <small>Amount</small>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={row.amountPaise ? row.amountPaise / 100 : ""}
+                onChange={(event) => onRowChange(index, { amountPaise: Math.round(Number(event.target.value || 0) * 100) })}
+              />
+            </label>
+            <label>
+              <small>Due date</small>
+              <input type="date" value={row.dueDate || ""} onChange={(event) => onRowChange(index, { dueDate: event.target.value || null })} />
+            </label>
+          </div>
+        ))}
+      </div>
+      <div className="payment-schedule-summary">
+        <span><small>Final Agreed Fee</small><strong>{formatMoney(finalFeePaise)}</strong></span>
+        <span><small>Schedule Total</small><strong>{formatMoney(scheduleTotalPaise)}</strong></span>
+        <span><small>Difference</small><strong>{formatMoney(differencePaise)}</strong></span>
+        <span><small>Instalments</small><strong>{rows.length} / {maxInstallments}</strong></span>
+      </div>
+      <FieldMessage id={admissionFieldErrorId("fee.installmentSchedule")} message={error} />
+    </div>
   );
 }
 

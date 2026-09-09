@@ -983,6 +983,58 @@ describe("confirmAdmission service integration", () => {
     db.close();
   });
 
+  it("preserves custom unequal instalment amounts and due dates through admission confirmation", async () => {
+    const db = testDb();
+    const c = context(db);
+    db.database.exec("update courses set duration_label = '4 months', duration_months = 4, default_fee_paise = 2000000, lowest_acceptable_fee_paise = 2000000 where id = 'course_full_stack'");
+    const payload = validPayload();
+    payload.fee.paymentPlanType = "custom";
+    payload.fee.numberOfInstalments = 4;
+    payload.fee.standardFeePaise = 2000000;
+    payload.fee.finalAgreedFeePaise = 2000000;
+    payload.fee.installmentSchedule = [
+      { instalmentNumber: 1, amountPaise: 600000, dueDate: "2026-08-05" },
+      { instalmentNumber: 2, amountPaise: 600000, dueDate: "2026-09-05" },
+      { instalmentNumber: 3, amountPaise: 500000, dueDate: "2026-10-05" },
+      { instalmentNumber: 4, amountPaise: 300000, dueDate: "2026-11-05" },
+    ];
+    await createAdmissionDraft(c, "enq_first", payload, { tokenAmountPaise: 600000 });
+
+    const confirmed = await expectOk(confirmAdmission(c, staff, "enq_first"));
+    const schedule = all(db, "select instalment_number, amount_paise, due_date from fee_agreement_instalments order by instalment_number");
+
+    expect(confirmed.financialSummary.instalments.map((item) => `${item.instalmentNumber}:${item.requiredPaise}:${item.dueDate}`)).toEqual(["1:600000:2026-08-05", "2:600000:2026-09-05", "3:500000:2026-10-05", "4:300000:2026-11-05"]);
+    expect(schedule.map((item) => `${item.instalment_number}:${item.amount_paise}:${item.due_date}`)).toEqual(["1:600000:2026-08-05", "2:600000:2026-09-05", "3:500000:2026-10-05", "4:300000:2026-11-05"]);
+    db.close();
+  });
+
+  it.each([
+    ["19999 rupees", 1999900],
+    ["20001 rupees", 2000100],
+  ])("rejects a custom instalment schedule totalling %s", async (_label, amountPaise) => {
+    const db = testDb();
+    const c = context(db);
+    db.database.exec("update courses set duration_label = '4 months', duration_months = 4, default_fee_paise = 2000000, lowest_acceptable_fee_paise = 2000000 where id = 'course_full_stack'");
+    const payload = validPayload();
+    payload.fee.paymentPlanType = "custom";
+    payload.fee.numberOfInstalments = 4;
+    payload.fee.standardFeePaise = 2000000;
+    payload.fee.finalAgreedFeePaise = 2000000;
+    payload.fee.installmentSchedule = [
+      { instalmentNumber: 1, amountPaise, dueDate: "2026-08-05" },
+      { instalmentNumber: 2, amountPaise: 0, dueDate: "2026-09-05" },
+      { instalmentNumber: 3, amountPaise: 0, dueDate: "2026-10-05" },
+      { instalmentNumber: 4, amountPaise: 0, dueDate: "2026-11-05" },
+    ];
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
+
+    const confirmed = await confirmAdmission(c, staff, "enq_first");
+
+    expect(confirmed).toMatchObject({ ok: false, status: 400, code: "invalid_admission" });
+    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.installmentSchedule"]?.[0]).toContain("equal the final agreed fee");
+    db.close();
+  });
+
   it("requires matching owner approval for below-floor final fees", async () => {
     const db = testDb();
     const c = context(db);

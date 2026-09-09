@@ -10,6 +10,9 @@ import {
   createCollectionFollowupSchema,
   getCollectionDetail,
   listCollections,
+  PAYMENT_SCHEDULE_MANAGER_ROLES,
+  updatePaymentSchedule,
+  updatePaymentScheduleSchema,
 } from "../lib/collections";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { requireStaffRoles } from "../lib/staff-auth";
@@ -54,6 +57,18 @@ export function registerStaffCollectionRoutes(app: PortalHono) {
     const result = await createCollectionFollowup(c, staff, c.req.param("enrolmentId"), parsed.data);
     if (!result.ok) return collectionError(c, result);
     return jsonPlain(c, result, { status: 201 });
+  });
+
+  app.put("/api/staff/collections/:enrolmentId/schedule", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
+    const staff = await requireStaffRoles(c, PAYMENT_SCHEDULE_MANAGER_ROLES);
+    if (!staff) return forbidden(c);
+    const parsed = updatePaymentScheduleSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_payment_schedule", message: "Please correct the payment schedule.", fieldErrors: fieldErrorsFromIssues(parsed.error.issues) });
+    const result = await updatePaymentSchedule(c, staff, c.req.param("enrolmentId"), parsed.data);
+    if (!result.ok) return collectionError(c, result);
+    return jsonPlain(c, result.detail);
   });
 }
 

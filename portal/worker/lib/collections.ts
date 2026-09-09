@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { ORG_ID, mobileHash } from "./auth-store";
-import { createOpaqueId, decryptText } from "./crypto";
+import { createOpaqueId, decryptText, hmacHex } from "./crypto";
 import type { AppContext } from "./http";
 import { normalizeIndianMobile } from "./mobile";
 import { ADMISSION_STAFF_ROLES, type StaffContext } from "./staff-auth";
+import { maximumInstallmentsForCourse } from "./payment-schedule-policy";
 import { allocateInstalments, financialSummaryFromReceipts, type LedgerInstalment } from "./payments-ledger";
 
 export const COLLECTION_STAFF_ROLES = ADMISSION_STAFF_ROLES;
+export const PAYMENT_SCHEDULE_MANAGER_ROLES = ["owner", "system_admin", "admin"] as const;
 const COLLECTION_SCAN_LIMIT = 500;
 
 const followupTypeSchema = z.enum(["call", "whatsapp", "in_person", "other"]);
@@ -41,6 +43,16 @@ export const createCollectionFollowupSchema = z
     }
   });
 
+export const updatePaymentScheduleSchema = z
+  .object({
+    expectedVersion: z.string().trim().min(16).max(240),
+    reason: z.string().trim().min(3).max(500),
+    installments: z.array(z.object({
+      amountPaise: z.coerce.number().int(),
+      dueDate: isoDateSchema.nullable().optional().or(z.literal("")),
+    })).min(1).max(24),
+  });
+
 export type CollectionQuery = z.infer<typeof collectionQuerySchema>;
 type FollowupInput = z.infer<typeof createCollectionFollowupSchema>;
 
@@ -59,7 +71,9 @@ type EnrolmentCollectionRow = {
   course_id: string;
   course_code: string | null;
   course_name: string;
+  duration_months: number | null;
   fee_agreement_id: string;
+  fee_agreement_updated_at: string;
   final_agreed_fee_paise: number;
   payment_plan_type: string;
   number_of_instalments: number | null;
@@ -109,6 +123,8 @@ type FollowupRow = {
 };
 
 type CollectionFailure = { ok: false; status: number; code: string; message: string; fieldErrors?: Record<string, string[]> };
+type ScheduleInput = z.infer<typeof updatePaymentScheduleSchema>;
+type CollectionDetailResult = Exclude<Awaited<ReturnType<typeof getCollectionDetail>>, CollectionFailure>;
 
 export type CollectionInstallment = LedgerInstalment & {
   label: "Paid" | "Part Paid" | "Due Today" | "Overdue" | "Upcoming" | "Pending";
@@ -150,6 +166,17 @@ export type CollectionItem = {
   whatsappUrl: string | null;
   summary: CollectionSummary;
   flags: string[];
+};
+
+export type PaymentScheduleRevisionState = {
+  canManage: boolean;
+  reasonRequired: true;
+  version: string;
+  courseDurationMonths: number | null;
+  maxInstallments: number;
+  finalAgreedFeePaise: number;
+  totalReceivedPaise: number;
+  fullyPaid: boolean;
 };
 
 export type CollectionFollowup = {
@@ -213,7 +240,7 @@ export async function listCollections(c: AppContext, staff: StaffContext, query:
   };
 }
 
-export async function getCollectionDetail(c: AppContext, staff: StaffContext, enrolmentId: string): Promise<{ ok: true; success: true; today: string; item: CollectionItem; installments: CollectionInstallment[]; receipts: ReturnType<typeof publicReceipt>[]; followups: CollectionFollowup[]; timeline: CollectionTimelineEvent[]; receiptCorrection: { supported: false; message: string } } | CollectionFailure> {
+export async function getCollectionDetail(c: AppContext, staff: StaffContext, enrolmentId: string): Promise<{ ok: true; success: true; today: string; item: CollectionItem; installments: CollectionInstallment[]; receipts: ReturnType<typeof publicReceipt>[]; followups: CollectionFollowup[]; timeline: CollectionTimelineEvent[]; receiptCorrection: { supported: false; message: string }; paymentSchedule: PaymentScheduleRevisionState } | CollectionFailure> {
   const row = await collectionRowByEnrolment(c, staff, enrolmentId);
   if (!row) return { ok: false, status: 404, code: "collection_not_found", message: "Collection record was not found." };
   const today = indiaDate();
@@ -222,10 +249,13 @@ export async function getCollectionDetail(c: AppContext, staff: StaffContext, en
     receiptsByEnrolment(c, [row.enrolment_id]),
     followupsByEnrolment(c, [row.enrolment_id]),
   ]);
-  const item = mapCollectionItem(row, instalments.get(row.fee_agreement_id) || [], receipts.get(row.enrolment_id) || [], followups.get(row.enrolment_id) || [], today);
-  const installmentRows = collectionInstallments(Number(row.final_agreed_fee_paise || 0), instalments.get(row.fee_agreement_id) || [], receipts.get(row.enrolment_id) || [], today);
+  const currentRows = instalments.get(row.fee_agreement_id) || [];
+  const receiptRowsForSchedule = receipts.get(row.enrolment_id) || [];
+  const item = mapCollectionItem(row, currentRows, receiptRowsForSchedule, followups.get(row.enrolment_id) || [], today);
+  const installmentRows = collectionInstallments(Number(row.final_agreed_fee_paise || 0), currentRows, receiptRowsForSchedule, today);
   const receiptRows = (receipts.get(row.enrolment_id) || []).slice().reverse().map(publicReceipt);
   const followupRows = (followups.get(row.enrolment_id) || []).map(publicFollowup);
+  const schedule = await scheduleRevisionState(c, staff, row, currentRows, receiptRowsForSchedule);
   return {
     ok: true,
     success: true,
@@ -239,6 +269,7 @@ export async function getCollectionDetail(c: AppContext, staff: StaffContext, en
       supported: false,
       message: "Receipt amounts and dates are immutable in the current ledger. Use owner review until a reversal workflow exists.",
     },
+    paymentSchedule: schedule,
   };
 }
 
@@ -288,6 +319,83 @@ export async function createCollectionFollowup(c: AppContext, staff: StaffContex
   return { ok: true, success: true, followup: publicFollowup(followup!) };
 }
 
+export async function updatePaymentSchedule(c: AppContext, staff: StaffContext, enrolmentId: string, input: ScheduleInput): Promise<{ ok: true; success: true; detail: CollectionDetailResult } | CollectionFailure> {
+  const row = await collectionRowByEnrolment(c, staff, enrolmentId);
+  if (!row) return { ok: false, status: 404, code: "collection_not_found", message: "Collection record was not found." };
+  if (!(await canManageScheduleForBranch(c, staff, row.branch_id))) {
+    return { ok: false, status: 403, code: "forbidden", message: "Owner or admin access is required to edit payment schedules." };
+  }
+
+  const [instalmentsMap, receiptsMap] = await Promise.all([
+    instalmentsByFee(c, [row.fee_agreement_id]),
+    receiptsByEnrolment(c, [row.enrolment_id]),
+  ]);
+  const currentRows = instalmentsMap.get(row.fee_agreement_id) || [];
+  const receipts = receiptsMap.get(row.enrolment_id) || [];
+  const currentVersion = await paymentScheduleVersion(c, row, currentRows);
+  if (input.expectedVersion !== currentVersion) {
+    return { ok: false, status: 409, code: "stale_schedule", message: "Payment schedule changed. Refresh before saving." };
+  }
+
+  const finalFee = Number(row.final_agreed_fee_paise || 0);
+  const totalReceived = sum(receipts, (receipt) => Number(receipt.amount_paise || 0));
+  if (totalReceived >= finalFee && finalFee > 0) {
+    return { ok: false, status: 409, code: "schedule_settled", message: "Fully settled schedules are read-only." };
+  }
+
+  const next = input.installments.map((item, index) => ({
+    instalmentNumber: index + 1,
+    amountPaise: Number(item.amountPaise || 0),
+    dueDate: typeof item.dueDate === "string" && item.dueDate.trim() ? item.dueDate.trim() : null,
+  }));
+  const validation = validateScheduleRevision(row, currentRows, receipts, next);
+  if (!validation.ok) return validation;
+
+  const now = new Date().toISOString();
+  const before = scheduleSnapshot(currentRows);
+  const after = scheduleSnapshot(next.map((item) => ({ fee_agreement_id: row.fee_agreement_id, instalment_number: item.instalmentNumber, amount_paise: item.amountPaise, due_date: item.dueDate })));
+  const revision = await nextRevisionNumber(c, row.fee_agreement_id);
+  const keepNumbers = next.map((item) => item.instalmentNumber);
+  const statements = [
+    c.env.DB.prepare(
+      `insert into fee_schedule_revisions
+         (id, organisation_id, branch_id, enrolment_id, fee_agreement_id, revision_number, before_json, after_json, reason, created_by_login_account_id, created_at)
+       select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       where exists (select 1 from fee_agreements where id = ? and updated_at = ?)`,
+    ).bind(createOpaqueId("feeschedrev"), ORG_ID, row.branch_id, row.enrolment_id, row.fee_agreement_id, revision, JSON.stringify(before), JSON.stringify(after), input.reason.trim(), staff.loginAccountId, now, row.fee_agreement_id, row.fee_agreement_updated_at),
+    c.env.DB.prepare(
+      `delete from fee_agreement_instalments
+       where fee_agreement_id = ?
+         and instalment_number not in (${placeholders(keepNumbers.length)})
+         and exists (select 1 from fee_agreements where id = ? and updated_at = ?)`,
+    ).bind(row.fee_agreement_id, ...keepNumbers, row.fee_agreement_id, row.fee_agreement_updated_at),
+    ...next.map((item) => c.env.DB.prepare(
+      `insert into fee_agreement_instalments
+         (id, fee_agreement_id, instalment_number, amount_paise, due_date, created_at)
+       select ?, ?, ?, ?, ?, ?
+       where exists (select 1 from fee_agreements where id = ? and updated_at = ?)
+       on conflict(fee_agreement_id, instalment_number) do update set
+         amount_paise = excluded.amount_paise,
+         due_date = excluded.due_date`,
+    ).bind(createOpaqueId("inst"), row.fee_agreement_id, item.instalmentNumber, item.amountPaise, item.dueDate, now, row.fee_agreement_id, row.fee_agreement_updated_at)),
+    c.env.DB.prepare("update fee_agreements set number_of_instalments = ?, payment_plan_type = ?, updated_at = ? where id = ? and updated_at = ?")
+      .bind(next.length, next.length === 1 ? "full" : next.length === 2 ? "two_instalments" : next.length === 3 ? "three_instalments" : "custom", now, row.fee_agreement_id, row.fee_agreement_updated_at),
+    c.env.DB.prepare(
+      `insert into audit_logs
+         (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
+       select ?, ?, ?, ?, ?, 'fee_schedule_revised', 'fee_agreement', ?, ?, ?
+       where exists (select 1 from fee_agreements where id = ? and updated_at = ?)`,
+    ).bind(createOpaqueId("audit"), ORG_ID, row.branch_id, staff.loginAccountId, staff.activePersonId, row.fee_agreement_id, JSON.stringify({ enrolmentId: row.enrolment_id, revisionNumber: revision, installmentCount: next.length }), now, row.fee_agreement_id, now),
+  ];
+  const results = await c.env.DB.batch(statements);
+  if (!changed(results[results.length - 2])) {
+    return { ok: false, status: 409, code: "stale_schedule", message: "Payment schedule changed. Refresh before saving." };
+  }
+  const detail = await getCollectionDetail(c, staff, enrolmentId);
+  if (!detail.ok) return detail;
+  return { ok: true, success: true, detail };
+}
+
 export function collectionInstallments(finalAgreedFeePaise: number, instalments: InstalmentRow[], receipts: ReceiptRow[], today: string): CollectionInstallment[] {
   const schedule = instalments.map((row) => ({ instalmentNumber: Number(row.instalment_number), amountPaise: Number(row.amount_paise), dueDate: row.due_date || null }));
   const totalReceived = receipts.reduce((total, receipt) => total + Number(receipt.amount_paise || 0), 0);
@@ -296,6 +404,98 @@ export function collectionInstallments(finalAgreedFeePaise: number, instalments:
     const daysOverdue = instalment.dueDate && instalment.balancePaise > 0 && instalment.dueDate < today ? daysBetween(instalment.dueDate, today) : 0;
     return { ...instalment, daysOverdue, label: installmentLabel(instalment, today, daysOverdue) };
   });
+}
+
+async function scheduleRevisionState(c: AppContext, staff: StaffContext, row: EnrolmentCollectionRow, instalments: InstalmentRow[], receipts: ReceiptRow[]): Promise<PaymentScheduleRevisionState> {
+  const totalReceivedPaise = sum(receipts, (receipt) => Number(receipt.amount_paise || 0));
+  const finalAgreedFeePaise = Number(row.final_agreed_fee_paise || 0);
+  return {
+    canManage: totalReceivedPaise < finalAgreedFeePaise && await canManageScheduleForBranch(c, staff, row.branch_id),
+    reasonRequired: true,
+    version: await paymentScheduleVersion(c, row, instalments),
+    courseDurationMonths: row.duration_months === null ? null : Number(row.duration_months),
+    maxInstallments: maximumInstallmentsForCourse(row),
+    finalAgreedFeePaise,
+    totalReceivedPaise,
+    fullyPaid: finalAgreedFeePaise > 0 && totalReceivedPaise >= finalAgreedFeePaise,
+  };
+}
+
+async function canManageScheduleForBranch(c: AppContext, staff: StaffContext, branchId: string) {
+  if (!staff.roles.some((role) => PAYMENT_SCHEDULE_MANAGER_ROLES.includes(role as (typeof PAYMENT_SCHEDULE_MANAGER_ROLES)[number]))) return false;
+  const row = await c.env.DB.prepare(
+    `select 1 as ok
+     from login_account_roles
+     join roles on roles.id = login_account_roles.role_id
+     where login_account_roles.login_account_id = ?
+       and roles.organisation_id = ?
+       and roles.code in (${PAYMENT_SCHEDULE_MANAGER_ROLES.map(() => "?").join(", ")})
+       and (login_account_roles.branch_id is null or login_account_roles.branch_id = ?)
+     limit 1`,
+  )
+    .bind(staff.loginAccountId, ORG_ID, ...PAYMENT_SCHEDULE_MANAGER_ROLES, branchId)
+    .first<{ ok: number }>();
+  return Boolean(row);
+}
+
+async function paymentScheduleVersion(c: AppContext, row: EnrolmentCollectionRow, instalments: InstalmentRow[]) {
+  return hmacHex(c.env.SESSION_PEPPER, "payment-schedule-version", JSON.stringify({
+    feeAgreementId: row.fee_agreement_id,
+    updatedAt: row.fee_agreement_updated_at,
+    schedule: scheduleSnapshot(instalments),
+  }));
+}
+
+function validateScheduleRevision(row: EnrolmentCollectionRow, currentRows: InstalmentRow[], receipts: ReceiptRow[], next: Array<{ instalmentNumber: number; amountPaise: number; dueDate: string | null }>): { ok: true } | CollectionFailure {
+  const maxInstallments = maximumInstallmentsForCourse(row);
+  if (next.length < 1) return { ok: false, status: 400, code: "invalid_schedule", message: "At least one instalment is required.", fieldErrors: { installments: ["At least one instalment is required."] } };
+  if (next.length > maxInstallments) return { ok: false, status: 400, code: "invalid_schedule", message: `This course allows a maximum of ${maxInstallments} instalment${maxInstallments === 1 ? "" : "s"}.`, fieldErrors: { installments: [`Maximum ${maxInstallments} instalments allowed.`] } };
+  for (const [index, item] of next.entries()) {
+    if (item.instalmentNumber !== index + 1 || !Number.isInteger(item.amountPaise) || item.amountPaise <= 0) {
+      return { ok: false, status: 400, code: "invalid_schedule", message: "Instalment amounts must be positive.", fieldErrors: { installments: ["Every instalment amount must be greater than zero."] } };
+    }
+    if (item.dueDate && !strictIsoDate(item.dueDate)) return { ok: false, status: 400, code: "invalid_due_date", message: "Enter real due dates.", fieldErrors: { installments: ["Enter real due dates."] } };
+    if (index > 0 && item.dueDate && next[index - 1].dueDate && item.dueDate < next[index - 1].dueDate!) {
+      return { ok: false, status: 400, code: "due_dates_out_of_order", message: "Due dates must not move backwards.", fieldErrors: { installments: ["Due dates must be non-decreasing."] } };
+    }
+  }
+  const total = sum(next, (item) => item.amountPaise);
+  const finalFee = Number(row.final_agreed_fee_paise || 0);
+  if (total !== finalFee) return { ok: false, status: 400, code: "schedule_total_mismatch", message: "Schedule total must equal the final agreed fee exactly.", fieldErrors: { installments: ["Schedule total must equal the final agreed fee exactly."] } };
+
+  const currentAllocated = collectionInstallments(finalFee, currentRows, receipts, indiaDate());
+  for (const current of currentAllocated) {
+    if (current.allocatedReceivedPaise <= 0) continue;
+    const replacement = next[current.instalmentNumber - 1];
+    if (!replacement) {
+      return { ok: false, status: 400, code: "paid_instalment_locked", message: "Paid or partially paid instalments cannot be removed.", fieldErrors: { installments: ["Paid or partially paid instalments cannot be removed."] } };
+    }
+    if (current.status === "paid" && (replacement.amountPaise !== current.requiredPaise || replacement.dueDate !== current.dueDate)) {
+      return { ok: false, status: 400, code: "paid_instalment_locked", message: "Fully paid instalments are locked.", fieldErrors: { installments: [`Instalment ${current.instalmentNumber} is fully paid and locked.`] } };
+    }
+    if (current.status === "part_paid" && replacement.amountPaise < current.allocatedReceivedPaise) {
+      return { ok: false, status: 400, code: "paid_amount_protected", message: "Instalment amount cannot be reduced below already allocated paid amount.", fieldErrors: { installments: [`Instalment ${current.instalmentNumber} cannot be below paid amount.`] } };
+    }
+  }
+  return { ok: true };
+}
+
+function scheduleSnapshot(instalments: InstalmentRow[]) {
+  return instalments
+    .slice()
+    .sort((a, b) => Number(a.instalment_number) - Number(b.instalment_number))
+    .map((item) => ({
+      instalmentNumber: Number(item.instalment_number),
+      amountPaise: Number(item.amount_paise),
+      dueDate: item.due_date || null,
+    }));
+}
+
+async function nextRevisionNumber(c: AppContext, feeAgreementId: string) {
+  const row = await c.env.DB.prepare("select coalesce(max(revision_number), 0) + 1 as revision from fee_schedule_revisions where fee_agreement_id = ?")
+    .bind(feeAgreementId)
+    .first<{ revision: number }>();
+  return Number(row?.revision || 1);
 }
 
 export function agingBucket(daysOverdue: number) {
@@ -408,7 +608,9 @@ function collectionBaseSql() {
             students.id as student_id, students.student_number, students.person_id, students.current_status as student_status,
             coalesce(person_identity_details.official_full_name, people.full_name, people.public_name) as student_name,
             courses.id as course_id, courses.code as course_code, courses.name as course_name,
+            courses.duration_months,
             fee_agreements.id as fee_agreement_id, fee_agreements.final_agreed_fee_paise, fee_agreements.payment_plan_type, fee_agreements.number_of_instalments,
+            fee_agreements.updated_at as fee_agreement_updated_at,
             primary_mobile.id as primary_contact_id,
             case when person_contact_details.contact_id is not null then primary_mobile.last_four else null end as mobile_last_four,
             person_contact_details.is_whatsapp,
@@ -715,6 +917,11 @@ function pushMap<T>(map: Map<string, T[]>, key: string, item: T) {
 
 function sum<T>(items: T[], value: (item: T) => number) {
   return items.reduce((total, item) => total + value(item), 0);
+}
+
+function changed(result: unknown) {
+  const meta = (result as { meta?: { changes?: number; rows_written?: number } } | null)?.meta;
+  return Number(meta?.changes ?? meta?.rows_written ?? 0) > 0;
 }
 
 function escapeLike(value: string) {
