@@ -468,7 +468,7 @@ function CollectionRow({ item, onOpen }: { item: CollectionItem; onOpen: () => v
         <small>Schedule issue</small>
         <span>{scheduleIssue || "None"}</span>
       </div>
-      <button type="button" onClick={onOpen}>Open</button>
+      <button type="button" className="collection-row-action" onClick={onOpen}>Open</button>
     </article>
   );
 }

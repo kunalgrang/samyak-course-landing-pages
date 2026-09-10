@@ -63,6 +63,21 @@ describe("CollectionsPage", () => {
     expect(apiMocks.getCollections).toHaveBeenLastCalledWith(expect.objectContaining({ status: "schedule_attention" }));
   });
 
+  it("keeps each collection row action in the row flow", async () => {
+    await act(async () => {
+      root.render(<CollectionsPage onNavigate={vi.fn()} />);
+    });
+    await act(async () => {});
+
+    const row = container.querySelector(".collection-row");
+    const action = row?.querySelector(".collection-row-action");
+    expect(row).toBeTruthy();
+    expect(action?.textContent).toBe("Open");
+    expect(row?.lastElementChild).toBe(action);
+    expect(action?.tagName).toBe("BUTTON");
+    expect(action?.classList.contains("collection-row-action")).toBe(true);
+  });
+
   it("renders detail warning and separate payment schedule row cells", async () => {
     await act(async () => {
       root.render(<CollectionsPage enrolmentId="enrol_a" onNavigate={vi.fn()} />);
