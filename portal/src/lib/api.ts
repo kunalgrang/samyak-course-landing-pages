@@ -757,6 +757,7 @@ const collectionSummarySchema = z.object({
   promiseAmountPaise: z.number().nullable(),
   promiseMissed: z.boolean(),
   fullyPaid: z.boolean(),
+  scheduleAttentionReason: z.enum(["missing_schedule", "missing_due_date", "invalid_schedule_total"]).nullable(),
 });
 
 const collectionItemSchema = z.object({
@@ -801,9 +802,11 @@ const collectionListSchema = z.object({
     overduePaise: z.number(),
     collectedThisMonthPaise: z.number(),
     promisesDueToday: z.number(),
+    scheduleAttentionCount: z.number(),
   }),
   sections: z.object({
     needsAttention: z.array(collectionItemSchema),
+    scheduleAttention: z.array(collectionItemSchema),
     dueToday: z.array(collectionItemSchema),
     overdue: z.array(collectionItemSchema),
     upcoming: z.array(collectionItemSchema),
@@ -1996,7 +1999,7 @@ export async function recordEnrolmentReceipt(enrolmentId: string, input: Record<
 }
 
 export type CollectionQuery = {
-  status?: "due_today" | "overdue" | "upcoming" | "promise_due" | "no_follow_up" | "paid" | "all";
+  status?: "schedule_attention" | "due_today" | "overdue" | "upcoming" | "promise_due" | "no_follow_up" | "paid" | "all";
   agingBucket?: string;
   branchId?: string;
   courseId?: string;

@@ -113,6 +113,16 @@ describe("staff collection routes", () => {
     expect(mocks.createCollectionFollowup).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ roles: ["counsellor"] }), "enrol_a", expect.objectContaining({ outcome: "contacted" }));
   });
 
+  it("accepts the server-backed schedule attention collection filter", async () => {
+    const app = routeApp();
+    authenticateAs(["counsellor"]);
+
+    const response = await app.request("/api/staff/collections?status=schedule_attention&limit=10&offset=20");
+
+    expect(response.status).toBe(200);
+    expect(mocks.listCollections).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ roles: ["counsellor"] }), expect.objectContaining({ status: "schedule_attention", limit: 10, offset: 20 }));
+  });
+
   it("requires same-origin for follow-up creation before service execution", async () => {
     const app = routeApp();
     authenticateAs(["owner"]);
