@@ -884,13 +884,13 @@
 
 .collection-row {
   display: grid;
-  grid-template-columns: minmax(190px, 1.35fr) minmax(110px, 0.7fr) minmax(120px, 0.75fr) minmax(110px, 0.7fr) minmax(120px, 0.85fr) minmax(130px, 0.85fr) auto;
+  grid-template-columns: minmax(170px, 1.35fr) minmax(0, 0.7fr) minmax(0, 0.75fr) minmax(0, 0.7fr) minmax(0, 0.85fr) minmax(0, 0.9fr) auto;
   gap: 12px;
   align-items: center;
   min-width: 0;
   border: 1px solid var(--color-line);
   border-radius: var(--radius);
-  padding: 14px;
+  padding: 14px 18px 14px 14px;
   background: #fff;
 }
 
@@ -909,6 +909,11 @@
 .collection-row small {
   color: var(--color-muted);
   font-weight: 800;
+}
+
+.collection-row-action {
+  justify-self: end;
+  white-space: nowrap;
 }
 
 .collection-flags {
@@ -2345,6 +2350,7 @@
 
   .collection-row button {
     width: 100%;
+    justify-self: stretch;
   }
 
   .student-directory-row small {
