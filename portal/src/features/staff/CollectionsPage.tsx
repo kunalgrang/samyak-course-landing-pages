@@ -28,6 +28,7 @@ type ScheduleDraftRow = {
 };
 
 const statuses: Array<{ value: NonNullable<CollectionQuery["status"]>; label: string }> = [
+  { value: "schedule_attention", label: "Schedule Attention" },
   { value: "overdue", label: "Overdue" },
   { value: "due_today", label: "Due Today" },
   { value: "upcoming", label: "Upcoming" },
@@ -76,6 +77,7 @@ function CollectionsOverviewPage({ onNavigate }: { onNavigate: (path: AppRoute) 
         <SummaryTile label="Total Outstanding" value={formatMoney(data.overview.totalOutstandingPaise)} emphasis={data.overview.totalOutstandingPaise > 0} />
         <SummaryTile label="Due Today" value={formatMoney(data.overview.dueTodayPaise)} />
         <SummaryTile label="Overdue" value={formatMoney(data.overview.overduePaise)} emphasis={data.overview.overduePaise > 0} />
+        <SummaryTile label="Schedule Attention" value={String(data.overview.scheduleAttentionCount)} subtext="Outstanding accounts missing a usable payment schedule" emphasis={data.overview.scheduleAttentionCount > 0} onClick={() => setQuery((current) => ({ ...current, status: "schedule_attention", offset: 0 }))} />
         <SummaryTile label="Collected This Month" value={formatMoney(data.overview.collectedThisMonthPaise)} />
       </section>
 
@@ -109,6 +111,7 @@ function CollectionsOverviewPage({ onNavigate }: { onNavigate: (path: AppRoute) 
         </div>
       </section>
 
+      <CollectionSection title="Schedule Attention" items={data.sections.scheduleAttention} onNavigate={onNavigate} />
       <CollectionSection title="Needs Attention" items={data.sections.needsAttention} onNavigate={onNavigate} />
       <CollectionSection title="Due Today" items={data.sections.dueToday} onNavigate={onNavigate} />
       <CollectionSection title="Overdue" items={data.sections.overdue} onNavigate={onNavigate} />
@@ -226,6 +229,7 @@ function CollectionDetailPage({ enrolmentId, onNavigate }: { enrolmentId: string
   if (error) return <ErrorState title="Could not load collection" message={error} />;
   if (!detail) return <LoadingState label="Loading collection detail" />;
   const item = detail.item;
+  const scheduleAttentionText = scheduleAttentionMessage(item.summary.scheduleAttentionReason);
 
   return (
     <div className="content-stack staff-enquiries-page collections-page">
@@ -256,9 +260,15 @@ function CollectionDetailPage({ enrolmentId, onNavigate }: { enrolmentId: string
         <p className="staff-empty">{detail.receiptCorrection.message}</p>
       </section>
 
-      {detail.paymentSchedule.canManage || editingSchedule || scheduleMessage ? (
+      {detail.paymentSchedule.canManage || editingSchedule || scheduleMessage || scheduleAttentionText ? (
         <section className="staff-card">
           <div className="section-heading"><h2>Payment Schedule</h2><span>{detail.paymentSchedule.maxInstallments} max</span></div>
+          {scheduleAttentionText ? (
+            <div className="schedule-attention-notice">
+              <strong>Payment schedule needs attention</strong>
+              <span>{scheduleAttentionText}</span>
+            </div>
+          ) : null}
           {scheduleMessage ? <p className="form-message">{scheduleMessage}</p> : null}
           {editingSchedule ? (
             <PaymentScheduleEditor
@@ -433,6 +443,7 @@ function PaymentScheduleEditor({
 }
 
 function CollectionRow({ item, onOpen }: { item: CollectionItem; onOpen: () => void }) {
+  const scheduleIssue = scheduleAttentionLabel(item.summary.scheduleAttentionReason);
   return (
     <article className="collection-row">
       <div>
@@ -453,13 +464,20 @@ function CollectionRow({ item, onOpen }: { item: CollectionItem; onOpen: () => v
         <span>{item.summary.nextDueDate || item.summary.nextFollowUpAt?.slice(0, 10) || "None"}</span>
       </div>
       <div className="collection-flags">{item.flags.map((flag) => <span key={flag}>{flag}</span>)}</div>
+      <div>
+        <small>Schedule issue</small>
+        <span>{scheduleIssue || "None"}</span>
+      </div>
       <button type="button" onClick={onOpen}>Open</button>
     </article>
   );
 }
 
-function SummaryTile({ label, value, emphasis = false }: { label: string; value: string; emphasis?: boolean }) {
-  return <div className={emphasis ? "summary-tile summary-tile--emphasis" : "summary-tile"}><small>{label}</small><strong>{value}</strong></div>;
+function SummaryTile({ label, value, subtext, emphasis = false, onClick }: { label: string; value: string; subtext?: string; emphasis?: boolean; onClick?: () => void }) {
+  const className = `${emphasis ? "summary-tile summary-tile--emphasis" : "summary-tile"}${onClick ? " summary-tile--button" : ""}`;
+  const content = <><small>{label}</small><strong>{value}</strong>{subtext ? <span>{subtext}</span> : null}</>;
+  if (onClick) return <button type="button" className={className} onClick={onClick}>{content}</button>;
+  return <div className={className}>{content}</div>;
 }
 
 function defaultFollowupForm(): FollowupForm {
@@ -492,4 +510,18 @@ function equalAmounts(totalPaise: number, count: number) {
 
 function titleCase(value: string) {
   return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function scheduleAttentionLabel(reason: CollectionItem["summary"]["scheduleAttentionReason"]) {
+  if (reason === "missing_schedule") return "Schedule Missing";
+  if (reason === "missing_due_date") return "Due Date Missing";
+  if (reason === "invalid_schedule_total") return "Schedule Needs Review";
+  return null;
+}
+
+function scheduleAttentionMessage(reason: CollectionItem["summary"]["scheduleAttentionReason"]) {
+  if (reason === "missing_schedule") return "No payment schedule has been configured.";
+  if (reason === "missing_due_date") return "One or more outstanding installments does not have a due date.";
+  if (reason === "invalid_schedule_total") return "The installment total does not match the final agreed fee.";
+  return null;
 }

@@ -731,18 +731,36 @@
   display: grid;
   gap: 6px;
   min-width: 0;
+  width: 100%;
+  text-align: left;
   border: 1px solid var(--color-line);
   border-radius: var(--radius);
   padding: 14px;
   background: #fff;
+  font: inherit;
 }
 
 .summary-tile small,
+.summary-tile span,
 .payment-progress-line span,
 .receipt-card small,
 .instalment-row small {
   color: var(--color-muted);
   font-weight: 800;
+}
+
+.summary-tile span {
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.summary-tile--button {
+  cursor: pointer;
+}
+
+.summary-tile--button:hover {
+  border-color: rgba(13, 148, 136, 0.36);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.08);
 }
 
 .summary-tile strong,
@@ -866,7 +884,7 @@
 
 .collection-row {
   display: grid;
-  grid-template-columns: minmax(190px, 1.35fr) minmax(110px, 0.7fr) minmax(120px, 0.75fr) minmax(110px, 0.7fr) minmax(120px, 0.9fr) auto;
+  grid-template-columns: minmax(190px, 1.35fr) minmax(110px, 0.7fr) minmax(120px, 0.75fr) minmax(110px, 0.7fr) minmax(120px, 0.85fr) minmax(130px, 0.85fr) auto;
   gap: 12px;
   align-items: center;
   min-width: 0;
@@ -920,6 +938,22 @@
   justify-self: start;
 }
 
+.schedule-attention-notice {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid rgba(217, 119, 6, 0.32);
+  border-radius: var(--radius);
+  padding: 12px;
+  color: #7c2d12;
+  background: #fffbeb;
+}
+
+.schedule-attention-notice span {
+  color: #92400e;
+  font-weight: 700;
+}
+
 .admission-schedule-editor,
 .payment-schedule-form,
 .schedule-editor-table,
@@ -955,7 +989,7 @@
 }
 
 .payment-schedule-row {
-  grid-template-columns: minmax(112px, 0.85fr) minmax(126px, 1fr) minmax(136px, 1fr) minmax(92px, 0.7fr) minmax(104px, 0.8fr) minmax(98px, 0.75fr) auto;
+  grid-template-columns: minmax(104px, 0.72fr) minmax(124px, 0.86fr) minmax(144px, 0.92fr) minmax(92px, 0.62fr) minmax(104px, 0.68fr) minmax(112px, 0.72fr) minmax(86px, auto);
 }
 
 .schedule-editor-row label,
@@ -997,6 +1031,22 @@
 .payment-schedule-form textarea {
   min-height: 92px;
   resize: vertical;
+}
+
+.payment-schedule-row input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.payment-schedule-row > strong,
+.payment-schedule-row > span,
+.payment-schedule-row button {
+  min-width: 0;
+}
+
+.payment-schedule-row button {
+  align-self: end;
 }
 
 .notification-toast {

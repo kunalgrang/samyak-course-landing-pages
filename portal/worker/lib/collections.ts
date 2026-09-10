@@ -10,13 +10,14 @@ import { allocateInstalments, financialSummaryFromReceipts, type LedgerInstalmen
 export const COLLECTION_STAFF_ROLES = ADMISSION_STAFF_ROLES;
 export const PAYMENT_SCHEDULE_MANAGER_ROLES = ["owner", "system_admin", "admin"] as const;
 const COLLECTION_SCAN_LIMIT = 500;
+const SCHEDULE_ATTENTION_REASONS = ["missing_schedule", "missing_due_date", "invalid_schedule_total"] as const;
 
 const followupTypeSchema = z.enum(["call", "whatsapp", "in_person", "other"]);
 const followupOutcomeSchema = z.enum(["contacted", "not_reachable", "promised_payment", "paid_or_receipt_pending", "dispute_or_query", "follow_up_later"]);
 const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(strictIsoDate, "Enter a real date.");
 
 export const collectionQuerySchema = z.object({
-  status: z.enum(["due_today", "overdue", "upcoming", "promise_due", "no_follow_up", "paid", "all"]).default("overdue"),
+  status: z.enum(["schedule_attention", "due_today", "overdue", "upcoming", "promise_due", "no_follow_up", "paid", "all"]).default("overdue"),
   agingBucket: z.enum(["1-7", "8-15", "16-30", "31-60", "60+"]).optional().or(z.literal("")),
   branchId: z.string().trim().max(120).optional().or(z.literal("")),
   courseId: z.string().trim().max(120).optional().or(z.literal("")),
@@ -125,6 +126,7 @@ type FollowupRow = {
 type CollectionFailure = { ok: false; status: number; code: string; message: string; fieldErrors?: Record<string, string[]> };
 type ScheduleInput = z.infer<typeof updatePaymentScheduleSchema>;
 type CollectionDetailResult = Exclude<Awaited<ReturnType<typeof getCollectionDetail>>, CollectionFailure>;
+export type ScheduleAttentionReason = (typeof SCHEDULE_ATTENTION_REASONS)[number];
 
 export type CollectionInstallment = LedgerInstalment & {
   label: "Paid" | "Part Paid" | "Due Today" | "Overdue" | "Upcoming" | "Pending";
@@ -147,6 +149,7 @@ export type CollectionSummary = {
   promiseAmountPaise: number | null;
   promiseMissed: boolean;
   fullyPaid: boolean;
+  scheduleAttentionReason: ScheduleAttentionReason | null;
 };
 
 export type CollectionItem = {
@@ -204,19 +207,21 @@ export type CollectionTimelineEvent = {
 export async function listCollections(c: AppContext, staff: StaffContext, query: CollectionQuery) {
   const today = indiaDate();
   const monthStart = `${today.slice(0, 7)}-01`;
-  const base = await collectionRows(c, staff, query, Math.max(query.limit + query.offset + 1, COLLECTION_SCAN_LIMIT));
+  const serverFiltered = query.status === "schedule_attention";
+  const base = await collectionRows(c, staff, query, serverFiltered ? query.limit + 1 : Math.max(query.limit + query.offset + 1, COLLECTION_SCAN_LIMIT), serverFiltered ? query.offset : 0, today);
   const feeIds = base.map((row) => row.fee_agreement_id);
   const enrolmentIds = base.map((row) => row.enrolment_id);
-  const [instalments, receipts, followups, collectedThisMonth] = await Promise.all([
+  const [instalments, receipts, followups, collectedThisMonth, total] = await Promise.all([
     instalmentsByFee(c, feeIds),
     receiptsByEnrolment(c, enrolmentIds),
     followupsByEnrolment(c, enrolmentIds),
     collectedSince(c, staff, monthStart),
+    serverFiltered ? collectionCount(c, staff, query, today) : Promise.resolve<number | null>(null),
   ]);
   const overview = await overviewMetrics(c, staff, today, monthStart, collectedThisMonth);
   const allItems = base.map((row) => mapCollectionItem(row, instalments.get(row.fee_agreement_id) || [], receipts.get(row.enrolment_id) || [], followups.get(row.enrolment_id) || [], today));
-  const filtered = allItems.filter((item) => matchesOperationalFilter(item, query.status, query.agingBucket || ""));
-  const page = filtered.slice(query.offset, query.offset + query.limit);
+  const filtered = serverFiltered ? allItems.slice(0, query.limit) : allItems.filter((item) => matchesOperationalFilter(item, query.status, query.agingBucket || "", today));
+  const page = serverFiltered ? filtered : filtered.slice(query.offset, query.offset + query.limit);
   const overviewItems = allItems.filter((item) => !item.summary.fullyPaid);
   return {
     success: true as const,
@@ -225,12 +230,13 @@ export async function listCollections(c: AppContext, staff: StaffContext, query:
     pagination: {
       limit: query.limit,
       offset: query.offset,
-      hasMore: filtered.length > query.offset + query.limit || base.length > query.limit + query.offset,
-      total: filtered.length,
+      hasMore: serverFiltered ? base.length > query.limit : filtered.length > query.offset + query.limit || base.length > query.limit + query.offset,
+      total: total ?? filtered.length,
     },
     overview,
     sections: {
       needsAttention: overviewItems.filter((item) => item.flags.length > 0).slice(0, 8),
+      scheduleAttention: overviewItems.filter((item) => item.summary.scheduleAttentionReason).slice(0, 8),
       dueToday: overviewItems.filter((item) => item.summary.dueTodayPaise > 0).slice(0, 8),
       overdue: overviewItems.filter((item) => item.summary.overduePaise > 0).sort((a, b) => b.summary.daysOverdue - a.summary.daysOverdue).slice(0, 8),
       upcoming: overviewItems.filter((item) => item.summary.nextDueDate && item.summary.nextDueDate > today && item.summary.nextDueDate <= addIndiaDays(today, 7)).slice(0, 8),
@@ -514,6 +520,7 @@ export function indiaDate(now = new Date()) {
 function mapCollectionItem(row: EnrolmentCollectionRow, instalments: InstalmentRow[], receipts: ReceiptRow[], followups: FollowupRow[], today: string): CollectionItem {
   const installments = collectionInstallments(Number(row.final_agreed_fee_paise || 0), instalments, receipts, today);
   const summary = financialSummaryFromReceipts(Number(row.final_agreed_fee_paise || 0), instalments.map((item) => ({ instalmentNumber: Number(item.instalment_number), amountPaise: Number(item.amount_paise), dueDate: item.due_date || null })), receipts);
+  const scheduleAttentionReason = scheduleAttentionReasonFor(Number(row.final_agreed_fee_paise || 0), installments, instalments, summary.overallBalancePaise);
   const latestFollowup = followups[0] || null;
   const latestPromise = latestFollowup?.outcome === "promised_payment" && latestFollowup.promised_payment_date ? latestFollowup : null;
   const nextFollowUpAt = latestFollowup?.next_follow_up_at || null;
@@ -538,6 +545,7 @@ function mapCollectionItem(row: EnrolmentCollectionRow, instalments: InstalmentR
     promiseAmountPaise: latestPromise?.promised_amount_paise || null,
     promiseMissed: Boolean(promiseDate && promiseDate < today && summary.overallBalancePaise > 0),
     fullyPaid: summary.fullyPaid,
+    scheduleAttentionReason,
   };
   return {
     enrolmentId: row.enrolment_id,
@@ -559,10 +567,28 @@ function mapCollectionItem(row: EnrolmentCollectionRow, instalments: InstalmentR
   };
 }
 
-async function collectionRows(c: AppContext, staff: StaffContext, query: CollectionQuery, limit: number) {
+async function collectionRows(c: AppContext, staff: StaffContext, query: CollectionQuery, limit: number, offset: number, today: string) {
   const bindings: unknown[] = [ORG_ID, ORG_ID, ORG_ID, ORG_ID];
   let where = "students.organisation_id = ? and people.organisation_id = ? and courses.organisation_id = ? and branches.organisation_id = ? and people.status != 'archived' and fee_agreements.status = 'active'";
-  where += branchScopeSql(staff, "enrolments.branch_id", bindings);
+  where += await collectionFilterSql(c, staff, query, bindings, today);
+  const rows = await c.env.DB.prepare(`${collectionBaseSql()} where ${where} order by enrolments.created_at desc limit ? offset ?`)
+    .bind(...bindings, limit, offset)
+    .all<EnrolmentCollectionRow>();
+  return hydrateContactUrls(c, rows.results || []);
+}
+
+async function collectionCount(c: AppContext, staff: StaffContext, query: CollectionQuery, today: string) {
+  const bindings: unknown[] = [ORG_ID, ORG_ID, ORG_ID, ORG_ID];
+  let where = "students.organisation_id = ? and people.organisation_id = ? and courses.organisation_id = ? and branches.organisation_id = ? and people.status != 'archived' and fee_agreements.status = 'active'";
+  where += await collectionFilterSql(c, staff, query, bindings, today);
+  const row = await c.env.DB.prepare(`select count(distinct scoped_collections.enrolment_id) as count from (${collectionBaseSql()} where ${where}) scoped_collections`)
+    .bind(...bindings)
+    .first<{ count: number }>();
+  return Number(row?.count || 0);
+}
+
+async function collectionFilterSql(c: AppContext, staff: StaffContext, query: CollectionQuery, bindings: unknown[], today: string) {
+  let where = branchScopeSql(staff, "enrolments.branch_id", bindings);
   if (query.branchId) {
     where += " and enrolments.branch_id = ?";
     bindings.push(query.branchId);
@@ -586,10 +612,8 @@ async function collectionRows(c: AppContext, staff: StaffContext, query: Collect
     bindings.push(like, like, like, like, like);
     if (hash) bindings.push(hash);
   }
-  const rows = await c.env.DB.prepare(`${collectionBaseSql()} where ${where} order by enrolments.created_at desc limit ?`)
-    .bind(...bindings, limit)
-    .all<EnrolmentCollectionRow>();
-  return hydrateContactUrls(c, rows.results || []);
+  if (query.status === "schedule_attention") where += scheduleAttentionWhereSql(today);
+  return where;
 }
 
 async function collectionRowByEnrolment(c: AppContext, staff: StaffContext, enrolmentId: string) {
@@ -774,12 +798,31 @@ async function overviewMetrics(c: AppContext, staff: StaffContext, today: string
        ${branchScopeSql(staff, "enrolments.branch_id", promiseBindings)}`,
   ).bind(...promiseBindings).first<{ count: number | null }>();
 
+  const scheduleAttentionBindings: unknown[] = [ORG_ID, ORG_ID];
+  const scheduleAttention = await c.env.DB.prepare(
+    `select count(distinct fee_agreements.enrolment_id) as count
+     from fee_agreements
+     join enrolments on enrolments.id = fee_agreements.enrolment_id
+     join students on students.id = enrolments.student_id and students.organisation_id = ?
+     left join (
+       select fee_agreement_id, sum(amount_paise) as total_received_paise
+       from receipts
+       where organisation_id = ? and status = 'recorded'
+       group by fee_agreement_id
+     ) receipt_totals on receipt_totals.fee_agreement_id = fee_agreements.id
+     where fee_agreements.status = 'active'
+       and fee_agreements.final_agreed_fee_paise > coalesce(receipt_totals.total_received_paise, 0)
+       and ${scheduleAttentionPredicateSql("fee_agreements", "coalesce(receipt_totals.total_received_paise, 0)")}
+       ${branchScopeSql(staff, "enrolments.branch_id", scheduleAttentionBindings)}`,
+  ).bind(...scheduleAttentionBindings).first<{ count: number | null }>();
+
   return {
     totalOutstandingPaise: Math.max(0, Number(balance?.outstanding || 0)),
     dueTodayPaise: Number(due?.due_today || 0),
     overduePaise: Number(due?.overdue || 0),
     collectedThisMonthPaise,
     promisesDueToday: Number(promises?.count || 0),
+    scheduleAttentionCount: Number(scheduleAttention?.count || 0),
   };
 }
 
@@ -796,16 +839,73 @@ function branchScopeSql(staff: StaffContext, column: string, bindings: unknown[]
   )`;
 }
 
-function matchesOperationalFilter(item: CollectionItem, status: string, aging: string) {
+function matchesOperationalFilter(item: CollectionItem, status: string, aging: string, today: string) {
   if (aging && item.summary.agingBucket !== aging) return false;
   if (status === "all") return true;
+  if (status === "schedule_attention") return Boolean(item.summary.scheduleAttentionReason);
   if (status === "due_today") return item.summary.dueTodayPaise > 0;
   if (status === "overdue") return item.summary.overduePaise > 0;
-  if (status === "upcoming") return Boolean(item.summary.nextDueDate && item.summary.nextDueDate > indiaDate() && item.summary.nextDueDate <= addIndiaDays(indiaDate(), 7));
-  if (status === "promise_due") return item.summary.promiseDate === indiaDate() || item.summary.promiseMissed;
+  if (status === "upcoming") return Boolean(item.summary.nextDueDate && item.summary.nextDueDate > today && item.summary.nextDueDate <= addIndiaDays(today, 7));
+  if (status === "promise_due") return item.summary.promiseDate === today || item.summary.promiseMissed;
   if (status === "no_follow_up") return item.summary.outstandingPaise > 0 && !item.summary.lastFollowUpAt;
   if (status === "paid") return item.summary.fullyPaid;
   return true;
+}
+
+function scheduleAttentionReasonFor(finalAgreedFeePaise: number, installments: CollectionInstallment[], instalmentRows: InstalmentRow[], outstandingPaise: number): ScheduleAttentionReason | null {
+  if (outstandingPaise <= 0) return null;
+  if (!instalmentRows.length) return "missing_schedule";
+  if (sum(instalmentRows, (item) => Number(item.amount_paise || 0)) !== finalAgreedFeePaise) return "invalid_schedule_total";
+  if (installments.some((item) => item.balancePaise > 0 && !item.dueDate)) return "missing_due_date";
+  return null;
+}
+
+function scheduleAttentionWhereSql(today: string) {
+  return ` and fee_agreements.final_agreed_fee_paise > (
+      select coalesce(sum(receipts.amount_paise), 0)
+      from receipts
+      where receipts.organisation_id = '${ORG_ID}'
+        and receipts.status = 'recorded'
+        and receipts.fee_agreement_id = fee_agreements.id
+    )
+        and ${scheduleAttentionPredicateSql("fee_agreements", `(
+      select coalesce(sum(receipts.amount_paise), 0)
+      from receipts
+      where receipts.organisation_id = '${ORG_ID}'
+        and receipts.status = 'recorded'
+        and receipts.fee_agreement_id = fee_agreements.id
+    )`)}`;
+}
+
+function scheduleAttentionPredicateSql(feeAlias: string, receivedSql: string) {
+  return `(
+    not exists (
+      select 1
+      from fee_agreement_instalments schedule_exists
+      where schedule_exists.fee_agreement_id = ${feeAlias}.id
+    )
+    or coalesce((
+      select sum(schedule_total.amount_paise)
+      from fee_agreement_instalments schedule_total
+      where schedule_total.fee_agreement_id = ${feeAlias}.id
+    ), 0) <> ${feeAlias}.final_agreed_fee_paise
+    or exists (
+      select 1
+      from (
+        select active_schedule.due_date,
+               active_schedule.amount_paise,
+               coalesce(sum(active_schedule.amount_paise) over (
+                 partition by active_schedule.fee_agreement_id
+                 order by active_schedule.instalment_number
+                 rows between unbounded preceding and 1 preceding
+               ), 0) as prior_due
+        from fee_agreement_instalments active_schedule
+        where active_schedule.fee_agreement_id = ${feeAlias}.id
+      ) active_instalments
+      where active_instalments.due_date is null
+        and max(0, active_instalments.amount_paise - min(active_instalments.amount_paise, max(0, (${receivedSql}) - active_instalments.prior_due))) > 0
+    )
+  )`;
 }
 
 function collectionFlags(summary: CollectionSummary, latestFollowup: FollowupRow | null, today: string) {

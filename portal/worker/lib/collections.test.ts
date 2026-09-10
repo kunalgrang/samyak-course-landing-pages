@@ -155,6 +155,165 @@ describe("Payments / Collections V2", () => {
     }
   });
 
+  it("flags outstanding enrolments with zero instalments as schedule attention", async () => {
+    const db = seededDb();
+    try {
+      db.database.exec("delete from fee_agreement_instalments where fee_agreement_id = 'fee_b'; insert into receipts (id, organisation_id, branch_id, receipt_number, receipt_year, person_id, student_id, enrolment_id, fee_agreement_id, amount_paise, received_at, payment_mode, status, created_by_login_account_id, idempotency_key, payload_fingerprint, created_at, updated_at) values ('receipt_b1', 'org_samyak', 'branch_sion', 'RCP-SION-2026-000003', 2026, 'person_b', 'student_b', 'enrol_b', 'fee_b', 500000, '2026-09-02T09:00:00.000Z', 'cash', 'recorded', 'acct_owner', 'idem_b1', 'fp_b1', '2026-09-02T09:00:00.000Z', '2026-09-02T09:00:00.000Z');");
+
+      const result = await listCollections(context(db), ownerStaff(), { status: "schedule_attention", limit: 25, offset: 0 });
+
+      expect(result.overview.scheduleAttentionCount).toBe(1);
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toMatchObject({ enrolmentId: "enrol_b", summary: { outstandingPaise: 500000, scheduleAttentionReason: "missing_schedule" } });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("flags active unpaid and partially paid instalments with missing due dates", async () => {
+    const db = seededDb();
+    try {
+      db.database.exec("update fee_agreement_instalments set due_date = null where fee_agreement_id = 'fee_b' and instalment_number = 1;");
+      const unpaid = await getCollectionDetail(context(db), ownerStaff(), "enrol_b");
+      expect(unpaid.ok && unpaid.item.summary.scheduleAttentionReason).toBe("missing_due_date");
+
+      db.database.exec("insert into receipts (id, organisation_id, branch_id, receipt_number, receipt_year, person_id, student_id, enrolment_id, fee_agreement_id, amount_paise, received_at, payment_mode, status, created_by_login_account_id, idempotency_key, payload_fingerprint, created_at, updated_at) values ('receipt_b_partial', 'org_samyak', 'branch_sion', 'RCP-SION-2026-000004', 2026, 'person_b', 'student_b', 'enrol_b', 'fee_b', 100000, '2026-09-02T09:00:00.000Z', 'cash', 'recorded', 'acct_owner', 'idem_b_partial', 'fp_b_partial', '2026-09-02T09:00:00.000Z', '2026-09-02T09:00:00.000Z');");
+      const partial = await getCollectionDetail(context(db), ownerStaff(), "enrol_b");
+      expect(partial.ok && partial.item.summary.scheduleAttentionReason).toBe("missing_due_date");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("ignores fully paid blank historical dates when remaining instalments are dated", async () => {
+    const db = seededDb();
+    try {
+      db.database.exec("update fee_agreement_instalments set due_date = null where fee_agreement_id = 'fee_a' and instalment_number = 1;");
+
+      const detail = await getCollectionDetail(context(db), ownerStaff(), "enrol_a");
+
+      expect(detail.ok && detail.item.summary.scheduleAttentionReason).toBeNull();
+      expect(detail.ok && detail.item.summary.overduePaise).toBe(300000);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("flags malformed schedule totals and removes attention after correction", async () => {
+    const db = seededDb();
+    try {
+      db.database.exec("update fee_agreement_instalments set amount_paise = 400000 where fee_agreement_id = 'fee_b' and instalment_number = 2;");
+      const malformed = await getCollectionDetail(context(db), ownerStaff(), "enrol_b");
+      expect(malformed.ok && malformed.item.summary.scheduleAttentionReason).toBe("invalid_schedule_total");
+
+      if (!malformed.ok) throw new Error(malformed.message);
+      await expect(updatePaymentSchedule(context(db), ownerStaff(), "enrol_b", {
+        expectedVersion: malformed.paymentSchedule.version,
+        reason: "Correct malformed historical schedule",
+        installments: [
+          { amountPaise: 300000, dueDate: "2026-09-08" },
+          { amountPaise: 700000, dueDate: "2026-09-15" },
+        ],
+      })).resolves.toMatchObject({ ok: true, detail: { item: { summary: { scheduleAttentionReason: null } } } });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps valid due today, overdue, and upcoming schedules out of schedule attention", async () => {
+    const db = seededDb();
+    try {
+      seedValidUpcomingEnrolment(db);
+      const c = context(db);
+
+      const dueToday = await listCollections(c, ownerStaff(), { status: "due_today", limit: 25, offset: 0 });
+      const overdue = await listCollections(c, ownerStaff(), { status: "overdue", limit: 25, offset: 0 });
+      const upcoming = await listCollections(c, ownerStaff(), { status: "upcoming", limit: 25, offset: 0 });
+      const attention = await listCollections(c, ownerStaff(), { status: "schedule_attention", limit: 25, offset: 0 });
+
+      expect(dueToday.items.map((item) => item.enrolmentId)).toEqual(["enrol_b"]);
+      expect(overdue.items.map((item) => item.enrolmentId)).toEqual(["enrol_a"]);
+      expect(upcoming.items.map((item) => item.enrolmentId)).toEqual(["enrol_future"]);
+      expect(attention.items).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not create fake due dates for missing schedules or mix schedule attention into overdue", async () => {
+    const db = seededDb();
+    try {
+      db.database.exec("delete from fee_agreement_instalments where fee_agreement_id = 'fee_b';");
+
+      const detail = await getCollectionDetail(context(db), ownerStaff(), "enrol_b");
+      const overdue = await listCollections(context(db), ownerStaff(), { status: "overdue", limit: 25, offset: 0 });
+
+      expect(detail.ok && detail.installments).toMatchObject([{ dueDate: null, label: "Pending" }]);
+      expect(overdue.items.map((item) => item.enrolmentId)).toEqual(["enrol_a"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("paginates schedule attention on the server and keeps branch scope", async () => {
+    const db = seededDb();
+    try {
+      seedScheduleAttentionEnrolment(db, "c", "branch_sion", "2026-09-03T00:00:00.000Z");
+      seedScheduleAttentionEnrolment(db, "d", "branch_sion", "2026-09-04T00:00:00.000Z");
+      seedScheduleAttentionEnrolment(db, "e", "branch_wadala", "2026-09-05T00:00:00.000Z");
+
+      const first = await listCollections(context(db), ownerStaff(), { status: "schedule_attention", limit: 2, offset: 0 });
+      const second = await listCollections(context(db), ownerStaff(), { status: "schedule_attention", limit: 2, offset: 2 });
+      const sion = await listCollections(context(db), staffForRole("counsellor", "acct_counsellor"), { status: "schedule_attention", limit: 10, offset: 0 });
+
+      expect(first.pagination).toMatchObject({ total: 3, hasMore: true });
+      expect(first.items.map((item) => item.enrolmentId)).toEqual(["enrol_e", "enrol_d"]);
+      expect(second.items.map((item) => item.enrolmentId)).toEqual(["enrol_c"]);
+      expect(sion.items.map((item) => item.enrolmentId)).toEqual(["enrol_d", "enrol_c"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps schedule attention overview, filtered total, search, and duplicate-prone rows consistent", async () => {
+    const db = seededDb();
+    try {
+      db.database.exec(`
+        update fee_agreement_instalments set due_date = null where fee_agreement_id = 'fee_b' and instalment_number = 2;
+        insert into receipts (id, organisation_id, branch_id, receipt_number, receipt_year, person_id, student_id, enrolment_id, fee_agreement_id, amount_paise, received_at, payment_mode, status, created_by_login_account_id, idempotency_key, payload_fingerprint, created_at, updated_at)
+        values
+          ('receipt_b_multi_1', 'org_samyak', 'branch_sion', 'RCP-SION-2026-000006', 2026, 'person_b', 'student_b', 'enrol_b', 'fee_b', 100000, '2026-09-02T09:00:00.000Z', 'cash', 'recorded', 'acct_owner', 'idem_b_multi_1', 'fp_b_multi_1', '2026-09-02T09:00:00.000Z', '2026-09-02T09:00:00.000Z'),
+          ('receipt_b_multi_2', 'org_samyak', 'branch_sion', 'RCP-SION-2026-000007', 2026, 'person_b', 'student_b', 'enrol_b', 'fee_b', 50000, '2026-09-03T09:00:00.000Z', 'upi', 'recorded', 'acct_owner', 'idem_b_multi_2', 'fp_b_multi_2', '2026-09-03T09:00:00.000Z', '2026-09-03T09:00:00.000Z');
+      `);
+
+      const allAttention = await listCollections(context(db), ownerStaff(), { status: "schedule_attention", limit: 10, offset: 0 });
+      const searched = await listCollections(context(db), ownerStaff(), { status: "schedule_attention", search: "Ravi", limit: 10, offset: 0 });
+
+      expect(allAttention.overview.scheduleAttentionCount).toBe(1);
+      expect(allAttention.pagination.total).toBe(allAttention.overview.scheduleAttentionCount);
+      expect(allAttention.items.map((item) => item.enrolmentId)).toEqual(["enrol_b"]);
+      expect(searched.pagination.total).toBe(1);
+      expect(searched.items.map((item) => item.studentNumber)).toEqual(["SYK-SION-0002"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("settled enrolments are not schedule attention even with blank due dates", async () => {
+    const db = seededDb();
+    try {
+      db.database.exec("update fee_agreement_instalments set due_date = null where fee_agreement_id = 'fee_b'; insert into receipts (id, organisation_id, branch_id, receipt_number, receipt_year, person_id, student_id, enrolment_id, fee_agreement_id, amount_paise, received_at, payment_mode, status, created_by_login_account_id, idempotency_key, payload_fingerprint, created_at, updated_at) values ('receipt_b_full', 'org_samyak', 'branch_sion', 'RCP-SION-2026-000005', 2026, 'person_b', 'student_b', 'enrol_b', 'fee_b', 1000000, '2026-09-02T09:00:00.000Z', 'cash', 'recorded', 'acct_owner', 'idem_b_full', 'fp_b_full', '2026-09-02T09:00:00.000Z', '2026-09-02T09:00:00.000Z');");
+
+      const result = await listCollections(context(db), ownerStaff(), { status: "schedule_attention", limit: 25, offset: 0 });
+      const detail = await getCollectionDetail(context(db), ownerStaff(), "enrol_b");
+
+      expect(result.items).toEqual([]);
+      expect(detail.ok && detail.item.summary.scheduleAttentionReason).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
   it("keeps other organisation fee agreements out of owner overview aggregates", async () => {
     const db = seededDb();
     try {
@@ -512,6 +671,34 @@ function seedOtherOrgCollectionData(db: SqliteD1) {
     values ('inst_other_1', 'fee_other', 1, 9000000, '2026-09-08', '${NOW}');
     insert into receipts (id, organisation_id, branch_id, receipt_number, receipt_year, person_id, student_id, enrolment_id, fee_agreement_id, amount_paise, received_at, payment_mode, status, created_by_login_account_id, idempotency_key, payload_fingerprint, created_at, updated_at)
     values ('receipt_other', 'org_other', 'branch_other', 'RCP-OTH-2026-000001', 2026, 'person_other', 'student_other', 'enrol_other', 'fee_other', 1000000, '2026-09-02T09:00:00.000Z', 'cash', 'recorded', 'acct_owner', 'idem_other', 'fp_other', '2026-09-02T09:00:00.000Z', '2026-09-02T09:00:00.000Z');
+  `);
+}
+
+function seedScheduleAttentionEnrolment(db: SqliteD1, suffix: string, branchId: string, createdAt: string) {
+  db.database.exec(`
+    insert into people (id, organisation_id, home_branch_id, full_name, public_name, date_of_birth, status, created_at, updated_at)
+    values ('person_${suffix}', 'org_samyak', '${branchId}', 'Student ${suffix}', 'Student ${suffix}', null, 'active', '${NOW}', '${NOW}');
+    insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at)
+    values ('student_${suffix}', 'org_samyak', 'person_${suffix}', '${branchId}', 'SYK-${suffix}', ${suffix.charCodeAt(0)}, '2026-08-01', 'active', 'active', '${NOW}', '${NOW}');
+    insert into enrolments (id, student_id, branch_id, course_id, enrolment_number, training_mode, admission_date, joining_date, status, nsdc_preference, created_at, updated_at)
+    values ('enrol_${suffix}', 'student_${suffix}', '${branchId}', 'course_excel', 'ENR-${suffix}', 'classroom', '2026-08-01', '2026-08-02', 'confirmed', 'no', '${createdAt}', '${NOW}');
+    insert into fee_agreements (id, enrolment_id, standard_fee_paise, final_agreed_fee_paise, discount_paise, payment_plan_type, number_of_instalments, initial_payment_expected_paise, status, created_at, updated_at)
+    values ('fee_${suffix}', 'enrol_${suffix}', 1000000, 1000000, 0, 'custom', 1, 500000, 'active', '${NOW}', '${NOW}');
+  `);
+}
+
+function seedValidUpcomingEnrolment(db: SqliteD1) {
+  db.database.exec(`
+    insert into people (id, organisation_id, home_branch_id, full_name, public_name, date_of_birth, status, created_at, updated_at)
+    values ('person_future', 'org_samyak', 'branch_sion', 'Future Student', 'Future', null, 'active', '${NOW}', '${NOW}');
+    insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at)
+    values ('student_future', 'org_samyak', 'person_future', 'branch_sion', 'SYK-FUTURE', 99, '2026-08-01', 'active', 'active', '${NOW}', '${NOW}');
+    insert into enrolments (id, student_id, branch_id, course_id, enrolment_number, training_mode, admission_date, joining_date, status, nsdc_preference, created_at, updated_at)
+    values ('enrol_future', 'student_future', 'branch_sion', 'course_excel', 'ENR-FUTURE', 'classroom', '2026-08-01', '2026-08-02', 'confirmed', 'no', '2026-09-06T00:00:00.000Z', '${NOW}');
+    insert into fee_agreements (id, enrolment_id, standard_fee_paise, final_agreed_fee_paise, discount_paise, payment_plan_type, number_of_instalments, initial_payment_expected_paise, status, created_at, updated_at)
+    values ('fee_future', 'enrol_future', 1000000, 1000000, 0, 'custom', 1, 500000, 'active', '${NOW}', '${NOW}');
+    insert into fee_agreement_instalments (id, fee_agreement_id, instalment_number, amount_paise, due_date, created_at)
+    values ('inst_future_1', 'fee_future', 1, 1000000, '2026-09-10', '${NOW}');
   `);
 }
 
