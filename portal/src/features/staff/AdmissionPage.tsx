@@ -179,6 +179,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const configurationReady = isAdmissionConfigurationReady(configuration);
   const tokenReceipt = financialSummary?.tokenReceipt || null;
   const receiptHistory = financialSummary?.receiptHistory || [];
+  const effectiveTokenId = tokenReceipt?.id || null;
   const commercialLocked = Boolean(tokenReceipt) || isLocked;
   const needsPersonLink = !detail?.enquiry.person_id;
   const selectedAdmissionBatch = admissionBatchOptions.find((batch) => batch.id === payload.course.batchId);
@@ -695,7 +696,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
             </div>
           </>
         )}
-        <AdmissionReceiptHistory receipts={receiptHistory} effectiveTokenId={tokenReceipt?.id || null} />
+        <AdmissionReceiptHistory receipts={receiptHistory} effectiveTokenId={effectiveTokenId} />
       </AdmissionSection>
 
       <section className="staff-card">
@@ -1334,26 +1335,30 @@ function FinancialSummary({ summary, fallbackFinalFee }: { summary: AdmissionFin
 }
 
 export function AdmissionReceiptHistory({ receipts, effectiveTokenId }: { receipts: AdmissionReceipt[]; effectiveTokenId: string | null }) {
-  if (!receipts.length) return null;
+  const historicalReceipts = effectiveTokenId ? receipts.filter((receipt) => receipt.id !== effectiveTokenId) : receipts;
+  if (!historicalReceipts.length) return null;
   return (
-    <div className="receipt-list">
-      {receipts.map((receipt) => (
-        <article className={receipt.status === "reversed" ? "receipt-card receipt-card--reversed" : "receipt-card"} key={receipt.id}>
-          <span><strong>{receipt.receiptNumber}</strong>{receipt.status === "reversed" ? <small>Reversed</small> : receipt.id === effectiveTokenId ? <small>Effective token</small> : null}</span>
-          <span><small>Date</small>{formatDisplayDateTime(receipt.receivedAt)}</span>
-          <span><small>Amount</small>{formatMoney(receipt.amountPaise)}</span>
-          <span><small>Mode</small>{paymentModeLabel(receipt.paymentMode)}</span>
-          {receipt.paymentReference ? <span><small>Reference</small>{receipt.paymentReference}</span> : null}
-          {receipt.reversal ? <span><small>Reversal reason</small>{receipt.reversal.reason}</span> : null}
-          {receipt.reversal ? <span><small>Reversed by</small>{receipt.reversal.reversedBy || "Staff"}</span> : null}
-          {receipt.reversal ? <span><small>Reversed at</small>{formatDisplayDateTime(receipt.reversal.reversedAt)}</span> : null}
-        </article>
-      ))}
+    <div className="admission-receipt-history">
+      <div className="section-heading section-heading--compact"><h3>Receipt history</h3><span>{historicalReceipts.length}</span></div>
+      <div className="receipt-list">
+        {historicalReceipts.map((receipt) => (
+          <article className={receipt.status === "reversed" ? "receipt-card receipt-card--reversed" : "receipt-card"} key={receipt.id}>
+            <span><strong>{receipt.receiptNumber}</strong>{receipt.status === "reversed" ? <small>Reversed</small> : null}</span>
+            <span><small>Date</small>{formatDisplayDateTime(receipt.receivedAt)}</span>
+            <span><small>Amount</small>{formatMoney(receipt.amountPaise)}</span>
+            <span><small>Mode</small>{paymentModeLabel(receipt.paymentMode)}</span>
+            {receipt.paymentReference ? <span><small>Reference</small>{receipt.paymentReference}</span> : null}
+            {receipt.reversal ? <span className="receipt-card__wide"><small>Reversal reason</small>{receipt.reversal.reason}</span> : null}
+            {receipt.reversal ? <span><small>Reversed by</small>{receipt.reversal.reversedBy || "Staff"}</span> : null}
+            {receipt.reversal ? <span><small>Reversed at</small>{formatDisplayDateTime(receipt.reversal.reversedAt)}</span> : null}
+          </article>
+        ))}
+      </div>
     </div>
   );
 }
 
-function ReceiptRecorded({
+export function ReceiptRecorded({
   summary,
   canReverse,
   reversalReason,
@@ -1371,13 +1376,15 @@ function ReceiptRecorded({
   const receipt = summary?.tokenReceipt;
   if (!receipt) return null;
   return (
-    <div className="detail-grid">
-      <Review label="Receipt No." value={receipt.receiptNumber} />
-      <Review label="Amount" value={formatMoney(receipt.amountPaise)} />
-      <Review label="Mode" value={paymentModeLabel(receipt.paymentMode)} />
-      <Review label="Date/Time" value={formatDisplayDateTime(receipt.receivedAt)} />
-      <Review label="Reference" value={receipt.paymentReference || "Not recorded"} />
-      <Review label="Status" value={receipt.status === "reversed" ? "Reversed" : "Recorded"} />
+    <article className="receipt-card receipt-card--effective">
+      <span><strong>{receipt.receiptNumber}</strong><small>Effective token</small></span>
+      <div className="detail-grid receipt-card__details">
+        <Review label="Amount" value={formatMoney(receipt.amountPaise)} />
+        <Review label="Mode" value={paymentModeLabel(receipt.paymentMode)} />
+        <Review label="Date/Time" value={formatDisplayDateTime(receipt.receivedAt)} />
+        <Review label="Reference" value={receipt.paymentReference || "Not recorded"} />
+        <Review label="Status" value={receipt.status === "reversed" ? "Reversed" : "Recorded"} />
+      </div>
       {canReverse && receipt.status === "recorded" ? (
         <form className="receipt-reversal-form" onSubmit={(event) => {
           event.preventDefault();
@@ -1388,7 +1395,7 @@ function ReceiptRecorded({
         </form>
       ) : null}
       <p className="notice notice--success">Token receipt recorded. Admission can now be confirmed once all other admission requirements are complete.</p>
-    </div>
+    </article>
   );
 }
 

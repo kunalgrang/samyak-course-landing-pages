@@ -822,15 +822,48 @@
   background: #fff7f7;
 }
 
+.receipt-card--effective {
+  border-color: rgba(13, 148, 136, 0.32);
+  background: var(--color-green-soft);
+}
+
 .receipt-card span {
   display: grid;
   min-width: 0;
   gap: 4px;
 }
 
+.receipt-card__wide {
+  grid-column: 1 / -1;
+}
+
+.receipt-card__details {
+  gap: 12px;
+}
+
 .receipt-reversal-form {
   display: grid;
   gap: 10px;
+}
+
+.receipt-card--effective .receipt-reversal-form,
+.receipt-card--effective .notice {
+  grid-column: 1 / -1;
+}
+
+.admission-receipt-history {
+  display: grid;
+  gap: 10px;
+}
+
+.section-heading--compact {
+  margin-top: 4px;
+}
+
+.section-heading--compact h3 {
+  margin: 0;
+  color: var(--color-navy);
+  font-size: 1rem;
 }
 
 .notice--success {
@@ -3067,4 +3100,8 @@
   .nav-label-short {
     display: inline;
   }
+}
+
+.receipt-card--effective {
+  grid-template-columns: minmax(0, 1fr);
 }
