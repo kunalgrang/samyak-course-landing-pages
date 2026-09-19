@@ -13,6 +13,7 @@ import {
   linkAdmissionEnquiryPerson,
   recordAdmissionReceipt,
   requestDiscountApproval,
+  reverseAdmissionReceipt,
   saveAdmissionDraft,
   searchStudentByMobile,
   type AdmissionConfiguration,
@@ -41,6 +42,12 @@ type AdmissionScheduleRow = {
   instalmentNumber: number;
   amountPaise: number;
   dueDate: string | null;
+};
+
+type ReceiptCorrectionCapability = {
+  canReverse: boolean;
+  reasonRequired: true;
+  ownerOnly: true;
 };
 
 export const ADMISSION_CONFIGURATION_MISSING_MESSAGE = "Admission settings are incomplete. Ask an owner or administrator to configure admission options.";
@@ -108,6 +115,10 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const [admissionBatchOptions, setAdmissionBatchOptions] = useState<AdmissionBatchOption[]>([]);
   const [receiptInput, setReceiptInput] = useState(() => defaultReceiptInput());
   const [isRecordingReceipt, setIsRecordingReceipt] = useState(false);
+  const [receiptCorrection, setReceiptCorrection] = useState<ReceiptCorrectionCapability>({ canReverse: false, reasonRequired: true, ownerOnly: true });
+  const [reversalReason, setReversalReason] = useState("");
+  const [reversalKey, setReversalKey] = useState(() => randomIdempotencyKey("reverse"));
+  const [isReversingReceipt, setIsReversingReceipt] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const [studentSearchMobile, setStudentSearchMobile] = useState("");
   const [studentSearchResult, setStudentSearchResult] = useState<StudentSearchResult | null>(null);
@@ -134,6 +145,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       const next = draftData.draft?.payload ? mergeAdmissionPayload(defaultAdmissionPayload(detailData), draftData.draft.payload) : defaultAdmissionPayload(detailData);
       setPayload(next);
       setFinancialSummary(draftData.financialSummary || null);
+      setReceiptCorrection(draftData.receiptCorrection || { canReverse: false, reasonRequired: true, ownerOnly: true });
       setCurrentStep(draftData.draft?.currentStep || "identity");
       setIsLocked(Boolean(draftData.draft?.confirmationLockedAt));
       setStudentSearchMobile(draftData.draft ? studentSearchMobile : detailData.personLinkCandidate?.mobile || "");
@@ -301,6 +313,29 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, requestSummaryFocus, "Could not record token receipt.");
     } finally {
       setIsRecordingReceipt(false);
+    }
+  }
+
+  async function handleReverseTokenReceipt(receiptId: string, expectedReceiptVersion: string) {
+    if (!reversalReason.trim() || isReversingReceipt) return;
+    setIsReversingReceipt(true);
+    setError(null);
+    setFieldErrors({});
+    try {
+      const result = await reverseAdmissionReceipt(enquiryId, receiptId, {
+        reason: reversalReason,
+        expectedReceiptVersion,
+        idempotencyKey: reversalKey,
+      });
+      setFinancialSummary(result.financialSummary);
+      setReversalReason("");
+      setReversalKey(randomIdempotencyKey("reverse"));
+      setReceiptInput(defaultReceiptInput());
+      setSaved(`Receipt ${result.receipt.receiptNumber} reversed.`);
+    } catch (reason) {
+      captureAdmissionError(reason, setError, setFieldErrors, setIsLocked, requestSummaryFocus, "Could not reverse token receipt.");
+    } finally {
+      setIsReversingReceipt(false);
     }
   }
 
@@ -638,7 +673,14 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       <AdmissionSection title="H · Admission token / first receipt">
         <FinancialSummary summary={financialSummary} fallbackFinalFee={Number(payload.fee.finalAgreedFeePaise || 0)} />
         {tokenReceipt ? (
-          <ReceiptRecorded summary={financialSummary} />
+          <ReceiptRecorded
+            summary={financialSummary}
+            canReverse={receiptCorrection.canReverse && !isLocked}
+            reversalReason={reversalReason}
+            reversing={isReversingReceipt}
+            onReasonChange={setReversalReason}
+            onReverse={(receiptId, expectedReceiptVersion) => void handleReverseTokenReceipt(receiptId, expectedReceiptVersion)}
+          />
         ) : (
           <>
             <label>Amount received<RequiredMark /><input {...controlProps("amountPaise")} type="number" min="1" value={receiptInput.amount} onChange={(e) => setReceiptInput((current) => ({ ...current, amount: e.target.value }))} /><FieldMessage id={admissionFieldErrorId("amountPaise")} message={errorFor("amountPaise")} /></label>
@@ -737,8 +779,8 @@ function defaultReceiptInput() {
   };
 }
 
-function randomIdempotencyKey() {
-  return `receipt_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+function randomIdempotencyKey(prefix = "receipt") {
+  return `${prefix}_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
 }
 
 function randomPersonLinkKey() {
@@ -1288,7 +1330,21 @@ function FinancialSummary({ summary, fallbackFinalFee }: { summary: AdmissionFin
   );
 }
 
-function ReceiptRecorded({ summary }: { summary: AdmissionFinancialSummary | null }) {
+function ReceiptRecorded({
+  summary,
+  canReverse,
+  reversalReason,
+  reversing,
+  onReasonChange,
+  onReverse,
+}: {
+  summary: AdmissionFinancialSummary | null;
+  canReverse: boolean;
+  reversalReason: string;
+  reversing: boolean;
+  onReasonChange: (value: string) => void;
+  onReverse: (receiptId: string, expectedReceiptVersion: string) => void;
+}) {
   const receipt = summary?.tokenReceipt;
   if (!receipt) return null;
   return (
@@ -1298,7 +1354,16 @@ function ReceiptRecorded({ summary }: { summary: AdmissionFinancialSummary | nul
       <Review label="Mode" value={paymentModeLabel(receipt.paymentMode)} />
       <Review label="Date/Time" value={formatDisplayDateTime(receipt.receivedAt)} />
       <Review label="Reference" value={receipt.paymentReference || "Not recorded"} />
-      <Review label="Status" value="Recorded" />
+      <Review label="Status" value={receipt.status === "reversed" ? "Reversed" : "Recorded"} />
+      {canReverse && receipt.status === "recorded" ? (
+        <form className="receipt-reversal-form" onSubmit={(event) => {
+          event.preventDefault();
+          onReverse(receipt.id, receipt.correctionVersion);
+        }}>
+          <label><small>Reversal reason</small><input maxLength={500} value={reversalReason} onChange={(event) => onReasonChange(event.target.value)} required /></label>
+          <button type="submit" disabled={reversing || reversalReason.trim().length < 3}>{reversing ? "Reversing..." : "Reverse Receipt"}</button>
+        </form>
+      ) : null}
       <p className="notice notice--success">Token receipt recorded. Admission can now be confirmed once all other admission requirements are complete.</p>
     </div>
   );

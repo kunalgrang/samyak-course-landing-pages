@@ -8,6 +8,7 @@ export const ADMISSION_STAFF_ROLES = ["owner", "system_admin", "admin", "counsel
 export const SENSITIVE_ADMISSION_ROLES = ["owner", "system_admin", "admission_admin"] as const;
 export const RECEIPT_RECORDER_ROLES = ["owner", "system_admin", "admin", "admission_admin", "counsellor"] as const;
 export const RECEIPT_BACKDATE_ROLES = ["owner", "system_admin", "admin", "admission_admin"] as const;
+export const RECEIPT_REVERSAL_ROLES = ["owner"] as const;
 
 export type StaffContext = {
   loginAccountId: string;
@@ -35,4 +36,8 @@ export function canRecordReceipts(staff: Pick<StaffContext, "roles">) {
 
 export function canBackdateReceipts(staff: Pick<StaffContext, "roles">) {
   return staff.roles.some((role) => RECEIPT_BACKDATE_ROLES.includes(role as (typeof RECEIPT_BACKDATE_ROLES)[number]));
+}
+
+export function canReverseReceipts(staff: Pick<StaffContext, "roles">) {
+  return staff.roles.some((role) => RECEIPT_REVERSAL_ROLES.includes(role as (typeof RECEIPT_REVERSAL_ROLES)[number]));
 }

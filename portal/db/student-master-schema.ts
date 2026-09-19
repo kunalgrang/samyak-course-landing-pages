@@ -562,9 +562,6 @@ export const receipts = sqliteTable(
   (table) => [
     uniqueIndex("receipts_number_unique").on(table.organisationId, table.branchId, table.receiptNumber),
     uniqueIndex("receipts_idempotency_unique").on(table.organisationId, table.createdByLoginAccountId, table.idempotencyKey),
-    uniqueIndex("receipts_one_preconfirm_token_per_draft")
-      .on(table.admissionDraftId)
-      .where(sql`${table.enrolmentId} is null and ${table.status} = 'recorded'`),
     index("receipts_enquiry_created_idx").on(table.enquiryId, table.createdAt),
     index("receipts_draft_created_idx").on(table.admissionDraftId, table.createdAt),
     index("receipts_enrolment_created_idx").on(table.enrolmentId, table.createdAt),
@@ -572,6 +569,37 @@ export const receipts = sqliteTable(
     check("receipts_amount_positive_check", sql`${table.amountPaise} > 0`),
     check("receipts_status_check", sql`${table.status} in ('recorded')`),
     check("receipts_payment_mode_check", sql`${table.paymentMode} in ('cash', 'upi', 'card', 'bank_transfer', 'cheque', 'other')`),
+  ],
+);
+
+export const receiptReversals = sqliteTable(
+  "receipt_reversals",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branches.id),
+    receiptId: text("receipt_id")
+      .notNull()
+      .references(() => receipts.id),
+    enrolmentId: text("enrolment_id").references(() => enrolments.id),
+    feeAgreementId: text("fee_agreement_id").references(() => feeAgreements.id),
+    reason: text("reason").notNull(),
+    reversedByLoginAccountId: text("reversed_by_login_account_id")
+      .notNull()
+      .references(() => loginAccounts.id),
+    idempotencyKey: text("idempotency_key").notNull(),
+    payloadFingerprint: text("payload_fingerprint").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("receipt_reversals_receipt_unique").on(table.receiptId),
+    uniqueIndex("receipt_reversals_idempotency_unique").on(table.organisationId, table.reversedByLoginAccountId, table.idempotencyKey),
+    index("receipt_reversals_org_enrolment_created_idx").on(table.organisationId, table.enrolmentId, table.createdAt),
+    check("receipt_reversals_reason_check", sql`length(trim(${table.reason})) > 0`),
   ],
 );
 

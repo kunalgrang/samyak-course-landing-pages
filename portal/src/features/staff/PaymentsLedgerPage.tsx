@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
-import { getPaymentLedger, recordEnrolmentReceipt, type PaymentLedger } from "../../lib/api";
+import { getPaymentLedger, recordEnrolmentReceipt, reverseEnrolmentReceipt, type PaymentLedger } from "../../lib/api";
 
 type ReceiptInput = {
   amount: string;
@@ -21,6 +21,10 @@ export function PaymentsLedgerPage({ enrolmentId }: { enrolmentId: string }) {
   const [success, setSuccess] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [input, setInput] = useState<ReceiptInput>(() => defaultReceiptInput());
+  const [reversalReceiptId, setReversalReceiptId] = useState("");
+  const [reversalReason, setReversalReason] = useState("");
+  const [reversalKey, setReversalKey] = useState(() => randomIdempotencyKey("reverse"));
+  const [reversing, setReversing] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -46,6 +50,29 @@ export function PaymentsLedgerPage({ enrolmentId }: { enrolmentId: string }) {
 
   async function refreshLedger() {
     setLedger(await getPaymentLedger(enrolmentId));
+  }
+
+  async function handleReverse(receiptId: string, expectedReceiptVersion: string) {
+    if (!reversalReason.trim() || reversing) return;
+    setReversing(true);
+    setFormError(null);
+    setSuccess(null);
+    try {
+      const result = await reverseEnrolmentReceipt(enrolmentId, receiptId, {
+        reason: reversalReason,
+        expectedReceiptVersion,
+        idempotencyKey: reversalKey,
+      });
+      setSuccess(`Receipt ${result.receipt.receiptNumber} reversed.`);
+      setReversalReceiptId("");
+      setReversalReason("");
+      setReversalKey(randomIdempotencyKey("reverse"));
+      await refreshLedger();
+    } catch (reason) {
+      setFormError(reason instanceof Error ? reason.message : "Could not reverse receipt.");
+    } finally {
+      setReversing(false);
+    }
   }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -136,13 +163,35 @@ export function PaymentsLedgerPage({ enrolmentId }: { enrolmentId: string }) {
         <div className="section-heading"><h2>Receipt History</h2><span>{ledger.receipts.length}</span></div>
         <div className="receipt-list">
           {ledger.receipts.map((receipt, index) => (
-            <article className="receipt-card" key={receipt.id}>
-              <span><strong>{receipt.receiptNumber}</strong>{index === ledger.receipts.length - 1 ? <small>Admission Token</small> : null}</span>
+            <article className={receipt.status === "reversed" ? "receipt-card receipt-card--reversed" : "receipt-card"} key={receipt.id}>
+              <span><strong>{receipt.receiptNumber}</strong>{receipt.status === "reversed" ? <small>Reversed</small> : index === ledger.receipts.length - 1 ? <small>Admission Token</small> : null}</span>
               <span><small>Date</small>{formatDisplayDateTime(receipt.receivedAt)}</span>
               <span><small>Amount</small>{formatMoney(receipt.amountPaise)}</span>
               <span><small>Mode</small>{paymentModeLabel(receipt.paymentMode)}</span>
               <span><small>Recorded By</small>{receipt.recordedBy || "Staff"}</span>
               {receipt.paymentReference ? <span><small>Reference</small>{receipt.paymentReference}</span> : null}
+              {receipt.reversal ? <span><small>Reversal</small>{receipt.reversal.reason} · {formatDisplayDateTime(receipt.reversal.reversedAt)}</span> : null}
+              {receipt.status === "recorded" && ledger.receiptCorrection?.canReverse ? (
+                reversalReceiptId === receipt.id ? (
+                  <form className="receipt-reversal-form" onSubmit={(event) => {
+                    event.preventDefault();
+                    void handleReverse(receipt.id, receipt.correctionVersion);
+                  }}>
+                    <label><small>Reason</small><input maxLength={500} value={reversalReason} onChange={(event) => setReversalReason(event.target.value)} required /></label>
+                    <button type="submit" disabled={reversing || reversalReason.trim().length < 3}>{reversing ? "Reversing..." : "Confirm Reversal"}</button>
+                    <button type="button" className="button-secondary" disabled={reversing} onClick={() => {
+                      setReversalReceiptId("");
+                      setReversalReason("");
+                    }}>Cancel</button>
+                  </form>
+                ) : (
+                  <button type="button" className="button-secondary" onClick={() => {
+                    setReversalReceiptId(receipt.id);
+                    setReversalReason("");
+                    setReversalKey(randomIdempotencyKey("reverse"));
+                  }}>Reverse Receipt</button>
+                )
+              ) : null}
             </article>
           ))}
         </div>
@@ -183,8 +232,8 @@ function localDateTimeToIso(value: string) {
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
-function randomIdempotencyKey() {
-  return `pay_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+function randomIdempotencyKey(prefix = "pay") {
+  return `${prefix}_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
 }
 
 function formatMoney(paise: number) {

@@ -883,6 +883,8 @@ function financialSummary() {
       paymentMode: "cash",
       paymentReference: null,
       status: "recorded" as const,
+      correctionVersion: "receipt:receipt_1:fp:created:active",
+      reversal: null,
     },
   };
 }

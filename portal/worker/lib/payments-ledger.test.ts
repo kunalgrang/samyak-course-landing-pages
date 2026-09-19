@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { WorkerBindings } from "../bindings";
 import type { AppContext } from "./http";
 import type { StaffContext } from "./staff-auth";
-import { allocateInstalments, financialSummaryFromReceipts, getPaymentLedger, recordEnrolmentReceipt } from "./payments-ledger";
+import { allocateInstalments, financialSummaryFromReceipts, getPaymentLedger, recordEnrolmentReceipt, reverseEnrolmentReceipt, reverseReceiptSchema } from "./payments-ledger";
 
 class SqliteD1Statement {
   private values: unknown[] = [];
@@ -37,6 +37,21 @@ class SqliteD1 {
 
   prepare(sql: string) {
     return new SqliteD1Statement(this, sql);
+  }
+
+  async batch(statements: SqliteD1Statement[]) {
+    this.database.exec("begin");
+    try {
+      const results = [];
+      for (const statement of statements) {
+        results.push(await statement.run());
+      }
+      this.database.exec("commit");
+      return results;
+    } catch (reason) {
+      this.database.exec("rollback");
+      throw reason;
+    }
   }
 
   close() {
@@ -128,6 +143,193 @@ describe("Payments / Receipts Ledger V1", () => {
       const rejected = await recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", { amountPaise: 100000, paymentMode: "cash", idempotencyKey: "pay_stale_second" });
       expect(rejected).toMatchObject({ ok: false, code: "fee_fully_paid" });
       expect(row(db, "select sum(amount_paise) as total from receipts where enrolment_id = 'enrol_a'")?.total).toBe(1400000);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reverses a receipt immutably and recalculates FIFO balances from effective receipts", async () => {
+    const db = seededDb();
+    try {
+      const c = context(db);
+      const before = await getPaymentLedger(c, ownerStaff(), "enrol_a");
+      if (!before.ok) throw new Error(before.message);
+      expect(before.ledger.receiptCorrection).toMatchObject({ canReverse: true, reasonRequired: true, ownerOnly: true });
+      const token = before.ledger.receipts.find((receipt) => receipt.id === "receipt_token");
+      expect(token?.status).toBe("recorded");
+
+      const reversed = await reverseEnrolmentReceipt(c, ownerStaff(), "enrol_a", "receipt_token", {
+        reason: "Receipt was recorded against the wrong amount",
+        expectedReceiptVersion: token!.correctionVersion,
+        idempotencyKey: "reverse_token_once",
+      });
+
+      expect(reversed).toMatchObject({ ok: true, financialSummary: { totalReceivedPaise: 0, overallBalancePaise: 1400000, classStartEligible: false } });
+      if (!reversed.ok) throw new Error(reversed.message);
+      expect(reversed.receipt).toMatchObject({ status: "reversed", reversal: { reason: "Receipt was recorded against the wrong amount" } });
+      expect(row(db, "select count(*) as count from receipts where id = 'receipt_token' and status = 'recorded'")?.count).toBe(1);
+      expect(row(db, "select count(*) as count from receipt_reversals where receipt_id = 'receipt_token'")?.count).toBe(1);
+      expect(row(db, "select count(*) as count from audit_logs where action = 'payment_receipt_reversed'")?.count).toBe(1);
+
+      const retry = await reverseEnrolmentReceipt(c, ownerStaff(), "enrol_a", "receipt_token", {
+        reason: "Receipt was recorded against the wrong amount",
+        expectedReceiptVersion: token!.correctionVersion,
+        idempotencyKey: "reverse_token_once",
+      });
+      expect(retry).toMatchObject({ ok: true, financialSummary: { totalReceivedPaise: 0 } });
+      expect(row(db, "select count(*) as count from receipt_reversals where receipt_id = 'receipt_token'")?.count).toBe(1);
+
+      const stale = await reverseEnrolmentReceipt(c, ownerStaff(), "enrol_a", "receipt_token", {
+        reason: "Another reason",
+        expectedReceiptVersion: token!.correctionVersion,
+        idempotencyKey: "reverse_token_stale",
+      });
+      expect(stale).toMatchObject({ ok: false, code: "receipt_already_reversed" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("restricts reversal to owner role and branch authority", async () => {
+    const db = seededDb();
+    try {
+      const c = context(db);
+      const before = await getPaymentLedger(c, staffForRole("counsellor"), "enrol_a");
+      expect(before.ok && before.ledger.receiptCorrection.canReverse).toBe(false);
+      const ownerView = await getPaymentLedger(c, ownerStaff(), "enrol_a");
+      if (!ownerView.ok) throw new Error(ownerView.message);
+      const version = ownerView.ledger.receipts.find((receipt) => receipt.id === "receipt_token")!.correctionVersion;
+
+      for (const role of ["system_admin", "admin", "admission_admin", "counsellor", "telecaller"]) {
+        await expect(reverseEnrolmentReceipt(c, staffForRole(role), "enrol_a", "receipt_token", {
+          reason: "Wrong amount",
+          expectedReceiptVersion: version,
+          idempotencyKey: `reverse_denied_${role}`,
+        })).resolves.toMatchObject({ ok: false, code: "forbidden" });
+      }
+
+      await expect(reverseEnrolmentReceipt(c, staffForRole("owner", "acct_wadala"), "enrol_a", "receipt_token", {
+        reason: "Wrong amount",
+        expectedReceiptVersion: version,
+        idempotencyKey: "reverse_denied_branch_owner",
+      })).resolves.toMatchObject({ ok: false, code: "forbidden" });
+      expect(row(db, "select count(*) as count from receipt_reversals")?.count).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("protects reversal idempotency, stale writes and duplicate reversals", async () => {
+    const db = seededDb();
+    try {
+      const c = context(db);
+      const before = await getPaymentLedger(c, ownerStaff(), "enrol_a");
+      if (!before.ok) throw new Error(before.message);
+      const token = before.ledger.receipts.find((receipt) => receipt.id === "receipt_token")!;
+
+      await expect(reverseEnrolmentReceipt(c, ownerStaff(), "enrol_a", "receipt_token", {
+        reason: "Wrong amount",
+        expectedReceiptVersion: "receipt:stale-version",
+        idempotencyKey: "reverse_stale_before_write",
+      })).resolves.toMatchObject({ ok: false, code: "stale_receipt" });
+
+      const first = await reverseEnrolmentReceipt(c, ownerStaff(), "enrol_a", "receipt_token", {
+        reason: "Wrong amount",
+        expectedReceiptVersion: token.correctionVersion,
+        idempotencyKey: "reverse_once_conflict_key",
+      });
+      expect(first.ok).toBe(true);
+
+      await expect(reverseEnrolmentReceipt(c, ownerStaff(), "enrol_a", "receipt_token", {
+        reason: "Changed reason",
+        expectedReceiptVersion: token.correctionVersion,
+        idempotencyKey: "reverse_once_conflict_key",
+      })).resolves.toMatchObject({ ok: false, code: "idempotency_conflict" });
+
+      const [againA, againB] = await Promise.all([
+        reverseEnrolmentReceipt(c, ownerStaff(), "enrol_a", "receipt_token", {
+          reason: "Wrong amount",
+          expectedReceiptVersion: token.correctionVersion,
+          idempotencyKey: "reverse_second_a",
+        }),
+        reverseEnrolmentReceipt(c, ownerStaff(), "enrol_a", "receipt_token", {
+          reason: "Wrong amount",
+          expectedReceiptVersion: token.correctionVersion,
+          idempotencyKey: "reverse_second_b",
+        }),
+      ]);
+      expect([againA, againB]).toEqual(expect.arrayContaining([expect.objectContaining({ ok: false, code: "receipt_already_reversed" })]));
+      expect(row(db, "select count(*) as count from receipt_reversals where receipt_id = 'receipt_token'")?.count).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects whitespace-only reversal reasons in the shared reversal schema", () => {
+    expect(reverseReceiptSchema.safeParse({
+      reason: " \n\t ",
+      expectedReceiptVersion: "receipt:v1:active",
+      idempotencyKey: "reverse_blank_reason",
+    }).success).toBe(false);
+  });
+
+  it("allows replacement through normal receipt creation after reversal and recalculates outstanding", async () => {
+    const db = seededDb();
+    try {
+      const c = context(db);
+      const before = await getPaymentLedger(c, ownerStaff(), "enrol_a");
+      if (!before.ok) throw new Error(before.message);
+      const token = before.ledger.receipts.find((receipt) => receipt.id === "receipt_token")!;
+      await reverseEnrolmentReceipt(c, ownerStaff(), "enrol_a", "receipt_token", {
+        reason: "Replace with corrected amount",
+        expectedReceiptVersion: token.correctionVersion,
+        idempotencyKey: "reverse_before_replacement",
+      });
+
+      const replacement = await recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", {
+        amountPaise: 1300000,
+        paymentMode: "cash",
+        idempotencyKey: "pay_replacement_normal_flow",
+      });
+
+      expect(replacement).toMatchObject({ ok: true, financialSummary: { totalReceivedPaise: 1300000, overallBalancePaise: 100000 } });
+      expect(row(db, "select count(*) as count from receipts where enrolment_id = 'enrol_a'")?.count).toBe(2);
+      expect(row(db, "select coalesce(sum(receipts.amount_paise), 0) as total from receipts left join receipt_reversals on receipt_reversals.receipt_id = receipts.id where receipts.enrolment_id = 'enrol_a' and receipt_reversals.id is null")?.total).toBe(1300000);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reopens and settles outstanding with a separate replacement receipt after reversing a balance payment", async () => {
+    const db = seededDb();
+    try {
+      const c = context(db);
+      const balance = await recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", {
+        amountPaise: 100000,
+        paymentMode: "cash",
+        idempotencyKey: "pay_final_balance_before_reversal",
+      });
+      expect(balance).toMatchObject({ ok: true, financialSummary: { overallBalancePaise: 0, fullyPaid: true } });
+      if (!balance.ok) throw new Error(balance.message);
+
+      const reversed = await reverseEnrolmentReceipt(c, ownerStaff(), "enrol_a", balance.receipt.id, {
+        reason: "Balance receipt needs replacement",
+        expectedReceiptVersion: balance.receipt.correctionVersion,
+        idempotencyKey: "reverse_balance_payment",
+      });
+      expect(reversed).toMatchObject({ ok: true, financialSummary: { overallBalancePaise: 100000, fullyPaid: false } });
+
+      const replacement = await recordEnrolmentReceipt(c, ownerStaff(), "enrol_a", {
+        amountPaise: 100000,
+        paymentMode: "cash",
+        idempotencyKey: "pay_final_balance_replacement",
+      });
+      expect(replacement).toMatchObject({ ok: true, financialSummary: { overallBalancePaise: 0, fullyPaid: true } });
+      if (!replacement.ok) throw new Error(replacement.message);
+
+      expect(row(db, `select count(*) as count from receipt_reversals where receipt_id = '${balance.receipt.id}'`)?.count).toBe(1);
+      expect(row(db, `select count(*) as count from receipt_reversals where receipt_id = '${replacement.receipt.id}'`)?.count).toBe(0);
+      expect(row(db, "select count(*) as count from receipts where enrolment_id = 'enrol_a'")?.count).toBe(3);
     } finally {
       db.close();
     }

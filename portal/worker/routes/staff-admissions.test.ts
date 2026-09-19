@@ -26,11 +26,13 @@ vi.mock("../lib/admission-service", () => ({
   fieldErrorsFromIssues: vi.fn(() => ({ payload: ["Expected object"] })),
   getAdmissionConfiguration: vi.fn(),
   getAdmissionDraft: vi.fn(),
+  getAdmissionReceiptCorrectionCapability: vi.fn(() => ({ canReverse: false, reasonRequired: true, ownerOnly: true })),
   getAdmissionReceiptSummary: vi.fn(),
   listDiscountApprovals: mocks.listDiscountApprovals,
   recordAdmissionReceipt: vi.fn(),
   recordAdmissionReceiptSchema: { safeParse: vi.fn(() => ({ success: true, data: { admissionDraftId: "draft_1", amountPaise: 50000, paymentMode: "cash", idempotencyKey: "receipt_test" } })) },
   requestDiscountApproval: vi.fn(),
+  reverseAdmissionReceipt: vi.fn(),
   saveAdmissionDraft: vi.fn(),
   saveAdmissionDraftSchema: { safeParse: vi.fn(() => ({ success: true, data: { payload: {}, currentStep: "review" } })) },
 }));
@@ -142,6 +144,78 @@ describe("staff admission draft routes", () => {
         fieldErrors: { "contact.primaryMobile": ["Enter a valid Indian primary mobile number."] },
       },
     });
+  });
+});
+
+describe("staff admission receipt routes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(admissionService.recordAdmissionReceipt).mockResolvedValue({ ok: true, receipt: { receiptNumber: "RCP-SION-2026-000001" }, financialSummary: {} } as never);
+    vi.mocked(admissionService.reverseAdmissionReceipt).mockResolvedValue({ ok: true, receipt: { receiptNumber: "RCP-SION-2026-000001" }, financialSummary: {} } as never);
+  });
+
+  it("requires same-origin before recording or reversing admission receipts", async () => {
+    const app = routeApp();
+    authenticateAs(["owner"]);
+
+    const record = await app.request("http://portal.test/api/staff/admissions/enq_first/receipts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://evil.test" },
+      body: "{}",
+    });
+    const reverse = await app.request("http://portal.test/api/staff/admissions/enq_first/receipts/receipt_1/reversal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://evil.test" },
+      body: JSON.stringify({ reason: "Wrong amount", expectedReceiptVersion: "receipt:version-token", idempotencyKey: "reverse_route_test" }),
+    });
+
+    expect(record.status).toBe(403);
+    expect(reverse.status).toBe(403);
+    expect(admissionService.recordAdmissionReceipt).not.toHaveBeenCalled();
+    expect(admissionService.reverseAdmissionReceipt).not.toHaveBeenCalled();
+  });
+
+  it.each(["system_admin", "admin", "admission_admin", "counsellor"])("denies %s admission receipt reversal at the route", async (role) => {
+    const app = routeApp();
+    authenticateAs([role]);
+
+    const response = await app.request("http://portal.test/api/staff/admissions/enq_first/receipts/receipt_1/reversal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://portal.test" },
+      body: JSON.stringify({ reason: "Wrong amount", expectedReceiptVersion: "receipt:version-token", idempotencyKey: "reverse_route_test" }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(admissionService.reverseAdmissionReceipt).not.toHaveBeenCalled();
+  });
+
+  it("allows owner admission receipt reversal through the route", async () => {
+    const app = routeApp();
+    authenticateAs(["owner"]);
+
+    const response = await app.request("http://portal.test/api/staff/admissions/enq_first/receipts/receipt_1/reversal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://portal.test" },
+      body: JSON.stringify({ reason: "Wrong amount", expectedReceiptVersion: "receipt:version-token", idempotencyKey: "reverse_route_test" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(admissionService.reverseAdmissionReceipt).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ roles: ["owner"] }), "enq_first", "receipt_1", expect.objectContaining({ idempotencyKey: "reverse_route_test" }));
+  });
+
+  it("rejects whitespace-only reversal reasons before admission receipt reversal service execution", async () => {
+    const app = routeApp();
+    authenticateAs(["owner"]);
+
+    const response = await app.request("http://portal.test/api/staff/admissions/enq_first/receipts/receipt_1/reversal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://portal.test" },
+      body: JSON.stringify({ reason: "   \n  ", expectedReceiptVersion: "receipt:version-token", idempotencyKey: "reverse_blank_reason" }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_receipt_reversal" } });
+    expect(admissionService.reverseAdmissionReceipt).not.toHaveBeenCalled();
   });
 });
 
@@ -284,6 +358,7 @@ function installStudentProfileSchema(db: DatabaseSync) {
     create table courses (id text primary key, name text);
     create table fee_agreements (id text primary key, enrolment_id text, final_agreed_fee_paise integer, payment_plan_type text);
     create table receipts (id text primary key, enrolment_id text, amount_paise integer, status text);
+    create table receipt_reversals (id text primary key, receipt_id text);
     create table nsdc_profiles (id text primary key, enrolment_id text, status text);
     create table batches (id text primary key, branch_id text, course_id text, name text, primary_trainer_person_id text, days_of_week_json text, start_time text, end_time text, capacity integer, status text, created_at text, updated_at text);
     create table batch_memberships (id text primary key, batch_id text, enrolment_id text, joined_at text, left_at text, status text);

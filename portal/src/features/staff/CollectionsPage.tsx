@@ -319,12 +319,13 @@ function CollectionDetailPage({ enrolmentId, onNavigate }: { enrolmentId: string
         <div className="section-heading"><h2>Receipts</h2><span>{detail.receipts.length}</span></div>
         <div className="receipt-list">
           {detail.receipts.map((receipt) => (
-            <article className="receipt-card" key={receipt.id}>
-              <span><strong>{receipt.receiptNumber}</strong><small>{formatDisplayDateTime(receipt.receivedAt)}</small></span>
+            <article className={receipt.status === "reversed" ? "receipt-card receipt-card--reversed" : "receipt-card"} key={receipt.id}>
+              <span><strong>{receipt.receiptNumber}</strong><small>{receipt.status === "reversed" ? `Reversed · ${formatDisplayDateTime(receipt.reversal?.reversedAt || receipt.receivedAt)}` : formatDisplayDateTime(receipt.receivedAt)}</small></span>
               <span><small>Amount</small>{formatMoney(receipt.amountPaise)}</span>
               <span><small>Mode</small>{titleCase(receipt.paymentMode)}</span>
               <span><small>Reference</small>{receipt.paymentReference || "None"}</span>
               <span><small>Recorded By</small>{receipt.recordedBy || "Staff"}</span>
+              {receipt.reversal ? <span><small>Reason</small>{receipt.reversal.reason}</span> : null}
             </article>
           ))}
         </div>

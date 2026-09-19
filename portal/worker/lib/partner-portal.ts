@@ -140,11 +140,13 @@ export async function buildPartnerPortalView(c: AppContext, educationPartnerId: 
            and coalesce((
              select sum(receipts.amount_paise)
              from receipts
+             left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
              where receipts.organisation_id = referrals.organisation_id
                and receipts.enrolment_id = enrolments.id
                and receipts.fee_agreement_id = fee_agreements.id
                and receipts.branch_id = referrals.branch_id
                and receipts.status = 'recorded'
+               and receipt_reversals.id is null
            ), 0) < ((fee_agreements.final_agreed_fee_paise * referral_programmes.minimum_fee_percentage + 99) / 100)
          then 1 else 0 end) as in_progress,
        sum(case
@@ -157,11 +159,13 @@ export async function buildPartnerPortalView(c: AppContext, educationPartnerId: 
            and coalesce((
              select sum(receipts.amount_paise)
              from receipts
+             left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
              where receipts.organisation_id = referrals.organisation_id
                and receipts.enrolment_id = enrolments.id
                and receipts.fee_agreement_id = fee_agreements.id
                and receipts.branch_id = referrals.branch_id
                and receipts.status = 'recorded'
+               and receipt_reversals.id is null
            ), 0) >= ((fee_agreements.final_agreed_fee_paise * referral_programmes.minimum_fee_percentage + 99) / 100)
          then 1 else 0 end) as qualified,
        sum(case when referral_reward_snapshots.id is not null and referral_reward_payouts.id is null then 1 else 0 end) as approved,

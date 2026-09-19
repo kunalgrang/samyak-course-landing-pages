@@ -817,10 +817,20 @@
   gap: 12px;
 }
 
+.receipt-card--reversed {
+  border-color: rgba(185, 28, 28, 0.28);
+  background: #fff7f7;
+}
+
 .receipt-card span {
   display: grid;
   min-width: 0;
   gap: 4px;
+}
+
+.receipt-reversal-form {
+  display: grid;
+  gap: 10px;
 }
 
 .notice--success {

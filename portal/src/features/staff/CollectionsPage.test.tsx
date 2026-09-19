@@ -160,7 +160,7 @@ function collectionDetail(reason: "missing_schedule" | "missing_due_date" | "inv
     receipts: [],
     followups: [],
     timeline: [],
-    receiptCorrection: { supported: false, message: "Receipt amounts and dates are immutable in the current ledger. Use owner review until a reversal workflow exists." },
+    receiptCorrection: { supported: true, message: "Receipts are immutable. Reverse an incorrect receipt from Payments, then record any replacement through the normal payment form." },
     paymentSchedule: {
       canManage: true,
       reasonRequired: true,

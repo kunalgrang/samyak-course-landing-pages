@@ -13,10 +13,12 @@ import {
   decideDiscountApproval,
   getAdmissionConfiguration,
   getAdmissionDraft,
+  getAdmissionReceiptCorrectionCapability,
   listDiscountApprovals,
   maximumInstallmentsForCourse,
   recordAdmissionReceipt,
   requestDiscountApproval,
+  reverseAdmissionReceipt,
   saveAdmissionDraft,
   validateAdmissionDraftPayload,
   validateAdmissionForConfirmation,
@@ -404,7 +406,7 @@ describe("admission first receipt migration", () => {
 
     expect(row(db, "select name from sqlite_master where type = 'table' and name = 'receipts'")).toMatchObject({ name: "receipts" });
     expect(row(db, "select name from sqlite_master where type = 'table' and name = 'fee_agreement_instalments'")).toMatchObject({ name: "fee_agreement_instalments" });
-    expect(row(db, "select name from sqlite_master where type = 'index' and name = 'receipts_one_preconfirm_token_per_draft'")).toMatchObject({ name: "receipts_one_preconfirm_token_per_draft" });
+    expect(row(db, "select name from sqlite_master where type = 'index' and name = 'receipts_one_preconfirm_token_per_draft'")).toBeUndefined();
     expect(() => db.database.exec("insert into fee_agreement_instalments (id, fee_agreement_id, instalment_number, amount_paise, created_at) values ('fi_bad', 'missing', 1, 0, '2026-08-01T00:00:00.000Z')")).toThrow();
     db.close();
   });
@@ -486,6 +488,122 @@ describe("confirmAdmission service integration", () => {
 
     expect(second).toMatchObject({ ok: false, status: 409, code: "first_receipt_already_recorded" });
     expect(count(db, "receipts")).toBe(1);
+    db.close();
+  });
+
+  it("reverses a pre-confirmation token and records the replacement through normal receipt creation", async () => {
+    const db = testDb();
+    const c = context(db);
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+    const first = await recordTokenReceipt(c, "enq_first", draft.draftId, 40000);
+    const owner = staffForRole("owner", "acct_owner");
+    expect(await getAdmissionReceiptCorrectionCapability(c, owner, "enq_first")).toMatchObject({ canReverse: true, reasonRequired: true, ownerOnly: true });
+
+    const reversed = await reverseAdmissionReceipt(c, owner, "enq_first", first.receipt.id, {
+      reason: "Token amount entered incorrectly",
+      expectedReceiptVersion: first.receipt.correctionVersion,
+      idempotencyKey: "reverse_token_enq_first",
+    });
+    expect(reversed).toMatchObject({ ok: true, financialSummary: { totalReceivedPaise: 0, receiptCount: 0 } });
+    expect(row(db, "select count(*) as count from receipts where id = ? and status = 'recorded'", first.receipt.id)?.count).toBe(1);
+    expect(row(db, "select count(*) as count from receipt_reversals where receipt_id = ?", first.receipt.id)?.count).toBe(1);
+
+    const replacement = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "cash",
+      paymentReference: "",
+      notes: "",
+      idempotencyKey: "replacement_token_after_reversal",
+    });
+    expect(replacement).toMatchObject({ ok: true, financialSummary: { totalReceivedPaise: 50000, receiptCount: 1 } });
+    expect(count(db, "receipts")).toBe(2);
+
+    const confirmed = await expectOk(confirmAdmission(c, staff, "enq_first"));
+    expect(row(db, "select id, enrolment_id from receipts where id = ?", first.receipt.id)).toMatchObject({ id: first.receipt.id, enrolment_id: null });
+    expect(row(db, "select id, enrolment_id from receipts where id = ?", replacement.ok ? replacement.receipt.id : "")).toMatchObject({ id: replacement.ok ? replacement.receipt.id : "", enrolment_id: confirmed.enrolmentId });
+    db.close();
+  });
+
+  it("keeps one effective pre-confirmation token when competing replacements use different idempotency keys", async () => {
+    const db = testDb();
+    const c = context(db);
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+    const first = await recordTokenReceipt(c, "enq_first", draft.draftId, 40000);
+    const owner = staffForRole("owner", "acct_owner");
+    await reverseAdmissionReceipt(c, owner, "enq_first", first.receipt.id, {
+      reason: "Replace token with corrected amount",
+      expectedReceiptVersion: first.receipt.correctionVersion,
+      idempotencyKey: "reverse_token_before_competing_replacements",
+    });
+
+    const replacement = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 50000,
+      receivedAt: "2026-08-01T10:00:00.000Z",
+      paymentMode: "cash",
+      idempotencyKey: "replacement_token_a_after_reversal",
+    });
+    expect(replacement).toMatchObject({ ok: true, financialSummary: { totalReceivedPaise: 50000, receiptCount: 1 } });
+
+    const competing = await recordAdmissionReceipt(c, staff, "enq_first", {
+      admissionDraftId: draft.draftId,
+      amountPaise: 60000,
+      receivedAt: "2026-08-01T10:05:00.000Z",
+      paymentMode: "cash",
+      idempotencyKey: "replacement_token_b_after_reversal",
+    });
+    expect(competing).toMatchObject({ ok: false, status: 409, code: "first_receipt_already_recorded" });
+    expect(row(db, "select count(*) as count from receipts where admission_draft_id = ?", draft.draftId)?.count).toBe(2);
+    expect(row(db, "select count(*) as count from receipts left join receipt_reversals on receipt_reversals.receipt_id = receipts.id where receipts.admission_draft_id = ? and receipts.enrolment_id is null and receipt_reversals.id is null", draft.draftId)?.count).toBe(1);
+    db.close();
+  });
+
+  it("protects pre-confirmation reversal authorization, stale writes and idempotency", async () => {
+    const db = testDb();
+    const c = context(db);
+    const draft = await createAdmissionDraft(c, "enq_first", validPayload(), { recordReceipt: false });
+    const first = await recordTokenReceipt(c, "enq_first", draft.draftId, 50000);
+    const owner = staffForRole("owner", "acct_owner");
+    expect(await getAdmissionReceiptCorrectionCapability(c, staff, "enq_first")).toMatchObject({ canReverse: false });
+
+    await expect(reverseAdmissionReceipt(c, staff, "enq_first", first.receipt.id, {
+      reason: "Wrong token",
+      expectedReceiptVersion: first.receipt.correctionVersion,
+      idempotencyKey: "reverse_denied_admission_admin",
+    })).resolves.toMatchObject({ ok: false, code: "forbidden" });
+
+    await expect(reverseAdmissionReceipt(c, owner, "enq_first", first.receipt.id, {
+      reason: "Wrong token",
+      expectedReceiptVersion: "receipt:stale",
+      idempotencyKey: "reverse_stale_token",
+    })).resolves.toMatchObject({ ok: false, code: "stale_receipt" });
+
+    const reversed = await reverseAdmissionReceipt(c, owner, "enq_first", first.receipt.id, {
+      reason: "Wrong token",
+      expectedReceiptVersion: first.receipt.correctionVersion,
+      idempotencyKey: "reverse_token_same_key",
+    });
+    expect(reversed.ok).toBe(true);
+    await expect(reverseAdmissionReceipt(c, owner, "enq_first", first.receipt.id, {
+      reason: "Wrong token",
+      expectedReceiptVersion: first.receipt.correctionVersion,
+      idempotencyKey: "reverse_token_same_key",
+    })).resolves.toMatchObject({ ok: true, financialSummary: { totalReceivedPaise: 0 } });
+    expect(count(db, "receipt_reversals")).toBe(1);
+
+    await expect(reverseAdmissionReceipt(c, owner, "enq_first", first.receipt.id, {
+      reason: "Changed reason",
+      expectedReceiptVersion: first.receipt.correctionVersion,
+      idempotencyKey: "reverse_token_same_key",
+    })).resolves.toMatchObject({ ok: false, code: "idempotency_conflict" });
+    await expect(reverseAdmissionReceipt(c, owner, "enq_first", first.receipt.id, {
+      reason: "Wrong token",
+      expectedReceiptVersion: first.receipt.correctionVersion,
+      idempotencyKey: "reverse_token_second_key",
+    })).resolves.toMatchObject({ ok: false, code: "receipt_already_reversed" });
+    expect(count(db, "receipt_reversals")).toBe(1);
     db.close();
   });
 
@@ -1424,7 +1542,9 @@ function seedBase(db: SqliteD1) {
     insert into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at)
     values ('branch_sion', 'org_samyak', 'Sion', 'SION', 'Asia/Kolkata', 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
     insert into roles (id, organisation_id, code, name, created_at)
-    values ('role_admission_admin', 'org_samyak', 'admission_admin', 'Admission Admin', '2026-07-21T00:00:00.000Z');
+    values
+      ('role_admission_admin', 'org_samyak', 'admission_admin', 'Admission Admin', '2026-07-21T00:00:00.000Z'),
+      ('role_owner', 'org_samyak', 'owner', 'Owner', '2026-07-21T00:00:00.000Z');
     insert into people (id, organisation_id, home_branch_id, full_name, public_name, date_of_birth, status, created_at, updated_at)
     values
       ('person_staff', 'org_samyak', 'branch_sion', 'Staff User', 'Staff', null, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
@@ -1479,8 +1599,8 @@ function confirmationSnapshot(db: SqliteD1) {
   return JSON.parse(String(snapshotJson)) as Record<string, unknown>;
 }
 
-function row(db: SqliteD1, sql: string) {
-  return db.database.prepare(sql).get() as Row | undefined;
+function row(db: SqliteD1, sql: string, ...values: unknown[]) {
+  return db.database.prepare(sql).get(...(values as any[])) as Row | undefined;
 }
 
 function all(db: SqliteD1, sql: string) {

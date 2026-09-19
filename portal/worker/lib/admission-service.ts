@@ -3,10 +3,10 @@ import type { AppContext } from "./http";
 import { ORG_ID, mobileHash } from "./auth-store";
 import { assignBatchOnAdmissionConfirmation, validateAdmissionBatchSelection } from "./batch-management";
 import { createOpaqueId, decryptText, encryptText, hmacHex } from "./crypto";
-import { DISCOUNT_APPROVER_ROLES, canBackdateReceipts, canRecordReceipts, type StaffContext } from "./staff-auth";
+import { DISCOUNT_APPROVER_ROLES, canBackdateReceipts, canRecordReceipts, canReverseReceipts, type StaffContext } from "./staff-auth";
 import { normalizeIndianMobile } from "./mobile";
 import { maximumInstallmentsForCourse } from "./payment-schedule-policy";
-import { financialSummaryFromReceipts, type FinancialSummary } from "./payments-ledger";
+import { canReverseReceiptForBranch, financialSummaryFromReceipts, type FinancialSummary, type PublicReceipt, type ReceiptReversalInput } from "./payments-ledger";
 
 export { maximumInstallmentsForCourse } from "./payment-schedule-policy";
 
@@ -301,6 +301,10 @@ type DraftRecord = {
 type ReceiptRecord = {
   id: string;
   receipt_number: string;
+  branch_id?: string | null;
+  enquiry_id?: string | null;
+  admission_draft_id?: string | null;
+  enrolment_id?: string | null;
   amount_paise: number;
   received_at: string;
   payment_mode: string;
@@ -308,6 +312,11 @@ type ReceiptRecord = {
   notes: string | null;
   status: "recorded";
   payload_fingerprint: string;
+  created_at?: string;
+  reversal_id?: string | null;
+  reversal_reason?: string | null;
+  reversed_at?: string | null;
+  reversed_by_name?: string | null;
 };
 
 type Instalment = {
@@ -471,6 +480,16 @@ export async function getAdmissionReceiptSummary(c: AppContext, enquiryId: strin
   return financialSummaryFromReceipts(Number(payload.fee?.finalAgreedFeePaise || 0), schedule, receipts);
 }
 
+export async function getAdmissionReceiptCorrectionCapability(c: AppContext, staff: StaffContext, enquiryId: string) {
+  const enquiry = await getAdmissionEnquiry(c, enquiryId);
+  const canReverse = enquiry ? await canReverseReceiptForBranch(c, staff, enquiry.branch_id) : false;
+  return {
+    canReverse,
+    reasonRequired: true as const,
+    ownerOnly: true as const,
+  };
+}
+
 export async function recordAdmissionReceipt(c: AppContext, staff: StaffContext, enquiryId: string, input: z.infer<typeof recordAdmissionReceiptSchema>) {
   if (!canRecordAdmissionReceipt(staff)) {
     return { ok: false as const, status: 403, code: "forbidden", message: "This role cannot record admission receipts." };
@@ -523,12 +542,22 @@ export async function recordAdmissionReceipt(c: AppContext, staff: StaffContext,
   const receiptNumber = `RCP-${String(branch?.code || "BR").toUpperCase()}-${receiptYear}-${formatSequence(sequence)}`;
   const receiptId = createOpaqueId("receipt");
   try {
-    await c.env.DB.prepare(
+    const inserted = await c.env.DB.prepare(
       `insert into receipts
          (id, organisation_id, branch_id, receipt_number, receipt_year, enquiry_id, admission_draft_id, person_id,
           amount_paise, received_at, payment_mode, payment_reference, notes, status,
           created_by_login_account_id, idempotency_key, payload_fingerprint, created_at, updated_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'recorded', ?, ?, ?, ?, ?)`,
+       select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'recorded', ?, ?, ?, ?, ?
+       where not exists (
+         select 1
+         from receipts
+         left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+         where receipts.organisation_id = ?
+           and receipts.admission_draft_id = ?
+           and receipts.status = 'recorded'
+           and receipts.enrolment_id is null
+           and receipt_reversals.id is null
+       )`,
     )
       .bind(
         receiptId,
@@ -549,8 +578,21 @@ export async function recordAdmissionReceipt(c: AppContext, staff: StaffContext,
         fingerprint,
         now,
         now,
+        ORG_ID,
+        draft.id,
       )
       .run();
+    if (!changed(inserted)) {
+      const idempotent = await receiptByIdempotencyKey(c, staff, input.idempotencyKey);
+      if (idempotent) {
+        const idempotentFingerprint = input.receivedAt ? fingerprint : await receiptPayloadFingerprint(c, enquiry, draft, input, idempotent.received_at);
+        if (idempotent.payload_fingerprint !== idempotentFingerprint) {
+          return { ok: false as const, status: 409, code: "idempotency_conflict", message: "This idempotency key was already used for a different receipt payload." };
+        }
+        return { ok: true as const, receipt: publicReceipt(idempotent), financialSummary: await financialSummaryForDraft(c, draft, payload) };
+      }
+      return { ok: false as const, status: 409, code: "first_receipt_already_recorded", message: "The admission token receipt is already recorded." };
+    }
   } catch {
     const idempotent = await receiptByIdempotencyKey(c, staff, input.idempotencyKey);
     if (idempotent) {
@@ -564,14 +606,72 @@ export async function recordAdmissionReceipt(c: AppContext, staff: StaffContext,
     if (existing.length) return { ok: false as const, status: 409, code: "first_receipt_already_recorded", message: "The admission token receipt is already recorded." };
     return { ok: false as const, status: 409, code: "receipt_not_recorded", message: "Receipt could not be recorded. Please retry." };
   }
-  const receipt = await c.env.DB.prepare(
-    `select id, receipt_number, amount_paise, received_at, payment_mode, payment_reference, notes, status, payload_fingerprint
-     from receipts where id = ?`,
-  )
-    .bind(receiptId)
-    .first<ReceiptRecord>();
+  const receipt = await admissionReceiptById(c, receiptId);
   await audit(c, staff, enquiry.branch_id, "receipt_recorded", "receipt", receiptId, { enquiryId: enquiry.id, draftId: draft.id, receiptNumber, amountPaise: input.amountPaise, paymentMode: input.paymentMode });
   return { ok: true as const, receipt: publicReceipt(receipt!), financialSummary: await financialSummaryForDraft(c, draft, payload) };
+}
+
+export async function reverseAdmissionReceipt(c: AppContext, staff: StaffContext, enquiryId: string, receiptId: string, input: ReceiptReversalInput): Promise<{ ok: true; receipt: PublicReceipt; financialSummary: FinancialSummary } | AdmissionFailure> {
+  if (!canReverseReceipts(staff)) {
+    return { ok: false, status: 403, code: "forbidden", message: "This role cannot reverse receipts." };
+  }
+  const enquiry = await getAdmissionEnquiry(c, enquiryId);
+  if (!enquiry) return { ok: false, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
+  if (!(await canReverseReceiptForBranch(c, staff, enquiry.branch_id))) {
+    return { ok: false, status: 403, code: "forbidden", message: "This role cannot reverse receipts for this branch." };
+  }
+  const draft = await getAdmissionDraft(c, enquiryId);
+  if (!draft || draft.status !== "draft") return { ok: false, status: 404, code: "draft_not_found", message: "Save an active admission draft before reversing a token receipt." };
+  if (draft.confirmation_locked_at) {
+    return { ok: false, status: 409, code: "admission_confirmation_locked", message: "Admission confirmation has started. Receipt changes are locked." };
+  }
+  const receipt = await admissionReceiptById(c, receiptId);
+  if (!receipt || receipt.branch_id !== enquiry.branch_id || receipt.enquiry_id !== enquiry.id || receipt.admission_draft_id !== draft.id || receipt.enrolment_id) {
+    return { ok: false, status: 404, code: "receipt_not_found", message: "Receipt was not found for this admission draft." };
+  }
+  const payload = JSON.parse(draft.payload_json) as AdmissionPayload;
+  const fingerprint = await reversalPayloadFingerprint(c, receipt, input);
+  const existingByKey = await reversalByIdempotencyKey(c, staff, input.idempotencyKey);
+  if (existingByKey) {
+    if (existingByKey.payload_fingerprint !== fingerprint) {
+      return { ok: false, status: 409, code: "idempotency_conflict", message: "This idempotency key was already used for a different reversal." };
+    }
+    const idempotentReceipt = await admissionReceiptById(c, existingByKey.receipt_id);
+    return { ok: true, receipt: publicReceipt(idempotentReceipt || receipt), financialSummary: await financialSummaryForDraft(c, draft, payload) };
+  }
+  const currentVersion = receiptCorrectionVersion(receipt);
+  if (receipt.reversal_id) return { ok: false, status: 409, code: "receipt_already_reversed", message: "This receipt is already reversed." };
+  if (input.expectedReceiptVersion !== currentVersion) {
+    return { ok: false, status: 409, code: "stale_receipt", message: "Receipt state changed. Refresh before reversing." };
+  }
+
+  const now = new Date().toISOString();
+  const reversalId = createOpaqueId("reversal");
+  const results = await c.env.DB.batch([
+    c.env.DB.prepare(
+      `insert into receipt_reversals
+         (id, organisation_id, branch_id, receipt_id, enrolment_id, fee_agreement_id, reason, reversed_by_login_account_id, idempotency_key, payload_fingerprint, created_at)
+       select ?, ?, ?, ?, null, null, ?, ?, ?, ?, ?
+       where exists (
+         select 1 from receipts
+         where id = ? and organisation_id = ? and enquiry_id = ? and admission_draft_id = ? and enrolment_id is null and status = 'recorded'
+       )
+       and not exists (select 1 from receipt_reversals where receipt_id = ?)`,
+    ).bind(reversalId, ORG_ID, enquiry.branch_id, receipt.id, input.reason.trim(), staff.loginAccountId, input.idempotencyKey, fingerprint, now, receipt.id, ORG_ID, enquiry.id, draft.id, receipt.id),
+    c.env.DB.prepare(
+      `insert into audit_logs
+         (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
+       select ?, ?, ?, ?, ?, 'payment_receipt_reversed', 'receipt', ?, ?, ?
+       where exists (select 1 from receipt_reversals where id = ?)`,
+    ).bind(createOpaqueId("audit"), ORG_ID, enquiry.branch_id, staff.loginAccountId, staff.activePersonId, receipt.id, JSON.stringify({ receiptId: receipt.id, receiptNumber: receipt.receipt_number, reversalId, reason: input.reason.trim(), enquiryId: enquiry.id, draftId: draft.id, branchId: enquiry.branch_id, amountPaise: receipt.amount_paise }), now, reversalId),
+  ]);
+  if (!changed(results[0])) {
+    const existing = await admissionReceiptById(c, receiptId);
+    if (existing?.reversal_id) return { ok: false, status: 409, code: "receipt_already_reversed", message: "This receipt is already reversed." };
+    return { ok: false, status: 409, code: "receipt_not_reversed", message: "Receipt could not be reversed. Please retry." };
+  }
+  const reversed = await admissionReceiptById(c, receiptId);
+  return { ok: true, receipt: publicReceipt(reversed!), financialSummary: await financialSummaryForDraft(c, draft, payload) };
 }
 
 export async function confirmAdmission(c: AppContext, staff: StaffContext, enquiryId: string): Promise<
@@ -1345,10 +1445,13 @@ async function financialSummaryForEnrolment(c: AppContext, enrolmentId: string, 
     .bind(feeAgreement.id)
     .all<{ instalment_number: number; amount_paise: number; due_date: string | null }>();
   const receipts = await c.env.DB.prepare(
-    `select id, receipt_number, amount_paise, received_at, payment_mode, payment_reference, notes, status, payload_fingerprint
+    `select receipts.id, receipts.receipt_number, receipts.amount_paise, receipts.received_at, receipts.payment_mode,
+            receipts.payment_reference, receipts.notes, receipts.status, receipts.payload_fingerprint,
+            receipt_reversals.id as reversal_id
      from receipts
-     where enrolment_id = ? and status = 'recorded'
-     order by received_at, created_at`,
+     left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+     where receipts.enrolment_id = ? and receipts.status = 'recorded'
+     order by receipts.received_at, receipts.created_at`,
   )
     .bind(enrolmentId)
     .all<ReceiptRecord>();
@@ -1358,7 +1461,15 @@ async function financialSummaryForEnrolment(c: AppContext, enrolmentId: string, 
   return summary;
 }
 
-function publicReceipt(receipt: ReceiptRecord) {
+function publicReceipt(receipt: ReceiptRecord): PublicReceipt {
+  const reversal = receipt.reversal_id && receipt.reversal_reason && receipt.reversed_at
+    ? {
+        id: receipt.reversal_id,
+        reason: receipt.reversal_reason,
+        reversedAt: receipt.reversed_at,
+        reversedBy: receipt.reversed_by_name || null,
+      }
+    : null;
   return {
     id: receipt.id,
     receiptNumber: receipt.receipt_number,
@@ -1366,8 +1477,11 @@ function publicReceipt(receipt: ReceiptRecord) {
     receivedAt: receipt.received_at,
     paymentMode: receipt.payment_mode,
     paymentReference: receipt.payment_reference || null,
+    notes: receipt.notes || null,
     recordedBy: null,
-    status: "recorded" as const,
+    status: reversal ? "reversed" as const : "recorded" as const,
+    correctionVersion: receiptCorrectionVersion(receipt),
+    reversal,
   };
 }
 
@@ -1432,10 +1546,14 @@ async function freezeFeeAgreementInstalments(c: AppContext, feeAgreementId: stri
 
 async function receiptsForDraft(c: AppContext, draftId: string) {
   const receipts = await c.env.DB.prepare(
-    `select id, receipt_number, amount_paise, received_at, payment_mode, payment_reference, notes, status, payload_fingerprint
+    `select receipts.id, receipts.receipt_number, receipts.branch_id, receipts.enquiry_id, receipts.admission_draft_id,
+            receipts.enrolment_id, receipts.amount_paise, receipts.received_at, receipts.payment_mode,
+            receipts.payment_reference, receipts.notes, receipts.status, receipts.payload_fingerprint, receipts.created_at,
+            receipt_reversals.id as reversal_id, receipt_reversals.reason as reversal_reason, receipt_reversals.created_at as reversed_at
      from receipts
-     where admission_draft_id = ? and status = 'recorded' and enrolment_id is null
-     order by received_at, created_at`,
+     left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+     where receipts.admission_draft_id = ? and receipts.status = 'recorded' and receipts.enrolment_id is null and receipt_reversals.id is null
+     order by receipts.received_at, receipts.created_at`,
   )
     .bind(draftId)
     .all<ReceiptRecord>();
@@ -1444,17 +1562,59 @@ async function receiptsForDraft(c: AppContext, draftId: string) {
 
 async function receiptByIdempotencyKey(c: AppContext, staff: StaffContext, idempotencyKey: string) {
   return c.env.DB.prepare(
-    `select id, receipt_number, amount_paise, received_at, payment_mode, payment_reference, notes, status, payload_fingerprint
+    `select receipts.id, receipts.receipt_number, receipts.branch_id, receipts.enquiry_id, receipts.admission_draft_id,
+            receipts.enrolment_id, receipts.amount_paise, receipts.received_at, receipts.payment_mode,
+            receipts.payment_reference, receipts.notes, receipts.status, receipts.payload_fingerprint, receipts.created_at,
+            receipt_reversals.id as reversal_id, receipt_reversals.reason as reversal_reason, receipt_reversals.created_at as reversed_at
      from receipts
-     where organisation_id = ? and created_by_login_account_id = ? and idempotency_key = ?
+     left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+     where receipts.organisation_id = ? and receipts.created_by_login_account_id = ? and receipts.idempotency_key = ?
      limit 1`,
   )
     .bind(ORG_ID, staff.loginAccountId, idempotencyKey)
     .first<ReceiptRecord>();
 }
 
+async function admissionReceiptById(c: AppContext, receiptId: string) {
+  return c.env.DB.prepare(
+    `select receipts.id, receipts.receipt_number, receipts.branch_id, receipts.enquiry_id, receipts.admission_draft_id,
+            receipts.enrolment_id, receipts.amount_paise, receipts.received_at, receipts.payment_mode,
+            receipts.payment_reference, receipts.notes, receipts.status, receipts.payload_fingerprint, receipts.created_at,
+            receipt_reversals.id as reversal_id, receipt_reversals.reason as reversal_reason, receipt_reversals.created_at as reversed_at,
+            coalesce(reversal_people.public_name, reversal_people.full_name) as reversed_by_name
+     from receipts
+     left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+     left join login_account_people reversal_account_people on reversal_account_people.login_account_id = receipt_reversals.reversed_by_login_account_id
+       and reversal_account_people.is_default = 1
+     left join people reversal_people on reversal_people.id = reversal_account_people.person_id
+     where receipts.organisation_id = ? and receipts.id = ?
+     limit 1`,
+  )
+    .bind(ORG_ID, receiptId)
+    .first<ReceiptRecord>();
+}
+
+async function reversalByIdempotencyKey(c: AppContext, staff: StaffContext, idempotencyKey: string) {
+  return c.env.DB.prepare(
+    `select id, receipt_id, payload_fingerprint
+     from receipt_reversals
+     where organisation_id = ? and reversed_by_login_account_id = ? and idempotency_key = ?
+     limit 1`,
+  )
+    .bind(ORG_ID, staff.loginAccountId, idempotencyKey)
+    .first<{ id: string; receipt_id: string; payload_fingerprint: string }>();
+}
+
 async function preConfirmationReceiptCount(c: AppContext, draftId: string) {
-  const row = await c.env.DB.prepare("select count(*) as count from receipts where admission_draft_id = ? and status = 'recorded' and enrolment_id is null")
+  const row = await c.env.DB.prepare(
+    `select count(*) as count
+     from receipts
+     left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+     where receipts.admission_draft_id = ?
+       and receipts.status = 'recorded'
+       and receipts.enrolment_id is null
+       and receipt_reversals.id is null`,
+  )
     .bind(draftId)
     .first<{ count: number }>();
   return Number(row?.count || 0);
@@ -1540,6 +1700,29 @@ async function receiptPayloadFingerprint(c: AppContext, enquiry: EnquiryRecord, 
       notes: input.notes?.trim() || "",
     }),
   );
+}
+
+async function reversalPayloadFingerprint(c: AppContext, receipt: ReceiptRecord, input: ReceiptReversalInput) {
+  return hmacHex(
+    c.env.SESSION_PEPPER,
+    "receipt-reversal",
+    JSON.stringify({
+      receiptId: receipt.id,
+      amountPaise: Number(receipt.amount_paise || 0),
+      reason: input.reason.trim(),
+    }),
+  );
+}
+
+function receiptCorrectionVersion(receipt: ReceiptRecord) {
+  return [
+    "receipt",
+    receipt.id,
+    receipt.payload_fingerprint,
+    receipt.created_at || "",
+    receipt.reversal_id || "active",
+    receipt.reversed_at || "",
+  ].join(":");
 }
 
 async function instalmentScheduleFingerprint(c: AppContext, instalments: Instalment[]) {

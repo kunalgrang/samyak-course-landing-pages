@@ -80,7 +80,34 @@ describe("Payments / Collections V2", () => {
         lastPaymentAt: "2026-09-02T09:00:00.000Z",
       });
       expect(detail.installments.map((item) => `${item.label}:${item.allocatedReceivedPaise}:${item.balancePaise}`)).toEqual(["Paid:500000:0", "Overdue:200000:300000"]);
-      expect(detail.receiptCorrection.supported).toBe(false);
+      expect(detail.receiptCorrection.supported).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("excludes reversed receipts from outstanding, due metrics, recent collections and history totals", async () => {
+    const db = seededDb();
+    try {
+      db.database.exec(`
+        insert into receipt_reversals
+          (id, organisation_id, branch_id, receipt_id, enrolment_id, fee_agreement_id, reason, reversed_by_login_account_id, idempotency_key, payload_fingerprint, created_at)
+        values
+          ('reversal_a2', 'org_samyak', 'branch_sion', 'receipt_a2', 'enrol_a', 'fee_a', 'Wrong receipt', 'acct_owner', 'reverse_a2', 'reverse_fp_a2', '2026-09-03T09:00:00.000Z');
+      `);
+
+      const detail = await getCollectionDetail(context(db), ownerStaff(), "enrol_a");
+      const list = await listCollections(context(db), ownerStaff(), { status: "all", limit: 25, offset: 0 });
+
+      expect(detail.ok && detail.item.summary).toMatchObject({
+        receivedPaise: 500000,
+        outstandingPaise: 500000,
+        overduePaise: 500000,
+        lastPaymentAt: "2026-08-01T09:00:00.000Z",
+      });
+      expect(detail.ok && detail.receipts.find((receipt) => receipt.id === "receipt_a2")).toMatchObject({ status: "reversed", reversal: { reason: "Wrong receipt" } });
+      expect(list.overview).toMatchObject({ totalOutstandingPaise: 1500000, overduePaise: 500000, collectedThisMonthPaise: 0 });
+      expect(list.sections.recentCollections.map((receipt) => receipt.id)).not.toContain("receipt_a2");
     } finally {
       db.close();
     }
