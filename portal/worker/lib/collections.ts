@@ -98,6 +98,10 @@ type ReceiptRow = {
   payload_fingerprint: string;
   created_at: string;
   recorded_by: string | null;
+  reversal_id?: string | null;
+  reversal_reason?: string | null;
+  reversed_at?: string | null;
+  reversed_by?: string | null;
 };
 
 type InstalmentRow = {
@@ -246,7 +250,7 @@ export async function listCollections(c: AppContext, staff: StaffContext, query:
   };
 }
 
-export async function getCollectionDetail(c: AppContext, staff: StaffContext, enrolmentId: string): Promise<{ ok: true; success: true; today: string; item: CollectionItem; installments: CollectionInstallment[]; receipts: ReturnType<typeof publicReceipt>[]; followups: CollectionFollowup[]; timeline: CollectionTimelineEvent[]; receiptCorrection: { supported: false; message: string }; paymentSchedule: PaymentScheduleRevisionState } | CollectionFailure> {
+export async function getCollectionDetail(c: AppContext, staff: StaffContext, enrolmentId: string): Promise<{ ok: true; success: true; today: string; item: CollectionItem; installments: CollectionInstallment[]; receipts: ReturnType<typeof publicReceipt>[]; followups: CollectionFollowup[]; timeline: CollectionTimelineEvent[]; receiptCorrection: { supported: boolean; message: string }; paymentSchedule: PaymentScheduleRevisionState } | CollectionFailure> {
   const row = await collectionRowByEnrolment(c, staff, enrolmentId);
   if (!row) return { ok: false, status: 404, code: "collection_not_found", message: "Collection record was not found." };
   const today = indiaDate();
@@ -272,8 +276,8 @@ export async function getCollectionDetail(c: AppContext, staff: StaffContext, en
     followups: followupRows,
     timeline: collectionTimeline(receiptRows, followupRows, item.summary, today),
     receiptCorrection: {
-      supported: false,
-      message: "Receipt amounts and dates are immutable in the current ledger. Use owner review until a reversal workflow exists.",
+      supported: true,
+      message: "Receipts are immutable. Reverse an incorrect receipt from Payments, then record any replacement through the normal payment form.",
     },
     paymentSchedule: schedule,
   };
@@ -344,7 +348,7 @@ export async function updatePaymentSchedule(c: AppContext, staff: StaffContext, 
   }
 
   const finalFee = Number(row.final_agreed_fee_paise || 0);
-  const totalReceived = sum(receipts, (receipt) => Number(receipt.amount_paise || 0));
+  const totalReceived = sum(effectiveReceipts(receipts), (receipt) => Number(receipt.amount_paise || 0));
   if (totalReceived >= finalFee && finalFee > 0) {
     return { ok: false, status: 409, code: "schedule_settled", message: "Fully settled schedules are read-only." };
   }
@@ -404,7 +408,7 @@ export async function updatePaymentSchedule(c: AppContext, staff: StaffContext, 
 
 export function collectionInstallments(finalAgreedFeePaise: number, instalments: InstalmentRow[], receipts: ReceiptRow[], today: string): CollectionInstallment[] {
   const schedule = instalments.map((row) => ({ instalmentNumber: Number(row.instalment_number), amountPaise: Number(row.amount_paise), dueDate: row.due_date || null }));
-  const totalReceived = receipts.reduce((total, receipt) => total + Number(receipt.amount_paise || 0), 0);
+  const totalReceived = effectiveReceipts(receipts).reduce((total, receipt) => total + Number(receipt.amount_paise || 0), 0);
   const base = schedule.length ? allocateInstalments(totalReceived, schedule) : allocateInstalments(totalReceived, [{ instalmentNumber: 1, amountPaise: finalAgreedFeePaise, dueDate: null }]);
   return base.map((instalment) => {
     const daysOverdue = instalment.dueDate && instalment.balancePaise > 0 && instalment.dueDate < today ? daysBetween(instalment.dueDate, today) : 0;
@@ -413,7 +417,7 @@ export function collectionInstallments(finalAgreedFeePaise: number, instalments:
 }
 
 async function scheduleRevisionState(c: AppContext, staff: StaffContext, row: EnrolmentCollectionRow, instalments: InstalmentRow[], receipts: ReceiptRow[]): Promise<PaymentScheduleRevisionState> {
-  const totalReceivedPaise = sum(receipts, (receipt) => Number(receipt.amount_paise || 0));
+  const totalReceivedPaise = sum(effectiveReceipts(receipts), (receipt) => Number(receipt.amount_paise || 0));
   const finalAgreedFeePaise = Number(row.final_agreed_fee_paise || 0);
   return {
     canManage: totalReceivedPaise < finalAgreedFeePaise && await canManageScheduleForBranch(c, staff, row.branch_id),
@@ -518,6 +522,7 @@ export function indiaDate(now = new Date()) {
 }
 
 function mapCollectionItem(row: EnrolmentCollectionRow, instalments: InstalmentRow[], receipts: ReceiptRow[], followups: FollowupRow[], today: string): CollectionItem {
+  const activeReceipts = effectiveReceipts(receipts);
   const installments = collectionInstallments(Number(row.final_agreed_fee_paise || 0), instalments, receipts, today);
   const summary = financialSummaryFromReceipts(Number(row.final_agreed_fee_paise || 0), instalments.map((item) => ({ instalmentNumber: Number(item.instalment_number), amountPaise: Number(item.amount_paise), dueDate: item.due_date || null })), receipts);
   const scheduleAttentionReason = scheduleAttentionReasonFor(Number(row.final_agreed_fee_paise || 0), installments, instalments, summary.overallBalancePaise);
@@ -538,7 +543,7 @@ function mapCollectionItem(row: EnrolmentCollectionRow, instalments: InstalmentR
     nextDueDate,
     daysOverdue,
     agingBucket: agingBucket(daysOverdue),
-    lastPaymentAt: receipts[receipts.length - 1]?.received_at || null,
+    lastPaymentAt: activeReceipts[activeReceipts.length - 1]?.received_at || null,
     lastFollowUpAt: latestFollowup?.created_at || null,
     nextFollowUpAt,
     promiseDate,
@@ -681,11 +686,17 @@ async function receiptsByEnrolment(c: AppContext, enrolmentIds: string[]) {
   const rows = await c.env.DB.prepare(
     `select receipts.id, receipts.receipt_number, receipts.amount_paise, receipts.received_at, receipts.payment_mode,
             receipts.payment_reference, receipts.notes, receipts.status, receipts.payload_fingerprint, receipts.created_at,
-            receipts.enrolment_id, coalesce(actor_people.public_name, actor_people.full_name) as recorded_by
+            receipts.enrolment_id, coalesce(actor_people.public_name, actor_people.full_name) as recorded_by,
+            receipt_reversals.id as reversal_id, receipt_reversals.reason as reversal_reason, receipt_reversals.created_at as reversed_at,
+            coalesce(reversal_people.public_name, reversal_people.full_name) as reversed_by
      from receipts
      left join login_account_people on login_account_people.login_account_id = receipts.created_by_login_account_id
        and login_account_people.is_default = 1
      left join people actor_people on actor_people.id = login_account_people.person_id
+     left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+     left join login_account_people reversal_account_people on reversal_account_people.login_account_id = receipt_reversals.reversed_by_login_account_id
+       and reversal_account_people.is_default = 1
+     left join people reversal_people on reversal_people.id = reversal_account_people.person_id
      where receipts.organisation_id = ? and receipts.enrolment_id in (${placeholders(enrolmentIds.length)}) and receipts.status = 'recorded'
      order by receipts.enrolment_id, receipts.received_at, receipts.created_at`,
   ).bind(ORG_ID, ...enrolmentIds).all<ReceiptRow & { enrolment_id: string }>();
@@ -714,9 +725,11 @@ async function collectedSince(c: AppContext, staff: StaffContext, fromDate: stri
   const row = await c.env.DB.prepare(
     `select coalesce(sum(receipts.amount_paise), 0) as total
      from receipts
+     left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
      join enrolments on enrolments.id = receipts.enrolment_id
      where receipts.organisation_id = ?
        and receipts.status = 'recorded'
+       and receipt_reversals.id is null
        and receipts.received_at >= ?
        ${branchScopeSql(staff, "enrolments.branch_id", bindings)}`,
   ).bind(...bindings).first<{ total: number }>();
@@ -732,10 +745,11 @@ async function overviewMetrics(c: AppContext, staff: StaffContext, today: string
      join enrolments on enrolments.id = fee_agreements.enrolment_id
      join students on students.id = enrolments.student_id and students.organisation_id = ?
      left join (
-       select enrolment_id, fee_agreement_id, sum(amount_paise) as total_received_paise
+       select receipts.enrolment_id, receipts.fee_agreement_id, sum(receipts.amount_paise) as total_received_paise
        from receipts
-       where organisation_id = ? and status = 'recorded'
-       group by enrolment_id, fee_agreement_id
+       left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+       where receipts.organisation_id = ? and receipts.status = 'recorded' and receipt_reversals.id is null
+       group by receipts.enrolment_id, receipts.fee_agreement_id
      ) receipt_totals on receipt_totals.enrolment_id = enrolments.id and receipt_totals.fee_agreement_id = fee_agreements.id
      where fee_agreements.status = 'active'
        ${branchScopeSql(staff, "enrolments.branch_id", balanceBindings)}`,
@@ -757,10 +771,11 @@ async function overviewMetrics(c: AppContext, staff: StaffContext, today: string
        join enrolments on enrolments.id = fee_agreements.enrolment_id
        join students on students.id = enrolments.student_id and students.organisation_id = ?
        left join (
-         select fee_agreement_id, sum(amount_paise) as total_received_paise
+         select receipts.fee_agreement_id, sum(receipts.amount_paise) as total_received_paise
          from receipts
-         where organisation_id = ? and status = 'recorded'
-         group by fee_agreement_id
+         left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+         where receipts.organisation_id = ? and receipts.status = 'recorded' and receipt_reversals.id is null
+         group by receipts.fee_agreement_id
        ) receipt_totals on receipt_totals.fee_agreement_id = fee_agreements.id
      )
      select
@@ -779,10 +794,11 @@ async function overviewMetrics(c: AppContext, staff: StaffContext, today: string
      join students on students.id = enrolments.student_id and students.organisation_id = ?
      join fee_agreements on fee_agreements.enrolment_id = enrolments.id and fee_agreements.status = 'active'
      left join (
-       select fee_agreement_id, sum(amount_paise) as total_received_paise
+       select receipts.fee_agreement_id, sum(receipts.amount_paise) as total_received_paise
        from receipts
-       where organisation_id = ? and status = 'recorded'
-       group by fee_agreement_id
+       left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+       where receipts.organisation_id = ? and receipts.status = 'recorded' and receipt_reversals.id is null
+       group by receipts.fee_agreement_id
      ) receipt_totals on receipt_totals.fee_agreement_id = fee_agreements.id
      where collection_followups.organisation_id = ?
        and collection_followups.outcome = 'promised_payment'
@@ -805,10 +821,11 @@ async function overviewMetrics(c: AppContext, staff: StaffContext, today: string
      join enrolments on enrolments.id = fee_agreements.enrolment_id
      join students on students.id = enrolments.student_id and students.organisation_id = ?
      left join (
-       select fee_agreement_id, sum(amount_paise) as total_received_paise
+       select receipts.fee_agreement_id, sum(receipts.amount_paise) as total_received_paise
        from receipts
-       where organisation_id = ? and status = 'recorded'
-       group by fee_agreement_id
+       left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+       where receipts.organisation_id = ? and receipts.status = 'recorded' and receipt_reversals.id is null
+       group by receipts.fee_agreement_id
      ) receipt_totals on receipt_totals.fee_agreement_id = fee_agreements.id
      where fee_agreements.status = 'active'
        and fee_agreements.final_agreed_fee_paise > coalesce(receipt_totals.total_received_paise, 0)
@@ -864,15 +881,19 @@ function scheduleAttentionWhereSql(today: string) {
   return ` and fee_agreements.final_agreed_fee_paise > (
       select coalesce(sum(receipts.amount_paise), 0)
       from receipts
+      left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
       where receipts.organisation_id = '${ORG_ID}'
         and receipts.status = 'recorded'
+        and receipt_reversals.id is null
         and receipts.fee_agreement_id = fee_agreements.id
     )
         and ${scheduleAttentionPredicateSql("fee_agreements", `(
       select coalesce(sum(receipts.amount_paise), 0)
       from receipts
+      left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
       where receipts.organisation_id = '${ORG_ID}'
         and receipts.status = 'recorded'
+        and receipt_reversals.id is null
         and receipts.fee_agreement_id = fee_agreements.id
     )`)}`;
 }
@@ -920,7 +941,7 @@ function collectionFlags(summary: CollectionSummary, latestFollowup: FollowupRow
 
 function collectionTimeline(receipts: ReturnType<typeof publicReceipt>[], followups: CollectionFollowup[], summary: CollectionSummary, today: string) {
   const events: CollectionTimelineEvent[] = [
-    ...receipts.map((receipt) => ({ id: receipt.id, type: "receipt" as const, occurredAt: receipt.receivedAt, label: `Receipt ${receipt.receiptNumber}`, amountPaise: receipt.amountPaise, note: null, metadata: { paymentMode: receipt.paymentMode, paymentReference: receipt.paymentReference, recordedBy: receipt.recordedBy } })),
+    ...receipts.map((receipt) => ({ id: receipt.id, type: "receipt" as const, occurredAt: receipt.receivedAt, label: receipt.status === "reversed" ? `Reversed Receipt ${receipt.receiptNumber}` : `Receipt ${receipt.receiptNumber}`, amountPaise: receipt.amountPaise, note: receipt.reversal?.reason || null, metadata: { paymentMode: receipt.paymentMode, paymentReference: receipt.paymentReference, recordedBy: receipt.recordedBy, status: receipt.status, reversal: receipt.reversal } })),
     ...followups.map((followup) => ({ id: followup.id, type: "followup" as const, occurredAt: followup.createdAt, label: followup.outcome, amountPaise: followup.promisedAmountPaise, note: followup.note || null, metadata: { followupType: followup.followupType, promisedPaymentDate: followup.promisedPaymentDate, nextFollowUpAt: followup.nextFollowUpAt, recordedBy: followup.recordedBy } })),
   ];
   if (summary.promiseMissed && summary.promiseDate) {
@@ -933,10 +954,13 @@ function collectionTimeline(receipts: ReturnType<typeof publicReceipt>[], follow
 }
 
 function recentCollections(receipts: Map<string, ReceiptRow[]>) {
-  return [...receipts.values()].flat().slice().sort((a, b) => b.received_at.localeCompare(a.received_at)).slice(0, 8).map(publicReceipt);
+  return effectiveReceipts([...receipts.values()].flat()).slice().sort((a, b) => b.received_at.localeCompare(a.received_at)).slice(0, 8).map(publicReceipt);
 }
 
 function publicReceipt(receipt: ReceiptRow) {
+  const reversal = receipt.reversal_id && receipt.reversal_reason && receipt.reversed_at
+    ? { id: receipt.reversal_id, reason: receipt.reversal_reason, reversedAt: receipt.reversed_at, reversedBy: receipt.reversed_by || null }
+    : null;
   return {
     id: receipt.id,
     receiptNumber: receipt.receipt_number,
@@ -945,9 +969,15 @@ function publicReceipt(receipt: ReceiptRow) {
     paymentMode: receipt.payment_mode,
     paymentReference: receipt.payment_reference || null,
     notes: receipt.notes || null,
-    status: "recorded" as const,
+    status: reversal ? "reversed" as const : "recorded" as const,
     recordedBy: receipt.recorded_by || null,
+    correctionVersion: ["receipt", receipt.id, receipt.payload_fingerprint, receipt.created_at, receipt.reversal_id || "active", receipt.reversed_at || ""].join(":"),
+    reversal,
   };
+}
+
+function effectiveReceipts(receipts: ReceiptRow[]) {
+  return receipts.filter((receipt) => !receipt.reversal_id);
 }
 
 function publicFollowup(row: FollowupRow): CollectionFollowup {

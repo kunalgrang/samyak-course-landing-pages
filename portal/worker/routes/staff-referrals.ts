@@ -440,11 +440,13 @@ function pushRewardFilter(clauses: string[], params: Array<string | number>, rew
   const qualifyingReceiptTotal = `coalesce((
     select sum(receipts.amount_paise)
     from receipts
+    left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
     where receipts.organisation_id = referrals.organisation_id
       and receipts.enrolment_id = enrolments.id
       and receipts.fee_agreement_id = fee_agreements.id
       and receipts.branch_id = referrals.branch_id
       and receipts.status = 'recorded'
+      and receipt_reversals.id is null
   ), 0)`;
   const qualifyingMinimum = "((fee_agreements.final_agreed_fee_paise * referral_programmes.minimum_fee_percentage + 99) / 100)";
   const hasMatchingReward = `(case when referral_reward_rule_sets.reward_model_type = 'partner_percentage' then referrals.education_partner_id is not null and referrals.partner_commission_basis_points is not null and referrals.gst_basis_points_applicable is not null else exists (

@@ -112,6 +112,8 @@ function ledger(fullyPaid: boolean) {
         paymentReference: null,
         status: "recorded",
         recordedBy: "Owner",
+        correctionVersion: "receipt:receipt_1:fp:created:active",
+        reversal: null,
       },
     },
     receipts: [
@@ -125,6 +127,8 @@ function ledger(fullyPaid: boolean) {
         notes: null,
         status: "recorded",
         recordedBy: "Owner",
+        correctionVersion: "receipt:receipt_1:fp:created:active",
+        reversal: null,
       },
     ],
   };

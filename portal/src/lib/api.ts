@@ -718,11 +718,22 @@ const receiptSummarySchema = z.object({
     paymentReference: z.string().nullable(),
     notes: z.string().nullable().optional(),
     recordedBy: z.string().nullable().optional(),
-    status: z.literal("recorded"),
+    status: z.union([z.literal("recorded"), z.literal("reversed")]),
+    correctionVersion: z.string().default(""),
+    reversal: z.object({
+      id: z.string(),
+      reason: z.string(),
+      reversedAt: z.string(),
+      reversedBy: z.string().nullable(),
+    }).nullable().default(null),
   }).nullable(),
 });
 
 const paymentReceiptSchema = receiptSummarySchema.shape.tokenReceipt.unwrap();
+
+const admissionFinancialSummarySchema = receiptSummarySchema.extend({
+  receiptHistory: z.array(paymentReceiptSchema).default([]),
+});
 
 const paymentLedgerSchema = z.object({
   enrolment: z.object({
@@ -739,6 +750,17 @@ const paymentLedgerSchema = z.object({
   }),
   financialSummary: receiptSummarySchema,
   receipts: z.array(paymentReceiptSchema),
+  receiptCorrection: z.object({
+    canReverse: z.boolean(),
+    reasonRequired: z.literal(true),
+    ownerOnly: z.literal(true),
+  }),
+});
+
+const receiptCorrectionCapabilitySchema = z.object({
+  canReverse: z.boolean(),
+  reasonRequired: z.literal(true),
+  ownerOnly: z.literal(true),
 });
 
 const collectionSummarySchema = z.object({
@@ -840,7 +862,7 @@ const collectionDetailSchema = z.object({
     note: z.string().nullable(),
     metadata: z.record(z.string(), z.unknown()),
   })),
-  receiptCorrection: z.object({ supported: z.literal(false), message: z.string() }),
+  receiptCorrection: z.object({ supported: z.boolean(), message: z.string() }),
   paymentSchedule: z.object({
     canManage: z.boolean(),
     reasonRequired: z.literal(true),
@@ -870,7 +892,8 @@ const admissionDraftSchema = z.object({
       confirmationSnapshotVersion: z.string().nullable().optional(),
     })
     .nullable(),
-  financialSummary: receiptSummarySchema.nullable().optional(),
+  financialSummary: admissionFinancialSummarySchema.nullable().optional(),
+  receiptCorrection: receiptCorrectionCapabilitySchema.optional(),
 });
 
 const admissionDraftSaveSchema = z.object({
@@ -889,13 +912,13 @@ const admissionConfirmationSchema = z.object({
   enrolmentNumber: z.string(),
   enquiryNumber: z.string(),
   isNewStudent: z.boolean(),
-  financialSummary: receiptSummarySchema,
+  financialSummary: admissionFinancialSummarySchema,
 });
 
 const admissionReceiptResponseSchema = z.object({
   success: z.literal(true),
   receipt: paymentReceiptSchema,
-  financialSummary: receiptSummarySchema,
+  financialSummary: admissionFinancialSummarySchema,
 });
 
 const admissionPersonLinkResponseSchema = z.object({
@@ -1558,7 +1581,7 @@ export type CrmEnquiryList = z.infer<typeof crmListSchema>;
 export type CrmEnquiryDetail = z.infer<typeof crmDetailSchema>;
 export type AdmissionDraft = z.infer<typeof admissionDraftSchema>["draft"];
 export type AdmissionConfirmation = z.infer<typeof admissionConfirmationSchema>;
-export type AdmissionFinancialSummary = z.infer<typeof receiptSummarySchema>;
+export type AdmissionFinancialSummary = z.infer<typeof admissionFinancialSummarySchema>;
 export type AdmissionReceipt = NonNullable<AdmissionFinancialSummary["tokenReceipt"]>;
 export type PaymentLedger = z.infer<typeof paymentLedgerSchema>;
 export type PaymentReceipt = z.infer<typeof paymentReceiptSchema>;
@@ -1990,12 +2013,20 @@ export async function recordAdmissionReceipt(enquiryId: string, input: Record<st
   return postJson(`/api/staff/admissions/${encodeURIComponent(enquiryId)}/receipts`, input, admissionReceiptResponseSchema);
 }
 
+export async function reverseAdmissionReceipt(enquiryId: string, receiptId: string, input: Record<string, unknown>) {
+  return postJson(`/api/staff/admissions/${encodeURIComponent(enquiryId)}/receipts/${encodeURIComponent(receiptId)}/reversal`, input, admissionReceiptResponseSchema);
+}
+
 export async function getPaymentLedger(enrolmentId: string) {
   return getJson(`/api/staff/enrolments/${encodeURIComponent(enrolmentId)}/payments`, paymentLedgerSchema);
 }
 
 export async function recordEnrolmentReceipt(enrolmentId: string, input: Record<string, unknown>) {
   return postJson(`/api/staff/enrolments/${encodeURIComponent(enrolmentId)}/receipts`, input, admissionReceiptResponseSchema);
+}
+
+export async function reverseEnrolmentReceipt(enrolmentId: string, receiptId: string, input: Record<string, unknown>) {
+  return postJson(`/api/staff/enrolments/${encodeURIComponent(enrolmentId)}/receipts/${encodeURIComponent(receiptId)}/reversal`, input, admissionReceiptResponseSchema);
 }
 
 export type CollectionQuery = {

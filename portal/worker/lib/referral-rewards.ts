@@ -413,11 +413,13 @@ async function qualificationRows(c: AppContext, referralIds: string[]) {
        coalesce((
          select sum(receipts.amount_paise)
          from receipts
+         left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
          where receipts.organisation_id = referrals.organisation_id
            and receipts.enrolment_id = enrolments.id
            and receipts.fee_agreement_id = fee_agreements.id
            and receipts.branch_id = referrals.branch_id
            and receipts.status = 'recorded'
+           and receipt_reversals.id is null
        ), 0) as total_received_paise
      from referrals
      join referral_programmes on referral_programmes.id = referrals.referral_programme_id

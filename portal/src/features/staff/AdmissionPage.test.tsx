@@ -36,6 +36,8 @@ vi.mock("../../lib/api", async (importOriginal) => {
 
 import {
   AdmissionPage,
+  AdmissionReceiptHistory,
+  ReceiptRecorded,
   AdmissionLockedFieldset,
   AdmissionConfigurationMissing,
   AdmissionRecoveryNotice,
@@ -167,6 +169,73 @@ describe("AdmissionPage helpers", () => {
     expect(html).toContain("SYK-SION-000001");
     expect(html).toContain("ENR-SION-2026-000001");
     expect(html).toContain("/app/students/student_1");
+  });
+
+  it("renders the effective admission token once and keeps reversed history readable", () => {
+    const reversedAt = "2026-08-03T08:15:00.000Z";
+    const replacement = {
+      id: "receipt_b",
+      receiptNumber: "RCP-SION-2026-000002",
+      amountPaise: 50000,
+      receivedAt: "2026-08-01T09:00:00.000Z",
+      paymentMode: "cash",
+      paymentReference: "B-REF",
+      notes: null,
+      recordedBy: null,
+      status: "recorded" as const,
+      correctionVersion: "receipt:receipt_b:fp:created:active",
+      reversal: null,
+    };
+    const reversed = {
+      id: "receipt_a",
+      receiptNumber: "RCP-SION-2026-000001",
+      amountPaise: 40000,
+      receivedAt: "2026-08-02T10:00:00.000Z",
+      paymentMode: "upi",
+      paymentReference: "A-REF",
+      notes: null,
+      recordedBy: null,
+      status: "reversed" as const,
+      correctionVersion: "receipt:receipt_a:fp:created:reversed",
+      reversal: {
+        id: "reversal_a",
+        reason: "Token amount entered incorrectly",
+        reversedAt,
+        reversedBy: "Owner",
+      },
+    };
+    const summary = { ...financialSummary(), tokenReceipt: replacement, receiptHistory: [replacement, reversed] };
+    const html = renderToStaticMarkup(
+      <>
+        <ReceiptRecorded
+          summary={summary}
+          canReverse
+          reversalReason=""
+          reversing={false}
+          onReasonChange={() => undefined}
+          onReverse={() => undefined}
+        />
+        <AdmissionReceiptHistory receipts={summary.receiptHistory} effectiveTokenId="receipt_b" />
+      </>,
+    );
+
+    const reversedAtLabel = new Intl.DateTimeFormat("en-IN", {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: "Asia/Kolkata",
+    }).format(new Date(reversedAt));
+    expect(html.match(/RCP-SION-2026-000002/g)).toHaveLength(1);
+    expect(html).toContain("receipt-card--effective");
+    expect(html).toContain("admission-receipt-history");
+    expect(html).toContain("Effective token");
+    expect(html).toContain("Reverse Receipt");
+    expect(html).toContain("RCP-SION-2026-000001");
+    expect(html).toContain("Reversed");
+    expect(html).toContain("Token amount entered incorrectly");
+    expect(html).toContain("Owner");
+    expect(html).toContain(reversedAtLabel);
+    expect(html.indexOf("RCP-SION-2026-000002")).toBeLessThan(html.indexOf("Effective token"));
+    expect(html.indexOf("Receipt history")).toBeLessThan(html.indexOf("RCP-SION-2026-000001"));
   });
 
   it("models double-click protection through disabled confirmation state text", () => {
@@ -883,6 +952,9 @@ function financialSummary() {
       paymentMode: "cash",
       paymentReference: null,
       status: "recorded" as const,
+      correctionVersion: "receipt:receipt_1:fp:created:active",
+      reversal: null,
     },
+    receiptHistory: [],
   };
 }

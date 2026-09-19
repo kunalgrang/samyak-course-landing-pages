@@ -9,15 +9,18 @@ import {
   fieldErrorsFromIssues,
   getAdmissionConfiguration,
   getAdmissionDraft,
+  getAdmissionReceiptCorrectionCapability,
   getAdmissionReceiptSummary,
   listDiscountApprovals,
   recordAdmissionReceipt,
   recordAdmissionReceiptSchema,
   requestDiscountApproval,
+  reverseAdmissionReceipt,
   saveAdmissionDraft,
   saveAdmissionDraftSchema,
 } from "../lib/admission-service";
-import { ADMISSION_STAFF_ROLES, COURSE_ADMIN_ROLES, DISCOUNT_APPROVER_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
+import { ADMISSION_STAFF_ROLES, COURSE_ADMIN_ROLES, DISCOUNT_APPROVER_ROLES, RECEIPT_REVERSAL_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
+import { reverseReceiptSchema } from "../lib/payments-ledger";
 import { createOpaqueId, decryptText, hmacHex } from "../lib/crypto";
 import { mapStatusToPipelineStage } from "../lib/enquiry-crm";
 import { isResponse, readJsonBody, requireSameOrigin } from "../lib/http";
@@ -256,6 +259,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
           }
         : null,
       financialSummary: await getAdmissionReceiptSummary(c, c.req.param("enquiryId")),
+      receiptCorrection: await getAdmissionReceiptCorrectionCapability(c, staff, c.req.param("enquiryId")),
     });
   });
 
@@ -278,6 +282,8 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   });
 
   app.post("/api/staff/admissions/:enquiryId/receipts", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
     const parsed = recordAdmissionReceiptSchema.safeParse(await c.req.json().catch(() => null));
@@ -285,6 +291,18 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     const result = await recordAdmissionReceipt(c, staff, c.req.param("enquiryId"), parsed.data);
     if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message, fieldErrors: result.fieldErrors });
     return jsonPlain(c, { success: true, receipt: result.receipt, financialSummary: result.financialSummary }, { status: 201 });
+  });
+
+  app.post("/api/staff/admissions/:enquiryId/receipts/:receiptId/reversal", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
+    const staff = await requireStaffRoles(c, RECEIPT_REVERSAL_ROLES);
+    if (!staff) return forbidden(c);
+    const parsed = reverseReceiptSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_receipt_reversal", message: "Please correct reversal details.", fieldErrors: fieldErrorsFromIssues(parsed.error.issues) });
+    const result = await reverseAdmissionReceipt(c, staff, c.req.param("enquiryId"), c.req.param("receiptId"), parsed.data);
+    if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message, fieldErrors: result.fieldErrors });
+    return jsonPlain(c, { success: true, receipt: result.receipt, financialSummary: result.financialSummary });
   });
 
   app.post("/api/staff/enquiries/:enquiryId/discount-approval", async (c) => {
@@ -665,10 +683,11 @@ async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], sta
        join courses on courses.id = enrolments.course_id
        left join fee_agreements on fee_agreements.enrolment_id = enrolments.id
        left join (
-         select enrolment_id, sum(amount_paise) as total_received_paise
+         select receipts.enrolment_id, sum(receipts.amount_paise) as total_received_paise
          from receipts
-         where status = 'recorded'
-         group by enrolment_id
+         left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+         where receipts.status = 'recorded' and receipt_reversals.id is null
+         group by receipts.enrolment_id
        ) receipt_totals on receipt_totals.enrolment_id = enrolments.id
        left join nsdc_profiles on nsdc_profiles.enrolment_id = enrolments.id
        left join batch_memberships on batch_memberships.enrolment_id = enrolments.id and batch_memberships.status = 'active' and batch_memberships.left_at is null
