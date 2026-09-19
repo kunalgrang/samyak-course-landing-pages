@@ -3102,6 +3102,20 @@
   }
 }
 
-.receipt-card--effective {
+.admission-token-summary,
+.receipt-card--effective,
+.admission-receipt-history {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.receipt-card--effective,
+.admission-receipt-history .receipt-card {
   grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 640px) {
+  .admission-receipt-history .receipt-card {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }

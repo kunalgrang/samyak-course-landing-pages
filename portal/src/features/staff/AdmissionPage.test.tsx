@@ -225,6 +225,8 @@ describe("AdmissionPage helpers", () => {
       timeZone: "Asia/Kolkata",
     }).format(new Date(reversedAt));
     expect(html.match(/RCP-SION-2026-000002/g)).toHaveLength(1);
+    expect(html).toContain("receipt-card--effective");
+    expect(html).toContain("admission-receipt-history");
     expect(html).toContain("Effective token");
     expect(html).toContain("Reverse Receipt");
     expect(html).toContain("RCP-SION-2026-000001");

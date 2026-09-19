@@ -674,7 +674,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       </AdmissionSection>
 
       <AdmissionSection title="H · Admission token / first receipt">
-        <FinancialSummary summary={financialSummary} fallbackFinalFee={Number(payload.fee.finalAgreedFeePaise || 0)} />
+        <FinancialSummary className="admission-token-summary" summary={financialSummary} fallbackFinalFee={Number(payload.fee.finalAgreedFeePaise || 0)} />
         {tokenReceipt ? (
           <ReceiptRecorded
             summary={financialSummary}
@@ -1320,10 +1320,10 @@ function Review({ label, value }: { label: string; value: string }) {
   return <div><small>{label}</small><strong>{value}</strong></div>;
 }
 
-function FinancialSummary({ summary, fallbackFinalFee }: { summary: AdmissionFinancialSummary | null; fallbackFinalFee: number }) {
+function FinancialSummary({ summary, fallbackFinalFee, className = "" }: { summary: AdmissionFinancialSummary | null; fallbackFinalFee: number; className?: string }) {
   const finalFee = summary?.finalAgreedFeePaise ?? fallbackFinalFee;
   return (
-    <div className="detail-grid">
+    <div className={className ? `detail-grid ${className}` : "detail-grid"}>
       <Review label="Final Agreed Fee" value={formatMoney(finalFee)} />
       <Review label="First Instalment Required" value={formatMoney(summary?.firstInstalmentRequiredPaise ?? finalFee)} />
       <Review label="Token / Amount Received" value={formatMoney(summary?.totalReceivedPaise ?? 0)} />
