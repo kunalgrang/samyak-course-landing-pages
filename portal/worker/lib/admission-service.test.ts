@@ -14,6 +14,7 @@ import {
   getAdmissionConfiguration,
   getAdmissionDraft,
   getAdmissionReceiptCorrectionCapability,
+  getAdmissionReceiptSummary,
   listDiscountApprovals,
   maximumInstallmentsForCourse,
   recordAdmissionReceipt,
@@ -23,6 +24,7 @@ import {
   validateAdmissionDraftPayload,
   validateAdmissionForConfirmation,
 } from "./admission-service";
+import { getPaymentLedger } from "./payments-ledger";
 
 type Row = Record<string, any>;
 type AdmissionTestPayload = any;
@@ -505,8 +507,32 @@ describe("confirmAdmission service integration", () => {
       idempotencyKey: "reverse_token_enq_first",
     });
     expect(reversed).toMatchObject({ ok: true, financialSummary: { totalReceivedPaise: 0, receiptCount: 0 } });
+    if (!reversed.ok) throw new Error(reversed.message);
+    expect(reversed.financialSummary.tokenReceipt).toBeNull();
+    expect(reversed.financialSummary.receiptHistory).toEqual([
+      expect.objectContaining({
+        id: first.receipt.id,
+        receiptNumber: first.receipt.receiptNumber,
+        amountPaise: 40000,
+        paymentMode: "cash",
+        status: "reversed",
+        reversal: expect.objectContaining({
+          reason: "Token amount entered incorrectly",
+          reversedBy: "Owner",
+        }),
+      }),
+    ]);
     expect(row(db, "select count(*) as count from receipts where id = ? and status = 'recorded'", first.receipt.id)?.count).toBe(1);
     expect(row(db, "select count(*) as count from receipt_reversals where receipt_id = ?", first.receipt.id)?.count).toBe(1);
+
+    const revisedPayload = validPayload();
+    revisedPayload.fee.finalAgreedFeePaise = 4900000;
+    revisedPayload.fee.discountReason = "Corrected admission terms";
+    revisedPayload.fee.discountReasonCode = "scholarship_financial_support";
+    await expect(saveAdmissionDraft(c, staff, "enq_first", { payload: revisedPayload, currentStep: "review" })).resolves.toMatchObject({ ok: true });
+    const afterUnlock = await getAdmissionReceiptSummary(c, "enq_first");
+    expect(afterUnlock).toMatchObject({ totalReceivedPaise: 0, receiptCount: 0, finalAgreedFeePaise: 4900000 });
+    expect(afterUnlock?.receiptHistory).toHaveLength(1);
 
     const replacement = await recordAdmissionReceipt(c, staff, "enq_first", {
       admissionDraftId: draft.draftId,
@@ -518,11 +544,40 @@ describe("confirmAdmission service integration", () => {
       idempotencyKey: "replacement_token_after_reversal",
     });
     expect(replacement).toMatchObject({ ok: true, financialSummary: { totalReceivedPaise: 50000, receiptCount: 1 } });
+    if (!replacement.ok) throw new Error(replacement.message);
+    expect(replacement.financialSummary.tokenReceipt).toMatchObject({ id: replacement.receipt.id, status: "recorded" });
+    expect(replacement.financialSummary.receiptHistory.map((receipt) => receipt.status)).toEqual(["reversed", "recorded"]);
     expect(count(db, "receipts")).toBe(2);
 
     const confirmed = await expectOk(confirmAdmission(c, staff, "enq_first"));
-    expect(row(db, "select id, enrolment_id from receipts where id = ?", first.receipt.id)).toMatchObject({ id: first.receipt.id, enrolment_id: null });
-    expect(row(db, "select id, enrolment_id from receipts where id = ?", replacement.ok ? replacement.receipt.id : "")).toMatchObject({ id: replacement.ok ? replacement.receipt.id : "", enrolment_id: confirmed.enrolmentId });
+    expect(confirmed.financialSummary).toMatchObject({
+      totalReceivedPaise: 50000,
+      receiptCount: 1,
+      tokenReceipt: expect.objectContaining({ id: replacement.receipt.id }),
+    });
+    expect(confirmationSnapshot(db)).toMatchObject({ tokenReceiptId: replacement.receipt.id, tokenReceiptAmountPaise: 50000 });
+    expect(row(db, "select id, enrolment_id, fee_agreement_id from receipts where id = ?", first.receipt.id)).toMatchObject({ id: first.receipt.id, enrolment_id: confirmed.enrolmentId });
+    expect(row(db, "select id, enrolment_id, fee_agreement_id from receipts where id = ?", replacement.receipt.id)).toMatchObject({ id: replacement.receipt.id, enrolment_id: confirmed.enrolmentId });
+    expect(row(db, "select count(*) as count from receipts left join receipt_reversals on receipt_reversals.receipt_id = receipts.id where receipts.admission_draft_id = ? and receipt_reversals.id is null", draft.draftId)?.count).toBe(1);
+
+    const postConfirmSummary = await getAdmissionReceiptSummary(c, "enq_first");
+    expect(postConfirmSummary?.receiptHistory).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: first.receipt.id, status: "reversed", reversal: expect.objectContaining({ reason: "Token amount entered incorrectly", reversedBy: "Owner" }) }),
+      expect.objectContaining({ id: replacement.receipt.id, status: "recorded" }),
+    ]));
+    const ledgerResult = await getPaymentLedger(c, owner, confirmed.enrolmentId);
+    expect(ledgerResult.ok).toBe(true);
+    if (!ledgerResult.ok) throw new Error(ledgerResult.message);
+    expect(ledgerResult.ledger.financialSummary).toMatchObject({ totalReceivedPaise: 50000, receiptCount: 1, tokenReceipt: expect.objectContaining({ id: replacement.receipt.id }) });
+    expect(ledgerResult.ledger.receipts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: first.receipt.id,
+        amountPaise: 40000,
+        status: "reversed",
+        reversal: expect.objectContaining({ reason: "Token amount entered incorrectly", reversedBy: "Owner" }),
+      }),
+      expect.objectContaining({ id: replacement.receipt.id, amountPaise: 50000, status: "recorded" }),
+    ]));
     db.close();
   });
 
@@ -1554,6 +1609,10 @@ function seedBase(db: SqliteD1) {
     values
       ('acct_staff', 'org_samyak', 'staff_mobile_hash', 'staff_mobile_hash', '0000', 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),
       ('acct_owner', 'org_samyak', 'owner_mobile_hash', 'owner_mobile_hash', '1111', 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+    insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at)
+    values
+      ('acct_staff', 'person_staff', 'staff', 1, 1, '2026-07-21T00:00:00.000Z'),
+      ('acct_owner', 'person_owner', 'staff', 1, 1, '2026-07-21T00:00:00.000Z');
     insert into login_account_roles (login_account_id, role_id, branch_id, created_at)
     select 'acct_owner', roles.id, null, '2026-07-21T00:00:00.000Z' from roles where roles.organisation_id = 'org_samyak' and roles.code = 'owner';
     insert into login_account_roles (login_account_id, role_id, branch_id, created_at)

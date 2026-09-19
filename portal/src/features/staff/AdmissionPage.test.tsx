@@ -886,5 +886,6 @@ function financialSummary() {
       correctionVersion: "receipt:receipt_1:fp:created:active",
       reversal: null,
     },
+    receiptHistory: [],
   };
 }

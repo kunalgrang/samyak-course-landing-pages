@@ -325,6 +325,8 @@ type Instalment = {
   dueDate: string | null;
 };
 
+type AdmissionFinancialSummary = FinancialSummary & { receiptHistory: PublicReceipt[] };
+
 export type AdmissionConfirmationResult = {
   studentId: string;
   studentNumber: string;
@@ -332,7 +334,7 @@ export type AdmissionConfirmationResult = {
   enrolmentNumber: string;
   enquiryNumber: string;
   isNewStudent: boolean;
-  financialSummary: FinancialSummary;
+  financialSummary: AdmissionFinancialSummary;
 };
 
 const REQUIRED_ADMISSION_OPTION_CATEGORIES = [
@@ -475,9 +477,7 @@ export async function getAdmissionReceiptSummary(c: AppContext, enquiryId: strin
   const draft = await getAdmissionDraft(c, enquiryId);
   if (!draft) return null;
   const payload = JSON.parse(draft.payload_json) as AdmissionPayload;
-  const schedule = buildInstalmentSchedule(payload);
-  const receipts = await receiptsForDraft(c, draft.id);
-  return financialSummaryFromReceipts(Number(payload.fee?.finalAgreedFeePaise || 0), schedule, receipts);
+  return financialSummaryForDraft(c, draft, payload);
 }
 
 export async function getAdmissionReceiptCorrectionCapability(c: AppContext, staff: StaffContext, enquiryId: string) {
@@ -611,7 +611,7 @@ export async function recordAdmissionReceipt(c: AppContext, staff: StaffContext,
   return { ok: true as const, receipt: publicReceipt(receipt!), financialSummary: await financialSummaryForDraft(c, draft, payload) };
 }
 
-export async function reverseAdmissionReceipt(c: AppContext, staff: StaffContext, enquiryId: string, receiptId: string, input: ReceiptReversalInput): Promise<{ ok: true; receipt: PublicReceipt; financialSummary: FinancialSummary } | AdmissionFailure> {
+export async function reverseAdmissionReceipt(c: AppContext, staff: StaffContext, enquiryId: string, receiptId: string, input: ReceiptReversalInput): Promise<{ ok: true; receipt: PublicReceipt; financialSummary: AdmissionFinancialSummary } | AdmissionFailure> {
   if (!canReverseReceipts(staff)) {
     return { ok: false, status: 403, code: "forbidden", message: "This role cannot reverse receipts." };
   }
@@ -925,10 +925,10 @@ async function finalizeAdmission(
   await c.env.DB.prepare(
     `update receipts
      set student_id = ?, enrolment_id = ?, fee_agreement_id = ?, updated_at = ?
-     where id = ? and organisation_id = ? and admission_draft_id = ? and status = 'recorded'
+     where organisation_id = ? and admission_draft_id = ? and status = 'recorded'
        and (enrolment_id is null or enrolment_id = ?)`,
   )
-    .bind(input.studentId, input.enrolmentId, feeAgreementId, input.now, snapshot.tokenReceiptId, ORG_ID, draft.id, input.enrolmentId)
+    .bind(input.studentId, input.enrolmentId, feeAgreementId, input.now, ORG_ID, draft.id, input.enrolmentId)
     .run();
   await audit(c, staff, snapshot.branchId, "receipt_attached_to_enrolment", "receipt", snapshot.tokenReceiptId, { enrolmentId: input.enrolmentId, receiptNumber: snapshot.tokenReceiptNumber });
 
@@ -972,7 +972,8 @@ async function finalizeAdmission(
   if (finalCheck) return finalCheck;
   const batchAssignment = await assignBatchOnAdmissionConfirmation(c, staff, snapshot, input.enrolmentId, input.now);
   if (!batchAssignment.ok) return batchAssignment;
-  const financialSummary = (await financialSummaryForEnrolment(c, input.enrolmentId, snapshot)) || financialSummaryFromReceipts(snapshot.finalAgreedFeePaise, scheduleFromSnapshot(snapshot), []);
+  const financialSummary = ((await financialSummaryForEnrolment(c, input.enrolmentId, snapshot)) || financialSummaryFromReceipts(snapshot.finalAgreedFeePaise, scheduleFromSnapshot(snapshot), [])) as AdmissionFinancialSummary;
+  financialSummary.receiptHistory = await receiptHistoryForDraft(c, draft.id);
   return {
     ok: true as const,
     result: {
@@ -1427,8 +1428,11 @@ async function tokenReceiptForConfirmation(c: AppContext, draft: DraftRecord, pa
   return { ok: true as const, receipt: receipts[0], instalments: schedule };
 }
 
-async function financialSummaryForDraft(c: AppContext, draft: DraftRecord, payload: AdmissionPayload) {
-  return financialSummaryFromReceipts(Number(payload.fee?.finalAgreedFeePaise || 0), buildInstalmentSchedule(payload), await receiptsForDraft(c, draft.id));
+async function financialSummaryForDraft(c: AppContext, draft: DraftRecord, payload: AdmissionPayload): Promise<AdmissionFinancialSummary> {
+  return {
+    ...financialSummaryFromReceipts(Number(payload.fee?.finalAgreedFeePaise || 0), buildInstalmentSchedule(payload), await receiptsForDraft(c, draft.id)),
+    receiptHistory: await receiptHistoryForDraft(c, draft.id),
+  };
 }
 
 async function financialSummaryForEnrolment(c: AppContext, enrolmentId: string, snapshot: ConfirmationSnapshot | null): Promise<FinancialSummary | null> {
@@ -1558,6 +1562,26 @@ async function receiptsForDraft(c: AppContext, draftId: string) {
     .bind(draftId)
     .all<ReceiptRecord>();
   return receipts.results || [];
+}
+
+async function receiptHistoryForDraft(c: AppContext, draftId: string) {
+  const receipts = await c.env.DB.prepare(
+    `select receipts.id, receipts.receipt_number, receipts.branch_id, receipts.enquiry_id, receipts.admission_draft_id,
+            receipts.enrolment_id, receipts.amount_paise, receipts.received_at, receipts.payment_mode,
+            receipts.payment_reference, receipts.notes, receipts.status, receipts.payload_fingerprint, receipts.created_at,
+            receipt_reversals.id as reversal_id, receipt_reversals.reason as reversal_reason, receipt_reversals.created_at as reversed_at,
+            coalesce(reversal_people.public_name, reversal_people.full_name) as reversed_by_name
+     from receipts
+     left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+     left join login_account_people reversal_account_people on reversal_account_people.login_account_id = receipt_reversals.reversed_by_login_account_id
+       and reversal_account_people.is_default = 1
+     left join people reversal_people on reversal_people.id = reversal_account_people.person_id
+     where receipts.organisation_id = ? and receipts.admission_draft_id = ? and receipts.status = 'recorded'
+     order by receipts.received_at, receipts.created_at`,
+  )
+    .bind(ORG_ID, draftId)
+    .all<ReceiptRecord>();
+  return (receipts.results || []).map(publicReceipt);
 }
 
 async function receiptByIdempotencyKey(c: AppContext, staff: StaffContext, idempotencyKey: string) {
@@ -2367,6 +2391,9 @@ async function confirmationForEnrolment(c: AppContext, enquiry: EnquiryRecord, e
     .bind(enrolmentId)
     .first<{ student_id: string; student_number: string; enrolment_id: string; enrolment_number: string }>();
   if (!row) return null;
+  const draft = await getAdmissionDraft(c, enquiry.id);
+  const financialSummary = ((await financialSummaryForEnrolment(c, row.enrolment_id, null)) || financialSummaryFromReceipts(0, [], [])) as AdmissionFinancialSummary;
+  financialSummary.receiptHistory = draft ? await receiptHistoryForDraft(c, draft.id) : [];
   return {
     studentId: row.student_id,
     studentNumber: row.student_number,
@@ -2374,7 +2401,7 @@ async function confirmationForEnrolment(c: AppContext, enquiry: EnquiryRecord, e
     enrolmentNumber: row.enrolment_number,
     enquiryNumber: enquiry.enquiry_number,
     isNewStudent,
-    financialSummary: (await financialSummaryForEnrolment(c, row.enrolment_id, null)) || financialSummaryFromReceipts(0, [], []),
+    financialSummary,
   };
 }
 

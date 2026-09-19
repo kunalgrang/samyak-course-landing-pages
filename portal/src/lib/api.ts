@@ -731,6 +731,10 @@ const receiptSummarySchema = z.object({
 
 const paymentReceiptSchema = receiptSummarySchema.shape.tokenReceipt.unwrap();
 
+const admissionFinancialSummarySchema = receiptSummarySchema.extend({
+  receiptHistory: z.array(paymentReceiptSchema).default([]),
+});
+
 const paymentLedgerSchema = z.object({
   enrolment: z.object({
     id: z.string(),
@@ -888,7 +892,7 @@ const admissionDraftSchema = z.object({
       confirmationSnapshotVersion: z.string().nullable().optional(),
     })
     .nullable(),
-  financialSummary: receiptSummarySchema.nullable().optional(),
+  financialSummary: admissionFinancialSummarySchema.nullable().optional(),
   receiptCorrection: receiptCorrectionCapabilitySchema.optional(),
 });
 
@@ -908,13 +912,13 @@ const admissionConfirmationSchema = z.object({
   enrolmentNumber: z.string(),
   enquiryNumber: z.string(),
   isNewStudent: z.boolean(),
-  financialSummary: receiptSummarySchema,
+  financialSummary: admissionFinancialSummarySchema,
 });
 
 const admissionReceiptResponseSchema = z.object({
   success: z.literal(true),
   receipt: paymentReceiptSchema,
-  financialSummary: receiptSummarySchema,
+  financialSummary: admissionFinancialSummarySchema,
 });
 
 const admissionPersonLinkResponseSchema = z.object({
@@ -1577,7 +1581,7 @@ export type CrmEnquiryList = z.infer<typeof crmListSchema>;
 export type CrmEnquiryDetail = z.infer<typeof crmDetailSchema>;
 export type AdmissionDraft = z.infer<typeof admissionDraftSchema>["draft"];
 export type AdmissionConfirmation = z.infer<typeof admissionConfirmationSchema>;
-export type AdmissionFinancialSummary = z.infer<typeof receiptSummarySchema>;
+export type AdmissionFinancialSummary = z.infer<typeof admissionFinancialSummarySchema>;
 export type AdmissionReceipt = NonNullable<AdmissionFinancialSummary["tokenReceipt"]>;
 export type PaymentLedger = z.infer<typeof paymentLedgerSchema>;
 export type PaymentReceipt = z.infer<typeof paymentReceiptSchema>;

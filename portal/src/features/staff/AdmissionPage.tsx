@@ -20,6 +20,7 @@ import {
   type AdmissionConfirmation,
   type AdmissionBatchOption,
   type AdmissionFinancialSummary,
+  type AdmissionReceipt,
   type EnquiryDetail,
   type FieldErrors,
   type PaymentPlanRule,
@@ -177,6 +178,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const paymentPlanNotice = paymentPlanPolicyMessage(selectedCourse, configuration.paymentPlanRules, allowedPaymentRules);
   const configurationReady = isAdmissionConfigurationReady(configuration);
   const tokenReceipt = financialSummary?.tokenReceipt || null;
+  const receiptHistory = financialSummary?.receiptHistory || [];
   const commercialLocked = Boolean(tokenReceipt) || isLocked;
   const needsPersonLink = !detail?.enquiry.person_id;
   const selectedAdmissionBatch = admissionBatchOptions.find((batch) => batch.id === payload.course.batchId);
@@ -693,6 +695,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
             </div>
           </>
         )}
+        <AdmissionReceiptHistory receipts={receiptHistory} />
       </AdmissionSection>
 
       <section className="staff-card">
@@ -1326,6 +1329,26 @@ function FinancialSummary({ summary, fallbackFinalFee }: { summary: AdmissionFin
       <Review label="Pending before classes start" value={formatMoney(summary?.firstInstalmentBalancePaise ?? finalFee)} />
       <Review label="Overall Balance" value={formatMoney(summary?.overallBalancePaise ?? finalFee)} />
       <Review label="Ready to Start Classes" value={summary?.classStartEligible ? "Yes" : "No"} />
+    </div>
+  );
+}
+
+function AdmissionReceiptHistory({ receipts }: { receipts: AdmissionReceipt[] }) {
+  if (!receipts.length) return null;
+  return (
+    <div className="receipt-list">
+      {receipts.map((receipt, index) => (
+        <article className={receipt.status === "reversed" ? "receipt-card receipt-card--reversed" : "receipt-card"} key={receipt.id}>
+          <span><strong>{receipt.receiptNumber}</strong>{receipt.status === "reversed" ? <small>Reversed</small> : index === receipts.length - 1 ? <small>Effective token</small> : null}</span>
+          <span><small>Date</small>{formatDisplayDateTime(receipt.receivedAt)}</span>
+          <span><small>Amount</small>{formatMoney(receipt.amountPaise)}</span>
+          <span><small>Mode</small>{paymentModeLabel(receipt.paymentMode)}</span>
+          {receipt.paymentReference ? <span><small>Reference</small>{receipt.paymentReference}</span> : null}
+          {receipt.reversal ? <span><small>Reversal reason</small>{receipt.reversal.reason}</span> : null}
+          {receipt.reversal ? <span><small>Reversed by</small>{receipt.reversal.reversedBy || "Staff"}</span> : null}
+          {receipt.reversal ? <span><small>Reversed at</small>{formatDisplayDateTime(receipt.reversal.reversedAt)}</span> : null}
+        </article>
+      ))}
     </div>
   );
 }
