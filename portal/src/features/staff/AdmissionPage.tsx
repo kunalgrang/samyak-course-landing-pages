@@ -695,7 +695,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
             </div>
           </>
         )}
-        <AdmissionReceiptHistory receipts={receiptHistory} />
+        <AdmissionReceiptHistory receipts={receiptHistory} effectiveTokenId={tokenReceipt?.id || null} />
       </AdmissionSection>
 
       <section className="staff-card">
@@ -1333,13 +1333,13 @@ function FinancialSummary({ summary, fallbackFinalFee }: { summary: AdmissionFin
   );
 }
 
-function AdmissionReceiptHistory({ receipts }: { receipts: AdmissionReceipt[] }) {
+export function AdmissionReceiptHistory({ receipts, effectiveTokenId }: { receipts: AdmissionReceipt[]; effectiveTokenId: string | null }) {
   if (!receipts.length) return null;
   return (
     <div className="receipt-list">
-      {receipts.map((receipt, index) => (
+      {receipts.map((receipt) => (
         <article className={receipt.status === "reversed" ? "receipt-card receipt-card--reversed" : "receipt-card"} key={receipt.id}>
-          <span><strong>{receipt.receiptNumber}</strong>{receipt.status === "reversed" ? <small>Reversed</small> : index === receipts.length - 1 ? <small>Effective token</small> : null}</span>
+          <span><strong>{receipt.receiptNumber}</strong>{receipt.status === "reversed" ? <small>Reversed</small> : receipt.id === effectiveTokenId ? <small>Effective token</small> : null}</span>
           <span><small>Date</small>{formatDisplayDateTime(receipt.receivedAt)}</span>
           <span><small>Amount</small>{formatMoney(receipt.amountPaise)}</span>
           <span><small>Mode</small>{paymentModeLabel(receipt.paymentMode)}</span>
