@@ -13,6 +13,7 @@ const apiMocks = vi.hoisted(() => ({
   getStaffBatch: vi.fn(),
   getStaffBatches: vi.fn(),
   getStaffBatchTrainers: vi.fn(),
+  getUnassignedBatchEnrolments: vi.fn(),
   removeStaffBatchMembership: vi.fn(),
   transferStaffBatchMembership: vi.fn(),
   updateStaffBatch: vi.fn(),
@@ -29,13 +30,14 @@ vi.mock("../../lib/api", async (importOriginal) => {
     getStaffBatch: apiMocks.getStaffBatch,
     getStaffBatches: apiMocks.getStaffBatches,
     getStaffBatchTrainers: apiMocks.getStaffBatchTrainers,
+    getUnassignedBatchEnrolments: apiMocks.getUnassignedBatchEnrolments,
     removeStaffBatchMembership: apiMocks.removeStaffBatchMembership,
     transferStaffBatchMembership: apiMocks.transferStaffBatchMembership,
     updateStaffBatch: apiMocks.updateStaffBatch,
   };
 });
 
-import { BatchManagementPage, filterCourses } from "./BatchManagementPage";
+import { BatchManagementPage, filterCourses, formatTime12Hour } from "./BatchManagementPage";
 
 describe("BatchManagementPage course selector", () => {
   let root: Root;
@@ -60,6 +62,7 @@ describe("BatchManagementPage course selector", () => {
     apiMocks.getStaffBatchTrainers.mockResolvedValue({ success: true, trainers: [{ id: "person_trainer", name: "Trainer One" }] });
     apiMocks.getStaffBatch.mockResolvedValue({ success: true, batch: batch(), roster: [] });
     apiMocks.getEligibleBatchEnrolments.mockResolvedValue({ success: true, enrolments: [] });
+    apiMocks.getUnassignedBatchEnrolments.mockResolvedValue({ success: true, enrolments: [] });
     apiMocks.createStaffBatch.mockResolvedValue({ success: true, batchId: "batch_saved" });
     apiMocks.updateStaffBatch.mockResolvedValue({ success: true, batchId: "batch_one" });
   });
@@ -99,6 +102,45 @@ describe("BatchManagementPage course selector", () => {
       "Python Advanced",
       "Python & Web Design",
     ]);
+  });
+
+  it("formats displayed batch schedules in 12-hour time without changing input values", async () => {
+    expect(formatTime12Hour("08:00")).toBe("8:00 AM");
+    expect(formatTime12Hour("12:00")).toBe("12:00 PM");
+    expect(formatTime12Hour("18:30")).toBe("6:30 PM");
+    expect(formatTime12Hour("00:15")).toBe("12:15 AM");
+
+    await renderPage();
+
+    expect(text()).toContain("Mon, Wed, Fri · 8:00 AM-10:00 AM");
+    expect(container.querySelector<HTMLInputElement>('input[type="time"]')?.value).toBe("08:00");
+  });
+
+  it("renders unassigned enrolments as enrolment-specific rows with profile links", async () => {
+    apiMocks.getUnassignedBatchEnrolments.mockResolvedValue({
+      success: true,
+      enrolments: [{
+        enrolment_id: "enrol_dm_ai",
+        enrolment_number: "ENR-SION-2026-0003",
+        enrolment_status: "confirmed",
+        joining_date: "2026-08-28",
+        student_id: "student_second",
+        student_number: "SYK-SION-0002",
+        student_name: "Canonical Second Name",
+        course_id: "course_dm_ai",
+        course_name: "Digital Marketing with AI",
+        branch_id: "branch_sion",
+        branch_name: "Sion",
+      }],
+    });
+
+    await renderPage();
+
+    expect(text()).toContain("Unassigned Enrolments");
+    expect(text()).toContain("Canonical Second Name");
+    expect(text()).toContain("SYK-SION-0002 · ENR-SION-2026-0003 · Digital Marketing with AI");
+    expect(text()).toContain("Sion · confirmed · Joining 2026-08-28");
+    expect(container.querySelector<HTMLAnchorElement>('a[href="/app/students/student_second"]')?.textContent).toBe("Profile");
   });
 
   it("selects one and multiple courses, shows chips, and removes a chip", async () => {

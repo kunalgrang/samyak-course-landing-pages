@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getSessionFromRequest: vi.fn(),
   getAccountRoles: vi.fn(),
   listBatches: vi.fn(),
+  listUnassignedEnrolments: vi.fn(),
   createBatch: vi.fn(),
 }));
 
@@ -20,6 +21,7 @@ vi.mock("../lib/batch-management", async (importOriginal) => {
   return {
     ...actual,
     listBatches: mocks.listBatches,
+    listUnassignedEnrolments: mocks.listUnassignedEnrolments,
     createBatch: mocks.createBatch,
   };
 });
@@ -41,6 +43,7 @@ describe("staff batch routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.listBatches.mockResolvedValue({ ok: true, batches: [] });
+    mocks.listUnassignedEnrolments.mockResolvedValue({ ok: true, enrolments: [] });
     mocks.createBatch.mockResolvedValue({ ok: true, batchId: "batch_1" });
   });
 
@@ -118,5 +121,21 @@ describe("staff batch routes", () => {
 
     expect(response.status).toBe(200);
     expect(mocks.createBatch).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ roles: ["admission_admin"] }), expect.objectContaining({ name: "Morning" }));
+  });
+
+  it("routes unassigned enrolments through the static read-only endpoint", async () => {
+    const app = routeApp();
+    authenticateAs(["counsellor"]);
+    mocks.listUnassignedEnrolments.mockResolvedValue({
+      ok: true,
+      enrolments: [{ enrolment_id: "enrol_1", student_name: "Student One" }],
+    });
+
+    const response = await app.request("/api/staff/batches/unassigned-enrolments");
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true, enrolments: [{ enrolment_id: "enrol_1" }] });
+    expect(mocks.listUnassignedEnrolments).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ roles: ["counsellor"] }));
+    expect(mocks.listBatches).not.toHaveBeenCalled();
   });
 });

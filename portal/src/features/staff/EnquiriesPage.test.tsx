@@ -4,6 +4,8 @@ import {
   CreateEnquirySubmitButton,
   CrmContactLine,
   EnquirySuccessNotice,
+  NEW_ENQUIRY_SECTION_ID,
+  NewEnquiryHeaderAction,
   assignedCounsellorLabel,
   buildFollowUpPayload,
   buildCreateEnquiryInput,
@@ -83,6 +85,14 @@ const created: CreateEnquiryResponse = {
 };
 
 describe("EnquiriesPage submission lifecycle", () => {
+  it("targets the existing New Enquiry section from the top-page CTA", () => {
+    const html = renderToStaticMarkup(<NewEnquiryHeaderAction />);
+
+    expect(NEW_ENQUIRY_SECTION_ID).toBe("new-enquiry");
+    expect(html).toContain("href=\"#new-enquiry\"");
+    expect(html).toContain("New Enquiry");
+  });
+
   it("disables the create button and shows the loading label during submission", () => {
     const html = renderToStaticMarkup(<CreateEnquirySubmitButton isSubmitting />);
 

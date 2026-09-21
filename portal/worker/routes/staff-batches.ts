@@ -14,6 +14,7 @@ import {
   listBatches,
   listEligibleEnrolments,
   listTrainers,
+  listUnassignedEnrolments,
   removeBatchMembershipFromBatch,
   transferBatchMembership,
   assignEnrolmentToBatch,
@@ -74,6 +75,13 @@ export function registerStaffBatchRoutes(app: PortalHono) {
     const result = await listAdmissionEligibleBatches(c, staff, branchId, courseId);
     if (!result.ok) return batchError(c, result);
     return jsonPlain(c, { success: true, batches: result.batches });
+  });
+
+  app.get("/api/staff/batches/unassigned-enrolments", async (c) => {
+    const staff = await requireStaffRoles(c, BATCH_READ_ROLES);
+    if (!staff) return forbidden(c);
+    const result = await listUnassignedEnrolments(c, staff);
+    return jsonPlain(c, { success: true, enrolments: result.enrolments });
   });
 
   app.get("/api/staff/batches/:batchId/eligible-enrolments", async (c) => {

@@ -11,7 +11,9 @@ import {
   createBatch,
   getBatchDetail,
   listAdmissionEligibleBatches,
+  listBatches,
   listEligibleEnrolments,
+  listUnassignedEnrolments,
   normalizeDaysOfWeek,
   removeBatchMembership,
   transferBatchMembership,
@@ -94,6 +96,22 @@ describe("Batch Management V1 service", () => {
     });
   });
 
+  it("lists batches earliest first with deterministic name and id tie-breakers", async () => {
+    const { c, staff } = setup();
+    await seedBatch(c, "batch_late", "branch_sion", "course_fsd");
+    await seedBatch(c, "batch_same_b", "branch_sion", "course_fsd");
+    await seedBatch(c, "batch_morning", "branch_sion", "course_fsd");
+    await seedBatch(c, "batch_same_a", "branch_sion", "course_fsd");
+    c.env.DB.database.prepare("update batches set name = 'Late Batch', start_time = '18:00' where id = 'batch_late'").run();
+    c.env.DB.database.prepare("update batches set name = 'Same Name', start_time = '08:00' where id = 'batch_same_b'").run();
+    c.env.DB.database.prepare("update batches set name = 'Alpha Morning', start_time = '08:00' where id = 'batch_morning'").run();
+    c.env.DB.database.prepare("update batches set name = 'Same Name', start_time = '08:00' where id = 'batch_same_a'").run();
+
+    const result = await listBatches(c, staff, { status: "active" });
+
+    expect(result.ok && result.batches.map((batch) => batch.id)).toEqual(["batch_morning", "batch_same_a", "batch_same_b", "batch_late"]);
+  });
+
   it("creates mixed-course batches and enforces explicit course eligibility", async () => {
     const { c, staff } = setup();
     const created = await createBatch(c, staff, {
@@ -135,6 +153,52 @@ describe("Batch Management V1 service", () => {
 
     expect(detail.ok && detail.roster[0]).toMatchObject({ student_name: "Corrected Current Name" });
     expect(eligible.ok && eligible.enrolments[0]).toMatchObject({ student_name: "Eligible Corrected Name" });
+  });
+
+  it("lists unassigned enrolments at enrolment level with active-membership and branch-scope exclusions", async () => {
+    const { c, staff } = setup();
+    await seedBatch(c, "batch_one", "branch_sion", "course_fsd");
+    c.env.DB.database.prepare("update person_identity_details set official_full_name = 'Canonical Second Name' where person_id = 'person_second_student'").run();
+    c.env.DB.database.prepare("update enrolments set status = 'completed' where id = 'enrol_unrelated'").run();
+    await expect(assignEnrolmentToBatch(c, staff, "batch_one", "enrol_one")).resolves.toMatchObject({ ok: true });
+
+    const result = await listUnassignedEnrolments(c, staff);
+
+    expect(result.ok && result.enrolments.map((row) => row.enrolment_id)).toEqual(["enrol_second", "enrol_dm_ai"]);
+    expect(result.ok && result.enrolments).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ enrolment_id: "enrol_one" }),
+      expect.objectContaining({ enrolment_id: "enrol_unrelated" }),
+      expect.objectContaining({ enrolment_id: "enrol_other_branch" }),
+    ]));
+    expect(result.ok && result.enrolments).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        enrolment_id: "enrol_dm_ai",
+        student_id: "student_second",
+        student_name: "Canonical Second Name",
+        student_number: "SYK-SION-0002",
+        enrolment_number: "ENR-SION-2026-0003",
+        course_name: "Digital Marketing with AI",
+        branch_name: "Sion",
+        enrolment_status: "confirmed",
+        joining_date: "2026-08-28",
+      }),
+      expect.objectContaining({
+        enrolment_id: "enrol_second",
+        student_id: "student_second",
+        course_name: "Full Stack",
+      }),
+    ]));
+  });
+
+  it("lets owner-scoped readers see unassigned enrolments across branches", async () => {
+    const { c } = setup();
+    const owner: StaffContext = { loginAccountId: "acct_owner", activePersonId: "person_admin", roles: ["owner"] };
+
+    const result = await listUnassignedEnrolments(c, owner);
+
+    expect(result.ok && result.enrolments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ enrolment_id: "enrol_other_branch", branch_name: "Dadar" }),
+    ]));
   });
 
   it("uses batch course mappings for admission options and transfer targets", async () => {

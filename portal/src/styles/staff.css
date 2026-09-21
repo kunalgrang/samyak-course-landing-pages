@@ -402,6 +402,11 @@
   background: #f8fdfc;
 }
 
+.unassigned-enrolment-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
 .table-row-main {
   display: grid;
   min-width: 0;

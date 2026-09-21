@@ -10,6 +10,7 @@ export const BATCH_MANAGE_ROLES = ["owner", "system_admin", "admin", "admission_
 const weekdayOrder = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 const weekdaySet = new Set<string>(weekdayOrder);
 const batchStatusValues = ["active", "inactive", "completed"] as const;
+const assignableEnrolmentStatuses = ["confirmed", "not_started", "active", "on_hold"] as const;
 type BatchStatus = (typeof batchStatusValues)[number];
 
 const batchBaseSchema = z.object({
@@ -120,7 +121,7 @@ export async function listBatches(c: AppContext, staff: StaffContext, filters: {
        group by batch_id
      ) active_counts on active_counts.batch_id = batches.id
      where ${where}
-     order by batches.status = 'active' desc, batches.updated_at desc`,
+     order by batches.start_time asc, batches.name collate nocase asc, batches.id asc`,
   )
     .bind(...bindings)
     .all<Record<string, unknown>>();
@@ -298,13 +299,47 @@ export async function listEligibleEnrolments(c: AppContext, staff: StaffContext,
       and batch_courses.course_id = enrolments.course_id
       and batch_courses.organisation_id = ?
      where enrolments.branch_id = ?
-       and enrolments.status in ('confirmed', 'not_started', 'active', 'on_hold')
+       and enrolments.status in (${assignableEnrolmentStatuses.map(() => "?").join(", ")})
        and active_membership.id is null
        and (? = '' or person_identity_details.official_full_name like ? or people.full_name like ? or people.public_name like ? or students.student_number like ? or enrolments.enrolment_number like ? or primary_mobile.normalized_value like ? or primary_mobile.display_value like ? or primary_mobile.last_four like ?)
      order by coalesce(person_identity_details.official_full_name, people.full_name, people.public_name) collate nocase
      limit 50`,
   )
-    .bind(ORG_ID, batchId, ORG_ID, batch.branch_id, q, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`)
+    .bind(ORG_ID, batchId, ORG_ID, batch.branch_id, ...assignableEnrolmentStatuses, q, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`)
+    .all<Record<string, unknown>>();
+  return { ok: true as const, enrolments: rows.results || [] };
+}
+
+export async function listUnassignedEnrolments(c: AppContext, staff: StaffContext) {
+  const bindings: unknown[] = [ORG_ID, ORG_ID, ORG_ID, ORG_ID, ORG_ID, ...assignableEnrolmentStatuses];
+  let where = "enrolments.status in (" + assignableEnrolmentStatuses.map(() => "?").join(", ") + ") and active_membership.id is null";
+  where += branchScopeSql(staff, "enrolments.branch_id", bindings);
+  const rows = await c.env.DB.prepare(
+    `select enrolments.id as enrolment_id, enrolments.enrolment_number, enrolments.status as enrolment_status,
+            enrolments.joining_date,
+            students.id as student_id, students.student_number,
+            coalesce(person_identity_details.official_full_name, people.full_name, people.public_name) as student_name,
+            courses.id as course_id, courses.name as course_name,
+            branches.id as branch_id, branches.name as branch_name
+     from enrolments
+     join students on students.id = enrolments.student_id and students.organisation_id = ?
+     join people on people.id = students.person_id and people.organisation_id = ?
+     left join person_identity_details on person_identity_details.person_id = people.id
+     join courses on courses.id = enrolments.course_id and courses.organisation_id = ?
+     join branches on branches.id = enrolments.branch_id and branches.organisation_id = ?
+     left join batch_memberships active_membership
+       on active_membership.enrolment_id = enrolments.id
+      and active_membership.organisation_id = ?
+      and active_membership.status = 'active'
+      and active_membership.left_at is null
+     where ${where}
+     order by branches.name collate nocase asc,
+              coalesce(person_identity_details.official_full_name, people.full_name, people.public_name) collate nocase asc,
+              enrolments.enrolment_number collate nocase asc,
+              enrolments.id asc
+     limit 200`,
+  )
+    .bind(...bindings)
     .all<Record<string, unknown>>();
   return { ok: true as const, enrolments: rows.results || [] };
 }
@@ -484,7 +519,7 @@ async function validateAssignment(c: AppContext, staff: StaffContext, batch: Bat
     .bind(enrolmentId)
     .first<{ id: string; branch_id: string; course_id: string; status: string; organisation_id: string }>();
   if (!enrolment || enrolment.organisation_id !== ORG_ID) return { ok: false as const, status: 404, code: "enrolment_not_found", message: "Enrolment not found." };
-  if (!["confirmed", "not_started", "active", "on_hold"].includes(enrolment.status)) return { ok: false as const, status: 400, code: "ineligible_enrolment", message: "Only current confirmed enrolments can be assigned." };
+  if (!assignableEnrolmentStatuses.includes(enrolment.status as (typeof assignableEnrolmentStatuses)[number])) return { ok: false as const, status: 400, code: "ineligible_enrolment", message: "Only current confirmed enrolments can be assigned." };
   if (enrolment.branch_id !== batch.branch_id) return { ok: false as const, status: 400, code: "batch_mismatch", message: "Enrolment branch must match the batch." };
   if (!(await batchIncludesCourse(c, batch.id, enrolment.course_id))) {
     return { ok: false as const, status: 400, code: "batch_course_not_eligible", message: "This enrolment's course is not configured for the batch." };
