@@ -50,6 +50,7 @@ const emptyFormFields: FormState = {
 };
 
 export const defaultCrmQueue = "hot";
+export const NEW_ENQUIRY_SECTION_ID = "new-enquiry";
 
 export const queueOptions = [
   ["my", "My enquiries"],
@@ -251,9 +252,12 @@ export function EnquiriesPage() {
   return (
     <div className="content-stack staff-enquiries-page">
       <NotificationToast notification={notification} onDismiss={() => setNotification(null)} />
-      <header className="page-header">
-        <h1>Enquiries</h1>
-        <p>Follow up active leads and manage admissions.</p>
+      <header className="page-header page-header--with-action">
+        <div>
+          <h1>Enquiries</h1>
+          <p>Follow up active leads and manage admissions.</p>
+        </div>
+        <NewEnquiryHeaderAction />
       </header>
 
       <section className="staff-card crm-queue-card">
@@ -320,7 +324,7 @@ export function EnquiriesPage() {
         {!isLoadingCrm && !crmItems.length ? <p className="staff-empty">No enquiries in this queue.</p> : null}
       </section>
 
-      <header className="page-header page-header--compact">
+      <header className="page-header page-header--compact" id={NEW_ENQUIRY_SECTION_ID}>
         <h1>New Enquiry</h1>
         <p>Search by mobile number before creating an enquiry to prevent duplicate student records.</p>
       </header>
@@ -591,6 +595,10 @@ export function EnquirySuccessNotice({ message }: { message: string }) {
       <span>{message}</span>
     </div>
   );
+}
+
+export function NewEnquiryHeaderAction() {
+  return <a className="button-link button-link--primary" href={`#${NEW_ENQUIRY_SECTION_ID}`}>New Enquiry</a>;
 }
 
 export function CreateEnquirySubmitButton({ isSubmitting }: { isSubmitting: boolean }) {

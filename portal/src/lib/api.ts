@@ -391,6 +391,20 @@ const managedTrainerMutationSchema = z.object({
   idempotent: z.boolean().optional(),
 });
 const eligibleEnrolmentListSchema = z.object({ success: z.literal(true), enrolments: z.array(z.record(z.string(), z.unknown())) });
+const unassignedBatchEnrolmentSchema = z.object({
+  enrolment_id: z.string(),
+  enrolment_number: z.string(),
+  enrolment_status: z.string(),
+  joining_date: z.string().nullable(),
+  student_id: z.string(),
+  student_number: z.string(),
+  student_name: z.string(),
+  course_id: z.string(),
+  course_name: z.string(),
+  branch_id: z.string(),
+  branch_name: z.string(),
+});
+const unassignedBatchEnrolmentListSchema = z.object({ success: z.literal(true), enrolments: z.array(unassignedBatchEnrolmentSchema) });
 const admissionBatchOptionListSchema = z.object({ success: z.literal(true), batches: z.array(admissionBatchOptionSchema) });
 const batchDetailSchema = z.object({
   success: z.literal(true),
@@ -1562,6 +1576,7 @@ export type StudentSearchResult = z.infer<typeof studentSearchSchema>;
 export type CreateEnquiryResponse = z.infer<typeof createEnquiryResponseSchema>;
 export type StaffCourse = z.infer<typeof courseSchema>;
 export type StaffBatch = z.infer<typeof batchSchema>;
+export type StaffUnassignedBatchEnrolment = z.infer<typeof unassignedBatchEnrolmentSchema>;
 export type ManagedTrainer = z.infer<typeof managedTrainerSchema>;
 export type ManagedTrainerCandidate = z.infer<typeof managedTrainerCandidateSchema>;
 export type ManagedTrainerBatch = z.infer<typeof managedTrainerBatchSchema>;
@@ -1923,6 +1938,10 @@ export async function setManagedTrainerStatus(personId: string, status: "active"
 
 export async function getEligibleBatchEnrolments(batchId: string, q = "") {
   return getJson(`/api/staff/batches/${encodeURIComponent(batchId)}/eligible-enrolments${queryString({ q })}`, eligibleEnrolmentListSchema);
+}
+
+export async function getUnassignedBatchEnrolments() {
+  return getJson("/api/staff/batches/unassigned-enrolments", unassignedBatchEnrolmentListSchema);
 }
 
 export async function getAdmissionBatchOptions(branchId: string, courseId: string) {

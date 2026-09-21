@@ -314,6 +314,14 @@ a:focus-visible {
   margin: 0;
 }
 
+.page-header--with-action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .overview-hero,
 .profile-header,
 .friend-benefit {

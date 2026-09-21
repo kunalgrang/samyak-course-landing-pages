@@ -10,11 +10,13 @@ import {
   getStaffBatch,
   getStaffBatches,
   getStaffBatchTrainers,
+  getUnassignedBatchEnrolments,
   removeStaffBatchMembership,
   transferStaffBatchMembership,
   updateStaffBatch,
   type StaffBatch,
   type StaffCourse,
+  type StaffUnassignedBatchEnrolment,
 } from "../../lib/api";
 
 const weekdays = [
@@ -47,6 +49,7 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
   const [selectedBatchId, setSelectedBatchId] = useState(batchId || "");
   const [detail, setDetail] = useState<{ batch: StaffBatch; roster: Record<string, unknown>[] } | null>(null);
   const [eligible, setEligible] = useState<Record<string, unknown>[]>([]);
+  const [unassignedEnrolments, setUnassignedEnrolments] = useState<StaffUnassignedBatchEnrolment[]>([]);
   const [selectedEnrolmentId, setSelectedEnrolmentId] = useState("");
   const [targetBatchId, setTargetBatchId] = useState("");
   const [statusFilter, setStatusFilter] = useState("active");
@@ -109,10 +112,11 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
   async function load() {
     setIsLoading(true);
     try {
-      const [batchData, courseData, optionData] = await Promise.all([getStaffBatches({ status: statusFilter }), getActiveCourses(), getEnquiryOptions()]);
+      const [batchData, courseData, optionData, unassignedData] = await Promise.all([getStaffBatches({ status: statusFilter }), getActiveCourses(), getEnquiryOptions(), getUnassignedBatchEnrolments()]);
       setBatches(batchData.batches);
       setCourses(courseData.courses);
       setBranches(optionData.branches);
+      setUnassignedEnrolments(unassignedData.enrolments);
       if (batchId && !selectedBatchId) setSelectedBatchId(batchId);
       setError(null);
     } catch (reason) {
@@ -336,12 +340,33 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
           <article className={`table-row ${batch.id === selectedBatchId ? "table-row--selected" : ""}`} key={batch.id}>
             <button className="link-button table-row-main" type="button" onClick={() => setSelectedBatchId(batch.id)}>
               <strong>{batch.name} {batch.capacityWarning ? <span className="status-pill status-pill--warning">Full</span> : null}</strong>
-              <span>{compactCourseLabel(batch)} · {batch.branchName} · {formatDays(batch.daysOfWeek)} · {batch.startTime}-{batch.endTime}</span>
+              <span>{compactCourseLabel(batch)} · {batch.branchName} · {formatDays(batch.daysOfWeek)} · {formatTimeRange(batch.startTime, batch.endTime)}</span>
               <small>{batch.trainerName || "Trainer unassigned"} · {batch.activeStudents}{batch.capacity ? `/${batch.capacity}` : ""} students · {batch.status}</small>
             </button>
             <button type="button" className="button-link" onClick={() => editBatch(batch)}>Edit</button>
           </article>
         )) : <p className="staff-empty">No batches match this view.</p>}
+      </section>
+
+      <section className="staff-card">
+        <div className="section-heading">
+          <h2>Unassigned Enrolments</h2>
+          <span>{unassignedEnrolments.length}</span>
+        </div>
+        {unassignedEnrolments.length ? (
+          <div className="table-list">
+            {unassignedEnrolments.map((enrolment) => (
+              <article className="table-row unassigned-enrolment-row" key={enrolment.enrolment_id}>
+                <div className="table-row-main">
+                  <strong>{enrolment.student_name}</strong>
+                  <span>{enrolment.student_number} · {enrolment.enrolment_number} · {enrolment.course_name}</span>
+                  <small>{enrolment.branch_name} · {enrolment.enrolment_status} · Joining {formatDate(enrolment.joining_date)}</small>
+                </div>
+                <a className="button-link" href={`/app/students/${encodeURIComponent(enrolment.student_id)}`}>Profile</a>
+              </article>
+            ))}
+          </div>
+        ) : <p className="staff-empty">No unassigned enrolments match the current assignment rules.</p>}
       </section>
 
       {selectedBatch ? (
@@ -354,7 +379,7 @@ export function BatchManagementPage({ batchId }: { batchId?: string }) {
             </div>
             <Detail label="Branch" value={selectedBatch.branchName} />
             <Detail label="Trainer" value={selectedBatch.trainerName || "Unassigned"} />
-            <Detail label="Schedule" value={`${formatDays(selectedBatch.daysOfWeek)} ${selectedBatch.startTime}-${selectedBatch.endTime}`} />
+            <Detail label="Schedule" value={`${formatDays(selectedBatch.daysOfWeek)} ${formatTimeRange(selectedBatch.startTime, selectedBatch.endTime)}`} />
           </div>
           <div className="staff-form-grid batch-assignment-row">
             <label>Assign enrolment<select className="batch-assignment-select" value={selectedEnrolmentId} onChange={(event) => setSelectedEnrolmentId(event.target.value)}><option value="">Select eligible student</option>{eligible.map((row) => <option key={String(row.id)} value={String(row.id)}>{String(row.student_name)} · {String(row.enrolment_number)}</option>)}</select></label>
@@ -426,6 +451,24 @@ function compactCourseLabel(batch: StaffBatch) {
 function formatDays(days: string[]) {
   const labels = new Map<string, string>(weekdays.map(([value, label]) => [value, label]));
   return days.map((day) => labels.get(day) || day).join(", ");
+}
+
+export function formatTime12Hour(value: string) {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
+  if (!match) return value;
+  const hours = Number(match[1]);
+  const minutes = match[2];
+  const hour12 = hours % 12 || 12;
+  const suffix = hours < 12 ? "AM" : "PM";
+  return `${hour12}:${minutes} ${suffix}`;
+}
+
+function formatTimeRange(startTime: string, endTime: string) {
+  return `${formatTime12Hour(startTime)}-${formatTime12Hour(endTime)}`;
+}
+
+function formatDate(value: string | null) {
+  return value ? value.slice(0, 10) : "Not set";
 }
 
 export function filterCourses(courses: StaffCourse[], search: string) {
