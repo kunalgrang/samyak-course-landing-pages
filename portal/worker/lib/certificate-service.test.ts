@@ -11,6 +11,7 @@ import {
   issueCertificate,
   revokeCertificate,
   verifyCertificate,
+  buildVerificationUrl,
 } from "./certificate-service";
 import {
   approveCourseCompletionFromApplication,
@@ -52,6 +53,14 @@ describe("certificate system migration", () => {
 });
 
 describe("certificate service synthetic issuance flow", () => {
+  it("builds public verification URLs from configured platform origin", () => {
+    const { c } = testContext();
+
+    expect(buildVerificationUrl(c, "SYK-ABC1234567890XYZ")).toBe("https://go.samyaksion.com/verify/SYK-ABC1234567890XYZ");
+    const misconfiguredContext = { ...c, env: { ...c.env, CERTIFICATE_VERIFICATION_ORIGIN: "" } } as unknown as AppContext;
+    expect(() => buildVerificationUrl(misconfiguredContext, "SYK-ABC1234567890XYZ")).toThrow();
+  });
+
   it("issues, stores, verifies, downloads, deduplicates, and revokes a completed enrolment", async () => {
     const { c, db, staff } = testContext();
     const objects = new Map<string, Uint8Array>();

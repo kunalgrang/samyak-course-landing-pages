@@ -9,16 +9,17 @@ import {
   fetchStudentHomeForActiveProfile,
   getSessionFromRequest,
   hasSessionCookie,
-  ORG_ID,
   recordAuthEvent,
   sessionView,
 } from "../lib/auth-store";
+import { ORG_ID } from "../lib/tenant-context";
 import { getClientIp, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { getStudentLearningEnrolment, getStudentMaterialContent, listStudentLearning } from "../lib/session-materials";
 import { issueReferralLink, ReferralServiceError, type ReferralServiceEnv } from "../lib/referral-service";
 import { requireReferralTokenPepper } from "../lib/referral-token";
 import { hmacHex } from "../lib/crypto";
+import { referralPublicOrigin } from "../lib/platform-config";
 
 type PortalHono = Hono<{
   Bindings: WorkerBindings;
@@ -30,7 +31,6 @@ type PortalContext = Context<{
 }>;
 
 const REFERRAL_PROGRAMME_ID = "rprog_samyak_skill_circle";
-const REFERRAL_PUBLIC_ORIGIN = "https://go.samyaksion.com";
 
 export function registerStudentRoutes(app: PortalHono) {
   app.get("/api/student/home", async (c) => {
@@ -139,7 +139,7 @@ export function registerStudentRoutes(app: PortalHono) {
       }
       return jsonPlain(c, {
         created: true,
-        link: buildPublicReferralUrl(issued.rawToken),
+        link: buildPublicReferralUrl(c, issued.rawToken),
         shownOnce: true,
         lastFour: issued.link.tokenLastFour,
       }, { status: 201 });
@@ -242,8 +242,8 @@ async function ipHash(c: PortalContext) {
   return hmacHex(c.env.SESSION_PEPPER, "ip", getClientIp(c));
 }
 
-function buildPublicReferralUrl(rawToken: string) {
-  return `${REFERRAL_PUBLIC_ORIGIN}/r/${encodeURIComponent(rawToken)}`;
+function buildPublicReferralUrl(c: PortalContext, rawToken: string) {
+  return `${referralPublicOrigin(c.env)}/r/${encodeURIComponent(rawToken)}`;
 }
 
 function dashboardPagination(c: PortalContext) {

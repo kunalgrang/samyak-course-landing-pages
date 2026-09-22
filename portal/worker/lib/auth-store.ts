@@ -2,11 +2,12 @@ import type { AppContext } from "./http";
 import { createOpaqueId, createSessionToken, daysFromNow, decryptText, encryptText, hmacHex, secondsFromNow } from "./crypto";
 import { getRecoverableReferralLink, type ReferralServiceEnv } from "./referral-service";
 import { requireReferralTokenPepper } from "./referral-token";
+import { referralPublicOrigin } from "./platform-config";
+import { CURRENT_ORGANISATION_ID, trustedOrganisationId } from "./tenant-context";
 
-export const ORG_ID = "org_samyak";
+export const ORG_ID = CURRENT_ORGANISATION_ID;
 export const OTP_MAX_ATTEMPTS = 5;
 export const OTP_EXPIRY_SECONDS = 10 * 60;
-const REFERRAL_PUBLIC_ORIGIN = "https://go.samyaksion.com";
 
 const PRODUCTION_SESSION_COOKIE = "__Host-samyak_session";
 const LOCAL_DEVELOPMENT_SESSION_COOKIE = "samyak_session";
@@ -272,6 +273,7 @@ export async function createPendingChallenge({
   mobileLastFour: string;
   ipHash: string;
 }) {
+  const organisationId = trustedOrganisationId(c);
   const id = createOpaqueId("otp");
   const now = new Date().toISOString();
   await c.env.DB.prepare(
@@ -280,7 +282,7 @@ export async function createPendingChallenge({
       purpose, status, verification_attempts, resend_count, last_sent_at, requested_at, expires_at, ip_hash
     ) values (?, ?, ?, ?, null, 'none', 'login', 'requested', 0, 0, null, ?, ?, ?)`,
   )
-    .bind(id, ORG_ID, hash, mobileLastFour, now, secondsFromNow(OTP_EXPIRY_SECONDS), ipHash)
+    .bind(id, organisationId, hash, mobileLastFour, now, secondsFromNow(OTP_EXPIRY_SECONDS), ipHash)
     .run();
   return id;
 }
@@ -381,6 +383,7 @@ export async function runDummyOtpComparison(c: AppContext, otp: string) {
 }
 
 export async function bootstrapAccount(c: AppContext, mobile: string, lookup: PortalLookup) {
+  const organisationId = trustedOrganisationId(c);
   const now = new Date().toISOString();
   const accountHash = await mobileHash(c, mobile);
   const accountId = createOpaqueId("acct");
@@ -395,10 +398,10 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
       last_login_at = excluded.last_login_at,
       updated_at = excluded.updated_at`,
   )
-    .bind(accountId, ORG_ID, accountHash, accountHash, mobile.slice(-4), now, now, now)
+    .bind(accountId, organisationId, accountHash, accountHash, mobile.slice(-4), now, now, now)
     .run();
   const account = await c.env.DB.prepare("select id from login_accounts where organisation_id = ? and mobile_normalized = ?")
-    .bind(ORG_ID, accountHash)
+    .bind(organisationId, accountHash)
     .first<{ id: string }>();
   if (!account) throw new Error("Account bootstrap failed");
 
@@ -411,7 +414,7 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
        and roles.code in ('student', 'alumni')
      where login_account_people.login_account_id = ?`,
   )
-    .bind(ORG_ID, account.id)
+    .bind(organisationId, account.id)
     .all<PreviousProfileLink>();
   const previousByPersonId = new Map((previousLinks.results || []).map((link) => [link.person_id, link]));
   const returnedPersonIds = new Set<string>();
@@ -421,7 +424,7 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
      where login_account_id = ?
        and role_id in (select id from roles where organisation_id = ? and code in ('student', 'alumni'))`,
   )
-    .bind(account.id, ORG_ID)
+    .bind(account.id, organisationId)
     .run();
 
   for (const profile of lookup.profiles) {
@@ -466,6 +469,7 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
 }
 
 export async function lookupTrainersByMobile(c: AppContext, mobile: string): Promise<TrainerLookup> {
+  const organisationId = trustedOrganisationId(c);
   const hash = await mobileHash(c, mobile);
   const rows = await c.env.DB.prepare(
     `select distinct
@@ -492,7 +496,7 @@ export async function lookupTrainersByMobile(c: AppContext, mobile: string): Pro
        and (branches.id is null or branches.status = 'active')
      order by public_name collate nocase`,
   )
-    .bind(ORG_ID, TRAINER_ROLE_CODE, hash, new Date().toISOString())
+    .bind(organisationId, TRAINER_ROLE_CODE, hash, new Date().toISOString())
     .all<{ person_id: string; public_name: string; home_branch_id: string | null; branch_name: string | null }>();
   const trainers = (rows.results || []).map((row) => ({
     personId: row.person_id,
@@ -505,6 +509,7 @@ export async function lookupTrainersByMobile(c: AppContext, mobile: string): Pro
 }
 
 export async function bootstrapTrainerAccount(c: AppContext, mobile: string, lookup: TrainerLookup) {
+  const organisationId = trustedOrganisationId(c);
   const now = new Date().toISOString();
   const accountHash = await mobileHash(c, mobile);
   const accountId = createOpaqueId("acct");
@@ -519,10 +524,10 @@ export async function bootstrapTrainerAccount(c: AppContext, mobile: string, loo
       last_login_at = excluded.last_login_at,
       updated_at = excluded.updated_at`,
   )
-    .bind(accountId, ORG_ID, accountHash, accountHash, mobile.slice(-4), now, now, now)
+    .bind(accountId, organisationId, accountHash, accountHash, mobile.slice(-4), now, now, now)
     .run();
   const account = await c.env.DB.prepare("select id from login_accounts where organisation_id = ? and mobile_normalized = ?")
-    .bind(ORG_ID, accountHash)
+    .bind(organisationId, accountHash)
     .first<{ id: string }>();
   if (!account) throw new Error("Trainer account bootstrap failed");
 
@@ -552,7 +557,7 @@ export async function bootstrapTrainerAccount(c: AppContext, mobile: string, loo
      where login_account_people.login_account_id = ?
      group by login_account_people.person_id`,
   )
-    .bind(TRAINER_ROLE_CODE, ORG_ID, account.id)
+    .bind(TRAINER_ROLE_CODE, organisationId, account.id)
     .all<{ person_id: string; has_person_role: number }>();
   for (const previous of previousLinks.results || []) {
     if (returnedPersonIds.has(previous.person_id)) continue;
@@ -1130,7 +1135,7 @@ async function recoverActiveReferralLink(
 ) {
   return getRecoverableReferralLink(referralEnv(c), {
     link,
-    publicOrigin: REFERRAL_PUBLIC_ORIGIN,
+    publicOrigin: referralPublicOrigin(c.env),
   });
 }
 

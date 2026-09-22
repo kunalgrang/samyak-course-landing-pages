@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Context, Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
-import { ORG_ID } from "../lib/auth-store";
+import { ORG_ID } from "../lib/tenant-context";
 import { createOpaqueId, decryptText } from "../lib/crypto";
 import { requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";

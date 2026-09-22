@@ -388,6 +388,8 @@ function bindings(sqlite: DatabaseSync, overrides: Partial<WorkerBindings> = {})
     TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
     SESSION_PEPPER,
     REFERRAL_TOKEN_PEPPER,
+    REFERRAL_PUBLIC_ORIGIN: "https://go.samyaksion.com",
+    CERTIFICATE_VERIFICATION_ORIGIN: "https://go.samyaksion.com",
     DEV_OTP: "123456",
     ...overrides,
   };

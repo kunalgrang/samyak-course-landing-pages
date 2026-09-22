@@ -24,6 +24,7 @@
   "vars": {
     "ENVIRONMENT": "production",
     "CERTIFICATE_VERIFICATION_ORIGIN": "https://go.samyaksion.com",
+    "REFERRAL_PUBLIC_ORIGIN": "https://go.samyaksion.com",
     "REFERRAL_PUBLIC_ALLOWED_ORIGINS": "https://go.samyaksion.com,https://refer.samyaksion.com,https://samyaksion.com,https://www.samyaksion.com",
     "TURNSTILE_SITE_KEY": "0x4AAAAAAD_9LJVUBqi8lIkK"
   },
@@ -54,6 +55,7 @@
       ],
       "vars": {
         "ENVIRONMENT": "staging",
+        "REFERRAL_PUBLIC_ORIGIN": "https://staging-go.samyaksion.com",
         "REFERRAL_PUBLIC_ALLOWED_ORIGINS": "https://staging-go.samyaksion.com",
         "TURNSTILE_SITE_KEY": "<STAGING_TURNSTILE_SITE_KEY>"
       },

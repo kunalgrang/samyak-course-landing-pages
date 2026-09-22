@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Context, Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { createOpaqueId, hmacHex } from "../lib/crypto";
-import { ORG_ID } from "../lib/auth-store";
+import { ORG_ID } from "../lib/tenant-context";
 import { getClientIp } from "../lib/http";
 import { jsonPlain } from "../lib/json-response";
 import {
@@ -30,12 +30,6 @@ const RESOLVE_LIMIT = { count: 60, windowSeconds: 60 };
 const SUBMIT_IP_LIMIT = { count: 10, windowSeconds: 600 };
 const SUBMIT_MOBILE_LIMIT = { count: 3, windowSeconds: 3600 };
 const SUBMIT_TOKEN_LIMIT = { count: 20, windowSeconds: 3600 };
-const PRODUCTION_PUBLIC_ORIGINS = new Set([
-  "https://go.samyaksion.com",
-  "https://refer.samyaksion.com",
-  "https://samyaksion.com",
-  "https://www.samyaksion.com",
-]);
 const DEVELOPMENT_PUBLIC_ORIGINS = new Set([
   "http://localhost:5173",
   "http://127.0.0.1:5173",
@@ -303,8 +297,7 @@ function allowedPublicOrigins(env: WorkerBindings) {
   const environment = env.ENVIRONMENT || "production";
   const configuredOrigins = parseConfiguredOrigins(env.REFERRAL_PUBLIC_ALLOWED_ORIGINS);
   if (environment === "development") return new Set([...DEVELOPMENT_PUBLIC_ORIGINS, ...configuredOrigins]);
-  if (environment === "staging" || environment === "preview") return configuredOrigins;
-  return new Set([...PRODUCTION_PUBLIC_ORIGINS, ...configuredOrigins]);
+  return configuredOrigins;
 }
 
 function parseConfiguredOrigins(value?: string) {

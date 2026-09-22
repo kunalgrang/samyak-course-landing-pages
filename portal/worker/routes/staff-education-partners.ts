@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Context, Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
-import { ORG_ID } from "../lib/auth-store";
+import { ORG_ID } from "../lib/tenant-context";
 import { createOpaqueId, encryptText, hmacHex } from "../lib/crypto";
 import { requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
@@ -11,12 +11,12 @@ import { getRecoverableReferralLink, issueReferralLink, rotateReferralLink, type
 import { requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import { getCourseFeeGstBasisPoints } from "../lib/course-fee";
 import { buildPartnerPortalView } from "../lib/partner-portal";
+import { referralPublicOrigin } from "../lib/platform-config";
 
 type PortalHono = Hono<{ Bindings: WorkerBindings; Variables: WorkerVariables }>;
 type PortalContext = Context<{ Bindings: WorkerBindings; Variables: WorkerVariables }>;
 
 const PARTNER_PROGRAMME_ID = "rprog_samyak_education_partners";
-const REFERRAL_PUBLIC_ORIGIN = "https://go.samyaksion.com";
 const MAX_BODY_BYTES = 8192;
 
 const partnerTypes = ["college", "coaching_class", "tuition_centre", "training_institute", "career_counsellor", "placement_consultant", "freelancer", "other"] as const;
@@ -179,7 +179,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
       loginAccountId: staff.loginAccountId,
       now: new Date().toISOString(),
     });
-    const recovered = issued.rawToken ? { recoverable: true as const, publicUrl: buildPublicReferralUrl(issued.rawToken) } : await recoverPartnerLink(c, partner);
+    const recovered = issued.rawToken ? { recoverable: true as const, publicUrl: buildPublicReferralUrl(c, issued.rawToken) } : await recoverPartnerLink(c, partner);
     const publicLink = recovered?.recoverable ? recovered.publicUrl : null;
     return jsonPlain(c, { success: true, created: issued.issued, link: publicLink, shownOnce: Boolean(publicLink), lastFour: issued.link.tokenLastFour, activatedAt: issued.link.activatedAt });
   });
@@ -203,7 +203,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
       success: true,
       created: true,
       replaced: true,
-      link: buildPublicReferralUrl(rotated.rawToken),
+      link: buildPublicReferralUrl(c, rotated.rawToken),
       shownOnce: true,
       lastFour: rotated.link.tokenLastFour,
       activatedAt: rotated.link.activatedAt,
@@ -316,7 +316,7 @@ async function recoverPartnerLink(c: PortalContext, partner: PartnerRow): Promis
   if (!partner.active_link_id || !partner.active_link_token_hash) return null;
   return getRecoverableReferralLink(referralEnv(c), {
     link: { id: partner.active_link_id, organisation_id: ORG_ID, token_hash: partner.active_link_token_hash },
-    publicOrigin: REFERRAL_PUBLIC_ORIGIN,
+    publicOrigin: referralPublicOrigin(c.env),
   });
 }
 
@@ -328,8 +328,8 @@ function referralEnv(c: PortalContext): ReferralServiceEnv {
   };
 }
 
-function buildPublicReferralUrl(rawToken: string) {
-  return `${REFERRAL_PUBLIC_ORIGIN}/r/${encodeURIComponent(rawToken)}`;
+function buildPublicReferralUrl(c: PortalContext, rawToken: string) {
+  return `${referralPublicOrigin(c.env)}/r/${encodeURIComponent(rawToken)}`;
 }
 
 async function parsePartnerBody(c: PortalContext): Promise<{ ok: true; data: z.infer<typeof partnerSchema> & { commissionBps: number } } | { ok: false; response: Response }> {

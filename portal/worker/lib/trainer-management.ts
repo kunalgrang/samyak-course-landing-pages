@@ -1,4 +1,5 @@
-import { ORG_ID, mobileHash } from "./auth-store";
+import { mobileHash } from "./auth-store";
+import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, decryptText, encryptText } from "./crypto";
 import type { AppContext } from "./http";
 import { maskMobile, normalizeIndianMobile } from "./mobile";

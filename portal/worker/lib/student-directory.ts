@@ -1,4 +1,5 @@
-import { ORG_ID, mobileHash } from "./auth-store";
+import { mobileHash } from "./auth-store";
+import { ORG_ID } from "./tenant-context";
 import type { AppContext } from "./http";
 import { normalizeIndianMobile } from "./mobile";
 import { ADMISSION_STAFF_ROLES, type StaffContext } from "./staff-auth";

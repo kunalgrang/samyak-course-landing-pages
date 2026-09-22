@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { AppContext } from "./http";
-import { ORG_ID } from "./auth-store";
+import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, hmacHex } from "./crypto";
 import { calculateEducationPartnerCommissionSnapshot, calculateMinimumQualifyingPaymentPaise, selectRewardSlab, type RewardModelType, type RewardSlab } from "./referral-domain";
 import type { StaffContext } from "./staff-auth";

@@ -1,6 +1,7 @@
 import type { AppContext } from "./http";
-import { ORG_ID } from "./auth-store";
+import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, randomBase64Url } from "./crypto";
+import { certificateVerificationOrigin } from "./platform-config";
 import type { StaffContext } from "./staff-auth";
 import { generateCertificatePdf } from "./certificate-pdf";
 import {
@@ -12,7 +13,6 @@ import {
 import { certificateIssuedApplicationStatements, markApplicationCertificateIssued } from "./certificate-application-service";
 
 export const CERTIFICATE_TEMPLATE_CODE = "SAMYAK_COMPLETION_V1";
-export const CERTIFICATE_VERIFICATION_ORIGIN = "https://go.samyaksion.com";
 
 export type CertificateRecord = {
   id: string;
@@ -349,8 +349,7 @@ export async function getCertificateById(c: AppContext, certificateId: string) {
 }
 
 export function buildVerificationUrl(c: AppContext, code: string) {
-  const envOrigin = String(c.env.CERTIFICATE_VERIFICATION_ORIGIN || "").replace(/\/$/, "");
-  return `${envOrigin || CERTIFICATE_VERIFICATION_ORIGIN}/verify/${encodeURIComponent(code)}`;
+  return `${certificateVerificationOrigin(c.env)}/verify/${encodeURIComponent(code)}`;
 }
 
 async function loadEligibilityRow(c: AppContext, enrolmentId: string) {

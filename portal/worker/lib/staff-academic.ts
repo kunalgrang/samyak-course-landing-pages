@@ -1,4 +1,4 @@
-import { ORG_ID } from "./auth-store";
+import { ORG_ID } from "./tenant-context";
 import type { AppContext } from "./http";
 import { sessionMaterialStorageFromEnv, type SessionMaterialRecord } from "./session-materials";
 import type { StaffContext } from "./staff-auth";

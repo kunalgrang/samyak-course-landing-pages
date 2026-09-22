@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ORG_ID } from "./auth-store";
+import { ORG_ID } from "./tenant-context";
 import { createOpaqueId } from "./crypto";
 import type { AppContext } from "./http";
 import type { StaffContext } from "./staff-auth";

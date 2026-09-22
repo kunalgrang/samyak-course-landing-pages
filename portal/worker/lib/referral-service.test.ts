@@ -1786,7 +1786,15 @@ function testFixture() {
   sqlite.exec("pragma foreign_keys = on");
   applyMigrations(sqlite);
   const db = new SqliteD1(sqlite) as unknown as ReferralDb;
-  const env: ReferralServiceEnv = { DB: db, SESSION_PEPPER, referralTokenPepper: TEST_REFERRAL_TOKEN_PEPPER };
+  const env = {
+    DB: db,
+    SESSION_PEPPER,
+    referralTokenPepper: TEST_REFERRAL_TOKEN_PEPPER,
+    ENVIRONMENT: "production",
+    REFERRAL_PUBLIC_ORIGIN: "https://go.samyaksion.com",
+    REFERRAL_PUBLIC_ALLOWED_ORIGINS: "https://go.samyaksion.com,https://refer.samyaksion.com,https://samyaksion.com,https://www.samyaksion.com",
+    CERTIFICATE_VERIFICATION_ORIGIN: "https://go.samyaksion.com",
+  } as ReferralServiceEnv & WorkerBindings;
   return { sqlite, env, close: () => sqlite.close() };
 }
 

@@ -572,6 +572,8 @@ function env(db = new FakeD1(), overrides: Partial<WorkerBindings> = {}): Worker
     TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
     TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
     SESSION_PEPPER: "test-pepper",
+    REFERRAL_PUBLIC_ORIGIN: "https://go.samyaksion.com",
+    CERTIFICATE_VERIFICATION_ORIGIN: "https://go.samyaksion.com",
     DEV_OTP: "123456",
     ...overrides,
   };
@@ -1455,6 +1457,29 @@ describe("auth routes", () => {
     });
     expect(db.userSessions[0].token_hash).not.toBe(token);
     expect(JSON.stringify(db.userSessions)).not.toContain(token);
+  });
+
+  it("keeps auth bootstrap scoped to Samyak despite arbitrary client organisation hints", async () => {
+    const db = new FakeD1();
+    const bindings = env(db);
+    installFetch();
+    await seedLookupProfiles(db, "9876543210", currentLookupOptions, bindings.SESSION_PEPPER);
+
+    const otpResponse = await app.request(
+      "http://localhost/api/auth/request-otp?organisation_id=org_other",
+      {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json", "X-Organisation-Id": "org_other" },
+        body: JSON.stringify({ mobile: "9876543210", turnstileToken: "token", organisationId: "org_other" }),
+      },
+      bindings,
+    );
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456", undefined, bindings);
+
+    expect(verifyResponse.status).toBe(200);
+    expect(db.otpChallenges[0].organisation_id).toBe("org_samyak");
+    expect(db.loginAccounts).toEqual([expect.objectContaining({ organisation_id: "org_samyak" })]);
+    expect(db.loginAccounts).not.toEqual(expect.arrayContaining([expect.objectContaining({ organisation_id: "org_other" })]));
   });
 
   it("clears a stale active profile without destroying a valid account session", async () => {

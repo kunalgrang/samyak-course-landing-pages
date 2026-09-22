@@ -1,5 +1,6 @@
 import type { AppContext } from "./http";
-import { ORG_ID, lookupPortalProfilesByMobile, mobileHash } from "./auth-store";
+import { lookupPortalProfilesByMobile, mobileHash } from "./auth-store";
+import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, encryptText, hmacHex } from "./crypto";
 import { normalizeIndianMobile } from "./mobile";
 import type { StaffContext } from "./staff-auth";

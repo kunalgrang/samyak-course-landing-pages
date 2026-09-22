@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { ORG_ID, type TrainerProfileChoice } from "./auth-store";
+import type { TrainerProfileChoice } from "./auth-store";
+import { ORG_ID } from "./tenant-context";
 import { createOpaqueId } from "./crypto";
 import type { AppContext } from "./http";
 

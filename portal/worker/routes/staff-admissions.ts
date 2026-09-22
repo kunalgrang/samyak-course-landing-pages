@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
-import { ORG_ID, mobileHash } from "../lib/auth-store";
+import { mobileHash } from "../lib/auth-store";
+import { ORG_ID } from "../lib/tenant-context";
 import {
   confirmAdmission,
   admissionDraftPayloadForStaff,
@@ -31,6 +32,7 @@ import { addMobileIfMissing } from "../lib/person-contact";
 import { getRecoverableReferralLink, rotateReferralLink, type ReferralServiceEnv } from "../lib/referral-service";
 import { requireReferralTokenPepper } from "../lib/referral-token";
 import { listStaffStudents } from "../lib/student-directory";
+import { referralPublicOrigin } from "../lib/platform-config";
 
 type PortalHono = Hono<{
   Bindings: WorkerBindings;
@@ -39,7 +41,6 @@ type PortalHono = Hono<{
 type PortalContext = Parameters<typeof getAdmissionDraft>[0];
 
 const REFERRAL_PROGRAMME_ID = "rprog_samyak_skill_circle";
-const REFERRAL_PUBLIC_ORIGIN = "https://go.samyaksion.com";
 
 const baseCourseSchema = z.object({
   code: z.string().trim().min(2).max(30).regex(/^[A-Za-z0-9_-]+$/),
@@ -416,7 +417,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     return jsonPlain(c, {
       created: true,
       rotated: true,
-      link: buildPublicReferralUrl(rotated.rawToken),
+      link: buildPublicReferralUrl(c, rotated.rawToken),
       shownOnce: true,
       lastFour: rotated.link.tokenLastFour,
       previousLinkId: rotated.previousLinkId,
@@ -745,7 +746,7 @@ async function studentReferralLinkPayload(c: PortalContext, personId: string, ca
   const recovered = canRecoverFullUrl
     ? await getRecoverableReferralLink(referralEnv(c), {
         link: { id: active.id, organisation_id: active.organisation_id, token_hash: active.token_hash },
-        publicOrigin: REFERRAL_PUBLIC_ORIGIN,
+        publicOrigin: referralPublicOrigin(c.env),
       })
     : null;
   return {
@@ -806,8 +807,8 @@ function referralEnv(c: PortalContext): ReferralServiceEnv {
   };
 }
 
-function buildPublicReferralUrl(rawToken: string) {
-  return `${REFERRAL_PUBLIC_ORIGIN}/r/${encodeURIComponent(rawToken)}`;
+function buildPublicReferralUrl(c: PortalContext, rawToken: string) {
+  return `${referralPublicOrigin(c.env)}/r/${encodeURIComponent(rawToken)}`;
 }
 
 async function fullPrimaryMobile(c: Parameters<typeof getAdmissionDraft>[0], personId: string) {

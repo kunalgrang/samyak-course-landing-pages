@@ -1,6 +1,7 @@
 export type WorkerBindings = {
   DB: D1Database;
   ENVIRONMENT: "development" | "preview" | "staging" | "production";
+  REFERRAL_PUBLIC_ORIGIN?: string;
   REFERRAL_PUBLIC_ALLOWED_ORIGINS?: string;
   TURNSTILE_SITE_KEY: string;
   TURNSTILE_SECRET_KEY: string;

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { AppContext } from "./http";
-import { ORG_ID } from "./auth-store";
+import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, hmacHex } from "./crypto";
 import { ADMISSION_STAFF_ROLES, canBackdateReceipts, canRecordReceipts, canReverseReceipts, type StaffContext } from "./staff-auth";
 

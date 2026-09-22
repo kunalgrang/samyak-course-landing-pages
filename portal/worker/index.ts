@@ -23,6 +23,7 @@ import { registerPartnerRoutes } from "./routes/partner";
 import { registerTrainerRoutes } from "./routes/trainer";
 import { registerCertificateRoutes } from "./routes/certificates";
 import { AuthConfigurationError } from "./lib/auth-store";
+import { PlatformConfigurationError } from "./lib/platform-config";
 import { jsonError } from "./lib/json-response";
 
 const app = new Hono<{
@@ -81,6 +82,15 @@ app.onError((error, c) => {
       status: 500,
       code: "server_configuration_error",
       message: "Authentication is temporarily unavailable.",
+    });
+  }
+
+  if (error instanceof PlatformConfigurationError) {
+    logSafeServerError(c, "server_configuration_error", 500);
+    return jsonError(c, {
+      status: 500,
+      code: "server_configuration_error",
+      message: "Platform configuration is temporarily unavailable.",
     });
   }
 

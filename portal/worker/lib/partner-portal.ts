@@ -1,11 +1,11 @@
 import type { AppContext } from "./http";
-import { ORG_ID } from "./auth-store";
+import { ORG_ID } from "./tenant-context";
+import { referralPublicOrigin } from "./platform-config";
 import { getCourseFeeGstBasisPoints } from "./course-fee";
 import { getReferralQualifications, type ReferralQualification, type ReferralRewardStatus } from "./referral-rewards";
 import { requireReferralTokenPepper } from "./referral-token";
 import { getRecoverableReferralLink, type ReferralServiceEnv } from "./referral-service";
 
-const REFERRAL_PUBLIC_ORIGIN = "https://go.samyaksion.com";
 const MAX_PAGE_SIZE = 50;
 
 export type PartnerPortalView = {
@@ -251,7 +251,7 @@ async function recoverPartnerReferralLink(c: AppContext, partner: PartnerPortalR
   if (!partner.active_link_id || !partner.active_link_token_hash) return null;
   return getRecoverableReferralLink(referralEnv(c), {
     link: { id: partner.active_link_id, organisation_id: ORG_ID, token_hash: partner.active_link_token_hash },
-    publicOrigin: REFERRAL_PUBLIC_ORIGIN,
+    publicOrigin: referralPublicOrigin(c.env),
   });
 }
 

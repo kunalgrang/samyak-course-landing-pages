@@ -1,5 +1,5 @@
 import type { AppContext } from "./http";
-import { ORG_ID } from "./auth-store";
+import { ORG_ID } from "./tenant-context";
 import { createOpaqueId } from "./crypto";
 import type { StaffContext } from "./staff-auth";
 

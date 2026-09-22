@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AppContext } from "./http";
-import { ORG_ID, mobileHash } from "./auth-store";
+import { mobileHash } from "./auth-store";
+import { ORG_ID } from "./tenant-context";
 import { assignBatchOnAdmissionConfirmation, validateAdmissionBatchSelection } from "./batch-management";
 import { createOpaqueId, decryptText, encryptText, hmacHex } from "./crypto";
 import { DISCOUNT_APPROVER_ROLES, canBackdateReceipts, canRecordReceipts, canReverseReceipts, type StaffContext } from "./staff-auth";

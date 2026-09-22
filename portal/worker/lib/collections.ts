@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { ORG_ID, mobileHash } from "./auth-store";
+import { mobileHash } from "./auth-store";
+import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, decryptText, hmacHex } from "./crypto";
 import type { AppContext } from "./http";
 import { normalizeIndianMobile } from "./mobile";
