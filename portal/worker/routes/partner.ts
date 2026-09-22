@@ -157,7 +157,15 @@ export function registerPartnerRoutes(app: PortalHono) {
     if (!verified) return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
     const accountId = await bootstrapPartnerAccount(c, mobile, lookup);
     const activePartnerId = lookup.partners.length === 1 ? lookup.partners[0].educationPartnerId : null;
-    const token = await createSession(c, accountId, null, activePartnerId, "partner");
+    let token: string;
+    try {
+      token = await createSession(c, accountId, null, activePartnerId, "partner");
+    } catch (error) {
+      if (error instanceof Error && error.name === "MembershipAccessError") {
+        return jsonWithRequestId(c, { success: false, code: "MEMBERSHIP_INACTIVE", message: "This organisation access is not active." }, 403);
+      }
+      throw error;
+    }
     await recordAuthEvent(c, "partner_otp_verify", "LOGIN_SUCCESS", { loginAccountId: accountId, mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
     await recordAuditLog(c, accountId, null, "partner_login");
     const response = jsonWithRequestId(c, { success: true, session: await partnerSessionView(c, accountId, activePartnerId) });

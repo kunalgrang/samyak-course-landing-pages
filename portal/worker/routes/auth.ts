@@ -228,7 +228,15 @@ export function registerAuthRoutes(app: PortalHono) {
     }
     const accountId = await bootstrapAccount(c, mobile, lookup);
     const activePersonId = lookup.profiles.length === 1 ? lookup.profiles[0].personId || null : null;
-    const token = await createSession(c, accountId, activePersonId);
+    let token: string;
+    try {
+      token = await createSession(c, accountId, activePersonId);
+    } catch (error) {
+      if (error instanceof Error && error.name === "MembershipAccessError") {
+        return jsonWithRequestId(c, { success: false, code: "MEMBERSHIP_INACTIVE", message: "This organisation access is not active." }, 403);
+      }
+      throw error;
+    }
     await recordAuthEvent(c, "otp_verify", "LOGIN_SUCCESS", { loginAccountId: accountId, mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
     await recordAuditLog(c, accountId, activePersonId, "login");
     const session = await sessionView(c, accountId, activePersonId);

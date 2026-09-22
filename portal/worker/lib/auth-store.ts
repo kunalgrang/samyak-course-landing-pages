@@ -4,6 +4,7 @@ import { getRecoverableReferralLink, type ReferralServiceEnv } from "./referral-
 import { requireReferralTokenPepper } from "./referral-token";
 import { referralPublicOrigin } from "./platform-config";
 import { CURRENT_ORGANISATION_ID, trustedOrganisationId } from "./tenant-context";
+import { MembershipAccessError, requireActiveOrganisationMembershipForLoginAccount, validateSessionOrganisationMembership } from "./identity-membership";
 
 export const ORG_ID = CURRENT_ORGANISATION_ID;
 export const OTP_MAX_ATTEMPTS = 5;
@@ -86,6 +87,7 @@ export type SessionResultCode =
   | "SESSION_REVOKED"
   | "SESSION_ABSOLUTE_EXPIRED"
   | "SESSION_INACTIVE_EXPIRED"
+  | "SESSION_MEMBERSHIP_INACTIVE"
   | "SESSION_PROFILE_CLEARED"
   | "SESSION_VALID";
 
@@ -105,6 +107,8 @@ export class AuthConfigurationError extends Error {
 type SessionRecord = {
   id: string;
   login_account_id: string;
+  organisation_membership_id: string | null;
+  organisation_id?: string | null;
   active_person_id: string | null;
   active_education_partner_id: string | null;
   active_subject_type?: SessionSubjectType;
@@ -581,15 +585,17 @@ export async function createSession(
   activeEducationPartnerId: string | null = null,
   activeSubjectType: SessionSubjectType = activeEducationPartnerId ? "partner" : "person",
 ) {
+  const membership = await requireActiveOrganisationMembershipForLoginAccount(c, loginAccountId);
+  if (!membership) throw new MembershipAccessError();
   const token = createSessionToken();
   const tokenHash = await hmacHex(sessionPepper(c), "session", token);
   const now = new Date().toISOString();
   const fingerprint = await requestFingerprint(c);
   await c.env.DB.prepare(
-    `insert into user_sessions (id, login_account_id, active_person_id, active_education_partner_id, active_subject_type, token_hash, created_at, expires_at, last_seen_at, ip_hash, user_agent_hash)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `insert into user_sessions (id, login_account_id, organisation_membership_id, active_person_id, active_education_partner_id, active_subject_type, token_hash, created_at, expires_at, last_seen_at, ip_hash, user_agent_hash)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(createOpaqueId("sess"), loginAccountId, activePersonId, activeEducationPartnerId, activeSubjectType, tokenHash, now, daysFromNow(30), now, fingerprint.ipHash, fingerprint.userAgentHash)
+    .bind(createOpaqueId("sess"), loginAccountId, membership.organisationMembershipId, activePersonId, activeEducationPartnerId, activeSubjectType, tokenHash, now, daysFromNow(30), now, fingerprint.ipHash, fingerprint.userAgentHash)
     .run();
   return token;
 }
@@ -641,6 +647,13 @@ export async function getSessionValidationResult(c: AppContext, scope: SessionCo
     await recordSessionResult(c, "SESSION_INACTIVE_EXPIRED", record.login_account_id);
     return { session: null, resultCode: "SESSION_INACTIVE_EXPIRED", shouldClearCookie: true };
   }
+  const membership = await validateSessionOrganisationMembership(c, record);
+  if (!membership) {
+    await recordSessionResult(c, "SESSION_MEMBERSHIP_INACTIVE", record.login_account_id);
+    return { session: null, resultCode: "SESSION_MEMBERSHIP_INACTIVE", shouldClearCookie: true };
+  }
+  record.organisation_membership_id = membership.organisationMembershipId;
+  record.organisation_id = membership.organisationId;
   let currentRecord = record;
   const activeSubjectType = record.active_subject_type || "person";
   if (record.active_person_id && activeSubjectType === "trainer" && !(await isLinkedTrainerAvailable(c, record.login_account_id, record.active_person_id))) {

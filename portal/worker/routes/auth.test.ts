@@ -3,6 +3,7 @@ import app from "../index";
 import type { WorkerBindings } from "../bindings";
 import { bootstrapTrainerAccount } from "../lib/auth-store";
 import { hmacHex } from "../lib/crypto";
+import { ensureOrganisationMembershipForLoginAccount } from "../lib/identity-membership";
 
 type Row = Record<string, any>;
 type LookupOptions = Parameters<typeof installFetch>[0];
@@ -32,6 +33,28 @@ class FakeD1Statement {
     }
     if (sql.includes("select mobile_last_four from login_accounts where id = ?")) {
       return (this.db.loginAccounts.find((row) => row.id === this.values[0]) ?? null) as T;
+    }
+    if (sql.includes("from login_accounts where id = ?")) {
+      const row = this.db.loginAccounts.find((account) => account.id === this.values[0]);
+      return (row ? this.db.loginAccountMembershipRow(row) : null) as T;
+    }
+    if (sql.includes("select id from global_identities where mobile_normalized = ?")) {
+      return (this.db.globalIdentities.find((row) => row.mobile_normalized === this.values[0]) ?? null) as T;
+    }
+    if (sql.includes("from organisation_memberships") && sql.includes("join global_identities")) {
+      const byLoginAccount = sql.includes("organisation_memberships.login_account_id = ?");
+      const membership = this.db.organisationMemberships.find((row) => byLoginAccount ? row.login_account_id === this.values[0] : row.id === this.values[0]);
+      if (!membership) return null as T;
+      const identity = this.db.globalIdentities.find((row) => row.id === membership.global_identity_id);
+      if (!identity) return null as T;
+      return {
+        organisation_membership_id: membership.id,
+        organisation_id: membership.organisation_id,
+        membership_status: membership.status,
+        login_account_id: membership.login_account_id,
+        global_identity_id: identity.id,
+        global_identity_status: identity.status,
+      } as T;
     }
     if (sql.includes("select * from user_sessions where token_hash = ?")) {
       return (this.db.userSessions.find((row) => row.token_hash === this.values[0]) ?? null) as T;
@@ -284,6 +307,8 @@ class FakeD1 {
   writes: Array<{ sql: string; values: unknown[] }> = [];
   otpChallenges: Row[] = [];
   loginAccounts: Row[] = [];
+  globalIdentities: Row[] = [];
+  organisationMemberships: Row[] = [];
   branches: Row[] = [{ id: "branch_sion", name: "Sion", code: "SION" }];
   people: Row[] = [];
   personContacts: Row[] = [];
@@ -310,6 +335,22 @@ class FakeD1 {
 
   prepare(sql: string) {
     return new FakeD1Statement(this, sql);
+  }
+
+  loginAccountMembershipRow(row: Row) {
+    return {
+      organisation_id: "org_samyak",
+      mobile_normalized: row.id,
+      mobile_hash: row.id,
+      mobile_last_four: "0000",
+      login_enabled: 1,
+      status: "active",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      ...row,
+      global_identity_id: row.global_identity_id ?? null,
+      organisation_membership_id: row.organisation_membership_id ?? null,
+    };
   }
 
   countChallenges(sql: string, values: unknown[]) {
@@ -422,6 +463,29 @@ class FakeD1 {
       Object.assign(row, { mobile_hash: mobileHash, mobile_last_four: mobileLastFour, last_login_at: lastLoginAt, updated_at: updatedAt });
       return 1;
     }
+    if (sql.startsWith("insert into global_identities")) {
+      const [id, mobileNormalized, mobileHash, mobileLastFour, createdAt, updatedAt] = values;
+      let row = this.globalIdentities.find((identity) => identity.mobile_normalized === mobileNormalized);
+      if (!row) {
+        row = { id, mobile_normalized: mobileNormalized, status: "active", created_at: createdAt };
+        this.globalIdentities.push(row);
+      }
+      Object.assign(row, { mobile_hash: row.mobile_hash || mobileHash, mobile_last_four: mobileLastFour, updated_at: updatedAt });
+      return 1;
+    }
+    if (sql.startsWith("insert into organisation_memberships")) {
+      const [id, globalIdentityId, organisationId, loginAccountId, status, createdAt, updatedAt] = values;
+      if (this.organisationMemberships.some((membership) => membership.login_account_id === loginAccountId)) return 0;
+      this.organisationMemberships.push({ id, global_identity_id: globalIdentityId, organisation_id: organisationId, login_account_id: loginAccountId, status, created_at: createdAt, updated_at: updatedAt });
+      return 1;
+    }
+    if (sql.startsWith("update login_accounts set global_identity_id")) {
+      const [globalIdentityId, organisationMembershipId, updatedAt, loginAccountId] = values;
+      const row = this.loginAccounts.find((account) => account.id === loginAccountId);
+      if (!row) return 0;
+      Object.assign(row, { global_identity_id: globalIdentityId, organisation_membership_id: organisationMembershipId, updated_at: updatedAt });
+      return 1;
+    }
     if (sql.startsWith("delete from login_account_roles")) {
       const [accountId] = values;
       const before = this.loginAccountRoles.length;
@@ -513,8 +577,15 @@ class FakeD1 {
       return 1;
     }
     if (sql.startsWith("insert into user_sessions")) {
-      const [id, loginAccountId, activePersonId, activeEducationPartnerId, activeSubjectType, tokenHash, createdAt, expiresAt, lastSeenAt, ipHash, userAgentHash] = values;
-      this.userSessions.push({ id, login_account_id: loginAccountId, active_person_id: activePersonId, active_education_partner_id: activeEducationPartnerId, active_subject_type: activeSubjectType, token_hash: tokenHash, created_at: createdAt, expires_at: expiresAt, last_seen_at: lastSeenAt, revoked_at: null, ip_hash: ipHash, user_agent_hash: userAgentHash });
+      const [id, loginAccountId, organisationMembershipId, activePersonId, activeEducationPartnerId, activeSubjectType, tokenHash, createdAt, expiresAt, lastSeenAt, ipHash, userAgentHash] = values;
+      this.userSessions.push({ id, login_account_id: loginAccountId, organisation_membership_id: organisationMembershipId, active_person_id: activePersonId, active_education_partner_id: activeEducationPartnerId, active_subject_type: activeSubjectType, token_hash: tokenHash, created_at: createdAt, expires_at: expiresAt, last_seen_at: lastSeenAt, revoked_at: null, ip_hash: ipHash, user_agent_hash: userAgentHash });
+      return 1;
+    }
+    if (sql.startsWith("update user_sessions set organisation_membership_id")) {
+      const [organisationMembershipId, id] = values;
+      const row = this.userSessions.find((session) => session.id === id);
+      if (!row) return 0;
+      row.organisation_membership_id = organisationMembershipId;
       return 1;
     }
     if (sql.startsWith("update user_sessions set active_person_id = ?")) {
@@ -1480,6 +1551,73 @@ describe("auth routes", () => {
     expect(db.otpChallenges[0].organisation_id).toBe("org_samyak");
     expect(db.loginAccounts).toEqual([expect.objectContaining({ organisation_id: "org_samyak" })]);
     expect(db.loginAccounts).not.toEqual(expect.arrayContaining([expect.objectContaining({ organisation_id: "org_other" })]));
+  });
+
+  it("creates global identity and active Samyak membership without replacing the tenant-local login account", async () => {
+    const db = new FakeD1();
+    installFetch();
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+
+    expect(verifyResponse.status).toBe(200);
+    expect(db.loginAccounts).toHaveLength(1);
+    expect(db.globalIdentities).toHaveLength(1);
+    expect(db.organisationMemberships).toHaveLength(1);
+    expect(db.organisationMemberships[0]).toMatchObject({
+      organisation_id: "org_samyak",
+      login_account_id: db.loginAccounts[0].id,
+      status: "active",
+      global_identity_id: db.globalIdentities[0].id,
+    });
+    expect(db.loginAccounts[0]).toMatchObject({
+      id: db.organisationMemberships[0].login_account_id,
+      global_identity_id: db.globalIdentities[0].id,
+      organisation_membership_id: db.organisationMemberships[0].id,
+    });
+    expect(db.userSessions[0]).toMatchObject({
+      login_account_id: db.loginAccounts[0].id,
+      organisation_membership_id: db.organisationMemberships[0].id,
+    });
+    expect(db.loginAccountPeople).toEqual([expect.objectContaining({ login_account_id: db.loginAccounts[0].id, person_id: "person_stu1" })]);
+  });
+
+  it("blocks suspended and revoked organisation memberships while keeping the global identity active", async () => {
+    const db = new FakeD1();
+    installFetch();
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const cookie = sessionCookie(verifyResponse);
+    const membership = db.organisationMemberships[0];
+
+    membership.status = "suspended";
+    const suspended = await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db));
+    await expect(suspended.json()).resolves.toMatchObject({ authenticated: false, code: "SESSION_MEMBERSHIP_INACTIVE" });
+    expect(suspended.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect(db.globalIdentities[0].status).toBe("active");
+
+    db.userSessions[0].revoked_at = null;
+    membership.status = "revoked";
+    const revoked = await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db));
+    await expect(revoked.json()).resolves.toMatchObject({ authenticated: false, code: "SESSION_MEMBERSHIP_INACTIVE" });
+    expect(db.globalIdentities[0].status).toBe("active");
+  });
+
+  it("allows one global mobile identity to own memberships in two organisations", async () => {
+    const db = new FakeD1();
+    const mobile = "9876543210";
+    const accountHash = await hmacHex("test-pepper", "mobile", mobile);
+    db.loginAccounts.push({ id: "acct_samyak", organisation_id: "org_samyak", mobile_normalized: accountHash, mobile_hash: accountHash, mobile_last_four: "3210", login_enabled: 1, status: "active", created_at: "2026-07-01", updated_at: "2026-07-01" });
+    db.loginAccounts.push({ id: "acct_other", organisation_id: "org_other", mobile_normalized: accountHash, mobile_hash: accountHash, mobile_last_four: "3210", login_enabled: 1, status: "active", created_at: "2026-07-01", updated_at: "2026-07-01" });
+
+    const samyak = await ensureOrganisationMembershipForLoginAccount(testContext(db), "acct_samyak");
+    const other = await ensureOrganisationMembershipForLoginAccount(testContext(db), "acct_other");
+
+    expect(db.globalIdentities).toHaveLength(1);
+    expect(samyak?.globalIdentityId).toBe(other?.globalIdentityId);
+    expect(db.organisationMemberships).toEqual(expect.arrayContaining([
+      expect.objectContaining({ organisation_id: "org_samyak", login_account_id: "acct_samyak" }),
+      expect.objectContaining({ organisation_id: "org_other", login_account_id: "acct_other" }),
+    ]));
   });
 
   it("clears a stale active profile without destroying a valid account session", async () => {

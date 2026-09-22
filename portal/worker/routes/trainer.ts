@@ -174,7 +174,15 @@ export function registerTrainerRoutes(app: PortalHono) {
     if (!verified) return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
     const accountId = await bootstrapTrainerAccount(c, mobile, lookup);
     const activeTrainerId = lookup.trainers.length === 1 ? lookup.trainers[0].personId : null;
-    const token = await createSession(c, accountId, activeTrainerId, null, "trainer");
+    let token: string;
+    try {
+      token = await createSession(c, accountId, activeTrainerId, null, "trainer");
+    } catch (error) {
+      if (error instanceof Error && error.name === "MembershipAccessError") {
+        return jsonWithRequestId(c, { success: false, code: "MEMBERSHIP_INACTIVE", message: "This organisation access is not active." }, 403);
+      }
+      throw error;
+    }
     await recordAuthEvent(c, "trainer_otp_verify", "LOGIN_SUCCESS", { loginAccountId: accountId, mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
     await recordAuditLog(c, accountId, activeTrainerId, "trainer_login");
     const response = jsonWithRequestId(c, { success: true, session: await trainerSessionView(c, accountId, activeTrainerId) });

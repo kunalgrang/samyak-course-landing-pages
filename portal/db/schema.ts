@@ -1,5 +1,5 @@
 import { relations, sql } from "drizzle-orm";
-import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 
 const timestamps = {
   createdAt: text("created_at").notNull(),
@@ -97,6 +97,8 @@ export const loginAccounts = sqliteTable(
     organisationId: text("organisation_id")
       .notNull()
       .references(() => organisations.id),
+    globalIdentityId: text("global_identity_id").references((): AnySQLiteColumn => globalIdentities.id),
+    organisationMembershipId: text("organisation_membership_id").references((): AnySQLiteColumn => organisationMemberships.id),
     mobileNormalized: text("mobile_normalized").notNull(),
     mobileHash: text("mobile_hash"),
     mobileLastFour: text("mobile_last_four").notNull(),
@@ -108,7 +110,50 @@ export const loginAccounts = sqliteTable(
   (table) => [
     uniqueIndex("login_accounts_organisation_mobile_unique").on(table.organisationId, table.mobileNormalized),
     index("login_accounts_organisation_id_idx").on(table.organisationId),
+    index("login_accounts_global_identity_id_idx").on(table.globalIdentityId),
+    index("login_accounts_organisation_membership_id_idx").on(table.organisationMembershipId),
     check("login_accounts_status_check", sql`${table.status} in ('active', 'suspended', 'disabled')`),
+  ],
+);
+
+export const globalIdentities = sqliteTable(
+  "global_identities",
+  {
+    id: text("id").primaryKey(),
+    mobileNormalized: text("mobile_normalized").notNull(),
+    mobileHash: text("mobile_hash"),
+    mobileLastFour: text("mobile_last_four").notNull(),
+    status: text("status").notNull().default("active"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("global_identities_mobile_normalized_unique").on(table.mobileNormalized),
+    index("global_identities_mobile_hash_idx").on(table.mobileHash),
+    check("global_identities_status_check", sql`${table.status} in ('active', 'suspended', 'disabled')`),
+  ],
+);
+
+export const organisationMemberships = sqliteTable(
+  "organisation_memberships",
+  {
+    id: text("id").primaryKey(),
+    globalIdentityId: text("global_identity_id")
+      .notNull()
+      .references(() => globalIdentities.id),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    loginAccountId: text("login_account_id")
+      .notNull()
+      .references(() => loginAccounts.id),
+    status: text("status").notNull().default("active"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("organisation_memberships_identity_org_unique").on(table.globalIdentityId, table.organisationId),
+    uniqueIndex("organisation_memberships_login_account_unique").on(table.loginAccountId),
+    index("organisation_memberships_org_status_idx").on(table.organisationId, table.status),
+    check("organisation_memberships_status_check", sql`${table.status} in ('active', 'suspended', 'revoked')`),
   ],
 );
 
@@ -208,6 +253,7 @@ export const userSessions = sqliteTable(
     loginAccountId: text("login_account_id")
       .notNull()
       .references(() => loginAccounts.id),
+    organisationMembershipId: text("organisation_membership_id").references(() => organisationMemberships.id),
     activePersonId: text("active_person_id").references(() => people.id),
     activeSubjectType: text("active_subject_type").notNull().default("person"),
     tokenHash: text("token_hash").notNull(),
@@ -221,6 +267,7 @@ export const userSessions = sqliteTable(
   (table) => [
     uniqueIndex("user_sessions_token_hash_unique").on(table.tokenHash),
     index("user_sessions_login_account_id_idx").on(table.loginAccountId),
+    index("user_sessions_organisation_membership_id_idx").on(table.organisationMembershipId),
     index("user_sessions_active_subject_type_idx").on(table.activeSubjectType),
     index("user_sessions_expires_at_idx").on(table.expiresAt),
     index("user_sessions_revoked_at_idx").on(table.revokedAt),
