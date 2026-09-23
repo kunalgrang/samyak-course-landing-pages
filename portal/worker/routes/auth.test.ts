@@ -52,6 +52,8 @@ class FakeD1Statement {
         organisation_id: membership.organisation_id,
         membership_status: membership.status,
         login_account_id: membership.login_account_id,
+        login_account_organisation_id: this.db.loginAccounts.find((account) => account.id === membership.login_account_id)?.organisation_id ?? membership.organisation_id,
+        login_account_membership_id: this.db.loginAccounts.find((account) => account.id === membership.login_account_id)?.organisation_membership_id ?? membership.id,
         global_identity_id: identity.id,
         global_identity_status: identity.status,
       } as T;
@@ -61,9 +63,12 @@ class FakeD1Statement {
     }
     if (sql.includes("select 1 as ok from login_account_people")) {
       if (sql.includes("join person_roles") && sql.includes("roles.code = ?")) {
-        return (this.db.isLinkedTrainerAvailable(String(this.values[0]), String(this.values[1])) ? { ok: 1 } : null) as T;
+        return (this.db.isLinkedTrainerAvailable(String(this.values[0]), String(this.values[1]), String(this.values[2] || "org_samyak")) ? { ok: 1 } : null) as T;
       }
-      return (this.db.isLinkedProfileAvailable(String(this.values[0]), String(this.values[1])) ? { ok: 1 } : null) as T;
+      return (this.db.isLinkedProfileAvailable(String(this.values[0]), String(this.values[1]), String(this.values[2] || "org_samyak")) ? { ok: 1 } : null) as T;
+    }
+    if (sql.includes("select * from referrer_profiles where organisation_id = ? and person_id = ? and active = 1")) {
+      return (this.db.referrerProfiles.find((row) => row.organisation_id === this.values[0] && row.person_id === this.values[1] && row.active === 1) ?? null) as T;
     }
     if (sql.includes("select * from referrer_profiles where person_id = ? and active = 1")) {
       return (this.db.referrerProfiles.find((row) => row.person_id === this.values[0] && row.active === 1) ?? null) as T;
@@ -219,10 +224,11 @@ class FakeD1Statement {
     }
     if (sql.includes("from login_account_people join people") && sql.includes("left join person_roles")) {
       const accountId = this.values[0];
+      const organisationId = String(this.values[1] || "org_samyak");
       const results: Row[] = [];
       for (const link of this.db.loginAccountPeople.filter((row) => row.login_account_id === accountId && row.is_available === 1)) {
-        const person = this.db.people.find((row) => row.id === link.person_id && row.status === "active");
-        const referrer = this.db.referrerProfiles.find((row) => row.person_id === link.person_id && row.active === 1);
+        const person = this.db.people.find((row) => row.id === link.person_id && row.organisation_id === organisationId && row.status === "active");
+        const referrer = this.db.referrerProfiles.find((row) => row.person_id === link.person_id && row.organisation_id === organisationId && row.active === 1);
         const student = this.db.students.find((row) => row.person_id === link.person_id && row.organisation_id === person?.organisation_id && row.portal_status !== "disabled");
         if (!person || !referrer) continue;
         const personRoles = this.db.personRoles.filter((row) => row.person_id === person.id);
@@ -361,16 +367,16 @@ class FakeD1 {
     return this.otpChallenges.filter((row) => row.ip_hash === hash && row.requested_at >= since).length;
   }
 
-  isLinkedProfileAvailable(loginAccountId: string, personId: string) {
+  isLinkedProfileAvailable(loginAccountId: string, personId: string, organisationId = "org_samyak") {
     const link = this.loginAccountPeople.find((row) => row.login_account_id === loginAccountId && row.person_id === personId && row.is_available === 1);
-    const person = this.people.find((row) => row.id === personId && row.status === "active");
-    const referrer = this.referrerProfiles.find((row) => row.person_id === personId && row.active === 1);
+    const person = this.people.find((row) => row.id === personId && row.organisation_id === organisationId && row.status === "active");
+    const referrer = this.referrerProfiles.find((row) => row.person_id === personId && row.organisation_id === organisationId && row.active === 1);
     return Boolean(link && person && referrer);
   }
 
-  isLinkedTrainerAvailable(loginAccountId: string, personId: string) {
+  isLinkedTrainerAvailable(loginAccountId: string, personId: string, organisationId = "org_samyak") {
     const link = this.loginAccountPeople.find((row) => row.login_account_id === loginAccountId && row.person_id === personId && row.is_available === 1);
-    const person = this.people.find((row) => row.id === personId && row.organisation_id === "org_samyak" && row.status === "active");
+    const person = this.people.find((row) => row.id === personId && row.organisation_id === organisationId && row.status === "active");
     const trainerRole = this.roles.find((row) => row.code === "trainer");
     const role = trainerRole
       ? this.personRoles.find((row) => row.person_id === personId && row.role_id === trainerRole.id && (row.status === undefined || row.status === "active"))
@@ -1618,6 +1624,57 @@ describe("auth routes", () => {
       expect.objectContaining({ organisation_id: "org_samyak", login_account_id: "acct_samyak" }),
       expect.objectContaining({ organisation_id: "org_other", login_account_id: "acct_other" }),
     ]));
+  });
+
+  it("derives authenticated profile context from the session membership organisation", async () => {
+    const db = new FakeD1();
+    const token = "other-org-session-token";
+    db.loginAccounts.push({
+      id: "acct_other",
+      organisation_id: "org_other",
+      mobile_normalized: "mobile_hash_other",
+      mobile_hash: "mobile_hash_other",
+      mobile_last_four: "3210",
+      login_enabled: 1,
+      status: "active",
+      global_identity_id: "gident_other",
+      organisation_membership_id: "omem_other",
+      created_at: "2026-07-01",
+      updated_at: "2026-07-01",
+    });
+    db.globalIdentities.push({ id: "gident_other", mobile_normalized: "mobile_hash_other", mobile_hash: "mobile_hash_other", mobile_last_four: "3210", status: "active" });
+    db.organisationMemberships.push({ id: "omem_other", global_identity_id: "gident_other", organisation_id: "org_other", login_account_id: "acct_other", status: "active" });
+    db.people.push({ id: "person_other_org", organisation_id: "org_other", full_name: "Other Student", public_name: "Other", status: "active" });
+    db.referrerProfiles.push({ id: "ref_other_org", organisation_id: "org_other", person_id: "person_other_org", external_referrer_id: "OTHER_ORG", referral_token: "OTHER_TOKEN", personal_link: "https://other.test/r/OTHER", active: 1, created_at: "2026-07-01" });
+    db.students.push({ id: "student_other_org", organisation_id: "org_other", person_id: "person_other_org", home_branch_id: "branch_other", student_number: "OTH-0001", sequence_number: 1, student_since: "2026-07-01", current_status: "active", portal_status: "active" });
+    db.loginAccountPeople.push({ login_account_id: "acct_other", person_id: "person_other_org", access_type: "self", is_default: 1, is_available: 1, created_at: "2026-07-01" });
+    db.personRoles.push({ person_id: "person_other_org", role_id: "role_student", branch_id: null, branch_key: "", created_at: "2026-07-01" });
+    db.userSessions.push({
+      id: "sess_other",
+      login_account_id: "acct_other",
+      organisation_membership_id: "omem_other",
+      active_person_id: "person_other_org",
+      active_education_partner_id: null,
+      active_subject_type: "person",
+      token_hash: await hmacHex("test-pepper", "session", token),
+      created_at: "2026-07-01",
+      expires_at: "2999-01-01T00:00:00.000Z",
+      last_seen_at: new Date().toISOString(),
+      revoked_at: null,
+    });
+
+    const response = await app.request(
+      "http://localhost/api/auth/session?organisation_id=org_samyak",
+      { headers: { Cookie: `samyak_session=${token}`, "X-Organisation-Id": "org_samyak" } },
+      env(db),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      authenticated: true,
+      activeProfile: { personId: "person_other_org", publicName: "Other" },
+      profiles: [expect.objectContaining({ personId: "person_other_org" })],
+    });
   });
 
   it("clears a stale active profile without destroying a valid account session", async () => {

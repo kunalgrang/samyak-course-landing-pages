@@ -2,7 +2,7 @@ import type { AppContext } from "./http";
 import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, randomBase64Url } from "./crypto";
 import { certificateVerificationOrigin } from "./platform-config";
-import type { StaffContext } from "./staff-auth";
+import { staffOrganisationId, type StaffContext } from "./staff-auth";
 import { generateCertificatePdf } from "./certificate-pdf";
 import {
   buildCertificatePdfKey,
@@ -180,6 +180,7 @@ export async function listCertificates(c: AppContext, input: { q?: string; cours
 }
 
 export async function issueCertificate(c: AppContext, staff: StaffContext, enrolmentId: string, issueDate: string, options: { storage?: CertificatePdfStorage | null } = {}) {
+  const ORG_ID = staffOrganisationId(staff);
   const eligibility = await certificateEligibility(c, enrolmentId);
   if (eligibility.existingCertificate) {
     await markApplicationCertificateIssued(c, staff, eligibility.existingCertificate);

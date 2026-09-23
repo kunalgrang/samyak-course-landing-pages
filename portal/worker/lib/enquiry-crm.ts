@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { AppContext } from "./http";
 import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, decryptText } from "./crypto";
-import type { StaffContext } from "./staff-auth";
+import { staffOrganisationId, type StaffContext } from "./staff-auth";
 
 export const PIPELINE_STAGES = ["new", "contacting", "engaged", "considering", "deferred", "admission_ready", "converted", "lost", "invalid", "duplicate"] as const;
 export const ACTIVE_PIPELINE_STAGES = ["new", "contacting", "engaged", "considering", "deferred", "admission_ready"] as const;
@@ -376,6 +376,7 @@ export async function fetchEventsForEnquiries(c: AppContext, enquiryIds: string[
 }
 
 export async function assignEnquiry(c: AppContext, staff: StaffContext, enquiryId: string, assigneeId: string | null) {
+  const ORG_ID = staffOrganisationId(staff);
   const enquiry = await scopedEnquiry(c, staff, enquiryId);
   if (!enquiry) return { ok: false as const, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
   if (TERMINAL_STAGE_SET.has(enquiry.pipeline_stage)) return { ok: false as const, status: 409, code: "terminal_enquiry", message: "Terminal enquiries cannot be reassigned." };
@@ -417,6 +418,7 @@ export async function assignEnquiry(c: AppContext, staff: StaffContext, enquiryI
 }
 
 export async function recordFollowUp(c: AppContext, staff: StaffContext, enquiryId: string, input: z.infer<typeof followUpInputSchema>) {
+  const ORG_ID = staffOrganisationId(staff);
   const enquiry = await scopedEnquiry(c, staff, enquiryId);
   if (!enquiry) return { ok: false as const, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
   const preferredJoiningDate = input.expectedJoiningDate || enquiry.preferred_joining_date || null;
@@ -475,6 +477,7 @@ export async function recordFollowUp(c: AppContext, staff: StaffContext, enquiry
 }
 
 export async function scopedEnquiry(c: AppContext, staff: StaffContext, enquiryId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const scope = await branchScope(c, staff);
   if (!scope.canAccessAnyBranch) return null;
   const where = scopedWhere(scope, ["enquiries.id = ?", "enquiries.organisation_id = ?"], [enquiryId, ORG_ID]);
@@ -592,6 +595,7 @@ function emptyCrmContact() {
 }
 
 function auditStatement(c: AppContext, staff: StaffContext, branchId: string | null, action: string, entityType: string, entityId: string, metadata: Record<string, unknown>) {
+  const ORG_ID = staffOrganisationId(staff);
   return c.env.DB.prepare(
     `insert into audit_logs
        (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)

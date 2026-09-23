@@ -8,7 +8,7 @@ import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
 import { requireReferralTokenPepper } from "../lib/referral-token";
 import { getRecoverableReferralLink, issueReferralLink, rotateReferralLink, type ReferralServiceEnv } from "../lib/referral-service";
-import { requireStaffRoles, type StaffContext } from "../lib/staff-auth";
+import { staffOrganisationId, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import { getCourseFeeGstBasisPoints } from "../lib/course-fee";
 import { buildPartnerPortalView } from "../lib/partner-portal";
 import { referralPublicOrigin } from "../lib/platform-config";
@@ -36,6 +36,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
   app.get("/api/staff/education-partners", async (c) => {
     const staff = await requireStaffRoles(c, ["owner", "system_admin", "admin", "counsellor", "admission_admin"]);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const url = new URL(c.req.url);
     const q = clean(url.searchParams.get("q"));
     const status = enumParam(url.searchParams.get("status"), ["active", "inactive"] as const);
@@ -67,6 +68,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
   app.get("/api/staff/education-partners/:partnerId", async (c) => {
     const staff = await requireStaffRoles(c, ["owner", "system_admin", "admin", "counsellor", "admission_admin"]);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const partner = await findPartner(c, c.req.param("partnerId"));
     if (!partner) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
     const canShareFullLink = staff.roles.includes("owner");
@@ -83,6 +85,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
   app.get("/api/staff/education-partners/:partnerId/portal-preview", async (c) => {
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return forbiddenOwner(c);
+    const ORG_ID = staffOrganisationId(staff);
     const view = await buildPartnerPortalView(c, c.req.param("partnerId"), paginationFromUrl(c.req.url));
     if (!view) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
     return jsonPlain(c, { ...view, preview: true });
@@ -93,6 +96,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return forbiddenOwner(c);
+    const ORG_ID = staffOrganisationId(staff);
     const parsed = await parsePartnerBody(c);
     if (!parsed.ok) return parsed.response;
     const duplicateWarnings = await duplicateWarningsFor(c, parsed.data);
@@ -130,6 +134,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return forbiddenOwner(c);
+    const ORG_ID = staffOrganisationId(staff);
     const existing = await findPartner(c, c.req.param("partnerId"));
     if (!existing) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
     const parsed = await parsePartnerBody(c);
@@ -169,6 +174,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return forbiddenOwner(c);
+    const ORG_ID = staffOrganisationId(staff);
     const partner = await findPartner(c, c.req.param("partnerId"));
     if (!partner) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
     if (partner.status !== "active") return jsonError(c, { status: 409, code: "partner_inactive", message: "Activate the partner before issuing a referral link." });
@@ -189,6 +195,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return forbiddenOwner(c);
+    const ORG_ID = staffOrganisationId(staff);
     const partner = await findPartner(c, c.req.param("partnerId"));
     if (!partner) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
     if (partner.status !== "active") return jsonError(c, { status: 409, code: "partner_inactive", message: "Activate the partner before replacing a referral link." });
@@ -388,6 +395,7 @@ async function duplicateWarningsFor(c: PortalContext, input: z.infer<typeof part
 }
 
 function auditStatement(c: PortalContext, staff: StaffContext, branchId: string | null, action: string, entityType: string, entityId: string, metadata: Record<string, unknown>, now: string) {
+  const ORG_ID = staffOrganisationId(staff);
   return c.env.DB.prepare(
     `insert into audit_logs
       (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)

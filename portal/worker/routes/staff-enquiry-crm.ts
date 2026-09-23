@@ -6,7 +6,7 @@ import { ORG_ID } from "../lib/tenant-context";
 import { isResponse, readJsonBody, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
-import { ADMISSION_STAFF_ROLES, requireStaffRoles } from "../lib/staff-auth";
+import { staffOrganisationId, ADMISSION_STAFF_ROLES, requireStaffRoles } from "../lib/staff-auth";
 import {
   LEAD_TEMPERATURES,
   PIPELINE_STAGES,
@@ -46,6 +46,7 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
   app.get("/api/staff/enquiries/crm", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const scope = await branchScope(c, staff);
     if (!scope.canAccessAnyBranch) return jsonPlain(c, crmListPayload([], 0, listPagination(c), {}));
 
@@ -76,6 +77,7 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const body = await readJsonBody(c, followUpInputSchema);
     if (isResponse(body)) return body;
     const result = await recordFollowUp(c, staff, c.req.param("enquiryId"), body);
@@ -88,6 +90,7 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const body = await readJsonBody(c, assignmentInputSchema);
     if (isResponse(body)) return body;
     const result = await assignEnquiry(c, staff, c.req.param("enquiryId"), body.counsellorLoginAccountId);
@@ -98,6 +101,7 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
   app.get("/api/staff/enquiries/:enquiryId/crm", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const enquiry = await scopedEnquiry(c, staff, c.req.param("enquiryId"));
     if (!enquiry) return jsonError(c, { status: 404, code: "enquiry_not_found", message: "Enquiry was not found." });
     const events = (await fetchEventsForEnquiries(c, [enquiry.id], 200)).get(enquiry.id) || [];

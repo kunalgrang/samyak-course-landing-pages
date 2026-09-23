@@ -1,6 +1,5 @@
 import type { AppContext } from "./http";
 import { createOpaqueId } from "./crypto";
-import { trustedOrganisationId } from "./tenant-context";
 
 export type MembershipStatus = "active" | "suspended" | "revoked";
 export type GlobalIdentityStatus = "active" | "suspended" | "disabled";
@@ -40,6 +39,8 @@ type MembershipRow = {
   organisation_id: string;
   membership_status: MembershipStatus;
   login_account_id: string;
+  login_account_organisation_id: string;
+  login_account_membership_id: string | null;
   global_identity_id: string;
   global_identity_status: GlobalIdentityStatus;
 };
@@ -110,7 +111,7 @@ export async function ensureOrganisationMembershipForLoginAccount(c: AppContext,
 
 export async function requireActiveOrganisationMembershipForLoginAccount(c: AppContext, loginAccountId: string) {
   const context = await ensureOrganisationMembershipForLoginAccount(c, loginAccountId);
-  if (!isActiveTrustedMembership(c, context)) return null;
+  if (!isActiveMembership(context)) return null;
   return context;
 }
 
@@ -126,16 +127,15 @@ export async function validateSessionOrganisationMembership(c: AppContext, recor
       .run();
     context = { ...context };
   }
-  if (!isActiveTrustedMembership(c, context)) return null;
+  if (!isActiveMembership(context)) return null;
   return context;
 }
 
-function isActiveTrustedMembership(c: AppContext, context: OrganisationMembershipContext | null) {
+function isActiveMembership(context: OrganisationMembershipContext | null) {
   return Boolean(
     context &&
       context.globalIdentityStatus === "active" &&
-      context.membershipStatus === "active" &&
-      context.organisationId === trustedOrganisationId(c),
+      context.membershipStatus === "active",
   );
 }
 
@@ -154,9 +154,12 @@ async function loadMembership(c: AppContext, whereSql: string, value: string): P
        organisation_memberships.organisation_id,
        organisation_memberships.status as membership_status,
        organisation_memberships.login_account_id,
+       login_accounts.organisation_id as login_account_organisation_id,
+       login_accounts.organisation_membership_id as login_account_membership_id,
        global_identities.id as global_identity_id,
        global_identities.status as global_identity_status
      from organisation_memberships
+     join login_accounts on login_accounts.id = organisation_memberships.login_account_id
      join global_identities on global_identities.id = organisation_memberships.global_identity_id
      where ${whereSql}
      limit 1`,
@@ -164,6 +167,8 @@ async function loadMembership(c: AppContext, whereSql: string, value: string): P
     .bind(value)
     .first<MembershipRow>();
   if (!row) return null;
+  if (row.login_account_organisation_id !== row.organisation_id) return null;
+  if (row.login_account_membership_id && row.login_account_membership_id !== row.organisation_membership_id) return null;
   return {
     globalIdentityId: row.global_identity_id,
     globalIdentityStatus: row.global_identity_status,

@@ -1,7 +1,7 @@
 import type { AppContext } from "./http";
 import { ORG_ID } from "./tenant-context";
 import { createOpaqueId } from "./crypto";
-import type { StaffContext } from "./staff-auth";
+import { staffOrganisationId, type StaffContext } from "./staff-auth";
 
 export const CERTIFICATE_APPLICATION_STATUSES = ["submitted", "approved", "needs_attention", "certificate_issued", "cancelled"] as const;
 export type CertificateApplicationStatus = (typeof CERTIFICATE_APPLICATION_STATUSES)[number];
@@ -252,6 +252,7 @@ export async function submitCertificateApplication(c: AppContext, personId: stri
 }
 
 export async function listStaffCertificateApplications(c: AppContext, staff: StaffContext, input: { q?: string; status?: string; limit: number; offset: number }) {
+  const ORG_ID = staffOrganisationId(staff);
   const params: unknown[] = [ORG_ID, staff.loginAccountId, ORG_ID];
   const filters = [
     "certificate_applications.organisation_id = ?",
@@ -310,6 +311,7 @@ export async function listStaffCertificateApplications(c: AppContext, staff: Sta
 }
 
 export async function getStaffCertificateApplication(c: AppContext, staff: StaffContext, applicationId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const row = await c.env.DB.prepare(
     `select
        certificate_applications.*,
@@ -351,6 +353,7 @@ export async function getStaffCertificateApplication(c: AppContext, staff: Staff
 }
 
 export async function markCertificateApplicationNeedsAttention(c: AppContext, staff: StaffContext, applicationId: string, note: string | null) {
+  const ORG_ID = staffOrganisationId(staff);
   const current = await getStaffCertificateApplication(c, staff, applicationId);
   if (!current) return { ok: false as const, status: 404, code: "application_not_found", message: "Certificate application was not found." };
   const currentStatus = String(current.status);
@@ -379,6 +382,7 @@ export async function markCertificateApplicationNeedsAttention(c: AppContext, st
 }
 
 export async function approveCourseCompletionFromApplication(c: AppContext, staff: StaffContext, applicationId: string, completionDate: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const current = await getStaffCertificateApplication(c, staff, applicationId);
   if (!current) return { ok: false as const, status: 404, code: "application_not_found", message: "Certificate application was not found." };
   if (current.status === "certificate_issued") return { ok: false as const, status: 409, code: "already_issued", message: "This application already has an issued certificate." };
@@ -433,6 +437,7 @@ export async function markApplicationCertificateIssued(c: AppContext, staff: Sta
 }
 
 export async function certificateIssuedApplicationStatements(c: AppContext, staff: StaffContext, certificate: { enrolment_id: string; branch_id: string }, now: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const application = await activeApplicationForEnrolment(c, certificate.enrolment_id);
   if (!application || application.status !== "approved") return [];
   return [

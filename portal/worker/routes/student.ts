@@ -43,7 +43,8 @@ export function registerStudentRoutes(app: PortalHono) {
     if ((session.record.active_subject_type || "person") !== "person") {
       return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
     }
-    const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
+    const organisationId = session.record.organisation_id || ORG_ID;
+    const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id, organisationId);
     if (!view.activeProfile) {
       return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
     }
@@ -51,7 +52,7 @@ export function registerStudentRoutes(app: PortalHono) {
       return jsonError(c, { status: 403, code: "student_profile_required", message: "This profile is not available." });
     }
     try {
-      return jsonPlain(c, await fetchStudentHomeForActiveProfile(c, view.activeProfile.personId));
+      return jsonPlain(c, await fetchStudentHomeForActiveProfile(c, view.activeProfile.personId, organisationId));
     } catch {
       return jsonError(c, { status: 503, code: "student_home_unavailable", message: "Student dashboard is temporarily unavailable." });
     }
@@ -67,12 +68,13 @@ export function registerStudentRoutes(app: PortalHono) {
     if ((session.record.active_subject_type || "person") !== "person") {
       return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
     }
-    const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
+    const organisationId = session.record.organisation_id || ORG_ID;
+    const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id, organisationId);
     if (!view.activeProfile) {
       return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
     }
     try {
-      return jsonPlain(c, await fetchDashboardForActiveProfile(c, view.activeProfile.personId, dashboardPagination(c)));
+      return jsonPlain(c, await fetchDashboardForActiveProfile(c, view.activeProfile.personId, dashboardPagination(c), organisationId));
     } catch {
       return jsonError(c, { status: 503, code: "dashboard_unavailable", message: "Referral dashboard is temporarily unavailable." });
     }
@@ -81,7 +83,7 @@ export function registerStudentRoutes(app: PortalHono) {
   app.get("/api/student/learning/enrolments", async (c) => {
     const profile = await authenticatedStudentProfile(c);
     if (profile instanceof Response) return profile;
-    return jsonPlain(c, await listStudentLearning(c, profile.personId));
+    return jsonPlain(c, await listStudentLearning(c, profile.personId, profile.organisationId));
   });
 
   app.get("/api/student/learning/enrolments/:enrolmentId", async (c) => {
@@ -90,7 +92,7 @@ export function registerStudentRoutes(app: PortalHono) {
     const result = await getStudentLearningEnrolment(c, profile.personId, c.req.param("enrolmentId"), {
       limit: clampInteger(c.req.query("limit") || null, 20, 1, 50),
       offset: clampInteger(c.req.query("offset") || null, 0, 0, 5000),
-    });
+    }, profile.organisationId);
     if (!result.ok) return jsonError(c, { status: result.status as ContentfulStatusCode, code: result.code, message: result.message });
     return jsonPlain(c, result);
   });
@@ -98,7 +100,7 @@ export function registerStudentRoutes(app: PortalHono) {
   app.get("/api/student/session-materials/:materialId/content", async (c) => {
     const profile = await authenticatedStudentProfile(c);
     if (profile instanceof Response) return profile;
-    const result = await getStudentMaterialContent(c, profile.personId, c.req.param("materialId"));
+    const result = await getStudentMaterialContent(c, profile.personId, c.req.param("materialId"), profile.organisationId);
     if (!result.ok) return jsonError(c, { status: result.status as ContentfulStatusCode, code: result.code, message: result.message });
     return new Response(result.body, {
       headers: {
@@ -120,7 +122,7 @@ export function registerStudentRoutes(app: PortalHono) {
     if (limited) return limited;
     try {
       const issued = await issueReferralLink(referralEnv(c), {
-        organisationId: ORG_ID,
+        organisationId: context.organisationId,
         referralProgrammeId: REFERRAL_PROGRAMME_ID,
         referrerProfileId: context.referrer.id,
         loginAccountId: context.session.record.login_account_id,
@@ -172,12 +174,13 @@ async function authenticatedStudentProfile(c: PortalContext) {
   if ((session.record.active_subject_type || "person") !== "person") {
     return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
   }
-  const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
+  const organisationId = session.record.organisation_id || ORG_ID;
+  const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id, organisationId);
   if (!view.activeProfile) return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
   if (!view.activeProfile.effectiveRoles?.some((role) => role === "student" || role === "alumni")) {
     return jsonError(c, { status: 403, code: "student_profile_required", message: "This profile is not available." });
   }
-  return { personId: view.activeProfile.personId };
+  return { personId: view.activeProfile.personId, organisationId };
 }
 
 async function authenticatedReferrerContext(c: PortalContext) {
@@ -190,11 +193,12 @@ async function authenticatedReferrerContext(c: PortalContext) {
   if ((session.record.active_subject_type || "person") !== "person") {
     return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
   }
-  const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
+  const organisationId = session.record.organisation_id || ORG_ID;
+  const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id, organisationId);
   if (!view.activeProfile) return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
-  const referrer = await activeReferrerForPerson(c, view.activeProfile.personId);
+  const referrer = await activeReferrerForPerson(c, view.activeProfile.personId, organisationId);
   if (!referrer) return jsonError(c, { status: 403, code: "referrer_not_eligible", message: "This profile is not eligible for referral links." });
-  return { session, view, referrer };
+  return { session, view, referrer, organisationId };
 }
 
 function referralEnv(c: PortalContext): ReferralServiceEnv {

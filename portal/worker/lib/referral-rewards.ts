@@ -1,9 +1,9 @@
 import { z } from "zod";
 import type { AppContext } from "./http";
-import { ORG_ID } from "./tenant-context";
+import { ORG_ID, authenticatedOrDefaultOrganisationId, setAuthenticatedOrganisationId } from "./tenant-context";
 import { createOpaqueId, hmacHex } from "./crypto";
 import { calculateEducationPartnerCommissionSnapshot, calculateMinimumQualifyingPaymentPaise, selectRewardSlab, type RewardModelType, type RewardSlab } from "./referral-domain";
-import type { StaffContext } from "./staff-auth";
+import { staffOrganisationId, type StaffContext } from "./staff-auth";
 
 const payoutModeSchema = z.enum(["cash", "upi", "bank_transfer", "cheque", "other"]);
 
@@ -138,18 +138,18 @@ export function canApproveReferralRewards(staff: Pick<StaffContext, "roles">) {
   return staff.roles.includes("owner");
 }
 
-export async function getReferralQualification(c: AppContext, referralId: string): Promise<ReferralQualification | null> {
-  const row = await qualificationRow(c, referralId);
+export async function getReferralQualification(c: AppContext, referralId: string, organisationId = authenticatedOrDefaultOrganisationId(c)): Promise<ReferralQualification | null> {
+  const row = await qualificationRow(c, referralId, organisationId);
   if (!row) return null;
   const slabs = row.reward_rule_set_id ? await activeSlabs(c, row.reward_rule_set_id) : [];
   return qualificationFromRow(row, slabs);
 }
 
-export async function getReferralQualifications(c: AppContext, referralIds: string[]) {
+export async function getReferralQualifications(c: AppContext, referralIds: string[], organisationId = authenticatedOrDefaultOrganisationId(c)) {
   const uniqueIds = [...new Set(referralIds)].filter(Boolean);
   const result = new Map<string, ReferralQualification>();
   if (uniqueIds.length === 0) return result;
-  const rows = await qualificationRows(c, uniqueIds);
+  const rows = await qualificationRows(c, uniqueIds, organisationId);
   const ruleSetIds = [...new Set(rows.map((row) => row.reward_rule_set_id).filter((value): value is string => Boolean(value)))];
   const slabsByRuleSet = await activeSlabsByRuleSet(c, ruleSetIds);
   for (const row of rows) result.set(row.referral_id, qualificationFromRow(row, slabsByRuleSet.get(row.reward_rule_set_id || "") || []));
@@ -157,10 +157,12 @@ export async function getReferralQualifications(c: AppContext, referralIds: stri
 }
 
 export async function approveReferralReward(c: AppContext, staff: StaffContext, referralId: string): Promise<{ ok: true; qualification: ReferralQualification; idempotent: boolean } | ServiceFailure> {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   if (!canApproveReferralRewards(staff)) return { ok: false, status: 403, code: "forbidden", message: "Only the owner can approve referral rewards." };
-  const row = await qualificationRow(c, referralId);
+  const row = await qualificationRow(c, referralId, ORG_ID);
   if (!row) return { ok: false, status: 404, code: "referral_not_found", message: "Referral was not found." };
-  const existing = await getReferralQualification(c, referralId);
+  const existing = await getReferralQualification(c, referralId, ORG_ID);
   if (existing?.rewardSnapshot) return { ok: true, qualification: existing, idempotent: true };
   const slabs = row.reward_rule_set_id ? await activeSlabs(c, row.reward_rule_set_id) : [];
   const qualification = qualificationFromRow(row, slabs);
@@ -226,7 +228,7 @@ export async function approveReferralReward(c: AppContext, staff: StaffContext, 
     now,
   ).run();
   const created = Number(insertResult.meta?.changes || insertResult.meta?.rows_written || 0) > 0;
-  if (!created) return { ok: true, qualification: (await getReferralQualification(c, referralId))!, idempotent: true };
+  if (!created) return { ok: true, qualification: (await getReferralQualification(c, referralId, ORG_ID))!, idempotent: true };
 
   await c.env.DB.prepare(
       `insert into audit_logs
@@ -255,7 +257,7 @@ export async function approveReferralReward(c: AppContext, staff: StaffContext, 
     now,
   ).run();
 
-  return { ok: true, qualification: (await getReferralQualification(c, referralId))!, idempotent: false };
+  return { ok: true, qualification: (await getReferralQualification(c, referralId, ORG_ID))!, idempotent: false };
 }
 
 export async function recordReferralRewardPayout(
@@ -264,6 +266,8 @@ export async function recordReferralRewardPayout(
   referralId: string,
   input: ReferralRewardPayoutInput,
 ): Promise<{ ok: true; qualification: ReferralQualification; payout: RewardPayout; idempotent: boolean } | ServiceFailure> {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   if (!canApproveReferralRewards(staff)) return { ok: false, status: 403, code: "forbidden", message: "Only the owner can record referral reward payouts." };
   const parsedDate = new Date(input.paymentDate);
   if (Number.isNaN(parsedDate.getTime())) {
@@ -281,7 +285,7 @@ export async function recordReferralRewardPayout(
     return { ok: false, status: 400, code: "payout_notes_required", message: "Notes are required for other payout mode.", fieldErrors: { notes: ["Notes are required for other payout mode."] } };
   }
 
-  const qualification = await getReferralQualification(c, referralId);
+  const qualification = await getReferralQualification(c, referralId, ORG_ID);
   if (!qualification) return { ok: false, status: 404, code: "referral_not_found", message: "Referral was not found." };
   if (!qualification.rewardSnapshot) return { ok: false, status: 409, code: "reward_not_approved", message: "Approve the referral reward before recording payout." };
   const payoutAmountPaise = qualification.rewardSnapshot.cashRewardPaise;
@@ -298,7 +302,7 @@ export async function recordReferralRewardPayout(
     .first<{ id: string; payload_fingerprint: string }>();
   if (existingByKey) {
     if (existingByKey.payload_fingerprint !== fingerprint) return { ok: false, status: 409, code: "idempotency_conflict", message: "This idempotency key was already used for a different payout payload." };
-    const replayed = await getReferralQualification(c, referralId);
+    const replayed = await getReferralQualification(c, referralId, ORG_ID);
     return { ok: true, qualification: replayed!, payout: replayed!.payout!, idempotent: true };
   }
   if (qualification.payout) return { ok: false, status: 409, code: "reward_already_paid", message: "This referral reward payout has already been recorded." };
@@ -330,7 +334,7 @@ export async function recordReferralRewardPayout(
   ).run();
   const created = Number(insertResult.meta?.changes || insertResult.meta?.rows_written || 0) > 0;
   if (!created) {
-    const replayed = await getReferralQualification(c, referralId);
+    const replayed = await getReferralQualification(c, referralId, ORG_ID);
     if (replayed?.payout) return { ok: true, qualification: replayed, payout: replayed.payout, idempotent: true };
   }
 
@@ -355,17 +359,18 @@ export async function recordReferralRewardPayout(
     now,
   ).run();
 
-  const next = await getReferralQualification(c, referralId);
+  const next = await getReferralQualification(c, referralId, ORG_ID);
   if (!next?.payout) return { ok: false, status: 409, code: "payout_not_recorded", message: "Payout could not be recorded. Please retry." };
   return { ok: true, qualification: next, payout: next.payout, idempotent: false };
 }
 
-async function qualificationRow(c: AppContext, referralId: string) {
-  const rows = await qualificationRows(c, [referralId]);
+async function qualificationRow(c: AppContext, referralId: string, organisationId = authenticatedOrDefaultOrganisationId(c)) {
+  const rows = await qualificationRows(c, [referralId], organisationId);
   return rows[0] || null;
 }
 
-async function qualificationRows(c: AppContext, referralIds: string[]) {
+async function qualificationRows(c: AppContext, referralIds: string[], organisationId = authenticatedOrDefaultOrganisationId(c)) {
+  const ORG_ID = organisationId;
   if (referralIds.length === 0) return [];
   const placeholders = referralIds.map(() => "?").join(",");
   const rows = await c.env.DB.prepare(
@@ -436,7 +441,7 @@ async function qualificationRows(c: AppContext, referralIds: string[]) {
      left join referral_reward_payouts on referral_reward_payouts.reward_snapshot_id = referral_reward_snapshots.id
      where referrals.id in (${placeholders}) and referrals.organisation_id = ?`,
   )
-    .bind(...referralIds, ORG_ID)
+    .bind(...referralIds, organisationId)
     .all<QualificationRow>();
   return rows.results || [];
 }

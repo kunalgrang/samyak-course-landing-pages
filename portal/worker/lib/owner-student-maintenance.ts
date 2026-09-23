@@ -3,7 +3,7 @@ import { lookupPortalProfilesByMobile, mobileHash } from "./auth-store";
 import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, encryptText, hmacHex } from "./crypto";
 import { normalizeIndianMobile } from "./mobile";
-import type { StaffContext } from "./staff-auth";
+import { staffOrganisationId, type StaffContext } from "./staff-auth";
 
 type StudentRecord = {
   student_id: string;
@@ -80,6 +80,7 @@ export async function changeStudentFullName(
   studentId: string,
   input: { fullName: string; expectedBasicDetailsVersion: string },
 ): Promise<NameChangeResult> {
+  const ORG_ID = staffOrganisationId(staff);
   const student = await getStudentNameForMaintenance(c, studentId);
   if (!student) return { ok: false, status: 404, code: "student_not_found", message: "Student was not found." };
   if (student.person_status === "archived") return { ok: false, status: 404, code: "student_not_found", message: "Student was not found." };
@@ -174,6 +175,7 @@ export async function changeStudentPrimaryMobile(
   studentId: string,
   input: { newMobile: string; confirmSharedMobile: boolean; reason?: string; expectedContactVersion: string },
 ): Promise<MobileChangeResult> {
+  const ORG_ID = staffOrganisationId(staff);
   const student = await getStudentForMaintenance(c, studentId);
   if (!student) return { ok: false, status: 404, code: "student_not_found", message: "Student was not found." };
   if (student.person_status === "archived") return { ok: false, status: 404, code: "student_not_found", message: "Student was not found." };
@@ -502,6 +504,7 @@ async function countActivePrimaryMobiles(c: AppContext, personId: string) {
 }
 
 async function hasOwnerMaintenanceAccessForBranch(c: AppContext, staff: StaffContext, branchId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const row = await c.env.DB.prepare(
     `select 1 as ok
      from login_account_roles

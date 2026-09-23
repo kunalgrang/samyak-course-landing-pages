@@ -197,7 +197,7 @@ export function registerPartnerRoutes(app: PortalHono) {
         message: "Please sign in to Partner Portal.",
       });
     }
-    return jsonWithRequestId(c, await partnerSessionView(c, session.record.login_account_id, session.record.active_education_partner_id || null));
+    return jsonWithRequestId(c, await partnerSessionView(c, session.record.login_account_id, session.record.active_education_partner_id || null, session.record.organisation_id || undefined));
   });
 
   app.post("/api/partner/auth/select-profile", async (c) => {
@@ -210,7 +210,7 @@ export function registerPartnerRoutes(app: PortalHono) {
     if (session.record.active_person_id || session.record.active_subject_type !== "partner") return jsonWithRequestId(c, { success: false, code: "PERSON_SESSION_ACTIVE", message: "Please sign in to Partner Portal." }, 401);
     const selected = await selectLinkedPartner(c, session.record.id, session.record.login_account_id, body.educationPartnerId);
     if (!selected) return jsonWithRequestId(c, { success: false, code: "PROFILE_NOT_LINKED", message: "This partner profile is not available." }, 403);
-    return jsonWithRequestId(c, { success: true, session: await partnerSessionView(c, session.record.login_account_id, body.educationPartnerId) });
+    return jsonWithRequestId(c, { success: true, session: await partnerSessionView(c, session.record.login_account_id, body.educationPartnerId, session.record.organisation_id || undefined) });
   });
 
   app.post("/api/partner/auth/logout", async (c) => {
@@ -229,7 +229,7 @@ export function registerPartnerRoutes(app: PortalHono) {
   app.get("/api/partner/me", async (c) => {
     const authenticated = await requireAuthenticatedPartner(c);
     if (!authenticated) return jsonError(c, { status: 401, code: "unauthenticated", message: "Partner sign-in is required." });
-    const view = await buildPartnerPortalView(c, authenticated.activePartner.educationPartnerId, paginationFromUrl(c.req.url));
+    const view = await buildPartnerPortalView(c, authenticated.activePartner.educationPartnerId, paginationFromUrl(c.req.url), authenticated.organisationId);
     if (!view || view.partner.status !== "active") return jsonError(c, { status: 403, code: "partner_unavailable", message: "This partner profile is not available." });
     return jsonWithRequestId(c, view);
   });
@@ -237,7 +237,7 @@ export function registerPartnerRoutes(app: PortalHono) {
   app.get("/api/partner/referrals", async (c) => {
     const authenticated = await requireAuthenticatedPartner(c);
     if (!authenticated) return jsonError(c, { status: 401, code: "unauthenticated", message: "Partner sign-in is required." });
-    const view = await buildPartnerPortalView(c, authenticated.activePartner.educationPartnerId, paginationFromUrl(c.req.url));
+    const view = await buildPartnerPortalView(c, authenticated.activePartner.educationPartnerId, paginationFromUrl(c.req.url), authenticated.organisationId);
     if (!view || view.partner.status !== "active") return jsonError(c, { status: 403, code: "partner_unavailable", message: "This partner profile is not available." });
     return jsonWithRequestId(c, { success: true, summary: view.summary, pagination: view.pagination, referrals: view.referrals });
   });
@@ -245,7 +245,7 @@ export function registerPartnerRoutes(app: PortalHono) {
   app.get("/api/partner/referral-link", async (c) => {
     const authenticated = await requireAuthenticatedPartner(c);
     if (!authenticated) return jsonError(c, { status: 401, code: "unauthenticated", message: "Partner sign-in is required." });
-    const view = await buildPartnerPortalView(c, authenticated.activePartner.educationPartnerId, { limit: 1, offset: 0 });
+    const view = await buildPartnerPortalView(c, authenticated.activePartner.educationPartnerId, { limit: 1, offset: 0 }, authenticated.organisationId);
     if (!view || view.partner.status !== "active") return jsonError(c, { status: 403, code: "partner_unavailable", message: "This partner profile is not available." });
     return jsonWithRequestId(c, { success: true, referralLink: view.referralLink });
   });

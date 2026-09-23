@@ -656,17 +656,18 @@ export async function getSessionValidationResult(c: AppContext, scope: SessionCo
   record.organisation_id = membership.organisationId;
   let currentRecord = record;
   const activeSubjectType = record.active_subject_type || "person";
-  if (record.active_person_id && activeSubjectType === "trainer" && !(await isLinkedTrainerAvailable(c, record.login_account_id, record.active_person_id))) {
+  const organisationId = membership.organisationId;
+  if (record.active_person_id && activeSubjectType === "trainer" && !(await isLinkedTrainerAvailable(c, record.login_account_id, record.active_person_id, organisationId))) {
     await c.env.DB.prepare("update user_sessions set active_person_id = null where id = ?").bind(record.id).run();
     currentRecord = { ...record, active_person_id: null };
     await recordSessionResult(c, "SESSION_PROFILE_CLEARED", record.login_account_id);
   }
-  if (record.active_person_id && activeSubjectType === "person" && !(await isLinkedProfileAvailable(c, record.login_account_id, record.active_person_id))) {
+  if (record.active_person_id && activeSubjectType === "person" && !(await isLinkedProfileAvailable(c, record.login_account_id, record.active_person_id, organisationId))) {
     await c.env.DB.prepare("update user_sessions set active_person_id = null where id = ?").bind(record.id).run();
     currentRecord = { ...record, active_person_id: null };
     await recordSessionResult(c, "SESSION_PROFILE_CLEARED", record.login_account_id);
   }
-  if (currentRecord.active_education_partner_id && !(await isLinkedPartnerAvailable(c, currentRecord.login_account_id, currentRecord.active_education_partner_id))) {
+  if (currentRecord.active_education_partner_id && !(await isLinkedPartnerAvailable(c, currentRecord.login_account_id, currentRecord.active_education_partner_id, organisationId))) {
     await c.env.DB.prepare("update user_sessions set active_education_partner_id = null where id = ?").bind(currentRecord.id).run();
     currentRecord = { ...currentRecord, active_education_partner_id: null };
     await recordSessionResult(c, "SESSION_PROFILE_CLEARED", record.login_account_id);
@@ -688,7 +689,7 @@ export function sessionCookieName(c: AppContext, scope: SessionCookieScope = "de
   return PRODUCTION_SESSION_COOKIE;
 }
 
-export async function sessionView(c: AppContext, loginAccountId: string, activePersonId: string | null): Promise<SessionView> {
+export async function sessionView(c: AppContext, loginAccountId: string, activePersonId: string | null, organisationId = ORG_ID): Promise<SessionView> {
   const account = await c.env.DB.prepare("select mobile_last_four from login_accounts where id = ?")
     .bind(loginAccountId)
     .first<{ mobile_last_four: string | null }>();
@@ -709,9 +710,10 @@ export async function sessionView(c: AppContext, loginAccountId: string, activeP
      left join roles on roles.id = person_roles.role_id
      where login_account_people.login_account_id = ?
        and login_account_people.is_available = 1
+       and people.organisation_id = ?
        and people.status = 'active'`,
   )
-    .bind(loginAccountId)
+    .bind(loginAccountId, organisationId)
     .all<{ person_id: string; public_name: string | null; access_type: string; role_code: string | null; has_student_profile: number }>();
 
   const byPerson = new Map<string, ProfileChoice>();
@@ -730,8 +732,8 @@ export async function sessionView(c: AppContext, loginAccountId: string, activeP
     }
   }
   const profiles = Array.from(byPerson.values());
-  const accountRoles = await getAccountRoles(c, loginAccountId);
-  const effectiveRoles = activePersonId ? await getEffectiveRolesForActiveProfile(c, loginAccountId, activePersonId) : accountRoles;
+  const accountRoles = await getAccountRoles(c, loginAccountId, organisationId);
+  const effectiveRoles = activePersonId ? await getEffectiveRolesForActiveProfile(c, loginAccountId, activePersonId, organisationId) : accountRoles;
   const activeProfile = profiles.find((profile) => profile.personId === activePersonId) || null;
   return {
     authenticated: true,
@@ -742,38 +744,40 @@ export async function sessionView(c: AppContext, loginAccountId: string, activeP
   };
 }
 
-export async function getAccountRoles(c: AppContext, loginAccountId: string) {
+export async function getAccountRoles(c: AppContext, loginAccountId: string, organisationId = ORG_ID) {
   const rows = await c.env.DB.prepare(
     `select distinct roles.code as code
      from login_account_roles
      join roles on roles.id = login_account_roles.role_id
      where login_account_roles.login_account_id = ?
+       and roles.organisation_id = ?
        and roles.code not in ('student', 'alumni')
      order by roles.code`,
   )
-    .bind(loginAccountId)
+    .bind(loginAccountId, organisationId)
     .all<{ code: string }>();
   return (rows.results || []).map((row) => row.code);
 }
 
-export async function getPersonRoles(c: AppContext, personId: string) {
+export async function getPersonRoles(c: AppContext, personId: string, organisationId = ORG_ID) {
   const rows = await c.env.DB.prepare(
     `select distinct roles.code as code
      from person_roles
      join roles on roles.id = person_roles.role_id
      where person_roles.person_id = ?
+       and roles.organisation_id = ?
      order by roles.code`,
   )
-    .bind(personId)
+    .bind(personId, organisationId)
     .all<{ code: string }>();
   return (rows.results || []).map((row) => row.code);
 }
 
 // Effective roles are the union of account-level staff roles and the selected profile's person roles.
-export async function getEffectiveRolesForActiveProfile(c: AppContext, loginAccountId: string, activePersonId: string | null) {
-  const accountRoles = await getAccountRoles(c, loginAccountId);
+export async function getEffectiveRolesForActiveProfile(c: AppContext, loginAccountId: string, activePersonId: string | null, organisationId = ORG_ID) {
+  const accountRoles = await getAccountRoles(c, loginAccountId, organisationId);
   if (!activePersonId) return accountRoles;
-  const personRoles = await getPersonRoles(c, activePersonId);
+  const personRoles = await getPersonRoles(c, activePersonId, organisationId);
   return Array.from(new Set([...accountRoles, ...personRoles]));
 }
 
@@ -781,12 +785,13 @@ export async function requireAuthenticatedProfile(c: AppContext) {
   const session = await getSessionFromRequest(c);
   if (!session) return null;
   if ((session.record.active_subject_type || "person") !== "person") return null;
-  const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
+  const organisationId = session.record.organisation_id || ORG_ID;
+  const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id, organisationId);
   if (!view.activeProfile) return null;
-  return { session, view, activeProfile: view.activeProfile };
+  return { session, view, activeProfile: view.activeProfile, organisationId };
 }
 
-export async function trainerSessionView(c: AppContext, loginAccountId: string, activePersonId: string | null): Promise<TrainerSessionView> {
+export async function trainerSessionView(c: AppContext, loginAccountId: string, activePersonId: string | null, organisationId = ORG_ID): Promise<TrainerSessionView> {
   const account = await c.env.DB.prepare("select mobile_last_four from login_accounts where id = ?")
     .bind(loginAccountId)
     .first<{ mobile_last_four: string | null }>();
@@ -812,7 +817,7 @@ export async function trainerSessionView(c: AppContext, loginAccountId: string, 
        and (branches.id is null or branches.status = 'active')
      order by public_name collate nocase`,
   )
-    .bind(ORG_ID, TRAINER_ROLE_CODE, loginAccountId)
+    .bind(organisationId, TRAINER_ROLE_CODE, loginAccountId)
     .all<{ person_id: string; public_name: string; home_branch_id: string | null; branch_name: string | null }>();
   const trainers = (rows.results || []).map((row) => ({
     personId: row.person_id,
@@ -833,14 +838,17 @@ export async function requireAuthenticatedTrainer(c: AppContext) {
   const session = await getSessionFromRequest(c, "trainer");
   if (!session?.record.active_person_id || session.record.active_education_partner_id) return null;
   if (session.record.active_subject_type !== "trainer") return null;
-  if (!(await isLinkedTrainerAvailable(c, session.record.login_account_id, session.record.active_person_id))) return null;
-  const view = await trainerSessionView(c, session.record.login_account_id, session.record.active_person_id);
+  const organisationId = session.record.organisation_id || ORG_ID;
+  if (!(await isLinkedTrainerAvailable(c, session.record.login_account_id, session.record.active_person_id, organisationId))) return null;
+  const view = await trainerSessionView(c, session.record.login_account_id, session.record.active_person_id, organisationId);
   if (!view.activeTrainer) return null;
-  return { session, view, activeTrainer: view.activeTrainer };
+  return { session, view, activeTrainer: view.activeTrainer, organisationId };
 }
 
 export async function selectLinkedTrainer(c: AppContext, sessionId: string, loginAccountId: string, personId: string) {
-  const linked = await isLinkedTrainerAvailable(c, loginAccountId, personId);
+  const session = await c.env.DB.prepare("select organisation_membership_id from user_sessions where id = ? and login_account_id = ?").bind(sessionId, loginAccountId).first<{ organisation_membership_id: string | null }>();
+  const organisationId = session?.organisation_membership_id ? (await c.env.DB.prepare("select organisation_id from organisation_memberships where id = ?").bind(session.organisation_membership_id).first<{ organisation_id: string }>())?.organisation_id || ORG_ID : ORG_ID;
+  const linked = await isLinkedTrainerAvailable(c, loginAccountId, personId, organisationId);
   if (!linked) return false;
   await c.env.DB.prepare("update user_sessions set active_person_id = ?, active_education_partner_id = null, active_subject_type = 'trainer', last_seen_at = ? where id = ?")
     .bind(personId, new Date().toISOString(), sessionId)
@@ -857,7 +865,9 @@ export async function requireActiveProfileRole(c: AppContext, allowedRoles: stri
 }
 
 export async function selectLinkedProfile(c: AppContext, sessionId: string, loginAccountId: string, personId: string) {
-  const linked = await isLinkedProfileAvailable(c, loginAccountId, personId);
+  const session = await c.env.DB.prepare("select organisation_membership_id from user_sessions where id = ? and login_account_id = ?").bind(sessionId, loginAccountId).first<{ organisation_membership_id: string | null }>();
+  const organisationId = session?.organisation_membership_id ? (await c.env.DB.prepare("select organisation_id from organisation_memberships where id = ?").bind(session.organisation_membership_id).first<{ organisation_id: string }>())?.organisation_id || ORG_ID : ORG_ID;
+  const linked = await isLinkedProfileAvailable(c, loginAccountId, personId, organisationId);
   if (!linked) return false;
   await c.env.DB.prepare("update user_sessions set active_person_id = ?, active_education_partner_id = null, active_subject_type = 'person', last_seen_at = ? where id = ?")
     .bind(personId, new Date().toISOString(), sessionId)
@@ -866,7 +876,9 @@ export async function selectLinkedProfile(c: AppContext, sessionId: string, logi
 }
 
 export async function selectLinkedPartner(c: AppContext, sessionId: string, loginAccountId: string, educationPartnerId: string) {
-  const linked = await isLinkedPartnerAvailable(c, loginAccountId, educationPartnerId);
+  const session = await c.env.DB.prepare("select organisation_membership_id from user_sessions where id = ? and login_account_id = ?").bind(sessionId, loginAccountId).first<{ organisation_membership_id: string | null }>();
+  const organisationId = session?.organisation_membership_id ? (await c.env.DB.prepare("select organisation_id from organisation_memberships where id = ?").bind(session.organisation_membership_id).first<{ organisation_id: string }>())?.organisation_id || ORG_ID : ORG_ID;
+  const linked = await isLinkedPartnerAvailable(c, loginAccountId, educationPartnerId, organisationId);
   if (!linked) return false;
   await c.env.DB.prepare("update user_sessions set active_person_id = null, active_education_partner_id = ?, active_subject_type = 'partner', last_seen_at = ? where id = ?")
     .bind(educationPartnerId, new Date().toISOString(), sessionId)
@@ -880,20 +892,20 @@ export async function revokeSession(c: AppContext, tokenHash: string) {
     .run();
 }
 
-export async function activeReferrerForPerson(c: AppContext, personId: string) {
-  return c.env.DB.prepare("select * from referrer_profiles where person_id = ? and active = 1")
-    .bind(personId)
+export async function activeReferrerForPerson(c: AppContext, personId: string, organisationId = ORG_ID) {
+  return c.env.DB.prepare("select * from referrer_profiles where organisation_id = ? and person_id = ? and active = 1")
+    .bind(organisationId, personId)
     .first<{ id: string; external_referrer_id: string; personal_link: string; active: number; created_at: string }>();
 }
 
-export async function fetchDashboardForActiveProfile(c: AppContext, personId: string, pagination: { limit?: number; offset?: number } = {}): Promise<PortalDashboard> {
-  const referrer = await activeReferrerForPerson(c, personId);
+export async function fetchDashboardForActiveProfile(c: AppContext, personId: string, pagination: { limit?: number; offset?: number } = {}, organisationId = ORG_ID): Promise<PortalDashboard> {
+  const referrer = await activeReferrerForPerson(c, personId, organisationId);
   if (!referrer) throw new Error("No active referrer profile");
-  const profile = await profileForPerson(c, personId);
+  const profile = await profileForPerson(c, personId, organisationId);
   if (!profile) throw new Error("No active profile");
   const limit = pagination.limit || 25;
   const offset = pagination.offset || 0;
-  const activeLink = await activeReferralLinkForProfile(c, referrer.id);
+  const activeLink = await activeReferralLinkForProfile(c, referrer.id, organisationId);
   const recoveredLink = activeLink ? await recoverActiveReferralLink(c, activeLink) : null;
   const summary = await c.env.DB.prepare(
     `select
@@ -1014,7 +1026,7 @@ export async function fetchDashboardForActiveProfile(c: AppContext, personId: st
   };
 }
 
-export async function fetchStudentHomeForActiveProfile(c: AppContext, personId: string): Promise<StudentHome> {
+export async function fetchStudentHomeForActiveProfile(c: AppContext, personId: string, organisationId = ORG_ID): Promise<StudentHome> {
   const student = await c.env.DB.prepare(
     `select
        people.full_name,
@@ -1038,7 +1050,7 @@ export async function fetchStudentHomeForActiveProfile(c: AppContext, personId: 
        and people.status = 'active'
      limit 1`,
   )
-    .bind(ORG_ID, personId)
+    .bind(organisationId, personId)
     .first<{
       full_name: string;
       public_name: string | null;
@@ -1070,7 +1082,7 @@ export async function fetchStudentHomeForActiveProfile(c: AppContext, personId: 
        and students.person_id = ?
      order by enrolments.admission_date desc, enrolments.id desc`,
   )
-    .bind(ORG_ID, personId)
+    .bind(organisationId, personId)
     .all<{
       enrolment_id: string;
       enrolment_number: string;
@@ -1084,7 +1096,7 @@ export async function fetchStudentHomeForActiveProfile(c: AppContext, personId: 
       duration_label: string | null;
     }>();
 
-  const activeLink = student.referrer_profile_id ? await activeReferralLinkForProfile(c, student.referrer_profile_id) : null;
+  const activeLink = student.referrer_profile_id ? await activeReferralLinkForProfile(c, student.referrer_profile_id, organisationId) : null;
   const lifecycleStatus = studentLifecycleStatus(
     student.current_status,
     (courseRows.results || []).map((row) => row.status),
@@ -1125,7 +1137,7 @@ export async function fetchStudentHomeForActiveProfile(c: AppContext, personId: 
   };
 }
 
-async function activeReferralLinkForProfile(c: AppContext, referrerProfileId: string) {
+async function activeReferralLinkForProfile(c: AppContext, referrerProfileId: string, organisationId = ORG_ID) {
   const now = new Date().toISOString();
   return c.env.DB.prepare(
     `select id, organisation_id, token_hash, token_last_four, activated_at, expires_at
@@ -1138,7 +1150,7 @@ async function activeReferralLinkForProfile(c: AppContext, referrerProfileId: st
      order by activated_at desc, id desc
      limit 1`,
   )
-    .bind(ORG_ID, referrerProfileId, now)
+    .bind(organisationId, referrerProfileId, now)
     .first<{ id: string; organisation_id: string; token_hash: string; token_last_four: string | null; activated_at: string | null; expires_at: string | null }>();
 }
 
@@ -1333,7 +1345,7 @@ export async function bootstrapPartnerAccount(c: AppContext, mobile: string, loo
   return account.id;
 }
 
-export async function partnerSessionView(c: AppContext, loginAccountId: string, activeEducationPartnerId: string | null): Promise<PartnerSessionView> {
+export async function partnerSessionView(c: AppContext, loginAccountId: string, activeEducationPartnerId: string | null, organisationId = ORG_ID): Promise<PartnerSessionView> {
   const account = await c.env.DB.prepare("select mobile_last_four from login_accounts where id = ?")
     .bind(loginAccountId)
     .first<{ mobile_last_four: string | null }>();
@@ -1352,7 +1364,7 @@ export async function partnerSessionView(c: AppContext, loginAccountId: string, 
      where login_account_education_partners.login_account_id = ?
      order by education_partners.business_name, education_partners.id`,
   )
-    .bind(ORG_ID, loginAccountId)
+    .bind(organisationId, loginAccountId)
     .all<{ education_partner_id: string; business_name: string; partner_type: string; status: string; branch_name: string | null }>();
   const partners = (rows.results || []).map((row) => ({
     educationPartnerId: row.education_partner_id,
@@ -1373,10 +1385,11 @@ export async function requireAuthenticatedPartner(c: AppContext) {
   const session = await getSessionFromRequest(c);
   if (session?.record.active_subject_type !== "partner") return null;
   if (!session?.record.active_education_partner_id) return null;
-  if (!(await isLinkedPartnerAvailable(c, session.record.login_account_id, session.record.active_education_partner_id))) return null;
-  const view = await partnerSessionView(c, session.record.login_account_id, session.record.active_education_partner_id);
+  const organisationId = session.record.organisation_id || ORG_ID;
+  if (!(await isLinkedPartnerAvailable(c, session.record.login_account_id, session.record.active_education_partner_id, organisationId))) return null;
+  const view = await partnerSessionView(c, session.record.login_account_id, session.record.active_education_partner_id, organisationId);
   if (!view.activePartner) return null;
-  return { session, view, activePartner: view.activePartner };
+  return { session, view, activePartner: view.activePartner, organisationId };
 }
 
 function studentLifecycleStatus(studentStatus: string, enrolmentStatuses: string[] = []): "CURRENT" | "ALUMNI" {
@@ -1384,7 +1397,7 @@ function studentLifecycleStatus(studentStatus: string, enrolmentStatuses: string
   return ["active", "on_hold", "suspended"].includes(studentStatus) ? "CURRENT" : "ALUMNI";
 }
 
-async function profileForPerson(c: AppContext, personId: string) {
+async function profileForPerson(c: AppContext, personId: string, organisationId = ORG_ID) {
   const row = await c.env.DB.prepare(
     `select
        people.id as person_id,
@@ -1419,7 +1432,7 @@ async function profileForPerson(c: AppContext, personId: string) {
      order by case roles.code when 'student' then 1 when 'alumni' then 2 else 3 end
      limit 1`,
   )
-    .bind(personId, ORG_ID)
+    .bind(personId, organisationId)
     .first<{
       person_id: string;
       full_name: string;
@@ -1517,7 +1530,7 @@ async function recordProfileAudit(c: AppContext, loginAccountId: string, personI
     .run();
 }
 
-async function isLinkedProfileAvailable(c: AppContext, loginAccountId: string, personId: string) {
+async function isLinkedProfileAvailable(c: AppContext, loginAccountId: string, personId: string, organisationId = ORG_ID) {
   const linked = await c.env.DB.prepare(
     `select 1 as ok
      from login_account_people
@@ -1526,14 +1539,16 @@ async function isLinkedProfileAvailable(c: AppContext, loginAccountId: string, p
      where login_account_people.login_account_id = ?
        and login_account_people.person_id = ?
        and login_account_people.is_available = 1
+       and people.organisation_id = ?
+       and referrer_profiles.organisation_id = ?
        and people.status = 'active'`,
   )
-    .bind(loginAccountId, personId)
+    .bind(loginAccountId, personId, organisationId, organisationId)
     .first<{ ok: number }>();
   return Boolean(linked);
 }
 
-async function isLinkedTrainerAvailable(c: AppContext, loginAccountId: string, personId: string) {
+async function isLinkedTrainerAvailable(c: AppContext, loginAccountId: string, personId: string, organisationId = ORG_ID) {
   const linked = await c.env.DB.prepare(
     `select 1 as ok
      from login_account_people
@@ -1552,12 +1567,12 @@ async function isLinkedTrainerAvailable(c: AppContext, loginAccountId: string, p
        and (branches.id is null or branches.status = 'active')
      limit 1`,
   )
-    .bind(loginAccountId, personId, ORG_ID, TRAINER_ROLE_CODE)
+    .bind(loginAccountId, personId, organisationId, TRAINER_ROLE_CODE)
     .first<{ ok: number }>();
   return Boolean(linked);
 }
 
-async function isLinkedPartnerAvailable(c: AppContext, loginAccountId: string, educationPartnerId: string) {
+async function isLinkedPartnerAvailable(c: AppContext, loginAccountId: string, educationPartnerId: string, organisationId = ORG_ID) {
   const linked = await c.env.DB.prepare(
     `select 1 as ok
      from login_account_education_partners
@@ -1568,7 +1583,7 @@ async function isLinkedPartnerAvailable(c: AppContext, loginAccountId: string, e
        and education_partners.status = 'active'
        and education_partners.mobile_hash is not null`,
   )
-    .bind(loginAccountId, educationPartnerId, ORG_ID)
+    .bind(loginAccountId, educationPartnerId, organisationId)
     .first<{ ok: number }>();
   return Boolean(linked);
 }

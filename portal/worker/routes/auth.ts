@@ -279,7 +279,7 @@ export function registerAuthRoutes(app: PortalHono) {
         message: "Please use Trainer Portal.",
       });
     }
-    return jsonWithRequestId(c, await sessionView(c, session.record.login_account_id, session.record.active_person_id));
+    return jsonWithRequestId(c, await sessionView(c, session.record.login_account_id, session.record.active_person_id, session.record.organisation_id || undefined));
   });
 
   app.post("/api/auth/select-profile", async (c) => {
@@ -293,7 +293,7 @@ export function registerAuthRoutes(app: PortalHono) {
     if (session.record.active_subject_type === "trainer") return jsonWithRequestId(c, { success: false, code: "TRAINER_SESSION_ACTIVE", message: "Please use Trainer Portal." }, 401);
     const selected = await selectLinkedProfile(c, session.record.id, session.record.login_account_id, body.personId);
     if (!selected) return jsonWithRequestId(c, { success: false, code: "PROFILE_NOT_LINKED", message: "This profile is not available." }, 403);
-    return jsonWithRequestId(c, { success: true, session: await sessionView(c, session.record.login_account_id, body.personId) });
+    return jsonWithRequestId(c, { success: true, session: await sessionView(c, session.record.login_account_id, body.personId, session.record.organisation_id || undefined) });
   });
 
   app.post("/api/auth/logout", async (c) => {

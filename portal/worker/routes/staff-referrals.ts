@@ -1,12 +1,12 @@
 import { z } from "zod";
 import type { Context, Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
-import { ORG_ID } from "../lib/tenant-context";
+import { ORG_ID, authenticatedOrDefaultOrganisationId, setAuthenticatedOrganisationId } from "../lib/tenant-context";
 import { createOpaqueId, decryptText } from "../lib/crypto";
 import { requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
-import { ADMISSION_STAFF_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
+import { staffOrganisationId, ADMISSION_STAFF_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import {
   approveReferralReward,
   getReferralQualification,
@@ -96,6 +96,8 @@ export function registerStaffReferralRoutes(app: PortalHono) {
   app.get("/api/staff/referrals", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
 
     const scope = await branchScope(c, staff);
     if (!scope.canAccessAnyBranch) return jsonPlain(c, emptyListPayload(listPagination(c)));
@@ -117,7 +119,7 @@ export function registerStaffReferralRoutes(app: PortalHono) {
       .first<{ count: number }>();
 
     const pageRows = (rows.results || []).slice(0, pagination.limit);
-    const qualifications = await getReferralQualifications(c, pageRows.map((row) => row.referral_id));
+    const qualifications = await getReferralQualifications(c, pageRows.map((row) => row.referral_id), ORG_ID);
     const referrals = await Promise.all(pageRows.map((row) => toListItem(c, row, qualifications.get(row.referral_id))));
     return jsonPlain(c, {
       success: true,
@@ -135,6 +137,8 @@ export function registerStaffReferralRoutes(app: PortalHono) {
   app.get("/api/staff/referrals/:referralId", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
     const detail = await referralDetail(c, staff, c.req.param("referralId"));
     if (!detail) return jsonError(c, { status: 404, code: "referral_not_found", message: "Referral was not found." });
     return jsonPlain(c, detail);
@@ -145,6 +149,8 @@ export function registerStaffReferralRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
     const contentType = c.req.header("Content-Type") || "";
     if (!contentType.toLowerCase().startsWith("application/json")) return jsonError(c, { status: 415, code: "json_required", message: "Only JSON requests are accepted." });
     const bodyText = await c.req.raw.text();
@@ -185,6 +191,8 @@ export function registerStaffReferralRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
     const existing = await scopedReferral(c, staff, c.req.param("referralId"));
     if (!existing) return jsonError(c, { status: 404, code: "referral_not_found", message: "Referral was not found." });
     const result = await approveReferralReward(c, staff, existing.id);
@@ -197,6 +205,8 @@ export function registerStaffReferralRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
     const contentType = c.req.header("Content-Type") || "";
     if (!contentType.toLowerCase().startsWith("application/json")) return jsonError(c, { status: 415, code: "json_required", message: "Only JSON requests are accepted." });
     const bodyText = await c.req.raw.text();
@@ -214,6 +224,8 @@ export function registerStaffReferralRoutes(app: PortalHono) {
 }
 
 async function referralDetail(c: PortalContext, staff: StaffContext, referralId: string) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const scope = await branchScope(c, staff);
   if (!scope.canAccessAnyBranch) return null;
   const where = scopedWhere(scope, ["referrals.id = ?", "referrals.organisation_id = ?"], [referralId, ORG_ID]);
@@ -234,7 +246,7 @@ async function referralDetail(c: PortalContext, staff: StaffContext, referralId:
     .bind(...where.params)
     .first<ReferralDetailRow>();
   if (!row) return null;
-  const qualification = await getReferralQualification(c, referralId);
+  const qualification = await getReferralQualification(c, referralId, ORG_ID);
   const events = await c.env.DB.prepare(
     `select
        referral_status_events.id,
@@ -306,6 +318,8 @@ async function referralDetail(c: PortalContext, staff: StaffContext, referralId:
 }
 
 async function scopedReferral(c: PortalContext, staff: StaffContext, referralId: string) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const scope = await branchScope(c, staff);
   if (!scope.canAccessAnyBranch) return null;
   const where = scopedWhere(scope, ["id = ?", "organisation_id = ?"], [referralId, ORG_ID], "referrals");
@@ -406,6 +420,7 @@ function listFromSql() {
 }
 
 async function listWhere(c: PortalContext, scope: BranchScope, filters: ReturnType<typeof listFilters>) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   const now = new Date().toISOString();
   const clauses = ["referrals.organisation_id = ?"];
   const params: Array<string | number> = [ORG_ID];

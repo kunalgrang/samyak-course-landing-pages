@@ -1,10 +1,10 @@
 import { z } from "zod";
 import type { AppContext } from "./http";
 import { mobileHash } from "./auth-store";
-import { ORG_ID } from "./tenant-context";
+import { ORG_ID, authenticatedOrDefaultOrganisationId, setAuthenticatedOrganisationId } from "./tenant-context";
 import { assignBatchOnAdmissionConfirmation, validateAdmissionBatchSelection } from "./batch-management";
 import { createOpaqueId, decryptText, encryptText, hmacHex } from "./crypto";
-import { DISCOUNT_APPROVER_ROLES, canBackdateReceipts, canRecordReceipts, canReverseReceipts, type StaffContext } from "./staff-auth";
+import { staffOrganisationId, DISCOUNT_APPROVER_ROLES, canBackdateReceipts, canRecordReceipts, canReverseReceipts, type StaffContext } from "./staff-auth";
 import { normalizeIndianMobile } from "./mobile";
 import { maximumInstallmentsForCourse } from "./payment-schedule-policy";
 import { canReverseReceiptForBranch, financialSummaryFromReceipts, type FinancialSummary, type PublicReceipt, type ReceiptReversalInput } from "./payments-ledger";
@@ -380,6 +380,7 @@ export function validateAdmissionForConfirmation(payload: unknown) {
 }
 
 export async function getAdmissionDraft(c: AppContext, enquiryId: string) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   return c.env.DB.prepare(
     `select * from admission_drafts
      where organisation_id = ? and enquiry_id = ? and status in ('draft', 'confirmed')
@@ -403,6 +404,8 @@ export async function admissionDraftPayloadForStaff(c: AppContext, draft: DraftR
 }
 
 export async function saveAdmissionDraft(c: AppContext, staff: StaffContext, enquiryId: string, input: z.infer<typeof saveAdmissionDraftSchema>) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const enquiry = await getAdmissionEnquiry(c, enquiryId);
   if (!enquiry) return { ok: false as const, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
   if (!enquiry.person_id) return { ok: false as const, status: 400, code: "person_required", message: "Enquiry must be linked to a person before admission." };
@@ -482,6 +485,8 @@ export async function getAdmissionReceiptSummary(c: AppContext, enquiryId: strin
 }
 
 export async function getAdmissionReceiptCorrectionCapability(c: AppContext, staff: StaffContext, enquiryId: string) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const enquiry = await getAdmissionEnquiry(c, enquiryId);
   const canReverse = enquiry ? await canReverseReceiptForBranch(c, staff, enquiry.branch_id) : false;
   return {
@@ -492,6 +497,8 @@ export async function getAdmissionReceiptCorrectionCapability(c: AppContext, sta
 }
 
 export async function recordAdmissionReceipt(c: AppContext, staff: StaffContext, enquiryId: string, input: z.infer<typeof recordAdmissionReceiptSchema>) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   if (!canRecordAdmissionReceipt(staff)) {
     return { ok: false as const, status: 403, code: "forbidden", message: "This role cannot record admission receipts." };
   }
@@ -613,6 +620,8 @@ export async function recordAdmissionReceipt(c: AppContext, staff: StaffContext,
 }
 
 export async function reverseAdmissionReceipt(c: AppContext, staff: StaffContext, enquiryId: string, receiptId: string, input: ReceiptReversalInput): Promise<{ ok: true; receipt: PublicReceipt; financialSummary: AdmissionFinancialSummary } | AdmissionFailure> {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   if (!canReverseReceipts(staff)) {
     return { ok: false, status: 403, code: "forbidden", message: "This role cannot reverse receipts." };
   }
@@ -679,6 +688,8 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
   | { ok: true; result: AdmissionConfirmationResult }
   | AdmissionFailure
 > {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const enquiry = await getAdmissionEnquiry(c, enquiryId);
   if (!enquiry) return { ok: false, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
   const draft = await getAdmissionDraft(c, enquiryId);
@@ -784,6 +795,7 @@ export async function confirmAdmission(c: AppContext, staff: StaffContext, enqui
 }
 
 async function getAdmissionEnquiry(c: AppContext, enquiryId: string) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   return c.env.DB.prepare(
     "select * from enquiries where id = ? and organisation_id = ?",
   )
@@ -798,12 +810,14 @@ async function getEnrolmentByEnquiry(c: AppContext, enquiryId: string) {
 }
 
 async function getBranch(c: AppContext, branchId: string) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   return c.env.DB.prepare("select id, code, name, timezone from branches where id = ? and organisation_id = ? and status = 'active'")
     .bind(branchId, ORG_ID)
     .first<{ id: string; code: string; name: string; timezone: string | null }>();
 }
 
 async function getActiveCourse(c: AppContext, courseId: string) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   return c.env.DB.prepare("select id, code, name, default_fee_paise, duration_months, lowest_acceptable_fee_paise, admission_configuration_complete from courses where id = ? and organisation_id = ? and status = 'active'")
     .bind(courseId, ORG_ID)
     .first<CourseRecord>();
@@ -874,6 +888,8 @@ async function finalizeAdmission(
     now: string;
   },
 ) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const snapshot = input.snapshot;
   if (snapshot.finalAgreedFeePaise < snapshot.lowestAcceptableFeePaise && (!snapshot.discountApprovalId || !snapshot.discountApprovedByLoginAccountId)) {
     return {
@@ -1146,6 +1162,7 @@ async function getOrCreateConfirmationSnapshot(c: AppContext, staff: StaffContex
 }
 
 async function buildConfirmationSnapshot(c: AppContext, enquiry: EnquiryRecord, draft: DraftRecord, payload: AdmissionPayload, branch: { id: string; code: string }, course: CourseRecord, tokenReceipt: ReceiptRecord, instalments: Instalment[]): Promise<ConfirmationSnapshot> {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   const fee = payload.fee!;
   const courseInput = payload.course!;
   const listedFeePaise = Number(course.default_fee_paise || 0);
@@ -1246,6 +1263,7 @@ function snapshotsMatch(expected: ConfirmationSnapshot, actual: ConfirmationSnap
 }
 
 export async function getAdmissionConfiguration(c: AppContext) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   const [options, paymentPlanRules] = await Promise.all([
     c.env.DB.prepare(
       `select category, code, label, sort_order, requires_custom_label, is_active
@@ -1280,6 +1298,8 @@ export async function getAdmissionConfiguration(c: AppContext) {
 }
 
 export async function requestDiscountApproval(c: AppContext, staff: StaffContext, enquiryId: string) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const enquiry = await getAdmissionEnquiry(c, enquiryId);
   if (!enquiry) return { ok: false as const, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
   const draft = await getAdmissionDraft(c, enquiryId);
@@ -1342,6 +1362,7 @@ export async function requestDiscountApproval(c: AppContext, staff: StaffContext
 }
 
 export async function listDiscountApprovals(c: AppContext) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   const approvals = await c.env.DB.prepare(
     `select admission_discount_approvals.*, enquiries.enquiry_number, people.full_name, courses.name as course_name,
             coalesce(
@@ -1367,6 +1388,8 @@ export async function listDiscountApprovals(c: AppContext) {
 }
 
 export async function decideDiscountApproval(c: AppContext, staff: StaffContext, approvalId: string, decision: "approved" | "rejected") {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   if (!staff.roles.some((role) => DISCOUNT_APPROVER_ROLES.includes(role as (typeof DISCOUNT_APPROVER_ROLES)[number]))) {
     return { ok: false as const, status: 403, code: "forbidden", message: "Owner approval is required." };
   }
@@ -1566,6 +1589,7 @@ async function receiptsForDraft(c: AppContext, draftId: string) {
 }
 
 async function receiptHistoryForDraft(c: AppContext, draftId: string) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   const receipts = await c.env.DB.prepare(
     `select receipts.id, receipts.receipt_number, receipts.branch_id, receipts.enquiry_id, receipts.admission_draft_id,
             receipts.enrolment_id, receipts.amount_paise, receipts.received_at, receipts.payment_mode,
@@ -1586,6 +1610,8 @@ async function receiptHistoryForDraft(c: AppContext, draftId: string) {
 }
 
 async function receiptByIdempotencyKey(c: AppContext, staff: StaffContext, idempotencyKey: string) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   return c.env.DB.prepare(
     `select receipts.id, receipts.receipt_number, receipts.branch_id, receipts.enquiry_id, receipts.admission_draft_id,
             receipts.enrolment_id, receipts.amount_paise, receipts.received_at, receipts.payment_mode,
@@ -1601,6 +1627,7 @@ async function receiptByIdempotencyKey(c: AppContext, staff: StaffContext, idemp
 }
 
 async function admissionReceiptById(c: AppContext, receiptId: string) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   return c.env.DB.prepare(
     `select receipts.id, receipts.receipt_number, receipts.branch_id, receipts.enquiry_id, receipts.admission_draft_id,
             receipts.enrolment_id, receipts.amount_paise, receipts.received_at, receipts.payment_mode,
@@ -1620,6 +1647,8 @@ async function admissionReceiptById(c: AppContext, receiptId: string) {
 }
 
 async function reversalByIdempotencyKey(c: AppContext, staff: StaffContext, idempotencyKey: string) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   return c.env.DB.prepare(
     `select id, receipt_id, payload_fingerprint
      from receipt_reversals
@@ -1692,6 +1721,8 @@ async function canBackdateReceipt(c: AppContext, staff: StaffContext, branchId: 
 }
 
 async function hasReceiptCapabilityForBranch(c: AppContext, staff: StaffContext, branchId: string, backdate: boolean) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const roleAllowedInSession = backdate ? canBackdateReceipts(staff) : canRecordReceipts(staff);
   if (!roleAllowedInSession) return false;
   const roleCodes = backdate ? ["owner", "system_admin", "admin", "admission_admin"] : ["owner", "system_admin", "admin", "admission_admin", "counsellor"];
@@ -1858,6 +1889,7 @@ async function normalizeAdmissionOptionLabels(c: AppContext, payload: AdmissionP
 }
 
 async function admissionOptionsMap(c: AppContext) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   const rows = await c.env.DB.prepare(
     `select category, code, label, requires_custom_label, is_active
      from admission_option_values
@@ -2067,6 +2099,7 @@ async function ownerApprovalForFeeAgreement(c: AppContext, draftId: string, cour
 }
 
 async function discountApprovalDecisionIsOwner(c: AppContext, approvalId: string, loginAccountId: string) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   const currentOwner = await c.env.DB.prepare(
     `select 1 as ok
      from login_account_roles
@@ -2116,6 +2149,7 @@ async function allocateSequence(c: AppContext, organisationId: string, branchId:
 }
 
 async function upsertCanonicalPerson(c: AppContext, personId: string, identity: NonNullable<AdmissionPayload["identity"]>, branchId: string, staffId: string, now: string) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   const fullName = identity.officialFullName!.trim();
   const dob = identity.dateOfBirth!.trim();
   await c.env.DB.batch([
@@ -2407,6 +2441,8 @@ async function confirmationForEnrolment(c: AppContext, enquiry: EnquiryRecord, e
 }
 
 async function audit(c: AppContext, staff: StaffContext, branchId: string | null, action: string, entityType: string, entityId: string, metadata: Record<string, unknown>) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   await c.env.DB.prepare(
     `insert into audit_logs
        (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
@@ -2417,6 +2453,8 @@ async function audit(c: AppContext, staff: StaffContext, branchId: string | null
 }
 
 async function auditAdmissionConfirmed(c: AppContext, staff: StaffContext, branchId: string | null, enrolmentId: string, metadata: Record<string, unknown>) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   await c.env.DB.prepare(
     `insert or ignore into audit_logs
        (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)

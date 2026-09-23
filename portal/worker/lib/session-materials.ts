@@ -14,6 +14,7 @@ export const materialUploadSchema = z.object({
 });
 
 export type TrainerMaterialContext = {
+  organisationId?: string;
   loginAccountId: string;
   activeTrainer: TrainerProfileChoice;
 };
@@ -118,16 +119,18 @@ export function sanitizeMaterialFilename(value: string) {
 }
 
 export async function listTrainerSessionMaterials(c: AppContext, trainer: TrainerMaterialContext, sessionId: string) {
-  const session = await loadTrainerOwnedSession(c, trainer.activeTrainer.personId, sessionId);
+  const organisationId = trainerOrganisationId(trainer);
+  const session = await loadTrainerOwnedSession(c, trainer.activeTrainer.personId, sessionId, organisationId);
   if (!session) return { ok: false as const, status: 404, code: "session_not_found", message: "Class session not found." };
-  return { ok: true as const, materials: await activeMaterialsForSession(c, session.id) };
+  return { ok: true as const, materials: await activeMaterialsForSession(c, session.id, organisationId) };
 }
 
 export async function uploadTrainerSessionMaterial(c: AppContext, trainer: TrainerMaterialContext, sessionId: string, input: z.infer<typeof materialUploadSchema>, file: MaterialFileInput) {
-  const session = await loadTrainerOwnedSession(c, trainer.activeTrainer.personId, sessionId);
+  const organisationId = trainerOrganisationId(trainer);
+  const session = await loadTrainerOwnedSession(c, trainer.activeTrainer.personId, sessionId, organisationId);
   if (!session) return { ok: false as const, status: 404, code: "session_not_found", message: "Class session not found." };
   if (session.status === "cancelled") return { ok: false as const, status: 409, code: "session_cancelled", message: "Materials cannot be uploaded to cancelled sessions." };
-  const activeCount = await activeMaterialCount(c, session.id);
+  const activeCount = await activeMaterialCount(c, session.id, organisationId);
   if (activeCount >= MAX_ACTIVE_MATERIALS_PER_SESSION) {
     return { ok: false as const, status: 409, code: "material_limit_reached", message: `A session can have up to ${MAX_ACTIVE_MATERIALS_PER_SESSION} active materials.` };
   }
@@ -140,7 +143,7 @@ export async function uploadTrainerSessionMaterial(c: AppContext, trainer: Train
   const now = new Date().toISOString();
   const material: SessionMaterialRecord = {
     id: createOpaqueId("mat"),
-    organisation_id: ORG_ID,
+    organisation_id: organisationId,
     branch_id: session.branch_id,
     class_session_id: session.id,
     batch_id: session.batch_id,
@@ -196,7 +199,8 @@ export async function uploadTrainerSessionMaterial(c: AppContext, trainer: Train
 }
 
 export async function deleteTrainerSessionMaterial(c: AppContext, trainer: TrainerMaterialContext, materialId: string) {
-  const material = await loadMaterial(c, materialId);
+  const organisationId = trainerOrganisationId(trainer);
+  const material = await loadMaterial(c, materialId, organisationId);
   if (!material || material.deleted_at) return { ok: false as const, status: 404, code: "material_not_found", message: "Material was not found." };
   if (material.trainer_person_id !== trainer.activeTrainer.personId) {
     return { ok: false as const, status: 403, code: "forbidden", message: "Only the session trainer can remove this material." };
@@ -207,7 +211,7 @@ export async function deleteTrainerSessionMaterial(c: AppContext, trainer: Train
       `update session_materials
        set deleted_at = ?, updated_at = ?
        where id = ? and organisation_id = ? and deleted_at is null`,
-    ).bind(now, now, material.id, ORG_ID),
+    ).bind(now, now, material.id, organisationId),
     auditStatement(c, material.branch_id, trainer, "session_material_deleted", material.id, {
       sessionId: material.class_session_id,
       materialType: material.material_type,
@@ -221,13 +225,13 @@ export async function deleteTrainerSessionMaterial(c: AppContext, trainer: Train
 }
 
 export async function getTrainerMaterialContent(c: AppContext, trainer: TrainerMaterialContext, materialId: string) {
-  const material = await loadMaterial(c, materialId);
+  const material = await loadMaterial(c, materialId, trainerOrganisationId(trainer));
   if (!material || material.deleted_at) return materialNotFound();
   if (material.trainer_person_id !== trainer.activeTrainer.personId) return materialNotFound();
   return materialContent(c, material);
 }
 
-export async function listStudentLearning(c: AppContext, personId: string) {
+export async function listStudentLearning(c: AppContext, personId: string, organisationId = ORG_ID) {
   const rows = await c.env.DB.prepare(
     `select
        enrolments.id as enrolment_id,
@@ -268,29 +272,29 @@ export async function listStudentLearning(c: AppContext, personId: string) {
               enrolments.id desc
      limit 50`,
   )
-    .bind(ORG_ID, personId)
+    .bind(organisationId, personId)
     .all<LearningEnrolmentRow>();
   return { success: true as const, enrolments: (rows.results || []).map(mapLearningEnrolment) };
 }
 
-export async function getStudentLearningEnrolment(c: AppContext, personId: string, enrolmentId: string, pagination: { limit: number; offset: number }) {
-  const enrolments = await listStudentLearning(c, personId);
+export async function getStudentLearningEnrolment(c: AppContext, personId: string, enrolmentId: string, pagination: { limit: number; offset: number }, organisationId = ORG_ID) {
+  const enrolments = await listStudentLearning(c, personId, organisationId);
   const enrolment = enrolments.enrolments.find((item) => item.enrolmentId === enrolmentId);
   if (!enrolment) return { ok: false as const, status: 404, code: "enrolment_not_found", message: "Learning record was not found." };
-  const summary = await attendanceSummary(c, personId, enrolmentId);
-  const sessions = await studentSessions(c, personId, enrolmentId, pagination);
+  const summary = await attendanceSummary(c, personId, enrolmentId, organisationId);
+  const sessions = await studentSessions(c, personId, enrolmentId, pagination, organisationId);
   return { ok: true as const, success: true as const, enrolment, summary, sessions: sessions.items, pagination: sessions.pagination };
 }
 
-export async function getStudentMaterialContent(c: AppContext, personId: string, materialId: string) {
-  const material = await loadMaterial(c, materialId);
+export async function getStudentMaterialContent(c: AppContext, personId: string, materialId: string, organisationId = ORG_ID) {
+  const material = await loadMaterial(c, materialId, organisationId);
   if (!material || material.deleted_at) return materialNotFound();
-  const eligible = await isStudentEligibleForSession(c, personId, material.class_session_id);
+  const eligible = await isStudentEligibleForSession(c, personId, material.class_session_id, organisationId);
   if (!eligible) return materialNotFound();
   return materialContent(c, material);
 }
 
-async function studentSessions(c: AppContext, personId: string, enrolmentId: string, pagination: { limit: number; offset: number }) {
+async function studentSessions(c: AppContext, personId: string, enrolmentId: string, pagination: { limit: number; offset: number }, organisationId = ORG_ID) {
   const rows = await c.env.DB.prepare(
     `select distinct
        class_sessions.id as session_id,
@@ -331,17 +335,17 @@ async function studentSessions(c: AppContext, personId: string, enrolmentId: str
      order by class_sessions.session_date desc, class_sessions.scheduled_start_time desc, class_sessions.created_at desc, class_sessions.id desc
      limit ? offset ?`,
   )
-    .bind(ORG_ID, ORG_ID, enrolmentId, personId, pagination.limit + 1, pagination.offset)
+    .bind(organisationId, organisationId, enrolmentId, personId, pagination.limit + 1, pagination.offset)
     .all<StudentSessionRow>();
   const sessionRows = (rows.results || []).slice(0, pagination.limit);
-  const materials = sessionRows.length ? await materialsForSessions(c, sessionRows.map((row) => row.session_id)) : new Map<string, ReturnType<typeof publicMaterial>[]>();
+  const materials = sessionRows.length ? await materialsForSessions(c, sessionRows.map((row) => row.session_id), organisationId) : new Map<string, ReturnType<typeof publicMaterial>[]>();
   return {
     items: sessionRows.map((row) => mapStudentSession(row, materials.get(row.session_id) || [])),
     pagination: { limit: pagination.limit, offset: pagination.offset, hasMore: (rows.results || []).length > pagination.limit },
   };
 }
 
-async function attendanceSummary(c: AppContext, personId: string, enrolmentId: string) {
+async function attendanceSummary(c: AppContext, personId: string, enrolmentId: string, organisationId = ORG_ID) {
   const row = await c.env.DB.prepare(
     `select
        sum(case when attendance_records.status = 'present' then 1 else 0 end) as present,
@@ -361,7 +365,7 @@ async function attendanceSummary(c: AppContext, personId: string, enrolmentId: s
        and attendance_records.person_id = ?
        and students.person_id = ?`,
   )
-    .bind(ORG_ID, enrolmentId, personId, personId)
+    .bind(organisationId, enrolmentId, personId, personId)
     .first<{ present: number | null; absent: number | null }>();
   const present = Number(row?.present || 0);
   const absent = Number(row?.absent || 0);
@@ -369,7 +373,7 @@ async function attendanceSummary(c: AppContext, personId: string, enrolmentId: s
   return { present, absent, totalClasses: total, attendancePercent: total ? Math.round((present / total) * 100) : null };
 }
 
-async function isStudentEligibleForSession(c: AppContext, personId: string, sessionId: string) {
+async function isStudentEligibleForSession(c: AppContext, personId: string, sessionId: string, organisationId = ORG_ID) {
   const row = await c.env.DB.prepare(
     `select 1 as allowed
      from session_materials
@@ -388,12 +392,12 @@ async function isStudentEligibleForSession(c: AppContext, personId: string, sess
        and students.person_id = ?
      limit 1`,
   )
-    .bind(ORG_ID, sessionId, personId)
+    .bind(organisationId, sessionId, personId)
     .first<{ allowed: number }>();
   return Boolean(row);
 }
 
-async function materialsForSessions(c: AppContext, sessionIds: string[]) {
+async function materialsForSessions(c: AppContext, sessionIds: string[], organisationId = ORG_ID) {
   const placeholders = sessionIds.map(() => "?").join(",");
   const rows = await c.env.DB.prepare(
     `select id, class_session_id, material_type, title, size_bytes, original_filename, created_at
@@ -403,7 +407,7 @@ async function materialsForSessions(c: AppContext, sessionIds: string[]) {
        and class_session_id in (${placeholders})
      order by created_at asc, id asc`,
   )
-    .bind(ORG_ID, ...sessionIds)
+    .bind(organisationId, ...sessionIds)
     .all<MaterialSummaryRow>();
   const bySession = new Map<string, ReturnType<typeof publicMaterial>[]>();
   for (const row of rows.results || []) {
@@ -414,39 +418,39 @@ async function materialsForSessions(c: AppContext, sessionIds: string[]) {
   return bySession;
 }
 
-async function activeMaterialsForSession(c: AppContext, sessionId: string) {
+async function activeMaterialsForSession(c: AppContext, sessionId: string, organisationId = ORG_ID) {
   const rows = await c.env.DB.prepare(
     `select id, class_session_id, material_type, title, size_bytes, original_filename, created_at
      from session_materials
      where organisation_id = ? and class_session_id = ? and deleted_at is null
      order by created_at asc, id asc`,
   )
-    .bind(ORG_ID, sessionId)
+    .bind(organisationId, sessionId)
     .all<MaterialSummaryRow>();
   return (rows.results || []).map(publicMaterial);
 }
 
-async function activeMaterialCount(c: AppContext, sessionId: string) {
+async function activeMaterialCount(c: AppContext, sessionId: string, organisationId = ORG_ID) {
   const row = await c.env.DB.prepare("select count(*) as count from session_materials where organisation_id = ? and class_session_id = ? and deleted_at is null")
-    .bind(ORG_ID, sessionId)
+    .bind(organisationId, sessionId)
     .first<{ count: number }>();
   return Number(row?.count || 0);
 }
 
-async function loadTrainerOwnedSession(c: AppContext, trainerPersonId: string, sessionId: string) {
+async function loadTrainerOwnedSession(c: AppContext, trainerPersonId: string, sessionId: string, organisationId = ORG_ID) {
   return c.env.DB.prepare(
     `select id, organisation_id, branch_id, batch_id, trainer_person_id, session_date, status
      from class_sessions
      where id = ? and organisation_id = ? and trainer_person_id = ?
      limit 1`,
   )
-    .bind(sessionId, ORG_ID, trainerPersonId)
+    .bind(sessionId, organisationId, trainerPersonId)
     .first<SessionRecord>();
 }
 
-async function loadMaterial(c: AppContext, materialId: string) {
+async function loadMaterial(c: AppContext, materialId: string, organisationId = ORG_ID) {
   return c.env.DB.prepare("select * from session_materials where id = ? and organisation_id = ? limit 1")
-    .bind(materialId, ORG_ID)
+    .bind(materialId, organisationId)
     .first<SessionMaterialRecord>();
 }
 
@@ -533,7 +537,11 @@ function auditStatement(c: AppContext, branchId: string, trainer: TrainerMateria
     `insert into audit_logs
        (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
      values (?, ?, ?, ?, ?, ?, 'session_material', ?, ?, ?)`,
-  ).bind(createOpaqueId("audit"), ORG_ID, branchId, trainer.loginAccountId, trainer.activeTrainer.personId, action, materialId, JSON.stringify(metadata), new Date().toISOString());
+  ).bind(createOpaqueId("audit"), trainerOrganisationId(trainer), branchId, trainer.loginAccountId, trainer.activeTrainer.personId, action, materialId, JSON.stringify(metadata), new Date().toISOString());
+}
+
+function trainerOrganisationId(trainer: TrainerMaterialContext) {
+  return trainer.organisationId || ORG_ID;
 }
 
 type SessionMaterialStoragePutInput = {

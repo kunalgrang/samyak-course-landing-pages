@@ -18,4 +18,5 @@ export type WorkerBindings = {
 
 export type WorkerVariables = {
   requestId: string;
+  authenticatedOrganisationId?: string;
 };

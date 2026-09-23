@@ -99,8 +99,8 @@ type SummaryRow = {
   total_paid_paise: number | null;
 };
 
-export async function buildPartnerPortalView(c: AppContext, educationPartnerId: string, pagination: { limit?: number; offset?: number } = {}): Promise<PartnerPortalView | null> {
-  const partner = await findPartnerForPortal(c, educationPartnerId);
+export async function buildPartnerPortalView(c: AppContext, educationPartnerId: string, pagination: { limit?: number; offset?: number } = {}, organisationId = ORG_ID): Promise<PartnerPortalView | null> {
+  const partner = await findPartnerForPortal(c, educationPartnerId, organisationId);
   if (!partner) return null;
   const limit = clampInteger(pagination.limit, 20, 1, MAX_PAGE_SIZE);
   const offset = clampInteger(pagination.offset, 0, 0, 5000);
@@ -121,7 +121,7 @@ export async function buildPartnerPortalView(c: AppContext, educationPartnerId: 
      order by referrals.submitted_at desc, referrals.id desc
      limit ? offset ?`,
   )
-    .bind(ORG_ID, educationPartnerId, limit + 1, offset)
+    .bind(organisationId, educationPartnerId, limit + 1, offset)
     .all<ReferralRow>();
   const pageRows = (referralsResult.results || []).slice(0, limit);
   const summary = await c.env.DB.prepare(
@@ -185,10 +185,10 @@ export async function buildPartnerPortalView(c: AppContext, educationPartnerId: 
      where referrals.organisation_id = ?
        and referrals.education_partner_id = ?`,
   )
-    .bind(ORG_ID, educationPartnerId)
+    .bind(organisationId, educationPartnerId)
     .first<SummaryRow>();
-  const pageQualifications = await getReferralQualifications(c, pageRows.map((row) => row.referral_id));
-  const link = await recoverPartnerReferralLink(c, partner);
+  const pageQualifications = await getReferralQualifications(c, pageRows.map((row) => row.referral_id), organisationId);
+  const link = await recoverPartnerReferralLink(c, partner, organisationId);
   return {
     success: true,
     partner: {
@@ -224,7 +224,7 @@ export async function buildPartnerPortalView(c: AppContext, educationPartnerId: 
   };
 }
 
-async function findPartnerForPortal(c: AppContext, educationPartnerId: string) {
+async function findPartnerForPortal(c: AppContext, educationPartnerId: string, organisationId = ORG_ID) {
   return c.env.DB.prepare(
     `select education_partners.*,
        branches.name as branch_name,
@@ -243,14 +243,14 @@ async function findPartnerForPortal(c: AppContext, educationPartnerId: string) {
        and education_partners.id = ?
      limit 1`,
   )
-    .bind(ORG_ID, educationPartnerId)
+    .bind(organisationId, educationPartnerId)
     .first<PartnerPortalRow>();
 }
 
-async function recoverPartnerReferralLink(c: AppContext, partner: PartnerPortalRow) {
+async function recoverPartnerReferralLink(c: AppContext, partner: PartnerPortalRow, organisationId = ORG_ID) {
   if (!partner.active_link_id || !partner.active_link_token_hash) return null;
   return getRecoverableReferralLink(referralEnv(c), {
-    link: { id: partner.active_link_id, organisation_id: ORG_ID, token_hash: partner.active_link_token_hash },
+    link: { id: partner.active_link_id, organisation_id: organisationId, token_hash: partner.active_link_token_hash },
     publicOrigin: referralPublicOrigin(c.env),
   });
 }

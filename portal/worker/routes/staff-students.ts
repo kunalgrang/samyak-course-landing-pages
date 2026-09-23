@@ -7,7 +7,7 @@ import { createOpaqueId } from "../lib/crypto";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile as normalizeCanonicalIndianMobile } from "../lib/mobile";
 import { addMobileIfMissing } from "../lib/person-contact";
-import { ADMISSION_STAFF_ROLES, requireStaffRoles } from "../lib/staff-auth";
+import { staffOrganisationId, ADMISSION_STAFF_ROLES, requireStaffRoles } from "../lib/staff-auth";
 
 type PortalHono = Hono<{
   Bindings: WorkerBindings;
@@ -36,6 +36,7 @@ export function registerStaffStudentRoutes(app: PortalHono) {
   app.get("/api/staff/enquiry-options", async (c) => {
     const staff = await requireStaff(c);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Staff access is required." });
+    const ORG_ID = staffOrganisationId(staff);
 
     const [branches, courses] = await Promise.all([
       c.env.DB.prepare(
@@ -75,6 +76,7 @@ export function registerStaffStudentRoutes(app: PortalHono) {
   app.get("/api/staff/student-search", async (c) => {
     const staff = await requireStaff(c);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Staff access is required." });
+    const ORG_ID = staffOrganisationId(staff);
 
     const normalizedMobile = normalizeIndianMobile(c.req.query("mobile") || "");
     if (!normalizedMobile) {
@@ -128,6 +130,7 @@ export function registerStaffStudentRoutes(app: PortalHono) {
   app.post("/api/staff/enquiries", async (c) => {
     const staff = await requireStaff(c);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Staff access is required." });
+    const ORG_ID = staffOrganisationId(staff);
 
     const parsed = createEnquirySchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) {

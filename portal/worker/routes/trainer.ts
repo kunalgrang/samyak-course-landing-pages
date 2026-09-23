@@ -211,7 +211,7 @@ export function registerTrainerRoutes(app: PortalHono) {
     if ((session.record.active_subject_type || "person") !== "trainer") {
       return jsonWithRequestId(c, { authenticated: false, activeTrainer: null, trainers: [], code: "PERSON_SESSION_ACTIVE", message: "Please use Trainer login." });
     }
-    return jsonWithRequestId(c, await trainerSessionView(c, session.record.login_account_id, session.record.active_person_id));
+    return jsonWithRequestId(c, await trainerSessionView(c, session.record.login_account_id, session.record.active_person_id, session.record.organisation_id || undefined));
   });
 
   app.post("/api/trainer/auth/select-profile", async (c) => {
@@ -225,7 +225,7 @@ export function registerTrainerRoutes(app: PortalHono) {
     if ((session.record.active_subject_type || "person") !== "trainer") return jsonWithRequestId(c, { success: false, code: "PERSON_SESSION_ACTIVE", message: "Please use Trainer login." }, 401);
     const selected = await selectLinkedTrainer(c, session.record.id, session.record.login_account_id, body.personId);
     if (!selected) return jsonWithRequestId(c, { success: false, code: "PROFILE_NOT_LINKED", message: "This trainer profile is not available." }, 403);
-    return jsonWithRequestId(c, { success: true, session: await trainerSessionView(c, session.record.login_account_id, body.personId) });
+    return jsonWithRequestId(c, { success: true, session: await trainerSessionView(c, session.record.login_account_id, body.personId, session.record.organisation_id || undefined) });
   });
 
   app.post("/api/trainer/auth/logout", async (c) => {
@@ -348,6 +348,7 @@ async function trainerContext(c: Parameters<typeof readJsonBody>[0]) {
   const authenticated = await requireAuthenticatedTrainer(c);
   if (!authenticated) return null;
   return {
+    organisationId: authenticated.organisationId,
     loginAccountId: authenticated.session.record.login_account_id,
     activeTrainer: authenticated.activeTrainer,
   };

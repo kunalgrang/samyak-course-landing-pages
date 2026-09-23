@@ -10,6 +10,7 @@ export type OrganisationContext = {
 export type AuthenticatedOrganisationSession = {
   record: {
     organisation_id?: string | null;
+    organisation_membership_id?: string | null;
   };
 };
 
@@ -21,7 +22,16 @@ export function trustedOrganisationId(c: Pick<AppContext, "req" | "env">) {
   return resolveOrganisationContext(c).organisationId;
 }
 
+export function setAuthenticatedOrganisationId(c: Partial<Pick<AppContext, "set">>, organisationId: string) {
+  if (typeof c.set === "function") c.set("authenticatedOrganisationId", organisationId);
+}
+
+export function authenticatedOrDefaultOrganisationId(c: Partial<Pick<AppContext, "get">>) {
+  if (typeof c.get !== "function") return CURRENT_ORGANISATION_ID;
+  return c.get("authenticatedOrganisationId") || CURRENT_ORGANISATION_ID;
+}
+
 export function resolveAuthenticatedOrganisationContext(session: AuthenticatedOrganisationSession): OrganisationContext | null {
-  if (session.record.organisation_id !== CURRENT_ORGANISATION_ID) return null;
+  if (!session.record.organisation_membership_id || !session.record.organisation_id) return null;
   return { organisationId: session.record.organisation_id };
 }

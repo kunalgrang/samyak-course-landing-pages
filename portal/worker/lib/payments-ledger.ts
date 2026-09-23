@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { AppContext } from "./http";
 import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, hmacHex } from "./crypto";
-import { ADMISSION_STAFF_ROLES, canBackdateReceipts, canRecordReceipts, canReverseReceipts, type StaffContext } from "./staff-auth";
+import { ADMISSION_STAFF_ROLES, canBackdateReceipts, canRecordReceipts, canReverseReceipts, staffOrganisationId, type StaffContext } from "./staff-auth";
 
 const positivePaiseSchema = z.coerce.number().int().positive();
 const paymentModeSchema = z.enum(["cash", "upi", "card", "bank_transfer", "cheque", "other"]);
@@ -23,6 +23,7 @@ export const reverseReceiptSchema = z.object({
 });
 
 type EnrolmentLedgerRecord = {
+  organisation_id: string;
   enrolment_id: string;
   enrolment_number: string;
   enrolment_status: string;
@@ -191,7 +192,8 @@ export function allocateInstalments(totalReceivedPaise: number, instalments: Arr
 }
 
 export async function getPaymentLedger(c: AppContext, staff: StaffContext, enrolmentId: string): Promise<{ ok: true; ledger: PaymentLedger } | ServiceFailure> {
-  const enrolment = await getLedgerEnrolment(c, enrolmentId);
+  const organisationId = staffOrganisationId(staff);
+  const enrolment = await getLedgerEnrolment(c, enrolmentId, organisationId);
   if (!enrolment) return { ok: false, status: 404, code: "enrolment_not_found", message: "Enrolment was not found." };
   if (!(await hasReceiptCapabilityForBranch(c, staff, enrolment.branch_id, false))) {
     return { ok: false, status: 403, code: "forbidden", message: "This role cannot view payments for this branch." };
@@ -202,7 +204,8 @@ export async function getPaymentLedger(c: AppContext, staff: StaffContext, enrol
 
 export async function recordEnrolmentReceipt(c: AppContext, staff: StaffContext, enrolmentId: string, input: ReceiptInput): Promise<{ ok: true; receipt: PublicReceipt; financialSummary: FinancialSummary } | ServiceFailure> {
   if (!canRecordReceipts(staff)) return { ok: false, status: 403, code: "forbidden", message: "This role cannot record receipts." };
-  const enrolment = await getLedgerEnrolment(c, enrolmentId);
+  const organisationId = staffOrganisationId(staff);
+  const enrolment = await getLedgerEnrolment(c, enrolmentId, organisationId);
   if (!enrolment) return { ok: false, status: 404, code: "enrolment_not_found", message: "Enrolment was not found." };
   if (enrolment.enrolment_status !== "confirmed") return { ok: false, status: 409, code: "enrolment_not_confirmed", message: "Receipts can be recorded only for confirmed enrolments." };
   if (enrolment.fee_agreement_status !== "active") return { ok: false, status: 409, code: "fee_agreement_not_active", message: "An active fee agreement is required before recording a receipt." };
@@ -238,7 +241,7 @@ export async function recordEnrolmentReceipt(c: AppContext, staff: StaffContext,
 
   const now = new Date().toISOString();
   const receiptYear = receiptYearFor(receivedAt, enrolment.branch_timezone || "Asia/Kolkata");
-  const sequence = await allocateSequence(c, ORG_ID, enrolment.branch_id, `receipt:${receiptYear}`);
+  const sequence = await allocateSequence(c, organisationId, enrolment.branch_id, `receipt:${receiptYear}`);
   const receiptNumber = `RCP-${String(enrolment.branch_code || "BR").toUpperCase()}-${receiptYear}-${formatSequence(sequence)}`;
   const receiptId = createOpaqueId("receipt");
   try {
@@ -261,7 +264,7 @@ export async function recordEnrolmentReceipt(c: AppContext, staff: StaffContext,
     )
       .bind(
         receiptId,
-        ORG_ID,
+        organisationId,
         enrolment.branch_id,
         receiptNumber,
         receiptYear,
@@ -280,7 +283,7 @@ export async function recordEnrolmentReceipt(c: AppContext, staff: StaffContext,
         fingerprint,
         now,
         now,
-        ORG_ID,
+        organisationId,
         enrolment.enrolment_id,
         enrolment.fee_agreement_id,
         input.amountPaise,
@@ -304,7 +307,7 @@ export async function recordEnrolmentReceipt(c: AppContext, staff: StaffContext,
     return { ok: false, status: 409, code: "receipt_not_recorded", message: "Receipt could not be recorded. Please retry." };
   }
 
-  const receipt = await receiptById(c, receiptId);
+  const receipt = await receiptById(c, receiptId, organisationId);
   await audit(c, staff, enrolment.branch_id, "payment_receipt_recorded", "receipt", receiptId, {
     receiptId,
     receiptNumber,
@@ -318,13 +321,14 @@ export async function recordEnrolmentReceipt(c: AppContext, staff: StaffContext,
 
 export async function reverseEnrolmentReceipt(c: AppContext, staff: StaffContext, enrolmentId: string, receiptId: string, input: ReversalInput): Promise<{ ok: true; receipt: PublicReceipt; financialSummary: FinancialSummary } | ServiceFailure> {
   if (!canReverseReceipts(staff)) return { ok: false, status: 403, code: "forbidden", message: "This role cannot reverse receipts." };
-  const enrolment = await getLedgerEnrolment(c, enrolmentId);
+  const organisationId = staffOrganisationId(staff);
+  const enrolment = await getLedgerEnrolment(c, enrolmentId, organisationId);
   if (!enrolment) return { ok: false, status: 404, code: "enrolment_not_found", message: "Enrolment was not found." };
   if (!(await canReverseReceiptForBranch(c, staff, enrolment.branch_id))) {
     return { ok: false, status: 403, code: "forbidden", message: "This role cannot reverse receipts for this branch." };
   }
 
-  const receipt = await receiptById(c, receiptId);
+  const receipt = await receiptById(c, receiptId, organisationId);
   if (!receipt || receipt.enrolment_id !== enrolment.enrolment_id || receipt.fee_agreement_id !== enrolment.fee_agreement_id || receipt.branch_id !== enrolment.branch_id) {
     return { ok: false, status: 404, code: "receipt_not_found", message: "Receipt was not found for this enrolment." };
   }
@@ -335,7 +339,7 @@ export async function reverseEnrolmentReceipt(c: AppContext, staff: StaffContext
     if (existingByKey.payload_fingerprint !== fingerprint) {
       return { ok: false, status: 409, code: "idempotency_conflict", message: "This idempotency key was already used for a different reversal." };
     }
-    const idempotentReceipt = await receiptById(c, existingByKey.receipt_id);
+    const idempotentReceipt = await receiptById(c, existingByKey.receipt_id, organisationId);
     return { ok: true, receipt: publicReceipt(idempotentReceipt || receipt, true), financialSummary: (await ledgerForRecord(c, enrolment, false)).financialSummary };
   }
 
@@ -357,22 +361,22 @@ export async function reverseEnrolmentReceipt(c: AppContext, staff: StaffContext
          where id = ? and organisation_id = ? and enrolment_id = ? and fee_agreement_id = ? and status = 'recorded'
        )
        and not exists (select 1 from receipt_reversals where receipt_id = ?)`,
-    ).bind(reversalId, ORG_ID, enrolment.branch_id, receipt.id, enrolment.enrolment_id, enrolment.fee_agreement_id, input.reason.trim(), staff.loginAccountId, input.idempotencyKey, fingerprint, now, receipt.id, ORG_ID, enrolment.enrolment_id, enrolment.fee_agreement_id, receipt.id),
+    ).bind(reversalId, organisationId, enrolment.branch_id, receipt.id, enrolment.enrolment_id, enrolment.fee_agreement_id, input.reason.trim(), staff.loginAccountId, input.idempotencyKey, fingerprint, now, receipt.id, organisationId, enrolment.enrolment_id, enrolment.fee_agreement_id, receipt.id),
     c.env.DB.prepare(
       `insert into audit_logs
          (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
        select ?, ?, ?, ?, ?, 'payment_receipt_reversed', 'receipt', ?, ?, ?
        where exists (select 1 from receipt_reversals where id = ?)`,
-    ).bind(createOpaqueId("audit"), ORG_ID, enrolment.branch_id, staff.loginAccountId, staff.activePersonId, receipt.id, JSON.stringify({ receiptId: receipt.id, receiptNumber: receipt.receipt_number, reversalId, reason: input.reason.trim(), enrolmentId: enrolment.enrolment_id, branchId: enrolment.branch_id, amountPaise: receipt.amount_paise }), now, reversalId),
+    ).bind(createOpaqueId("audit"), organisationId, enrolment.branch_id, staff.loginAccountId, staff.activePersonId, receipt.id, JSON.stringify({ receiptId: receipt.id, receiptNumber: receipt.receipt_number, reversalId, reason: input.reason.trim(), enrolmentId: enrolment.enrolment_id, branchId: enrolment.branch_id, amountPaise: receipt.amount_paise }), now, reversalId),
   ];
 
   const results = await c.env.DB.batch(statements);
   if (!changed(results[0])) {
-    const existing = await receiptById(c, receiptId);
+    const existing = await receiptById(c, receiptId, organisationId);
     if (existing?.reversal_id) return { ok: false, status: 409, code: "receipt_already_reversed", message: "This receipt is already reversed." };
     return { ok: false, status: 409, code: "receipt_not_reversed", message: "Receipt could not be reversed. Please retry." };
   }
-  const reversed = await receiptById(c, receiptId);
+  const reversed = await receiptById(c, receiptId, organisationId);
   return { ok: true, receipt: publicReceipt(reversed!, true), financialSummary: (await ledgerForRecord(c, enrolment, false)).financialSummary };
 }
 
@@ -386,9 +390,9 @@ async function idempotentReceiptResult(c: AppContext, staff: StaffContext, enrol
   return { ok: true, receipt: publicReceipt(idempotent, true), financialSummary: (await ledgerForRecord(c, enrolment, false)).financialSummary };
 }
 
-async function getLedgerEnrolment(c: AppContext, enrolmentId: string) {
+async function getLedgerEnrolment(c: AppContext, enrolmentId: string, organisationId = ORG_ID) {
   return c.env.DB.prepare(
-    `select enrolments.id as enrolment_id, enrolments.enrolment_number, enrolments.status as enrolment_status,
+    `select students.organisation_id, enrolments.id as enrolment_id, enrolments.enrolment_number, enrolments.status as enrolment_status,
             enrolments.branch_id, branches.code as branch_code, branches.name as branch_name, branches.timezone as branch_timezone,
             students.person_id, students.id as student_id, students.student_number,
             coalesce(person_identity_details.official_full_name, people.full_name, people.public_name) as student_name,
@@ -405,7 +409,7 @@ async function getLedgerEnrolment(c: AppContext, enrolmentId: string) {
      where enrolments.id = ?
      limit 1`,
   )
-    .bind(ORG_ID, ORG_ID, ORG_ID, ORG_ID, enrolmentId)
+    .bind(organisationId, organisationId, organisationId, organisationId, enrolmentId)
     .first<EnrolmentLedgerRecord>();
 }
 
@@ -437,7 +441,7 @@ async function ledgerForRecord(c: AppContext, enrolment: EnrolmentLedgerRecord, 
        where receipts.organisation_id = ? and receipts.enrolment_id = ? and receipts.fee_agreement_id = ? and receipts.status = 'recorded'
        order by receipts.received_at, receipts.created_at`,
     )
-      .bind(ORG_ID, enrolment.enrolment_id, enrolment.fee_agreement_id)
+      .bind(enrolment.organisation_id, enrolment.enrolment_id, enrolment.fee_agreement_id)
       .all<ReceiptRecord>(),
   ]);
   const instalments = (instalmentRows.results || []).map((row) => ({ instalmentNumber: Number(row.instalment_number), amountPaise: Number(row.amount_paise), dueDate: row.due_date || null }));
@@ -508,7 +512,7 @@ function publicReceipt(receipt: ReceiptRecord, includeOperationalFields: boolean
   };
 }
 
-async function receiptById(c: AppContext, receiptId: string) {
+async function receiptById(c: AppContext, receiptId: string, organisationId = ORG_ID) {
   return c.env.DB.prepare(
     `select receipts.id, receipts.receipt_number, receipts.enrolment_id, receipts.fee_agreement_id, receipts.branch_id,
             receipts.person_id, receipts.student_id, receipts.amount_paise, receipts.received_at, receipts.payment_mode,
@@ -526,7 +530,7 @@ async function receiptById(c: AppContext, receiptId: string) {
      left join people reversal_people on reversal_people.id = reversal_account_people.person_id
      where receipts.id = ? and receipts.organisation_id = ?`,
   )
-    .bind(receiptId, ORG_ID)
+    .bind(receiptId, organisationId)
     .first<ReceiptRecord>();
 }
 
@@ -541,7 +545,7 @@ async function receiptByIdempotencyKey(c: AppContext, staff: StaffContext, idemp
      where receipts.organisation_id = ? and receipts.created_by_login_account_id = ? and receipts.idempotency_key = ?
      limit 1`,
   )
-    .bind(ORG_ID, staff.loginAccountId, idempotencyKey)
+    .bind(staffOrganisationId(staff), staff.loginAccountId, idempotencyKey)
     .first<ReceiptRecord>();
 }
 
@@ -552,7 +556,7 @@ async function reversalByIdempotencyKey(c: AppContext, staff: StaffContext, idem
      where organisation_id = ? and reversed_by_login_account_id = ? and idempotency_key = ?
      limit 1`,
   )
-    .bind(ORG_ID, staff.loginAccountId, idempotencyKey)
+    .bind(staffOrganisationId(staff), staff.loginAccountId, idempotencyKey)
     .first<{ id: string; receipt_id: string; payload_fingerprint: string }>();
 }
 
@@ -600,7 +604,7 @@ async function hasReceiptCapabilityForBranch(c: AppContext, staff: StaffContext,
        and (login_account_roles.branch_id is null or login_account_roles.branch_id = ?)
      limit 1`,
   )
-    .bind(staff.loginAccountId, ORG_ID, ...roleCodes, branchId)
+    .bind(staff.loginAccountId, staffOrganisationId(staff), ...roleCodes, branchId)
     .first<{ ok: number }>();
   return Boolean(row);
 }
@@ -617,7 +621,7 @@ export async function canReverseReceiptForBranch(c: AppContext, staff: StaffCont
        and (login_account_roles.branch_id is null or login_account_roles.branch_id = ?)
      limit 1`,
   )
-    .bind(staff.loginAccountId, ORG_ID, branchId)
+    .bind(staff.loginAccountId, staffOrganisationId(staff), branchId)
     .first<{ ok: number }>();
   return Boolean(row);
 }
@@ -692,7 +696,7 @@ async function audit(c: AppContext, staff: StaffContext, branchId: string | null
        (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(createOpaqueId("audit"), ORG_ID, branchId, staff.loginAccountId, staff.activePersonId, action, entityType, entityId, JSON.stringify(metadata), new Date().toISOString())
+    .bind(createOpaqueId("audit"), staffOrganisationId(staff), branchId, staff.loginAccountId, staff.activePersonId, action, entityType, entityId, JSON.stringify(metadata), new Date().toISOString())
     .run();
 }
 

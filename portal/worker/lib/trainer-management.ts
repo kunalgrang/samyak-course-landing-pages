@@ -3,7 +3,7 @@ import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, decryptText, encryptText } from "./crypto";
 import type { AppContext } from "./http";
 import { maskMobile, normalizeIndianMobile } from "./mobile";
-import type { StaffContext } from "./staff-auth";
+import { staffOrganisationId, type StaffContext } from "./staff-auth";
 
 export const TRAINER_MANAGEMENT_ROLES = ["owner", "system_admin", "admin"] as const;
 const TRAINER_ROLE_CODE = "trainer";
@@ -67,6 +67,7 @@ type BatchRow = {
 };
 
 export async function listManagedTrainers(c: AppContext, staff: StaffContext, query: { q?: string; status?: string; branchId?: string; limit?: number; offset?: number }) {
+  const ORG_ID = staffOrganisationId(staff);
   const limit = clampLimit(query.limit);
   const offset = Math.max(0, Math.trunc(Number(query.offset || 0)));
   const bindings: unknown[] = [ORG_ID, TRAINER_ROLE_CODE];
@@ -154,6 +155,7 @@ export async function findTrainerPersonCandidates(c: AppContext, staff: StaffCon
 }
 
 export async function createManagedTrainer(c: AppContext, staff: StaffContext, input: TrainerInput) {
+  const ORG_ID = staffOrganisationId(staff);
   const validated = await validateCreateInput(c, staff, input);
   if (!validated.ok) return validated;
   const { fullName, branchId, normalizedMobile, email, candidatePersonId, createSeparatePerson, trainerStatus } = validated;
@@ -227,6 +229,7 @@ export async function getManagedTrainer(c: AppContext, staff: StaffContext, pers
 }
 
 export async function updateManagedTrainer(c: AppContext, staff: StaffContext, personId: string, input: TrainerUpdateInput) {
+  const ORG_ID = staffOrganisationId(staff);
   const current = await loadTrainer(c, personId);
   if (!current) return { ok: false as const, status: 404, code: "trainer_not_found", message: "Trainer was not found." };
   if (current.branch_id && !(await hasTrainerManagementBranchAccess(c, staff, current.branch_id))) return { ok: false as const, status: 403, code: "forbidden", message: "You do not have access to this trainer." };
@@ -273,6 +276,7 @@ export async function setManagedTrainerStatus(c: AppContext, staff: StaffContext
 }
 
 async function validateCreateInput(c: AppContext, staff: StaffContext, input: TrainerInput) {
+  const ORG_ID = staffOrganisationId(staff);
   const fullName = normalizeFullName(input.fullName);
   if (!fullName.ok) return fullName;
   const normalizedMobile = normalizeIndianMobile(input.mobile);
@@ -296,6 +300,7 @@ async function validateCreateInput(c: AppContext, staff: StaffContext, input: Tr
 }
 
 async function candidatesByMobile(c: AppContext, staff: StaffContext, mobile: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const hash = await mobileHash(c, mobile);
   const rows = await c.env.DB.prepare(
     `select
@@ -521,6 +526,7 @@ async function getTrainerRoleForPerson(c: AppContext, personId: string, branchId
 }
 
 async function hasTrainerManagementBranchAccess(c: AppContext, staff: StaffContext, branchId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   if (staff.roles.some((role) => role === "owner" || role === "system_admin")) return true;
   const row = await c.env.DB.prepare(
     `select 1 as allowed
@@ -538,6 +544,7 @@ async function hasTrainerManagementBranchAccess(c: AppContext, staff: StaffConte
 }
 
 function branchScopeSql(staff: StaffContext, column: string, bindings: unknown[]) {
+  const ORG_ID = staffOrganisationId(staff);
   if (staff.roles.some((role) => role === "owner" || role === "system_admin")) return "";
   bindings.push(staff.loginAccountId, ORG_ID);
   return ` and exists (
@@ -551,6 +558,7 @@ function branchScopeSql(staff: StaffContext, column: string, bindings: unknown[]
 }
 
 function auditStatement(c: AppContext, staff: StaffContext, branchId: string | null, action: string, entityType: string, entityId: string, metadata: unknown) {
+  const ORG_ID = staffOrganisationId(staff);
   return c.env.DB.prepare(
     `insert into audit_logs
        (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)

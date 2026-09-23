@@ -2,7 +2,7 @@ import { mobileHash } from "./auth-store";
 import { ORG_ID } from "./tenant-context";
 import type { AppContext } from "./http";
 import { normalizeIndianMobile } from "./mobile";
-import { ADMISSION_STAFF_ROLES, type StaffContext } from "./staff-auth";
+import { staffOrganisationId, ADMISSION_STAFF_ROLES, type StaffContext } from "./staff-auth";
 
 export type StudentDirectoryStatus = "all" | "current" | "alumni";
 
@@ -146,6 +146,7 @@ async function directoryWhere(
   staff: StaffContext,
   input: { status: StudentDirectoryStatus; search: string; searchMobileHash: string | null; now: string },
 ) {
+  const ORG_ID = staffOrganisationId(staff);
   const clauses = [
     "students.organisation_id = ?",
     "people.organisation_id = students.organisation_id",

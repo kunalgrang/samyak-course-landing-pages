@@ -1,7 +1,7 @@
 import { ORG_ID } from "./tenant-context";
 import type { AppContext } from "./http";
 import { sessionMaterialStorageFromEnv, type SessionMaterialRecord } from "./session-materials";
-import type { StaffContext } from "./staff-auth";
+import { staffOrganisationId, type StaffContext } from "./staff-auth";
 
 export const STAFF_ACADEMIC_ROLES = ["owner", "system_admin", "admin"] as const;
 
@@ -93,6 +93,7 @@ export function previousScheduledDates(daysOfWeek: string[], today: string, coun
 }
 
 export async function getStaffAcademicOverview(c: AppContext, staff: StaffContext) {
+  const ORG_ID = staffOrganisationId(staff);
   const today = indiaDate();
   const week = indiaBusinessWeek();
   const branchBindings: unknown[] = [ORG_ID];
@@ -178,6 +179,7 @@ export async function getStaffAcademicOverview(c: AppContext, staff: StaffContex
 }
 
 export async function listStaffAcademicBatches(c: AppContext, staff: StaffContext, query: { q?: string; limit?: number; offset?: number } = {}) {
+  const ORG_ID = staffOrganisationId(staff);
   const limit = clampInteger(query.limit, 50, 1, MAX_BATCH_LIMIT);
   const offset = clampInteger(query.offset, 0, 0, 5000);
   const bindings: unknown[] = [ORG_ID];
@@ -208,6 +210,7 @@ export async function listStaffAcademicBatches(c: AppContext, staff: StaffContex
 }
 
 export async function getStaffAcademicBatch(c: AppContext, staff: StaffContext, batchId: string, pagination: AcademicPagination = {}) {
+  const ORG_ID = staffOrganisationId(staff);
   const batch = await loadAcademicBatch(c, staff, batchId);
   if (!batch) return notFound("batch_not_found", "Batch not found.");
   const limit = clampInteger(pagination.limit, DEFAULT_SESSION_LIMIT, 1, MAX_PAGE_LIMIT);
@@ -283,6 +286,7 @@ export async function getStaffAcademicBatch(c: AppContext, staff: StaffContext, 
 }
 
 export async function getStaffAcademicSession(c: AppContext, staff: StaffContext, sessionId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const session = await loadAcademicSession(c, staff, sessionId);
   if (!session) return notFound("session_not_found", "Class session not found.");
   const [roster, materials] = await Promise.all([
@@ -334,6 +338,7 @@ export async function getStaffAcademicSession(c: AppContext, staff: StaffContext
 }
 
 export async function getStaffTrainerActivity(c: AppContext, staff: StaffContext, personId: string, query: { range?: string; limit?: number; offset?: number } = {}) {
+  const ORG_ID = staffOrganisationId(staff);
   const trainer = await loadAcademicTrainer(c, staff, personId);
   if (!trainer) return notFound("trainer_not_found", "Trainer not found.");
   const limit = clampInteger(query.limit, DEFAULT_SESSION_LIMIT, 1, MAX_PAGE_LIMIT);
@@ -376,6 +381,7 @@ export async function getStaffTrainerActivity(c: AppContext, staff: StaffContext
 }
 
 export async function getStaffStudentAttendance(c: AppContext, staff: StaffContext, studentId: string, pagination: AcademicPagination = {}) {
+  const ORG_ID = staffOrganisationId(staff);
   const student = await loadAcademicStudent(c, staff, studentId);
   if (!student) return notFound("student_not_found", "Student not found.");
   const limit = clampInteger(pagination.limit, DEFAULT_SESSION_LIMIT, 1, MAX_PAGE_LIMIT);
@@ -467,6 +473,7 @@ export async function getStaffStudentAttendance(c: AppContext, staff: StaffConte
 }
 
 export async function getStaffAcademicMaterialContent(c: AppContext, staff: StaffContext, materialId: string): Promise<MaterialContentResult> {
+  const ORG_ID = staffOrganisationId(staff);
   const material = await c.env.DB.prepare(
     `select session_materials.*, class_sessions.branch_id as session_branch_id
      from session_materials
@@ -490,6 +497,7 @@ export async function getStaffAcademicMaterialContent(c: AppContext, staff: Staf
 }
 
 async function loadAcademicBatch(c: AppContext, staff: StaffContext, batchId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const row = await c.env.DB.prepare(activeBatchSql("batches.organisation_id = ? and batches.id = ?", "batches.name", 1))
     .bind(ORG_ID, ORG_ID, ORG_ID, ORG_ID, batchId)
     .first<BatchRow>();
@@ -499,6 +507,7 @@ async function loadAcademicBatch(c: AppContext, staff: StaffContext, batchId: st
 }
 
 async function loadAcademicSession(c: AppContext, staff: StaffContext, sessionId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const row = await c.env.DB.prepare(sessionSummarySql("class_sessions.id = ?", "class_sessions.session_date desc", "limit 1"))
     .bind(ORG_ID, ORG_ID, sessionId)
     .first<SessionSummaryRow>();
@@ -508,6 +517,7 @@ async function loadAcademicSession(c: AppContext, staff: StaffContext, sessionId
 }
 
 async function loadAcademicTrainer(c: AppContext, staff: StaffContext, personId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const row = await c.env.DB.prepare(
     `select distinct
        people.id as personId,
@@ -531,6 +541,7 @@ async function loadAcademicTrainer(c: AppContext, staff: StaffContext, personId:
 }
 
 async function loadAcademicStudent(c: AppContext, staff: StaffContext, studentId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const row = await c.env.DB.prepare(
     `select students.id as studentId, students.student_number as studentNumber, students.current_status as status,
             students.home_branch_id as branchId, branches.name as branchName,
@@ -660,6 +671,7 @@ function sessionSummarySql(extraWhere: string, orderBy: string, limitSql: string
 }
 
 export async function hasAcademicBranchAccess(c: AppContext, staff: StaffContext, branchId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   if (staff.roles.some((role) => role === "owner" || role === "system_admin")) return true;
   const row = await c.env.DB.prepare(
     `select 1 as allowed
@@ -677,6 +689,7 @@ export async function hasAcademicBranchAccess(c: AppContext, staff: StaffContext
 }
 
 function branchScopeSql(staff: StaffContext, column: string, bindings: unknown[]) {
+  const ORG_ID = staffOrganisationId(staff);
   if (staff.roles.some((role) => role === "owner" || role === "system_admin")) return "";
   bindings.push(staff.loginAccountId, ORG_ID);
   return ` and exists (

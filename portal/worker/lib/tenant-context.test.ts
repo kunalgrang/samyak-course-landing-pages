@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CURRENT_ORGANISATION_ID, resolveOrganisationContext, trustedOrganisationId } from "./tenant-context";
+import { CURRENT_ORGANISATION_ID, resolveAuthenticatedOrganisationContext, resolveOrganisationContext, trustedOrganisationId } from "./tenant-context";
 import type { AppContext } from "./http";
 
 describe("trusted organisation context", () => {
@@ -16,6 +16,14 @@ describe("trusted organisation context", () => {
     });
 
     expect(resolveOrganisationContext(c).organisationId).toBe("org_samyak");
+  });
+
+  it("derives authenticated organisation context from a validated session membership", () => {
+    expect(resolveAuthenticatedOrganisationContext({ record: { organisation_membership_id: "omem_other", organisation_id: "org_other" } })).toEqual({
+      organisationId: "org_other",
+    });
+    expect(resolveAuthenticatedOrganisationContext({ record: { organisation_membership_id: null, organisation_id: "org_other" } })).toBeNull();
+    expect(resolveAuthenticatedOrganisationContext({ record: { organisation_membership_id: "omem_other", organisation_id: null } })).toBeNull();
   });
 });
 

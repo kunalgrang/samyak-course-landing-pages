@@ -23,6 +23,7 @@ export const saveTrainerSessionSchema = z.object({
 });
 
 type TrainerContext = {
+  organisationId?: string;
   loginAccountId: string;
   activeTrainer: TrainerProfileChoice;
 };
@@ -85,7 +86,8 @@ type D1RunResult = {
 };
 
 export async function listTrainerBatches(c: AppContext, trainer: TrainerContext, status = "active") {
-  const bindings: unknown[] = [ORG_ID, trainer.activeTrainer.personId];
+  const organisationId = trainerOrganisationId(trainer);
+  const bindings: unknown[] = [organisationId, trainer.activeTrainer.personId];
   let statusSql = "and batches.status = 'active'";
   if (status === "all") statusSql = "";
   else if (["active", "inactive", "completed"].includes(status)) {
@@ -128,16 +130,18 @@ export async function listTrainerBatches(c: AppContext, trainer: TrainerContext,
 }
 
 export async function getTrainerBatchDetail(c: AppContext, trainer: TrainerContext, batchId: string) {
-  const batch = await loadAssignedBatch(c, trainer.activeTrainer.personId, batchId);
+  const organisationId = trainerOrganisationId(trainer);
+  const batch = await loadAssignedBatch(c, trainer.activeTrainer.personId, batchId, organisationId);
   if (!batch) return null;
   const [roster, sessions] = await Promise.all([
-    rosterForBatchDate(c, batchId, indiaDate()),
-    recentSessionsForBatch(c, batchId),
+    rosterForBatchDate(c, batchId, indiaDate(), organisationId),
+    recentSessionsForBatch(c, batchId, organisationId),
   ]);
   return { batch: await decorateBatch(c, batch), roster: mapRoster(roster), sessions };
 }
 
 export async function listTrainerSessions(c: AppContext, trainer: TrainerContext) {
+  const organisationId = trainerOrganisationId(trainer);
   const rows = await c.env.DB.prepare(
     `select class_sessions.*,
             batches.name as batch_name,
@@ -163,7 +167,7 @@ export async function listTrainerSessions(c: AppContext, trainer: TrainerContext
      order by class_sessions.session_date desc, class_sessions.scheduled_start_time desc, class_sessions.created_at desc
      limit 50`,
   )
-    .bind(ORG_ID, trainer.activeTrainer.personId)
+    .bind(organisationId, trainer.activeTrainer.personId)
     .all<Record<string, unknown>>();
   return (rows.results || []).map((row) => ({
     ...mapSession(row as unknown as SessionRecord, isWithinEditWindow(String(row.session_date))),
@@ -177,10 +181,11 @@ export async function listTrainerSessions(c: AppContext, trainer: TrainerContext
 }
 
 export async function openOrCreateTrainerSession(c: AppContext, trainer: TrainerContext, batchId: string, sessionDate = indiaDate()) {
-  const batch = await loadAssignedBatch(c, trainer.activeTrainer.personId, batchId);
+  const organisationId = trainerOrganisationId(trainer);
+  const batch = await loadAssignedBatch(c, trainer.activeTrainer.personId, batchId, organisationId);
   if (!batch) return { ok: false as const, status: 404, code: "batch_not_found", message: "Batch not found." };
   if (batch.status !== "active") return { ok: false as const, status: 409, code: "batch_not_active", message: "New sessions can be created only for active batches." };
-  const existing = await findBatchSession(c, batchId, sessionDate, batch.start_time);
+  const existing = await findBatchSession(c, batchId, sessionDate, batch.start_time, organisationId);
   if (existing) return { ok: true as const, session: await sessionDetail(c, existing, trainer) };
 
   const now = new Date().toISOString();
@@ -192,23 +197,25 @@ export async function openOrCreateTrainerSession(c: AppContext, trainer: Trainer
          scheduled_start_time, scheduled_end_time, actual_started_at, actual_ended_at,
          teaching_note, status, version, created_at, updated_at, created_by_actor_id
        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, null, '', 'open', 1, ?, ?, ?)`,
-    ).bind(sessionId, ORG_ID, batch.branch_id, batch.id, trainer.activeTrainer.personId, sessionDate, batch.start_time, batch.end_time, now, now, now, trainer.loginAccountId),
+    ).bind(sessionId, organisationId, batch.branch_id, batch.id, trainer.activeTrainer.personId, sessionDate, batch.start_time, batch.end_time, now, now, now, trainer.loginAccountId),
     auditStatement(c, batch.branch_id, trainer, "trainer_session_created", "class_session", sessionId, { batchId: batch.id, sessionDate }),
   ]);
-  const created = await getSession(c, sessionId);
+  const created = await getSession(c, sessionId, organisationId);
   if (!created) throw new Error("Session creation failed");
   return { ok: true as const, session: await sessionDetail(c, created, trainer) };
 }
 
 export async function getTrainerSessionDetail(c: AppContext, trainer: TrainerContext, sessionId: string) {
-  const session = await getSession(c, sessionId);
+  const organisationId = trainerOrganisationId(trainer);
+  const session = await getSession(c, sessionId, organisationId);
   if (!session) return null;
-  if (!(await canAccessSession(c, trainer.activeTrainer.personId, session))) return null;
+  if (!(await canAccessSession(c, trainer.activeTrainer.personId, session, organisationId))) return null;
   return sessionDetail(c, session, trainer);
 }
 
 export async function saveTrainerSession(c: AppContext, trainer: TrainerContext, sessionId: string, input: z.infer<typeof saveTrainerSessionSchema>) {
-  const session = await getSession(c, sessionId);
+  const organisationId = trainerOrganisationId(trainer);
+  const session = await getSession(c, sessionId, organisationId);
   if (!session) return { ok: false as const, status: 404, code: "session_not_found", message: "Class session not found." };
   if (session.trainer_person_id !== trainer.activeTrainer.personId) {
     return { ok: false as const, status: 403, code: "forbidden", message: "Only the session trainer can save this session." };
@@ -219,7 +226,7 @@ export async function saveTrainerSession(c: AppContext, trainer: TrainerContext,
   if (session.version !== input.expectedVersion) {
     return { ok: false as const, status: 409, code: "stale_session", message: "This session changed elsewhere. Reload and try again." };
   }
-  const applicable = await rosterForBatchDate(c, session.batch_id, session.session_date);
+  const applicable = await rosterForBatchDate(c, session.batch_id, session.session_date, organisationId);
   const rosterIds = new Set(applicable.map((row) => row.membership_id));
   const submittedIds = new Set(input.attendance.map((row) => row.batchMembershipId));
   if (submittedIds.size !== input.attendance.length) {
@@ -236,7 +243,7 @@ export async function saveTrainerSession(c: AppContext, trainer: TrainerContext,
       `update class_sessions
        set teaching_note = ?, status = 'completed', actual_ended_at = coalesce(actual_ended_at, ?), version = version + 1, updated_at = ?
        where id = ? and organisation_id = ? and version = ?`,
-    ).bind(input.teachingNote, now, now, session.id, ORG_ID, input.expectedVersion),
+    ).bind(input.teachingNote, now, now, session.id, organisationId, input.expectedVersion),
     ...input.attendance.map((item) => {
       const roster = byMembership.get(item.batchMembershipId);
       return c.env.DB.prepare(
@@ -256,7 +263,7 @@ export async function saveTrainerSession(c: AppContext, trainer: TrainerContext,
            updated_at = excluded.updated_at`,
       ).bind(
         createOpaqueId("att"),
-        ORG_ID,
+        organisationId,
         session.id,
         item.batchMembershipId,
         roster?.enrolment_id || "",
@@ -266,7 +273,7 @@ export async function saveTrainerSession(c: AppContext, trainer: TrainerContext,
         now,
         now,
         session.id,
-        ORG_ID,
+        organisationId,
         input.expectedVersion + 1,
         now,
       );
@@ -281,7 +288,7 @@ export async function saveTrainerSession(c: AppContext, trainer: TrainerContext,
   if (!changed(results[0] as D1RunResult)) {
     return { ok: false as const, status: 409, code: "stale_session", message: "This session changed elsewhere. Reload and try again." };
   }
-  const updated = await getSession(c, session.id);
+  const updated = await getSession(c, session.id, organisationId);
   if (!updated) throw new Error("Session update failed");
   return { ok: true as const, session: await sessionDetail(c, updated, trainer) };
 }
@@ -295,12 +302,12 @@ function isWithinEditWindow(sessionDate: string, now = new Date()) {
   return now.getTime() <= end;
 }
 
-async function loadAssignedBatch(c: AppContext, trainerPersonId: string, batchId: string) {
+async function loadAssignedBatch(c: AppContext, trainerPersonId: string, batchId: string, organisationId = ORG_ID) {
   return c.env.DB.prepare(
     `select * from batches
      where id = ? and organisation_id = ? and primary_trainer_person_id = ?`,
   )
-    .bind(batchId, ORG_ID, trainerPersonId)
+    .bind(batchId, organisationId, trainerPersonId)
     .first<BatchRecord>();
 }
 
@@ -331,23 +338,23 @@ async function decorateBatch(c: AppContext, batch: BatchRecord) {
   return mapBatchRow((rows.results || [batch as unknown as Record<string, unknown>])[0]);
 }
 
-async function findBatchSession(c: AppContext, batchId: string, sessionDate: string, startTime: string) {
+async function findBatchSession(c: AppContext, batchId: string, sessionDate: string, startTime: string, organisationId = ORG_ID) {
   return c.env.DB.prepare(
     `select * from class_sessions
      where organisation_id = ? and batch_id = ? and session_date = ? and scheduled_start_time = ?
      limit 1`,
   )
-    .bind(ORG_ID, batchId, sessionDate, startTime)
+    .bind(organisationId, batchId, sessionDate, startTime)
     .first<SessionRecord>();
 }
 
-async function getSession(c: AppContext, sessionId: string) {
+async function getSession(c: AppContext, sessionId: string, organisationId = ORG_ID) {
   return c.env.DB.prepare("select * from class_sessions where id = ? and organisation_id = ?")
-    .bind(sessionId, ORG_ID)
+    .bind(sessionId, organisationId)
     .first<SessionRecord>();
 }
 
-async function canAccessSession(c: AppContext, trainerPersonId: string, session: SessionRecord) {
+async function canAccessSession(c: AppContext, trainerPersonId: string, session: SessionRecord, organisationId = ORG_ID) {
   if (session.trainer_person_id === trainerPersonId) return true;
   const batch = await c.env.DB.prepare(
     `select 1 as allowed
@@ -355,7 +362,7 @@ async function canAccessSession(c: AppContext, trainerPersonId: string, session:
      where id = ? and organisation_id = ? and primary_trainer_person_id = ?
      limit 1`,
   )
-    .bind(session.batch_id, ORG_ID, trainerPersonId)
+    .bind(session.batch_id, organisationId, trainerPersonId)
     .first<{ allowed: number }>();
   return Boolean(batch);
 }
@@ -392,7 +399,7 @@ async function sessionDetail(c: AppContext, session: SessionRecord, trainer: Tra
   };
 }
 
-async function rosterForBatchDate(c: AppContext, batchId: string, sessionDate: string) {
+async function rosterForBatchDate(c: AppContext, batchId: string, sessionDate: string, organisationId = ORG_ID) {
   return c.env.DB.prepare(
     `select batch_memberships.id as membership_id,
             batch_memberships.joined_at,
@@ -419,7 +426,7 @@ async function rosterForBatchDate(c: AppContext, batchId: string, sessionDate: s
      order by student_name collate nocase
      limit 200`,
   )
-    .bind(ORG_ID, batchId, sessionDate, sessionDate, ORG_ID)
+    .bind(organisationId, batchId, sessionDate, sessionDate, organisationId)
     .all<RosterRow>()
     .then((rows) => rows.results || []);
 }
@@ -455,12 +462,12 @@ async function rosterForSession(c: AppContext, session: SessionRecord) {
      order by student_name collate nocase
      limit 200`,
   )
-    .bind(session.id, ORG_ID, session.batch_id, session.session_date, session.session_date, ORG_ID)
+    .bind(session.id, session.organisation_id, session.batch_id, session.session_date, session.session_date, session.organisation_id)
     .all<RosterRow>()
     .then((rows) => rows.results || []);
 }
 
-async function recentSessionsForBatch(c: AppContext, batchId: string) {
+async function recentSessionsForBatch(c: AppContext, batchId: string, organisationId = ORG_ID) {
   const rows = await c.env.DB.prepare(
     `select class_sessions.*,
             sum(case when attendance_records.status = 'present' then 1 else 0 end) as present_count,
@@ -472,7 +479,7 @@ async function recentSessionsForBatch(c: AppContext, batchId: string) {
      order by class_sessions.session_date desc, class_sessions.scheduled_start_time desc
      limit 25`,
   )
-    .bind(ORG_ID, batchId)
+    .bind(organisationId, batchId)
     .all<Record<string, unknown>>();
   return (rows.results || []).map((row) => ({
     ...mapSession(row as unknown as SessionRecord, isWithinEditWindow(String(row.session_date))),
@@ -487,10 +494,11 @@ function auditStatement(c: AppContext, branchId: string, trainer: TrainerContext
     `insert into audit_logs
        (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(createOpaqueId("audit"), ORG_ID, branchId, trainer.loginAccountId, trainer.activeTrainer.personId, action, entityType, entityId, JSON.stringify(metadata), new Date().toISOString());
+  ).bind(createOpaqueId("audit"), trainerOrganisationId(trainer), branchId, trainer.loginAccountId, trainer.activeTrainer.personId, action, entityType, entityId, JSON.stringify(metadata), new Date().toISOString());
 }
 
 function guardedAuditStatement(c: AppContext, branchId: string, trainer: TrainerContext, action: string, entityType: string, entityId: string, metadata: unknown, version: number, updatedAt: string) {
+  const organisationId = trainerOrganisationId(trainer);
   return c.env.DB.prepare(
     `insert into audit_logs
        (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
@@ -499,7 +507,11 @@ function guardedAuditStatement(c: AppContext, branchId: string, trainer: Trainer
        select 1 from class_sessions
        where id = ? and organisation_id = ? and version = ? and updated_at = ?
      )`,
-  ).bind(createOpaqueId("audit"), ORG_ID, branchId, trainer.loginAccountId, trainer.activeTrainer.personId, action, entityType, entityId, JSON.stringify(metadata), new Date().toISOString(), entityId, ORG_ID, version, updatedAt);
+  ).bind(createOpaqueId("audit"), organisationId, branchId, trainer.loginAccountId, trainer.activeTrainer.personId, action, entityType, entityId, JSON.stringify(metadata), new Date().toISOString(), entityId, organisationId, version, updatedAt);
+}
+
+function trainerOrganisationId(trainer: TrainerContext) {
+  return trainer.organisationId || ORG_ID;
 }
 
 function mapBatchRow(row: Record<string, unknown>) {

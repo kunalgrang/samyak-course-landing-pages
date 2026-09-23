@@ -20,7 +20,7 @@ import {
   saveAdmissionDraft,
   saveAdmissionDraftSchema,
 } from "../lib/admission-service";
-import { ADMISSION_STAFF_ROLES, COURSE_ADMIN_ROLES, DISCOUNT_APPROVER_ROLES, RECEIPT_REVERSAL_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
+import { staffOrganisationId, ADMISSION_STAFF_ROLES, COURSE_ADMIN_ROLES, DISCOUNT_APPROVER_ROLES, RECEIPT_REVERSAL_ROLES, requireStaffRoles, type StaffContext } from "../lib/staff-auth";
 import { reverseReceiptSchema } from "../lib/payments-ledger";
 import { createOpaqueId, decryptText, hmacHex } from "../lib/crypto";
 import { mapStatusToPipelineStage } from "../lib/enquiry-crm";
@@ -104,6 +104,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.get("/api/staff/courses/active", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const courses = await c.env.DB.prepare(
       `select id, code, name, category_id, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status
        from courses
@@ -118,6 +119,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.get("/api/staff/courses", async (c) => {
     const staff = await requireStaffRoles(c, COURSE_ADMIN_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const courses = await c.env.DB.prepare(
       `select id, code, name, category_id, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at
        from courses
@@ -132,6 +134,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.post("/api/staff/courses", async (c) => {
     const staff = await requireStaffRoles(c, COURSE_ADMIN_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const parsed = courseSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_course", message: parsed.error.issues[0]?.message || "Please check course details." });
     const now = new Date().toISOString();
@@ -168,6 +171,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.patch("/api/staff/courses/:courseId", async (c) => {
     const staff = await requireStaffRoles(c, COURSE_ADMIN_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const parsed = coursePatchSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_course", message: parsed.error.issues[0]?.message || "Please check course details." });
     const existing = await c.env.DB.prepare("select id from courses where id = ? and organisation_id = ?")
@@ -206,12 +210,14 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.get("/api/staff/admission-configuration", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     return jsonPlain(c, await getAdmissionConfiguration(c));
   });
 
   app.get("/api/staff/enquiries/:enquiryId", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const detail = await getEnquiryDetail(c, c.req.param("enquiryId"));
     if (!detail) return jsonError(c, { status: 404, code: "enquiry_not_found", message: "Enquiry was not found." });
     return jsonPlain(c, detail);
@@ -220,6 +226,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.post("/api/staff/enquiries/:enquiryId/person-link", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const parsed = personLinkSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_person_link", message: "Select an existing student or create a new student record." });
     const result = await linkAdmissionEnquiryPerson(c, staff, c.req.param("enquiryId"), parsed.data);
@@ -230,6 +237,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.patch("/api/staff/enquiries/:enquiryId", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const parsed = enquiryStatusSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_status", message: "Select a valid enquiry status." });
     const pipelineStage = mapStatusToPipelineStage(parsed.data.status);
@@ -246,6 +254,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.get("/api/staff/enquiries/:enquiryId/admission-draft", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const draft = await getAdmissionDraft(c, c.req.param("enquiryId"));
     return jsonPlain(c, {
       draft: draft
@@ -267,6 +276,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.post("/api/staff/enquiries/:enquiryId/admission-draft", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const parsed = saveAdmissionDraftSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_draft", message: "Please correct the highlighted fields.", fieldErrors: fieldErrorsFromIssues(parsed.error.issues) });
     const result = await saveAdmissionDraft(c, staff, c.req.param("enquiryId"), parsed.data);
@@ -277,6 +287,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.post("/api/staff/enquiries/:enquiryId/confirm-admission", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const result = await confirmAdmission(c, staff, c.req.param("enquiryId"));
     if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message, fieldErrors: result.fieldErrors });
     return jsonPlain(c, { success: true, ...result.result });
@@ -287,6 +298,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     if (originError) return originError;
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const parsed = recordAdmissionReceiptSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_receipt", message: "Please correct receipt details.", fieldErrors: fieldErrorsFromIssues(parsed.error.issues) });
     const result = await recordAdmissionReceipt(c, staff, c.req.param("enquiryId"), parsed.data);
@@ -299,6 +311,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     if (originError) return originError;
     const staff = await requireStaffRoles(c, RECEIPT_REVERSAL_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const parsed = reverseReceiptSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_receipt_reversal", message: "Please correct reversal details.", fieldErrors: fieldErrorsFromIssues(parsed.error.issues) });
     const result = await reverseAdmissionReceipt(c, staff, c.req.param("enquiryId"), c.req.param("receiptId"), parsed.data);
@@ -309,6 +322,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.post("/api/staff/enquiries/:enquiryId/discount-approval", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const result = await requestDiscountApproval(c, staff, c.req.param("enquiryId"));
     if (!result.ok) return jsonError(c, { status: result.status as 400, code: result.code, message: result.message, fieldErrors: result.fieldErrors });
     return jsonPlain(c, { success: true, approvalId: result.approvalId, status: result.status }, { status: 201 });
@@ -317,12 +331,14 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.get("/api/staff/discount-approvals", async (c) => {
     const staff = await requireStaffRoles(c, DISCOUNT_APPROVER_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     return jsonPlain(c, { approvals: await listDiscountApprovals(c) });
   });
 
   app.post("/api/staff/discount-approvals/:approvalId/decision", async (c) => {
     const staff = await requireStaffRoles(c, DISCOUNT_APPROVER_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const parsed = discountDecisionSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_decision", message: "Select approve or reject." });
     const result = await decideDiscountApproval(c, staff, c.req.param("approvalId"), parsed.data.decision);
@@ -333,6 +349,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.get("/api/staff/students", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const parsed = studentDirectoryQuerySchema.safeParse({
       status: c.req.query("status") || "all",
       search: c.req.query("search") || "",
@@ -346,6 +363,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   app.get("/api/staff/students/:studentId", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
+    const ORG_ID = staffOrganisationId(staff);
     const profile = await getStudentProfile(c, staff, c.req.param("studentId"));
     if (!profile) return jsonError(c, { status: 404, code: "student_not_found", message: "Student was not found." });
     return jsonPlain(c, profile);
@@ -356,6 +374,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     if (originError) return originError;
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Only owner accounts can maintain student contact details." });
+    const ORG_ID = staffOrganisationId(staff);
     const body = await readJsonBody(c, studentMobileChangeSchema);
     if (isResponse(body)) return body;
     const result = await changeStudentPrimaryMobile(c, staff, c.req.param("studentId"), body);
@@ -375,6 +394,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     if (originError) return originError;
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Only owner accounts can edit student basic details." });
+    const ORG_ID = staffOrganisationId(staff);
     const body = await readJsonBody(c, studentBasicDetailsChangeSchema);
     if (isResponse(body)) return body;
     const result = await changeStudentFullName(c, staff, c.req.param("studentId"), body);
@@ -393,6 +413,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     if (originError) return originError;
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Only owner accounts can replace student referral links." });
+    const ORG_ID = staffOrganisationId(staff);
     const student = await findStudentReferralTarget(c, c.req.param("studentId"));
     if (!student) return jsonError(c, { status: 404, code: "student_not_found", message: "Student was not found." });
     if (!(await hasOwnerMaintenanceAccessForBranch(c, staff, student.home_branch_id))) {
@@ -473,6 +494,7 @@ function safeAdmissionEnquiry(enquiry: Record<string, unknown>) {
 }
 
 async function linkAdmissionEnquiryPerson(c: PortalContext, staff: StaffContext, enquiryId: string, input: AdmissionPersonLinkInput) {
+  const ORG_ID = staffOrganisationId(staff);
   const enquiry = await c.env.DB.prepare(
     `select id, organisation_id, branch_id, person_id, enquiry_number
      from enquiries
@@ -490,6 +512,7 @@ async function linkAdmissionEnquiryPerson(c: PortalContext, staff: StaffContext,
 }
 
 async function linkExistingAdmissionPerson(c: PortalContext, staff: StaffContext, enquiry: { id: string; branch_id: string; person_id: string | null; enquiry_number: string }, personId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const person = await c.env.DB.prepare("select id from people where id = ? and organisation_id = ? and status != 'archived'")
     .bind(personId, ORG_ID)
     .first<{ id: string }>();
@@ -512,6 +535,7 @@ async function linkExistingAdmissionPerson(c: PortalContext, staff: StaffContext
 }
 
 async function createAndLinkAdmissionPerson(c: PortalContext, staff: StaffContext, enquiry: { id: string; branch_id: string; person_id: string | null; enquiry_number: string }, idempotencyKey: string) {
+  const ORG_ID = staffOrganisationId(staff);
   if (enquiry.person_id) return { ok: true as const, enquiryId: enquiry.id, personId: enquiry.person_id, mode: "create" as const, alreadyLinked: true };
   const candidate = await admissionPersonLinkCandidate(c, enquiry.id);
   if (!candidate?.mobile) {
@@ -603,6 +627,7 @@ async function cleanupUnlinkedCreatedPerson(c: PortalContext, personId: string) 
 }
 
 async function hasAdmissionAccessForBranch(c: PortalContext, staff: StaffContext, branchId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   if (!staff.roles.some((role) => ADMISSION_STAFF_ROLES.includes(role as (typeof ADMISSION_STAFF_ROLES)[number]))) return false;
   const row = await c.env.DB.prepare(
     `select 1 as ok
@@ -620,6 +645,7 @@ async function hasAdmissionAccessForBranch(c: PortalContext, staff: StaffContext
 }
 
 async function hasOwnerMaintenanceAccessForBranch(c: PortalContext, staff: StaffContext, branchId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const row = await c.env.DB.prepare(
     `select 1 as ok
      from login_account_roles
@@ -636,6 +662,7 @@ async function hasOwnerMaintenanceAccessForBranch(c: PortalContext, staff: Staff
 }
 
 async function auditPersonLink(c: PortalContext, staff: StaffContext, branchId: string, action: string, enquiryId: string, metadata: Record<string, unknown>) {
+  const ORG_ID = staffOrganisationId(staff);
   await c.env.DB.prepare(
     `insert into audit_logs
        (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
@@ -650,6 +677,7 @@ function formatIndianMobileDisplay(mobile: string) {
 }
 
 async function getStudentProfile(c: Parameters<typeof getAdmissionDraft>[0], staff: StaffContext, studentId: string) {
+  const ORG_ID = staffOrganisationId(staff);
   const student = await c.env.DB.prepare(
     `select students.*,
             coalesce(person_identity_details.official_full_name, people.full_name, people.public_name) as full_name,
@@ -844,6 +872,7 @@ async function fullMobileContacts(c: Parameters<typeof getAdmissionDraft>[0], pe
 }
 
 async function audit(c: Parameters<typeof getAdmissionDraft>[0], staff: StaffContext, action: string, entityType: string, entityId: string, metadata: Record<string, unknown>) {
+  const ORG_ID = staffOrganisationId(staff);
   await c.env.DB.prepare(
     `insert into audit_logs
        (id, organisation_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)

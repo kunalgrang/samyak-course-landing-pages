@@ -1,10 +1,10 @@
 import { z } from "zod";
 import { mobileHash } from "./auth-store";
-import { ORG_ID } from "./tenant-context";
+import { ORG_ID, authenticatedOrDefaultOrganisationId, setAuthenticatedOrganisationId } from "./tenant-context";
 import { createOpaqueId, decryptText, hmacHex } from "./crypto";
 import type { AppContext } from "./http";
 import { normalizeIndianMobile } from "./mobile";
-import { ADMISSION_STAFF_ROLES, type StaffContext } from "./staff-auth";
+import { staffOrganisationId, ADMISSION_STAFF_ROLES, type StaffContext } from "./staff-auth";
 import { maximumInstallmentsForCourse } from "./payment-schedule-policy";
 import { allocateInstalments, financialSummaryFromReceipts, type LedgerInstalment } from "./payments-ledger";
 
@@ -210,6 +210,8 @@ export type CollectionTimelineEvent = {
 };
 
 export async function listCollections(c: AppContext, staff: StaffContext, query: CollectionQuery) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const today = indiaDate();
   const monthStart = `${today.slice(0, 7)}-01`;
   const serverFiltered = query.status === "schedule_attention";
@@ -252,6 +254,8 @@ export async function listCollections(c: AppContext, staff: StaffContext, query:
 }
 
 export async function getCollectionDetail(c: AppContext, staff: StaffContext, enrolmentId: string): Promise<{ ok: true; success: true; today: string; item: CollectionItem; installments: CollectionInstallment[]; receipts: ReturnType<typeof publicReceipt>[]; followups: CollectionFollowup[]; timeline: CollectionTimelineEvent[]; receiptCorrection: { supported: boolean; message: string }; paymentSchedule: PaymentScheduleRevisionState } | CollectionFailure> {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const row = await collectionRowByEnrolment(c, staff, enrolmentId);
   if (!row) return { ok: false, status: 404, code: "collection_not_found", message: "Collection record was not found." };
   const today = indiaDate();
@@ -285,6 +289,8 @@ export async function getCollectionDetail(c: AppContext, staff: StaffContext, en
 }
 
 export async function createCollectionFollowup(c: AppContext, staff: StaffContext, enrolmentId: string, input: FollowupInput): Promise<{ ok: true; success: true; followup: CollectionFollowup } | CollectionFailure> {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const row = await collectionRowByEnrolment(c, staff, enrolmentId);
   if (!row) return { ok: false, status: 404, code: "collection_not_found", message: "Collection record was not found." };
   const now = new Date().toISOString();
@@ -331,6 +337,8 @@ export async function createCollectionFollowup(c: AppContext, staff: StaffContex
 }
 
 export async function updatePaymentSchedule(c: AppContext, staff: StaffContext, enrolmentId: string, input: ScheduleInput): Promise<{ ok: true; success: true; detail: CollectionDetailResult } | CollectionFailure> {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const row = await collectionRowByEnrolment(c, staff, enrolmentId);
   if (!row) return { ok: false, status: 404, code: "collection_not_found", message: "Collection record was not found." };
   if (!(await canManageScheduleForBranch(c, staff, row.branch_id))) {
@@ -433,6 +441,8 @@ async function scheduleRevisionState(c: AppContext, staff: StaffContext, row: En
 }
 
 async function canManageScheduleForBranch(c: AppContext, staff: StaffContext, branchId: string) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   if (!staff.roles.some((role) => PAYMENT_SCHEDULE_MANAGER_ROLES.includes(role as (typeof PAYMENT_SCHEDULE_MANAGER_ROLES)[number]))) return false;
   const row = await c.env.DB.prepare(
     `select 1 as ok
@@ -574,6 +584,8 @@ function mapCollectionItem(row: EnrolmentCollectionRow, instalments: InstalmentR
 }
 
 async function collectionRows(c: AppContext, staff: StaffContext, query: CollectionQuery, limit: number, offset: number, today: string) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const bindings: unknown[] = [ORG_ID, ORG_ID, ORG_ID, ORG_ID];
   let where = "students.organisation_id = ? and people.organisation_id = ? and courses.organisation_id = ? and branches.organisation_id = ? and people.status != 'archived' and fee_agreements.status = 'active'";
   where += await collectionFilterSql(c, staff, query, bindings, today);
@@ -584,6 +596,8 @@ async function collectionRows(c: AppContext, staff: StaffContext, query: Collect
 }
 
 async function collectionCount(c: AppContext, staff: StaffContext, query: CollectionQuery, today: string) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const bindings: unknown[] = [ORG_ID, ORG_ID, ORG_ID, ORG_ID];
   let where = "students.organisation_id = ? and people.organisation_id = ? and courses.organisation_id = ? and branches.organisation_id = ? and people.status != 'archived' and fee_agreements.status = 'active'";
   where += await collectionFilterSql(c, staff, query, bindings, today);
@@ -594,6 +608,7 @@ async function collectionCount(c: AppContext, staff: StaffContext, query: Collec
 }
 
 async function collectionFilterSql(c: AppContext, staff: StaffContext, query: CollectionQuery, bindings: unknown[], today: string) {
+  const ORG_ID = staffOrganisationId(staff);
   let where = branchScopeSql(staff, "enrolments.branch_id", bindings);
   if (query.branchId) {
     where += " and enrolments.branch_id = ?";
@@ -618,11 +633,16 @@ async function collectionFilterSql(c: AppContext, staff: StaffContext, query: Co
     bindings.push(like, like, like, like, like);
     if (hash) bindings.push(hash);
   }
-  if (query.status === "schedule_attention") where += scheduleAttentionWhereSql(today);
+  if (query.status === "schedule_attention") {
+    where += scheduleAttentionWhereSql(today);
+    bindings.push(ORG_ID, ORG_ID);
+  }
   return where;
 }
 
 async function collectionRowByEnrolment(c: AppContext, staff: StaffContext, enrolmentId: string) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const bindings: unknown[] = [ORG_ID, ORG_ID, ORG_ID, ORG_ID];
   let where = "students.organisation_id = ? and people.organisation_id = ? and courses.organisation_id = ? and branches.organisation_id = ? and people.status != 'archived' and fee_agreements.status = 'active' and enrolments.id = ?";
   bindings.push(enrolmentId);
@@ -682,6 +702,7 @@ async function instalmentsByFee(c: AppContext, feeAgreementIds: string[]) {
 }
 
 async function receiptsByEnrolment(c: AppContext, enrolmentIds: string[]) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   const map = new Map<string, ReceiptRow[]>();
   if (!enrolmentIds.length) return map;
   const rows = await c.env.DB.prepare(
@@ -706,6 +727,7 @@ async function receiptsByEnrolment(c: AppContext, enrolmentIds: string[]) {
 }
 
 async function followupsByEnrolment(c: AppContext, enrolmentIds: string[]) {
+  const ORG_ID = authenticatedOrDefaultOrganisationId(c);
   const map = new Map<string, FollowupRow[]>();
   if (!enrolmentIds.length) return map;
   const rows = await c.env.DB.prepare(
@@ -722,6 +744,8 @@ async function followupsByEnrolment(c: AppContext, enrolmentIds: string[]) {
 }
 
 async function collectedSince(c: AppContext, staff: StaffContext, fromDate: string) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const bindings: unknown[] = [ORG_ID, `${fromDate}T00:00:00.000+05:30`];
   const row = await c.env.DB.prepare(
     `select coalesce(sum(receipts.amount_paise), 0) as total
@@ -738,6 +762,8 @@ async function collectedSince(c: AppContext, staff: StaffContext, fromDate: stri
 }
 
 async function overviewMetrics(c: AppContext, staff: StaffContext, today: string, monthStart: string, collectedThisMonthPaise: number) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
   const balanceBindings: unknown[] = [ORG_ID, ORG_ID];
   const balance = await c.env.DB.prepare(
     `select
@@ -845,6 +871,7 @@ async function overviewMetrics(c: AppContext, staff: StaffContext, today: string
 }
 
 function branchScopeSql(staff: StaffContext, column: string, bindings: unknown[]) {
+  const ORG_ID = staffOrganisationId(staff);
   if (staff.roles.some((role) => role === "owner" || role === "system_admin")) return "";
   bindings.push(staff.loginAccountId, ORG_ID, ...COLLECTION_STAFF_ROLES);
   return ` and exists (
@@ -883,7 +910,7 @@ function scheduleAttentionWhereSql(today: string) {
       select coalesce(sum(receipts.amount_paise), 0)
       from receipts
       left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
-      where receipts.organisation_id = '${ORG_ID}'
+      where receipts.organisation_id = ?
         and receipts.status = 'recorded'
         and receipt_reversals.id is null
         and receipts.fee_agreement_id = fee_agreements.id
@@ -892,7 +919,7 @@ function scheduleAttentionWhereSql(today: string) {
       select coalesce(sum(receipts.amount_paise), 0)
       from receipts
       left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
-      where receipts.organisation_id = '${ORG_ID}'
+      where receipts.organisation_id = ?
         and receipts.status = 'recorded'
         and receipt_reversals.id is null
         and receipts.fee_agreement_id = fee_agreements.id
