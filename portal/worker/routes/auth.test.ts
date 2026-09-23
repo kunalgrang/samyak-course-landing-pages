@@ -1774,6 +1774,28 @@ describe("auth routes", () => {
     expect(studentHome.status).toBe(401);
   });
 
+  it("blocks pending organisation-selection sessions from representative tenant APIs", async () => {
+    const db = new FakeD1();
+    installFetch();
+    await seedOtherOrganisationMembership(db, "9876543210");
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const cookie = sessionCookie(verifyResponse);
+
+    await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: false,
+      code: "ORGANISATION_SELECTION_REQUIRED",
+    });
+    expect((await app.request("http://localhost/api/student/home", { headers: { Cookie: cookie } }, env(db))).status).toBe(401);
+    expect((await app.request("http://localhost/api/staff/students", { headers: { Cookie: cookie } }, env(db))).status).toBe(403);
+    await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: cookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: false,
+    });
+    await expect((await app.request("http://localhost/api/partner/session", { headers: { Cookie: cookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: false,
+    });
+  });
+
   it("activates only an owned active membership and rotates the pre-selection session", async () => {
     const db = new FakeD1();
     installFetch();
@@ -1870,6 +1892,139 @@ describe("auth routes", () => {
       authenticated: false,
       code: "SESSION_REVOKED",
     });
+  });
+
+  it("switches A to B to A with fresh tenant-local profiles and revoked old tokens", async () => {
+    const db = new FakeD1();
+    installFetch();
+    await seedOtherOrganisationMembership(db, "9876543210");
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const pendingBody = await jsonBody(verifyResponse);
+    const samyakChoice = pendingBody.organisations.find((item: Row) => item.organisationId === "org_samyak");
+    const otherChoice = pendingBody.organisations.find((item: Row) => item.organisationId === "org_other");
+
+    const selectedA = await app.request(
+      "http://localhost/api/auth/select-organisation",
+      { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: sessionCookie(verifyResponse) }, body: JSON.stringify({ membershipId: samyakChoice.membershipId }) },
+      env(db),
+    );
+    const cookieA1 = sessionCookie(selectedA);
+    await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookieA1 } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: true,
+      activeProfile: { personId: "person_stu1" },
+      profiles: [expect.objectContaining({ personId: "person_stu1" })],
+    });
+
+    const switchedToB = await app.request(
+      "http://localhost/api/auth/switch-organisation",
+      { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookieA1 }, body: JSON.stringify({ membershipId: otherChoice.membershipId }) },
+      env(db),
+    );
+    const cookieB = sessionCookie(switchedToB);
+    expect(cookieB).not.toBe(cookieA1);
+    await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookieA1 } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: false,
+      code: "SESSION_REVOKED",
+    });
+    const sessionB = await jsonBody(await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookieB } }, env(db)));
+    expect(sessionB).toMatchObject({
+      authenticated: true,
+      activeProfile: { personId: "person_other_org" },
+      profiles: [expect.objectContaining({ personId: "person_other_org" })],
+    });
+    expect(sessionB.profiles).not.toEqual(expect.arrayContaining([expect.objectContaining({ personId: "person_stu1" })]));
+
+    const switchedBackToA = await app.request(
+      "http://localhost/api/auth/switch-organisation",
+      { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookieB }, body: JSON.stringify({ membershipId: samyakChoice.membershipId }) },
+      env(db),
+    );
+    const cookieA2 = sessionCookie(switchedBackToA);
+    expect(cookieA2).not.toBe(cookieB);
+    await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookieB } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: false,
+      code: "SESSION_REVOKED",
+    });
+    const sessionA2 = await jsonBody(await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookieA2 } }, env(db)));
+    expect(sessionA2).toMatchObject({
+      authenticated: true,
+      activeProfile: { personId: "person_stu1" },
+      profiles: [expect.objectContaining({ personId: "person_stu1" })],
+    });
+    expect(sessionA2.profiles).not.toEqual(expect.arrayContaining([expect.objectContaining({ personId: "person_other_org" })]));
+  });
+
+  it("rejects foreign and inactive memberships during switch without revoking the current session", async () => {
+    const db = new FakeD1();
+    installFetch();
+    await seedOtherOrganisationMembership(db, "9876543210");
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const pendingBody = await jsonBody(verifyResponse);
+    const samyakChoice = pendingBody.organisations.find((item: Row) => item.organisationId === "org_samyak");
+    const otherChoice = pendingBody.organisations.find((item: Row) => item.organisationId === "org_other");
+    const selected = await app.request(
+      "http://localhost/api/auth/select-organisation",
+      { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: sessionCookie(verifyResponse) }, body: JSON.stringify({ membershipId: samyakChoice.membershipId }) },
+      env(db),
+    );
+    const cookie = sessionCookie(selected);
+    db.globalIdentities.push({ id: "gident_attacker", mobile_normalized: "other_mobile", mobile_hash: "other_mobile", mobile_last_four: "9999", status: "active" });
+    db.loginAccounts.push({ id: "acct_attacker", organisation_id: "org_other", mobile_normalized: "other_mobile", mobile_hash: "other_mobile", mobile_last_four: "9999", login_enabled: 1, status: "active", global_identity_id: "gident_attacker", organisation_membership_id: "omem_attacker" });
+    db.organisationMemberships.push({ id: "omem_attacker", global_identity_id: "gident_attacker", organisation_id: "org_other", login_account_id: "acct_attacker", status: "active" });
+
+    const foreign = await app.request(
+      "http://localhost/api/auth/switch-organisation",
+      { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie }, body: JSON.stringify({ membershipId: "omem_attacker" }) },
+      env(db),
+    );
+    expect(foreign.status).toBe(403);
+    await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: true,
+      activeProfile: { personId: "person_stu1" },
+    });
+
+    const otherMembership = db.organisationMemberships.find((membership) => membership.id === otherChoice.membershipId)!;
+    otherMembership.status = "revoked";
+    const revoked = await app.request(
+      "http://localhost/api/auth/switch-organisation",
+      { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie }, body: JSON.stringify({ membershipId: otherChoice.membershipId }) },
+      env(db),
+    );
+    expect(revoked.status).toBe(403);
+    await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: true,
+      activeProfile: { personId: "person_stu1" },
+    });
+  });
+
+  it("returns no-active-organisation when the only memberships are inactive", async () => {
+    const db = new FakeD1();
+    installFetch();
+    let otpResponse = await requestOtp(db);
+    let verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    expect(verifyResponse.status).toBe(200);
+
+    db.organisationMemberships[0].status = "suspended";
+    db.otpChallenges.length = 0;
+    otpResponse = await requestOtp(db);
+    verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    await expect(verifyResponse.json()).resolves.toMatchObject({
+      success: false,
+      code: "NO_ACTIVE_ORGANISATION",
+    });
+    expect(db.userSessions).toHaveLength(1);
+
+    db.organisationMemberships[0].status = "revoked";
+    db.otpChallenges.length = 0;
+    otpResponse = await requestOtp(db);
+    verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    await expect(verifyResponse.json()).resolves.toMatchObject({
+      success: false,
+      code: "NO_ACTIVE_ORGANISATION",
+    });
+    expect(db.userSessions).toHaveLength(1);
   });
 
   it("clears a stale active profile without destroying a valid account session", async () => {
