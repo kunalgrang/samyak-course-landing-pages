@@ -41,6 +41,10 @@ class FakeD1Statement {
     if (sql.includes("select id from global_identities where mobile_normalized = ?")) {
       return (this.db.globalIdentities.find((row) => row.mobile_normalized === this.values[0]) ?? null) as T;
     }
+    if (sql.includes("select global_identity_id from login_accounts where id = ?")) {
+      const account = this.db.loginAccounts.find((row) => row.id === this.values[0]);
+      return (account ? { global_identity_id: account.global_identity_id ?? null } : null) as T;
+    }
     if (sql.includes("from organisation_memberships") && sql.includes("join global_identities")) {
       const byLoginAccount = sql.includes("organisation_memberships.login_account_id = ?");
       const membership = this.db.organisationMemberships.find((row) => byLoginAccount ? row.login_account_id === this.values[0] : row.id === this.values[0]);
@@ -173,6 +177,44 @@ class FakeD1Statement {
         }
       }
       return { results } as T;
+    }
+    if (sql.includes("from global_identities") && sql.includes("join organisation_memberships")) {
+      const byGlobalIdentity = sql.includes("where global_identities.id = ?");
+      const identity = byGlobalIdentity
+        ? this.db.globalIdentities.find((row) => row.id === this.values[0])
+        : this.db.globalIdentities.find((row) => row.mobile_normalized === this.values[0]);
+      const results = identity
+        ? this.db.organisationMemberships
+            .filter((membership) => membership.global_identity_id === identity.id)
+            .map((membership) => {
+              const account = this.db.loginAccounts.find((row) => row.id === membership.login_account_id);
+              const organisation = this.db.organisations.find((row) => row.id === membership.organisation_id);
+              return {
+                organisation_membership_id: membership.id,
+                organisation_id: membership.organisation_id,
+                membership_status: membership.status,
+                login_account_id: membership.login_account_id,
+                login_account_organisation_id: account?.organisation_id ?? membership.organisation_id,
+                login_account_membership_id: account?.organisation_membership_id ?? null,
+                login_enabled: account?.login_enabled ?? 1,
+                login_account_status: account?.status ?? "active",
+                global_identity_id: identity.id,
+                global_identity_status: identity.status,
+                organisation_name: organisation?.name ?? membership.organisation_id,
+              };
+            })
+        : [];
+      return { results } as T;
+    }
+    if (sql.includes("select login_account_people.person_id") && sql.includes("join referrer_profiles")) {
+      const [organisationId, loginAccountId] = this.values;
+      return {
+        results: this.db.loginAccountPeople
+          .filter((link) => link.login_account_id === loginAccountId && link.is_available === 1)
+          .filter((link) => this.db.people.some((person) => person.id === link.person_id && person.organisation_id === organisationId && person.status === "active"))
+          .filter((link) => this.db.referrerProfiles.some((profile) => profile.person_id === link.person_id && profile.organisation_id === organisationId && profile.active === 1))
+          .map((link) => ({ person_id: link.person_id })),
+      } as T;
     }
     if (sql.includes("from person_contacts") && sql.includes("join person_roles") && sql.includes("roles.code = ?")) {
       const [organisationId, roleCode, mobileHash, nowValue] = this.values;
@@ -315,6 +357,10 @@ class FakeD1 {
   loginAccounts: Row[] = [];
   globalIdentities: Row[] = [];
   organisationMemberships: Row[] = [];
+  organisations: Row[] = [
+    { id: "org_samyak", name: "Samyak Computer Classes", slug: "samyak", status: "active" },
+    { id: "org_other", name: "Other Institute", slug: "other", status: "active" },
+  ];
   branches: Row[] = [{ id: "branch_sion", name: "Sion", code: "SION" }];
   people: Row[] = [];
   personContacts: Row[] = [];
@@ -583,7 +629,10 @@ class FakeD1 {
       return 1;
     }
     if (sql.startsWith("insert into user_sessions")) {
-      const [id, loginAccountId, organisationMembershipId, activePersonId, activeEducationPartnerId, activeSubjectType, tokenHash, createdAt, expiresAt, lastSeenAt, ipHash, userAgentHash] = values;
+      const selectionSession = values.length === 8;
+      const [id, loginAccountId, organisationMembershipId, activePersonId, activeEducationPartnerId, activeSubjectType, tokenHash, createdAt, expiresAt, lastSeenAt, ipHash, userAgentHash] = selectionSession
+        ? [values[0], values[1], null, null, null, "person", values[2], values[3], values[4], values[5], values[6], values[7]]
+        : values;
       this.userSessions.push({ id, login_account_id: loginAccountId, organisation_membership_id: organisationMembershipId, active_person_id: activePersonId, active_education_partner_id: activeEducationPartnerId, active_subject_type: activeSubjectType, token_hash: tokenHash, created_at: createdAt, expires_at: expiresAt, last_seen_at: lastSeenAt, revoked_at: null, ip_hash: ipHash, user_agent_hash: userAgentHash });
       return 1;
     }
@@ -871,6 +920,30 @@ async function seedTrainerProfile(db: FakeD1, mobile: string, sessionPepper: str
   if (!db.personRoles.some((row) => row.person_id === personId && row.role_id === "role_trainer")) {
     db.personRoles.push({ person_id: personId, role_id: "role_trainer", branch_id: "branch_sion", branch_key: "branch_sion", status: "active", created_at: "2026-07-01" });
   }
+}
+
+async function seedOtherOrganisationMembership(db: FakeD1, mobile: string) {
+  const mobileHash = await hmacHex("test-pepper", "mobile", mobile);
+  db.globalIdentities.push({ id: "gident_shared", mobile_normalized: mobileHash, mobile_hash: mobileHash, mobile_last_four: mobile.slice(-4), status: "active" });
+  db.loginAccounts.push({
+    id: "acct_other_org",
+    organisation_id: "org_other",
+    mobile_normalized: mobileHash,
+    mobile_hash: mobileHash,
+    mobile_last_four: mobile.slice(-4),
+    login_enabled: 1,
+    status: "active",
+    global_identity_id: "gident_shared",
+    organisation_membership_id: "omem_other_org",
+    created_at: "2026-07-01",
+    updated_at: "2026-07-01",
+  });
+  db.organisationMemberships.push({ id: "omem_other_org", global_identity_id: "gident_shared", organisation_id: "org_other", login_account_id: "acct_other_org", status: "active" });
+  db.branches.push({ id: "branch_other", organisation_id: "org_other", name: "Other", code: "OTHER", status: "active" });
+  db.people.push({ id: "person_other_org", organisation_id: "org_other", home_branch_id: "branch_other", full_name: "Other Org Student", public_name: "Other Student", status: "active", created_at: "2026-07-01", updated_at: "2026-07-01" });
+  db.loginAccountPeople.push({ login_account_id: "acct_other_org", person_id: "person_other_org", access_type: "self", is_default: 1, is_available: 1, created_at: "2026-07-01" });
+  db.personRoles.push({ person_id: "person_other_org", role_id: "role_student", branch_id: null, branch_key: "", created_at: "2026-07-01" });
+  db.referrerProfiles.push({ id: "ref_other_org", organisation_id: "org_other", person_id: "person_other_org", external_referrer_id: "OTHER_ORG", referral_token: "OTHER_TOKEN", personal_link: "https://example.test/r/OTHER", active: 1, created_at: "2026-07-01" });
 }
 
 function sessionCookie(response: Response) {
@@ -1674,6 +1747,128 @@ describe("auth routes", () => {
       authenticated: true,
       activeProfile: { personId: "person_other_org", publicName: "Other" },
       profiles: [expect.objectContaining({ personId: "person_other_org" })],
+    });
+  });
+
+  it("requires organisation selection after OTP when a global identity has multiple active memberships", async () => {
+    const db = new FakeD1();
+    installFetch();
+    await seedOtherOrganisationMembership(db, "9876543210");
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const body = await jsonBody(verifyResponse);
+    const cookie = sessionCookie(verifyResponse);
+
+    expect(verifyResponse.status).toBe(200);
+    expect(body).toMatchObject({
+      success: true,
+      code: "ORGANISATION_SELECTION_REQUIRED",
+      organisations: expect.arrayContaining([
+        expect.objectContaining({ organisationId: "org_samyak" }),
+        expect.objectContaining({ organisationId: "org_other" }),
+      ]),
+    });
+    expect(db.userSessions.at(-1)).toMatchObject({ organisation_membership_id: null, active_person_id: null, active_education_partner_id: null });
+
+    const studentHome = await app.request("http://localhost/api/student/home", { headers: { Cookie: cookie } }, env(db));
+    expect(studentHome.status).toBe(401);
+  });
+
+  it("activates only an owned active membership and rotates the pre-selection session", async () => {
+    const db = new FakeD1();
+    installFetch();
+    await seedOtherOrganisationMembership(db, "9876543210");
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const body = await jsonBody(verifyResponse);
+    const oldCookie = sessionCookie(verifyResponse);
+    const otherChoice = body.organisations.find((item: Row) => item.organisationId === "org_other");
+
+    const selected = await app.request(
+      "http://localhost/api/auth/select-organisation",
+      { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: oldCookie }, body: JSON.stringify({ membershipId: otherChoice.membershipId }) },
+      env(db),
+    );
+    const selectedBody = await jsonBody(selected);
+    const newCookie = sessionCookie(selected);
+
+    expect(selected.status).toBe(200);
+    expect(selectedBody).toMatchObject({ success: true, session: { authenticated: true, activeProfile: { personId: "person_other_org" } } });
+    expect(newCookie).not.toBe(oldCookie);
+    expect(db.userSessions.find((row) => row.token_hash === db.userSessions[0].token_hash)?.revoked_at).toBeTruthy();
+
+    await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: newCookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: true,
+      activeProfile: { personId: "person_other_org" },
+      organisations: expect.arrayContaining([expect.objectContaining({ organisationId: "org_samyak" })]),
+    });
+  });
+
+  it("rejects organisation selection for another identity and inactive memberships", async () => {
+    const db = new FakeD1();
+    installFetch();
+    await seedOtherOrganisationMembership(db, "9876543210");
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const cookie = sessionCookie(verifyResponse);
+    db.globalIdentities.push({ id: "gident_attacker", mobile_normalized: "other_mobile", mobile_hash: "other_mobile", mobile_last_four: "9999", status: "active" });
+    db.loginAccounts.push({ id: "acct_attacker", organisation_id: "org_other", mobile_normalized: "other_mobile", mobile_hash: "other_mobile", mobile_last_four: "9999", login_enabled: 1, status: "active", global_identity_id: "gident_attacker", organisation_membership_id: "omem_attacker" });
+    db.organisationMemberships.push({ id: "omem_attacker", global_identity_id: "gident_attacker", organisation_id: "org_other", login_account_id: "acct_attacker", status: "active" });
+
+    const attacker = await app.request(
+      "http://localhost/api/auth/select-organisation",
+      { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie }, body: JSON.stringify({ membershipId: "omem_attacker" }) },
+      env(db),
+    );
+    expect(attacker.status).toBe(403);
+
+    const pendingBody = await jsonBody(verifyResponse);
+    const samyakChoice = pendingBody.organisations.find((item: Row) => item.organisationId === "org_samyak");
+    const samyakMembership = db.organisationMemberships.find((membership) => membership.id === samyakChoice.membershipId)!;
+    samyakMembership.status = "suspended";
+    const suspended = await app.request(
+      "http://localhost/api/auth/select-organisation",
+      { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie }, body: JSON.stringify({ membershipId: samyakChoice.membershipId }) },
+      env(db),
+    );
+    expect(suspended.status).toBe(403);
+  });
+
+  it("switches organisations by membership and does not retain the previous tenant profile", async () => {
+    const db = new FakeD1();
+    installFetch();
+    await seedOtherOrganisationMembership(db, "9876543210");
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const pendingBody = await jsonBody(verifyResponse);
+    const samyakChoice = pendingBody.organisations.find((item: Row) => item.organisationId === "org_samyak");
+    const otherChoice = pendingBody.organisations.find((item: Row) => item.organisationId === "org_other");
+    const selected = await app.request(
+      "http://localhost/api/auth/select-organisation",
+      { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: sessionCookie(verifyResponse) }, body: JSON.stringify({ membershipId: samyakChoice.membershipId }) },
+      env(db),
+    );
+    const samyakCookie = sessionCookie(selected);
+    await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: samyakCookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: true,
+      activeProfile: { personId: "person_stu1" },
+    });
+
+    const switched = await app.request(
+      "http://localhost/api/auth/switch-organisation",
+      { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: samyakCookie }, body: JSON.stringify({ membershipId: otherChoice.membershipId }) },
+      env(db),
+    );
+    const switchedCookie = sessionCookie(switched);
+    expect(switchedCookie).not.toBe(samyakCookie);
+    await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: switchedCookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: true,
+      activeProfile: { personId: "person_other_org" },
+      profiles: [expect.objectContaining({ personId: "person_other_org" })],
+    });
+    await expect((await app.request("http://localhost/api/auth/session", { headers: { Cookie: samyakCookie } }, env(db))).json()).resolves.toMatchObject({
+      authenticated: false,
+      code: "SESSION_REVOKED",
     });
   });
 

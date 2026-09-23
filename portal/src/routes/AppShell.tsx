@@ -1,5 +1,7 @@
 import { BrandMark } from "../components/BrandMark";
 import { TrustFooter } from "../components/TrustFooter";
+import { switchOrganisation } from "../lib/api";
+import type { OrganisationChoice } from "../lib/api";
 import type { NavigationItem } from "../app/navigation";
 import type { RoutePath } from "./types";
 import type { ReactNode } from "react";
@@ -11,11 +13,14 @@ type AppShellProps = {
   children: ReactNode;
   onNavigate: (path: RoutePath) => void;
   onSignOut: () => void;
+  organisations?: OrganisationChoice[];
 };
 
-export function AppShell({ activePath, navigation, children, onNavigate, onSignOut }: AppShellProps) {
+export function AppShell({ activePath, navigation, children, onNavigate, onSignOut, organisations = [] }: AppShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [switchingMembershipId, setSwitchingMembershipId] = useState("");
   const usesMobileDrawer = navigation.some((item) => item.path.startsWith("/app/")) && navigation.length > 5;
+  const canSwitchOrganisations = organisations.length > 1;
 
   useEffect(() => {
     if (!drawerOpen) return;
@@ -29,6 +34,14 @@ export function AppShell({ activePath, navigation, children, onNavigate, onSignO
   function navigateAndClose(path: RoutePath) {
     onNavigate(path);
     setDrawerOpen(false);
+  }
+
+  async function handleOrganisationSwitch(membershipId: string) {
+    if (!membershipId) return;
+    setSwitchingMembershipId(membershipId);
+    const result = await switchOrganisation(membershipId);
+    if (result.success) window.location.assign("/app");
+    else setSwitchingMembershipId("");
   }
 
   return (
@@ -52,6 +65,17 @@ export function AppShell({ activePath, navigation, children, onNavigate, onSignO
         <button type="button" className="sidebar__signout" onClick={onSignOut}>
           Sign out
         </button>
+        {canSwitchOrganisations ? (
+          <label className="organisation-switcher">
+            <span>Organisation</span>
+            <select value="" disabled={Boolean(switchingMembershipId)} onChange={(event) => void handleOrganisationSwitch(event.target.value)}>
+              <option value="">Switch</option>
+              {organisations.map((organisation) => (
+                <option key={organisation.membershipId} value={organisation.membershipId}>{organisation.organisationName}</option>
+              ))}
+            </select>
+          </label>
+        ) : null}
       </aside>
 
       <div className="app-main">
@@ -66,6 +90,14 @@ export function AppShell({ activePath, navigation, children, onNavigate, onSignO
             <button type="button" onClick={onSignOut}>
               Sign out
             </button>
+            {canSwitchOrganisations ? (
+              <select className="topbar__organisation-switcher" aria-label="Switch organisation" value="" disabled={Boolean(switchingMembershipId)} onChange={(event) => void handleOrganisationSwitch(event.target.value)}>
+                <option value="">Switch organisation</option>
+                {organisations.map((organisation) => (
+                  <option key={organisation.membershipId} value={organisation.membershipId}>{organisation.organisationName}</option>
+                ))}
+              </select>
+            ) : null}
           </div>
         </header>
         <main className="page-content">{children}</main>

@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { getSession, logout, type SessionResponse } from "../../lib/api";
+import { getSession, logout, type OrganisationChoice, type SessionResponse } from "../../lib/api";
 
 export type SessionRefreshResult =
   | { status: "authenticated"; session: SessionResponse }
@@ -8,6 +8,7 @@ export type SessionRefreshResult =
 
 type AuthState = {
   session: SessionResponse | null;
+  pendingOrganisations: OrganisationChoice[];
   hasSessionError: boolean;
   sessionMessage: string | null;
 };
@@ -18,8 +19,11 @@ type AuthContextValue = {
   hasSessionError: boolean;
   sessionMessage: string | null;
   session: SessionResponse | null;
+  pendingOrganisations: OrganisationChoice[];
+  isOrganisationSelectionRequired: boolean;
   refreshSession: () => Promise<SessionRefreshResult>;
   setAuthenticatedSession: (session: SessionResponse) => void;
+  setPendingOrganisations: (organisations: OrganisationChoice[], message?: string | null) => void;
   signOut: () => Promise<void>;
 };
 
@@ -27,6 +31,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<SessionResponse | null>(null);
+  const [pendingOrganisations, setPendingOrganisationsState] = useState<OrganisationChoice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasSessionError, setHasSessionError] = useState(false);
   const [sessionMessage, setSessionMessage] = useState<string | null>(null);
@@ -38,6 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const next = await getSession();
       const state = applySessionRefreshSuccess(next);
       setSession(state.session);
+      setPendingOrganisationsState(state.pendingOrganisations);
       setHasSessionError(state.hasSessionError);
       setSessionMessage(state.sessionMessage);
       return next.authenticated ? { status: "authenticated", session: next } : { status: "unauthenticated", message: next.message };
@@ -60,20 +66,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasSessionError,
       sessionMessage,
       session,
+      pendingOrganisations,
+      isOrganisationSelectionRequired: pendingOrganisations.length > 0 && !session?.authenticated,
       refreshSession,
       setAuthenticatedSession: (nextSession) => {
         setSession(nextSession.authenticated ? nextSession : null);
+        setPendingOrganisationsState([]);
         setHasSessionError(false);
         setSessionMessage(null);
+      },
+      setPendingOrganisations: (organisations, message = "Choose an organisation to continue.") => {
+        setSession(null);
+        setPendingOrganisationsState(organisations);
+        setHasSessionError(false);
+        setSessionMessage(message);
       },
       signOut: async () => {
         await logout().catch(() => undefined);
         setSession(null);
+        setPendingOrganisationsState([]);
         setHasSessionError(false);
         setSessionMessage(null);
       },
     }),
-    [hasSessionError, isLoading, session, sessionMessage],
+    [hasSessionError, isLoading, pendingOrganisations, session, sessionMessage],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -82,6 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 export function applySessionRefreshSuccess(nextSession: SessionResponse): AuthState {
   return {
     session: nextSession.authenticated ? nextSession : null,
+    pendingOrganisations: !nextSession.authenticated && nextSession.code === "ORGANISATION_SELECTION_REQUIRED" ? nextSession.organisations : [],
     hasSessionError: false,
     sessionMessage: nextSession.authenticated ? null : nextSession.message || null,
   };

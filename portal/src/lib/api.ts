@@ -26,18 +26,26 @@ const profileSchema = z.object({
   hasStudentProfile: z.boolean().optional(),
 });
 
+const organisationChoiceSchema = z.object({
+  membershipId: z.string(),
+  organisationId: z.string(),
+  organisationName: z.string(),
+});
+
 export const sessionSchema = z.object({
   authenticated: z.boolean(),
   activeProfile: profileSchema.nullable(),
   profiles: z.array(profileSchema),
   mobileLastFour: z.string().optional(),
   accountRoles: z.array(z.string()).default([]),
+  organisations: z.array(organisationChoiceSchema).default([]),
   code: z.string().optional(),
   message: z.string().optional(),
   requestId: z.string().optional(),
 });
 
 export type SessionResponse = z.infer<typeof sessionSchema>;
+export type OrganisationChoice = z.infer<typeof organisationChoiceSchema>;
 
 const publicConfigSchema = z.object({
   turnstileSiteKey: z.string(),
@@ -62,11 +70,29 @@ const verifyOtpResponseSchema = z.object({
   success: z.boolean(),
   code: z.string().optional(),
   message: z.string().optional(),
+  organisations: z.array(organisationChoiceSchema).optional(),
   session: sessionSchema.optional(),
   requestId: z.string(),
 });
 
 export type VerifyOtpResponse = z.infer<typeof verifyOtpResponseSchema>;
+
+const organisationListResponseSchema = z.object({
+  success: z.boolean(),
+  selectionRequired: z.boolean().optional(),
+  organisations: z.array(organisationChoiceSchema).default([]),
+  code: z.string().optional(),
+  message: z.string().optional(),
+  requestId: z.string(),
+});
+
+const selectOrganisationResponseSchema = z.object({
+  success: z.boolean(),
+  code: z.string().optional(),
+  message: z.string().optional(),
+  session: sessionSchema.optional(),
+  requestId: z.string(),
+});
 
 const partnerProfileSchema = z.object({
   educationPartnerId: z.string(),
@@ -1677,6 +1703,18 @@ export async function resendOtp(challengeId: string) {
 
 export async function verifyOtp(challengeId: string, otp: string) {
   return postJson("/api/auth/verify-otp", { challengeId, otp }, verifyOtpResponseSchema);
+}
+
+export async function getOrganisations() {
+  return getJson("/api/auth/organisations", organisationListResponseSchema);
+}
+
+export async function selectOrganisation(membershipId: string) {
+  return postJson("/api/auth/select-organisation", { membershipId }, selectOrganisationResponseSchema);
+}
+
+export async function switchOrganisation(membershipId: string) {
+  return postJson("/api/auth/switch-organisation", { membershipId }, selectOrganisationResponseSchema);
 }
 
 export async function selectProfile(personId: string) {

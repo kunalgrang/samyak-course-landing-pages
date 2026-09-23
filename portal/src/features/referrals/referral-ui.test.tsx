@@ -90,6 +90,7 @@ const session: SessionResponse = {
   ],
   mobileLastFour: "3210",
   accountRoles: [],
+  organisations: [],
 };
 
 const studentHome: StudentHome = {

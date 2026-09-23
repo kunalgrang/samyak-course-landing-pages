@@ -4,7 +4,15 @@ import { getRecoverableReferralLink, type ReferralServiceEnv } from "./referral-
 import { requireReferralTokenPepper } from "./referral-token";
 import { referralPublicOrigin } from "./platform-config";
 import { CURRENT_ORGANISATION_ID, trustedOrganisationId } from "./tenant-context";
-import { MembershipAccessError, requireActiveOrganisationMembershipForLoginAccount, validateSessionOrganisationMembership } from "./identity-membership";
+import {
+  MembershipAccessError,
+  loadActiveOrganisationMembershipByIdForGlobalIdentity,
+  listActiveOrganisationMembershipsForGlobalIdentity,
+  listActiveOrganisationMembershipsForMobileHash,
+  requireActiveOrganisationMembershipForLoginAccount,
+  validateSessionOrganisationMembership,
+  type OrganisationMembershipChoice,
+} from "./identity-membership";
 
 export const ORG_ID = CURRENT_ORGANISATION_ID;
 export const OTP_MAX_ATTEMPTS = 5;
@@ -34,6 +42,13 @@ export type SessionView = {
   profiles: ProfileChoice[];
   mobileLastFour?: string;
   accountRoles?: string[];
+  organisations?: OrganisationChoice[];
+};
+
+export type OrganisationChoice = {
+  membershipId: string;
+  organisationId: string;
+  organisationName: string;
 };
 
 export type PartnerProfileChoice = {
@@ -88,6 +103,7 @@ export type SessionResultCode =
   | "SESSION_ABSOLUTE_EXPIRED"
   | "SESSION_INACTIVE_EXPIRED"
   | "SESSION_MEMBERSHIP_INACTIVE"
+  | "SESSION_ORGANISATION_REQUIRED"
   | "SESSION_PROFILE_CLEARED"
   | "SESSION_VALID";
 
@@ -469,6 +485,8 @@ export async function bootstrapAccount(c: AppContext, mobile: string, lookup: Po
       .run();
   }
 
+  await requireActiveOrganisationMembershipForLoginAccount(c, account.id);
+  await requireActiveOrganisationMembershipForLoginAccount(c, account.id);
   return account.id;
 }
 
@@ -575,6 +593,7 @@ export async function bootstrapTrainerAccount(c: AppContext, mobile: string, loo
       .run();
   }
 
+  await requireActiveOrganisationMembershipForLoginAccount(c, account.id);
   return account.id;
 }
 
@@ -598,6 +617,148 @@ export async function createSession(
     .bind(createOpaqueId("sess"), loginAccountId, membership.organisationMembershipId, activePersonId, activeEducationPartnerId, activeSubjectType, tokenHash, now, daysFromNow(30), now, fingerprint.ipHash, fingerprint.userAgentHash)
     .run();
   return token;
+}
+
+export async function createOrganisationSelectionSession(c: AppContext, seedLoginAccountId: string) {
+  const token = createSessionToken();
+  const tokenHash = await hmacHex(sessionPepper(c), "session", token);
+  const now = new Date().toISOString();
+  const fingerprint = await requestFingerprint(c);
+  await c.env.DB.prepare(
+    `insert into user_sessions (id, login_account_id, organisation_membership_id, active_person_id, active_education_partner_id, active_subject_type, token_hash, created_at, expires_at, last_seen_at, ip_hash, user_agent_hash)
+     values (?, ?, null, null, null, 'person', ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(createOpaqueId("sess"), seedLoginAccountId, tokenHash, now, daysFromNow(1), now, fingerprint.ipHash, fingerprint.userAgentHash)
+    .run();
+  return token;
+}
+
+export async function rotateSessionToOrganisationMembership(
+  c: AppContext,
+  currentTokenHash: string,
+  membershipId: string,
+  subjectType: SessionSubjectType = "person",
+) {
+  const pending = await pendingOrganisationSelection(c);
+  if (!pending) return null;
+  const membership = await loadActiveOrganisationMembershipByIdForGlobalIdentity(c, membershipId, pending.globalIdentityId);
+  if (!membership) return null;
+  if (currentTokenHash !== pending.tokenHash) return null;
+  await revokeSession(c, currentTokenHash);
+  const activePersonId = subjectType === "person" ? await defaultActivePersonId(c, membership.loginAccountId, membership.organisationId) : null;
+  const activeEducationPartnerId = subjectType === "partner" ? await defaultActivePartnerId(c, membership.loginAccountId, membership.organisationId) : null;
+  const activeTrainerId = subjectType === "trainer" ? await defaultActiveTrainerId(c, membership.loginAccountId, membership.organisationId) : null;
+  const token = await createSessionForMembership(c, membership.organisationMembershipId, membership.loginAccountId, subjectType === "trainer" ? activeTrainerId : activePersonId, activeEducationPartnerId, subjectType);
+  return { token, membership, activePersonId: subjectType === "trainer" ? activeTrainerId : activePersonId, activeEducationPartnerId };
+}
+
+export async function switchSessionOrganisation(
+  c: AppContext,
+  session: AuthenticatedSession,
+  membershipId: string,
+) {
+  const globalIdentityId = await globalIdentityIdForLoginAccount(c, session.record.login_account_id);
+  if (!globalIdentityId) return null;
+  const membership = await loadActiveOrganisationMembershipByIdForGlobalIdentity(c, membershipId, globalIdentityId);
+  if (!membership) return null;
+  await revokeSession(c, session.tokenHash);
+  const subjectType = session.record.active_subject_type || "person";
+  const activePersonId = subjectType === "trainer"
+    ? await defaultActiveTrainerId(c, membership.loginAccountId, membership.organisationId)
+    : subjectType === "person"
+      ? await defaultActivePersonId(c, membership.loginAccountId, membership.organisationId)
+      : null;
+  const activeEducationPartnerId = subjectType === "partner" ? await defaultActivePartnerId(c, membership.loginAccountId, membership.organisationId) : null;
+  const token = await createSessionForMembership(c, membership.organisationMembershipId, membership.loginAccountId, activePersonId, activeEducationPartnerId, subjectType);
+  return { token, membership, activePersonId, activeEducationPartnerId, subjectType };
+}
+
+export async function pendingOrganisationSelection(c: AppContext) {
+  const token = getCookie(c.req.header("cookie") || "", sessionCookieName(c));
+  if (!token) return null;
+  const tokenHash = await hmacHex(sessionPepper(c), "session", token);
+  const record = await c.env.DB.prepare("select * from user_sessions where token_hash = ?").bind(tokenHash).first<SessionRecord>();
+  if (!record || record.revoked_at || record.organisation_membership_id || Date.parse(record.expires_at) <= Date.now()) return null;
+  const globalIdentityId = await globalIdentityIdForLoginAccount(c, record.login_account_id);
+  if (!globalIdentityId) return null;
+  const organisations = await listActiveOrganisationMembershipsForGlobalIdentity(c, globalIdentityId);
+  return { record, tokenHash, globalIdentityId, organisations };
+}
+
+export async function activeOrganisationChoicesForSession(c: AppContext, session: AuthenticatedSession): Promise<OrganisationChoice[]> {
+  const globalIdentityId = await globalIdentityIdForLoginAccount(c, session.record.login_account_id);
+  if (!globalIdentityId) return [];
+  return organisationChoices(await listActiveOrganisationMembershipsForGlobalIdentity(c, globalIdentityId));
+}
+
+export async function activeOrganisationMembershipsForMobile(c: AppContext, mobile: string) {
+  const hash = await mobileHash(c, mobile);
+  return listActiveOrganisationMembershipsForMobileHash(c, hash);
+}
+
+export function organisationChoices(memberships: OrganisationMembershipChoice[]): OrganisationChoice[] {
+  return memberships.map((membership) => ({
+    membershipId: membership.organisationMembershipId,
+    organisationId: membership.organisationId,
+    organisationName: membership.organisationName,
+  }));
+}
+
+async function createSessionForMembership(
+  c: AppContext,
+  organisationMembershipId: string,
+  loginAccountId: string,
+  activePersonId: string | null,
+  activeEducationPartnerId: string | null,
+  activeSubjectType: SessionSubjectType,
+) {
+  const token = createSessionToken();
+  const tokenHash = await hmacHex(sessionPepper(c), "session", token);
+  const now = new Date().toISOString();
+  const fingerprint = await requestFingerprint(c);
+  await c.env.DB.prepare(
+    `insert into user_sessions (id, login_account_id, organisation_membership_id, active_person_id, active_education_partner_id, active_subject_type, token_hash, created_at, expires_at, last_seen_at, ip_hash, user_agent_hash)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(createOpaqueId("sess"), loginAccountId, organisationMembershipId, activePersonId, activeEducationPartnerId, activeSubjectType, tokenHash, now, daysFromNow(30), now, fingerprint.ipHash, fingerprint.userAgentHash)
+    .run();
+  return token;
+}
+
+async function globalIdentityIdForLoginAccount(c: AppContext, loginAccountId: string) {
+  const row = await c.env.DB.prepare("select global_identity_id from login_accounts where id = ?")
+    .bind(loginAccountId)
+    .first<{ global_identity_id: string | null }>();
+  return row?.global_identity_id || null;
+}
+
+async function defaultActivePersonId(c: AppContext, loginAccountId: string, organisationId: string) {
+  const rows = await c.env.DB.prepare(
+    `select login_account_people.person_id
+     from login_account_people
+     join people on people.id = login_account_people.person_id
+       and people.organisation_id = ?
+       and people.status = 'active'
+     join referrer_profiles on referrer_profiles.person_id = people.id
+       and referrer_profiles.organisation_id = people.organisation_id
+       and referrer_profiles.active = 1
+     where login_account_people.login_account_id = ?
+       and login_account_people.is_available = 1
+     order by login_account_people.is_default desc, people.full_name collate nocase, people.id`,
+  )
+    .bind(organisationId, loginAccountId)
+    .all<{ person_id: string }>();
+  return rows.results?.length === 1 ? rows.results[0].person_id : null;
+}
+
+async function defaultActiveTrainerId(c: AppContext, loginAccountId: string, organisationId: string) {
+  const view = await trainerSessionView(c, loginAccountId, null, organisationId);
+  return view.trainers.length === 1 ? view.trainers[0].personId : null;
+}
+
+async function defaultActivePartnerId(c: AppContext, loginAccountId: string, organisationId: string) {
+  const view = await partnerSessionView(c, loginAccountId, null, organisationId);
+  return view.partners.length === 1 ? view.partners[0].educationPartnerId : null;
 }
 
 export function buildSessionCookie(c: AppContext, token: string, scope: SessionCookieScope = "default") {
@@ -646,6 +807,21 @@ export async function getSessionValidationResult(c: AppContext, scope: SessionCo
   if (Date.parse(record.last_seen_at) <= now - 7 * 24 * 60 * 60_000) {
     await recordSessionResult(c, "SESSION_INACTIVE_EXPIRED", record.login_account_id);
     return { session: null, resultCode: "SESSION_INACTIVE_EXPIRED", shouldClearCookie: true };
+  }
+  if (!record.organisation_membership_id) {
+    if (record.active_person_id || record.active_education_partner_id) {
+      const membership = await requireActiveOrganisationMembershipForLoginAccount(c, record.login_account_id);
+      if (membership) {
+        await c.env.DB.prepare("update user_sessions set organisation_membership_id = ? where id = ?")
+          .bind(membership.organisationMembershipId, record.id)
+          .run();
+        record.organisation_membership_id = membership.organisationMembershipId;
+      }
+    }
+  }
+  if (!record.organisation_membership_id) {
+    await recordSessionResult(c, "SESSION_ORGANISATION_REQUIRED", record.login_account_id);
+    return { session: null, resultCode: "SESSION_ORGANISATION_REQUIRED", shouldClearCookie: false };
   }
   const membership = await validateSessionOrganisationMembership(c, record);
   if (!membership) {
@@ -1512,12 +1688,12 @@ async function recordSessionResult(c: AppContext, resultCode: SessionResultCode,
   await recordAuthEvent(c, "session_check", resultCode, { loginAccountId });
 }
 
-export async function recordAuditLog(c: AppContext, loginAccountId: string, personId: string | null, action: string) {
+export async function recordAuditLog(c: AppContext, loginAccountId: string, personId: string | null, action: string, organisationId = ORG_ID) {
   await c.env.DB.prepare(
     `insert into audit_logs (id, organisation_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, created_at)
      values (?, ?, ?, ?, ?, 'session', ?, ?)`,
   )
-    .bind(createOpaqueId("audit"), ORG_ID, loginAccountId, personId, action, loginAccountId, new Date().toISOString())
+    .bind(createOpaqueId("audit"), organisationId, loginAccountId, personId, action, loginAccountId, new Date().toISOString())
     .run();
 }
 

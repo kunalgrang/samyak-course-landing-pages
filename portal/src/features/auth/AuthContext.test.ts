@@ -22,6 +22,7 @@ const authenticatedSession: SessionResponse = {
   ],
   mobileLastFour: "3210",
   accountRoles: [],
+  organisations: [],
 };
 
 describe("AuthContext session refresh state", () => {
@@ -39,10 +40,26 @@ describe("AuthContext session refresh state", () => {
       activeProfile: null,
       profiles: [],
       accountRoles: [],
+      organisations: [],
       message: "Your session has expired. Please sign in again.",
     });
 
     expect(next.session).toBeNull();
     expect(next.sessionMessage).toBe("Your session has expired. Please sign in again.");
+  });
+
+  it("keeps server-issued organisation choices separate from authenticated tenant sessions", () => {
+    const next = applySessionRefreshSuccess({
+      authenticated: false,
+      activeProfile: null,
+      profiles: [],
+      accountRoles: [],
+      organisations: [{ membershipId: "omem_other", organisationId: "org_other", organisationName: "Other Institute" }],
+      code: "ORGANISATION_SELECTION_REQUIRED",
+      message: "Choose an organisation to continue.",
+    });
+
+    expect(next.session).toBeNull();
+    expect(next.pendingOrganisations).toEqual([expect.objectContaining({ membershipId: "omem_other" })]);
   });
 });

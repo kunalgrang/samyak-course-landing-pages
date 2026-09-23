@@ -3,7 +3,7 @@ import { BrandMark } from "../../components/BrandMark";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
 import { TrustFooter } from "../../components/TrustFooter";
-import { getPublicConfig, requestOtp, resendOtp, selectProfile, verifyOtp, type PublicConfig, type SessionResponse } from "../../lib/api";
+import { getPublicConfig, requestOtp, resendOtp, selectOrganisation, selectProfile, verifyOtp, type OrganisationChoice, type PublicConfig, type SessionResponse } from "../../lib/api";
 import { useAuth } from "./AuthContext";
 
 type LoginPageProps = {
@@ -30,7 +30,7 @@ export function LoginPage({
   title = "Student access",
   description = "Sign in with the mobile number registered for your Samyak referral profile.",
 }: LoginPageProps) {
-  const { setAuthenticatedSession } = useAuth();
+  const { setAuthenticatedSession, setPendingOrganisations } = useAuth();
   const [mobile, setMobile] = useState("");
   const [otp, setOtp] = useState("");
   const [config, setConfig] = useState<PublicConfig | null>(null);
@@ -39,7 +39,8 @@ export function LoginPage({
   const [challengeId, setChallengeId] = useState("");
   const [maskedMobile, setMaskedMobile] = useState("");
   const [sessionChoices, setSessionChoices] = useState<SessionResponse | null>(null);
-  const [step, setStep] = useState<"mobile" | "otp" | "profile">("mobile");
+  const [organisationChoices, setOrganisationChoices] = useState<OrganisationChoice[]>([]);
+  const [step, setStep] = useState<"mobile" | "otp" | "organisation" | "profile">("mobile");
   const [cooldown, setCooldown] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,6 +130,12 @@ export function LoginPage({
     setError(null);
     try {
       const result = await verifyOtp(challengeId, otp);
+      if (result.code === "ORGANISATION_SELECTION_REQUIRED" && result.organisations?.length) {
+        setOrganisationChoices(result.organisations);
+        setPendingOrganisations(result.organisations, result.message);
+        setStep("organisation");
+        return;
+      }
       if (!result.success || !result.session) {
         setError(result.message || "The OTP could not be verified.");
         return;
@@ -176,6 +183,23 @@ export function LoginPage({
     }
   }
 
+  async function handleSelectOrganisation(membershipId: string) {
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      const result = await selectOrganisation(membershipId);
+      if (!result.success || !result.session) {
+        setError(result.message || "This organisation is not available.");
+        return;
+      }
+      handleSession(result.session);
+    } catch {
+      setError("Network error. Please try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   function handleSession(nextSession: SessionResponse) {
     if (nextSession.profiles.length > 1 && !nextSession.activeProfile) {
       setSessionChoices(nextSession);
@@ -192,6 +216,7 @@ export function LoginPage({
     setChallengeId("");
     setMaskedMobile("");
     setSessionChoices(null);
+    setOrganisationChoices([]);
     setError(null);
   }
 
@@ -287,6 +312,21 @@ export function LoginPage({
               ))}
             </div>
             {error ? <ErrorState title="Could not select profile" message={error} /> : null}
+          </div>
+        ) : null}
+
+        {step === "organisation" ? (
+          <div className="login-form">
+            <p className="field-label">Choose organisation</p>
+            <div className="profile-choice-list">
+              {organisationChoices.map((organisation) => (
+                <button key={organisation.membershipId} type="button" className="profile-choice" onClick={() => handleSelectOrganisation(organisation.membershipId)} disabled={isSubmitting}>
+                  <span>{organisation.organisationName}</span>
+                  <small>{organisation.organisationId}</small>
+                </button>
+              ))}
+            </div>
+            {error ? <ErrorState title="Could not select organisation" message={error} /> : null}
           </div>
         ) : null}
       </section>

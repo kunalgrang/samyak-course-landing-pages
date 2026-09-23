@@ -13,6 +13,10 @@ export type OrganisationMembershipContext = {
   loginAccountId: string;
 };
 
+export type OrganisationMembershipChoice = OrganisationMembershipContext & {
+  organisationName: string;
+};
+
 export class MembershipAccessError extends Error {
   constructor(message = "Organisation membership is not active") {
     super(message);
@@ -116,22 +120,109 @@ export async function requireActiveOrganisationMembershipForLoginAccount(c: AppC
 }
 
 export async function validateSessionOrganisationMembership(c: AppContext, record: SessionMembershipRecord) {
-  let context = record.organisation_membership_id
+  const context = record.organisation_membership_id
     ? await loadMembershipById(c, record.organisation_membership_id)
-    : await ensureOrganisationMembershipForLoginAccount(c, record.login_account_id);
+    : null;
   if (!context) return null;
   if (context.loginAccountId !== record.login_account_id) return null;
-  if (!record.organisation_membership_id) {
-    await c.env.DB.prepare("update user_sessions set organisation_membership_id = ? where id = ?")
-      .bind(context.organisationMembershipId, record.id)
-      .run();
-    context = { ...context };
-  }
   if (!isActiveMembership(context)) return null;
   return context;
 }
 
-function isActiveMembership(context: OrganisationMembershipContext | null) {
+export async function loadActiveOrganisationMembershipByIdForGlobalIdentity(c: AppContext, membershipId: string, globalIdentityId: string) {
+  const context = await loadMembershipById(c, membershipId);
+  if (!isActiveMembership(context)) return null;
+  if (context?.globalIdentityId !== globalIdentityId) return null;
+  return context;
+}
+
+export async function listActiveOrganisationMembershipsForMobileHash(c: AppContext, mobileHash: string): Promise<OrganisationMembershipChoice[]> {
+  const rows = await c.env.DB.prepare(
+    `select
+       organisation_memberships.id as organisation_membership_id,
+       organisation_memberships.organisation_id,
+       organisation_memberships.status as membership_status,
+       organisation_memberships.login_account_id,
+       login_accounts.organisation_id as login_account_organisation_id,
+       login_accounts.organisation_membership_id as login_account_membership_id,
+       login_accounts.login_enabled,
+       login_accounts.status as login_account_status,
+       global_identities.id as global_identity_id,
+       global_identities.status as global_identity_status,
+       organisations.name as organisation_name
+     from global_identities
+     join organisation_memberships on organisation_memberships.global_identity_id = global_identities.id
+     join login_accounts on login_accounts.id = organisation_memberships.login_account_id
+     join organisations on organisations.id = organisation_memberships.organisation_id
+     where global_identities.mobile_normalized = ?
+     order by organisations.name collate nocase, organisation_memberships.id`,
+  )
+    .bind(mobileHash)
+    .all<MembershipRow & { login_account_status: string; login_enabled: number; organisation_name: string }>();
+  return (rows.results || [])
+    .filter((row) =>
+      row.global_identity_status === "active" &&
+      row.membership_status === "active" &&
+      row.login_enabled === 1 &&
+      row.login_account_status === "active" &&
+      row.login_account_organisation_id === row.organisation_id &&
+      (!row.login_account_membership_id || row.login_account_membership_id === row.organisation_membership_id),
+    )
+    .map((row) => ({
+      globalIdentityId: row.global_identity_id,
+      globalIdentityStatus: row.global_identity_status,
+      organisationMembershipId: row.organisation_membership_id,
+      organisationId: row.organisation_id,
+      organisationName: row.organisation_name,
+      membershipStatus: row.membership_status,
+      loginAccountId: row.login_account_id,
+    }));
+}
+
+export async function listActiveOrganisationMembershipsForGlobalIdentity(c: AppContext, globalIdentityId: string): Promise<OrganisationMembershipChoice[]> {
+  const rows = await c.env.DB.prepare(
+    `select
+       organisation_memberships.id as organisation_membership_id,
+       organisation_memberships.organisation_id,
+       organisation_memberships.status as membership_status,
+       organisation_memberships.login_account_id,
+       login_accounts.organisation_id as login_account_organisation_id,
+       login_accounts.organisation_membership_id as login_account_membership_id,
+       login_accounts.login_enabled,
+       login_accounts.status as login_account_status,
+       global_identities.id as global_identity_id,
+       global_identities.status as global_identity_status,
+       organisations.name as organisation_name
+     from global_identities
+     join organisation_memberships on organisation_memberships.global_identity_id = global_identities.id
+     join login_accounts on login_accounts.id = organisation_memberships.login_account_id
+     join organisations on organisations.id = organisation_memberships.organisation_id
+     where global_identities.id = ?
+     order by organisations.name collate nocase, organisation_memberships.id`,
+  )
+    .bind(globalIdentityId)
+    .all<MembershipRow & { login_account_status: string; login_enabled: number; organisation_name: string }>();
+  return (rows.results || [])
+    .filter((row) =>
+      row.global_identity_status === "active" &&
+      row.membership_status === "active" &&
+      row.login_enabled === 1 &&
+      row.login_account_status === "active" &&
+      row.login_account_organisation_id === row.organisation_id &&
+      (!row.login_account_membership_id || row.login_account_membership_id === row.organisation_membership_id),
+    )
+    .map((row) => ({
+      globalIdentityId: row.global_identity_id,
+      globalIdentityStatus: row.global_identity_status,
+      organisationMembershipId: row.organisation_membership_id,
+      organisationId: row.organisation_id,
+      organisationName: row.organisation_name,
+      membershipStatus: row.membership_status,
+      loginAccountId: row.login_account_id,
+    }));
+}
+
+export function isActiveMembership(context: OrganisationMembershipContext | null) {
   return Boolean(
     context &&
       context.globalIdentityStatus === "active" &&

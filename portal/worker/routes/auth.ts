@@ -2,10 +2,13 @@ import { z } from "zod";
 import type { Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import {
+  activeOrganisationChoicesForSession,
+  activeOrganisationMembershipsForMobile,
   bootstrapAccount,
   buildSessionCookie,
   checkOtpRequestLimits,
   clearSessionCookie,
+  createOrganisationSelectionSession,
   createPendingChallenge,
   createSession,
   decryptChallengeMobile,
@@ -20,12 +23,16 @@ import {
   markRequestedChallengeBlocked,
   markRequestedChallengeSent,
   mobileHash,
+  organisationChoices,
+  pendingOrganisationSelection,
   recordAuditLog,
   recordAuthEvent,
   requestFingerprint,
   revokeSession,
+  rotateSessionToOrganisationMembership,
   selectLinkedProfile,
   sessionView,
+  switchSessionOrganisation,
   runDummyOtpComparison,
   updateChallengeResent,
   OTP_MAX_ATTEMPTS,
@@ -56,6 +63,10 @@ const verifyOtpSchema = challengeSchema.extend({
 
 const selectProfileSchema = z.object({
   personId: z.string().min(1).max(120),
+});
+
+const selectOrganisationSchema = z.object({
+  membershipId: z.string().min(1).max(120),
 });
 
 const genericOtpMessage = "If this mobile number is registered, an OTP has been sent.";
@@ -226,20 +237,31 @@ export function registerAuthRoutes(app: PortalHono) {
     if (!verified) {
       return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
     }
-    const accountId = await bootstrapAccount(c, mobile, lookup);
-    const activePersonId = lookup.profiles.length === 1 ? lookup.profiles[0].personId || null : null;
-    let token: string;
-    try {
-      token = await createSession(c, accountId, activePersonId);
-    } catch (error) {
-      if (error instanceof Error && error.name === "MembershipAccessError") {
-        return jsonWithRequestId(c, { success: false, code: "MEMBERSHIP_INACTIVE", message: "This organisation access is not active." }, 403);
-      }
-      throw error;
+    if (lookup.eligible) await bootstrapAccount(c, mobile, lookup);
+    const memberships = await activeOrganisationMembershipsForMobile(c, mobile);
+    if (memberships.length === 0) {
+      await recordAuthEvent(c, "otp_verify", "NO_ACTIVE_ORGANISATION", { mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
+      return jsonWithRequestId(c, { success: false, code: "NO_ACTIVE_ORGANISATION", message: "No active organisation access is available for this mobile number." }, 403);
     }
-    await recordAuthEvent(c, "otp_verify", "LOGIN_SUCCESS", { loginAccountId: accountId, mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
-    await recordAuditLog(c, accountId, activePersonId, "login");
-    const session = await sessionView(c, accountId, activePersonId);
+    if (memberships.length > 1) {
+      const token = await createOrganisationSelectionSession(c, memberships[0].loginAccountId);
+      await recordAuthEvent(c, "otp_verify", "ORGANISATION_SELECTION_REQUIRED", { loginAccountId: memberships[0].loginAccountId, mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
+      const response = jsonWithRequestId(c, {
+        success: true,
+        code: "ORGANISATION_SELECTION_REQUIRED",
+        message: "Choose an organisation to continue.",
+        organisations: organisationChoices(memberships),
+      }, 200);
+      response.headers.append("Set-Cookie", buildSessionCookie(c, token));
+      return response;
+    }
+    const membership = memberships[0];
+    const activePersonId = lookup.profiles.length === 1 && membership.organisationId === "org_samyak" ? lookup.profiles[0].personId || null : null;
+    const token = await createSession(c, membership.loginAccountId, activePersonId);
+    await recordAuthEvent(c, "otp_verify", "LOGIN_SUCCESS", { loginAccountId: membership.loginAccountId, mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
+    await recordAuditLog(c, membership.loginAccountId, activePersonId, "login", membership.organisationId);
+    const organisations = organisationChoices(memberships);
+    const session = { ...(await sessionView(c, membership.loginAccountId, activePersonId, membership.organisationId)), organisations };
     const response = jsonWithRequestId(c, { success: true, session }, 200);
     response.headers.append("Set-Cookie", buildSessionCookie(c, token));
     return response;
@@ -249,6 +271,19 @@ export function registerAuthRoutes(app: PortalHono) {
     const validation = await getSessionValidationResult(c);
     const session = validation.session;
     if (!session) {
+      if (validation.resultCode === "SESSION_ORGANISATION_REQUIRED") {
+        const pending = await pendingOrganisationSelection(c);
+        if (pending) {
+          return jsonWithRequestId(c, {
+            authenticated: false,
+            activeProfile: null,
+            profiles: [],
+            code: "ORGANISATION_SELECTION_REQUIRED",
+            message: "Choose an organisation to continue.",
+            organisations: organisationChoices(pending.organisations),
+          });
+        }
+      }
       const expired =
         validation.resultCode === "SESSION_ABSOLUTE_EXPIRED" || validation.resultCode === "SESSION_INACTIVE_EXPIRED";
       const response = jsonWithRequestId(c, {
@@ -279,7 +314,74 @@ export function registerAuthRoutes(app: PortalHono) {
         message: "Please use Trainer Portal.",
       });
     }
-    return jsonWithRequestId(c, await sessionView(c, session.record.login_account_id, session.record.active_person_id, session.record.organisation_id || undefined));
+    const organisations = await activeOrganisationChoicesForSession(c, session);
+    return jsonWithRequestId(c, { ...(await sessionView(c, session.record.login_account_id, session.record.active_person_id, session.record.organisation_id || undefined)), organisations });
+  });
+
+  app.get("/api/auth/organisations", async (c) => {
+    const pending = await pendingOrganisationSelection(c);
+    if (pending) {
+      return jsonWithRequestId(c, { success: true, selectionRequired: true, organisations: organisationChoices(pending.organisations) });
+    }
+    const session = await getSessionFromRequest(c);
+    if (!session) return jsonWithRequestId(c, { success: false, code: "UNAUTHENTICATED", message: "Please sign in again." }, 401);
+    return jsonWithRequestId(c, { success: true, selectionRequired: false, organisations: await activeOrganisationChoicesForSession(c, session) });
+  });
+
+  app.post("/api/auth/select-organisation", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
+    const body = await readJsonBody(c, selectOrganisationSchema);
+    if (isResponse(body)) return body;
+    const pending = await pendingOrganisationSelection(c);
+    if (!pending) return jsonWithRequestId(c, { success: false, code: "SELECTION_SESSION_REQUIRED", message: "Please verify your OTP again." }, 401);
+    const activated = await rotateSessionToOrganisationMembership(c, pending.tokenHash, body.membershipId);
+    if (!activated) return jsonWithRequestId(c, { success: false, code: "ORGANISATION_NOT_AVAILABLE", message: "This organisation is not available." }, 403);
+    await recordAuthEvent(c, "organisation_select", "LOGIN_SUCCESS", { loginAccountId: activated.membership.loginAccountId });
+    await recordAuditLog(c, activated.membership.loginAccountId, activated.activePersonId, "organisation_selected", activated.membership.organisationId);
+    const organisations = await activeOrganisationChoicesForSession(c, { record: {
+      ...pending.record,
+      login_account_id: activated.membership.loginAccountId,
+      organisation_membership_id: activated.membership.organisationMembershipId,
+      organisation_id: activated.membership.organisationId,
+      active_person_id: activated.activePersonId,
+      active_education_partner_id: activated.activeEducationPartnerId,
+    }, tokenHash: "" });
+    const session = {
+      ...(await sessionView(c, activated.membership.loginAccountId, activated.activePersonId, activated.membership.organisationId)),
+      organisations,
+    };
+    const response = jsonWithRequestId(c, { success: true, session }, 200);
+    response.headers.append("Set-Cookie", buildSessionCookie(c, activated.token));
+    return response;
+  });
+
+  app.post("/api/auth/switch-organisation", async (c) => {
+    const originError = requireSameOrigin(c);
+    if (originError) return originError;
+    const body = await readJsonBody(c, selectOrganisationSchema);
+    if (isResponse(body)) return body;
+    const session = await getSessionFromRequest(c);
+    if (!session) return jsonWithRequestId(c, { success: false, code: "UNAUTHENTICATED", message: "Please sign in again." }, 401);
+    const switched = await switchSessionOrganisation(c, session, body.membershipId);
+    if (!switched) return jsonWithRequestId(c, { success: false, code: "ORGANISATION_NOT_AVAILABLE", message: "This organisation is not available." }, 403);
+    await recordAuthEvent(c, "organisation_switch", "SWITCH_SUCCESS", { loginAccountId: switched.membership.loginAccountId });
+    await recordAuditLog(c, switched.membership.loginAccountId, switched.activePersonId, "organisation_switched", switched.membership.organisationId);
+    const organisations = await activeOrganisationChoicesForSession(c, { record: {
+      ...session.record,
+      login_account_id: switched.membership.loginAccountId,
+      organisation_membership_id: switched.membership.organisationMembershipId,
+      organisation_id: switched.membership.organisationId,
+      active_person_id: switched.activePersonId,
+      active_education_partner_id: switched.activeEducationPartnerId,
+      active_subject_type: switched.subjectType,
+    }, tokenHash: "" });
+    const sessionViewForSubject = switched.subjectType === "partner"
+      ? await sessionView(c, switched.membership.loginAccountId, null, switched.membership.organisationId)
+      : await sessionView(c, switched.membership.loginAccountId, switched.activePersonId, switched.membership.organisationId);
+    const response = jsonWithRequestId(c, { success: true, session: { ...sessionViewForSubject, organisations } }, 200);
+    response.headers.append("Set-Cookie", buildSessionCookie(c, switched.token));
+    return response;
   });
 
   app.post("/api/auth/select-profile", async (c) => {

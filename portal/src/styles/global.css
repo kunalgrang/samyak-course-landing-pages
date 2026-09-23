@@ -268,6 +268,25 @@ a:focus-visible {
   gap: 8px;
 }
 
+.organisation-switcher {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  color: var(--color-muted);
+  font-size: 0.8rem;
+}
+
+.organisation-switcher select,
+.topbar__organisation-switcher {
+  min-height: 40px;
+  max-width: 220px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--color-navy);
+  padding: 0 10px;
+}
+
 .topbar button,
 .sidebar__signout,
 .mobile-drawer button {

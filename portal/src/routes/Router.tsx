@@ -4,6 +4,7 @@ import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import { useAuth } from "../features/auth/AuthContext";
 import { LoginPage } from "../features/auth/LoginPage";
+import { selectOrganisation, type OrganisationChoice, type SessionResponse } from "../lib/api";
 import { PartnerLoginPage } from "../features/partner/PartnerLoginPage";
 import { PartnerPortalPage } from "../features/partner/PartnerPortalPage";
 import { TrainerLoginPage } from "../features/trainer/TrainerLoginPage";
@@ -80,7 +81,7 @@ export function normalizePath(pathname: string): RoutePath {
 }
 
 export function Router() {
-  const { isAuthenticated, isLoading, hasSessionError, refreshSession, session, sessionMessage, signOut } = useAuth();
+  const { isAuthenticated, isLoading, hasSessionError, refreshSession, session, sessionMessage, signOut, isOrganisationSelectionRequired, pendingOrganisations, setAuthenticatedSession } = useAuth();
   const [path, setPath] = useState<RoutePath>(() => normalizePath(window.location.pathname));
   const isStaff = Boolean(session?.accountRoles.some((role) => staffRoles.has(role)));
   const canAccessEnquiries = canViewEnquiries(session?.accountRoles || []);
@@ -184,6 +185,13 @@ export function Router() {
     );
   }
 
+  if (isOrganisationSelectionRequired) {
+    return <OrganisationSelectionPage organisations={pendingOrganisations} onSelected={(nextSession) => {
+      setAuthenticatedSession(nextSession);
+      navigate("/app", true);
+    }} />;
+  }
+
   if (path === "/login" || !isAuthenticated) {
     if (path === "/student/login" || isStudentPath) {
       return <LoginPage sessionMessage={sessionMessage} onAuthenticated={() => navigate("/student/dashboard", true)} />;
@@ -206,7 +214,7 @@ export function Router() {
 
   if (path.startsWith("/student/") && !isStaff) {
     return (
-      <AppShell activePath={activeStudentPath} navigation={studentNavigation} onNavigate={navigate} onSignOut={handleStudentSignOut}>
+      <AppShell activePath={activeStudentPath} navigation={studentNavigation} onNavigate={navigate} onSignOut={handleStudentSignOut} organisations={session?.organisations || []}>
         {activeStudentPath === "/student/dashboard" ? <ShellHomePage referralPath="/student/referrals" profilePath="/student/profile" /> : null}
         {activeStudentPath === "/student/learning" ? <StudentLearningPage /> : null}
         {activeStudentPath === "/student/certificates" ? <CertificatesPage /> : null}
@@ -218,7 +226,7 @@ export function Router() {
   }
 
   return (
-    <AppShell activePath={activeAppPath} navigation={navigation} onNavigate={navigate} onSignOut={handleSignOut}>
+    <AppShell activePath={activeAppPath} navigation={navigation} onNavigate={navigate} onSignOut={handleSignOut} organisations={session?.organisations || []}>
       {activeAppPath === "/app" ? <ShellHomePage /> : null}
       {activeAppPath === "/app/enquiries" && canAccessEnquiries ? <EnquiriesPage /> : null}
       {activeAppPath === "/app/students" && canAccessStudents ? <StudentsPage /> : null}
@@ -250,6 +258,50 @@ export function Router() {
       {activeAppPath === "/app/rules" ? <RulesPage /> : null}
       {activeAppPath === "/app/profile" ? <ProfilePage /> : null}
     </AppShell>
+  );
+}
+
+function OrganisationSelectionPage({ organisations, onSelected }: { organisations: OrganisationChoice[]; onSelected: (session: SessionResponse) => void }) {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function choose(membershipId: string) {
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      const result = await selectOrganisation(membershipId);
+      if (!result.success || !result.session) {
+        setError(result.message || "This organisation is not available.");
+        return;
+      }
+      onSelected(result.session);
+    } catch {
+      setError("Network error. Please try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="login-page">
+      <section className="login-shell" aria-labelledby="organisation-select-title">
+        <div className="login-shell__content">
+          <h1 id="organisation-select-title">Choose organisation</h1>
+          <p>Select the institute you want to open.</p>
+        </div>
+        <div className="login-form">
+          <div className="profile-choice-list">
+            {organisations.map((organisation) => (
+              <button key={organisation.membershipId} type="button" className="profile-choice" disabled={isSubmitting} onClick={() => choose(organisation.membershipId)}>
+                <span>{organisation.organisationName}</span>
+                <small>{organisation.organisationId}</small>
+              </button>
+            ))}
+          </div>
+          {error ? <ErrorState title="Could not select organisation" message={error} /> : null}
+        </div>
+      </section>
+    </main>
   );
 }
 
