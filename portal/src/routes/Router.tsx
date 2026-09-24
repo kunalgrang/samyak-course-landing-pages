@@ -4,6 +4,7 @@ import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import { useAuth } from "../features/auth/AuthContext";
 import { LoginPage } from "../features/auth/LoginPage";
+import { SignupPage } from "../features/auth/SignupPage";
 import { selectOrganisation, type OrganisationChoice, type SessionResponse } from "../lib/api";
 import { PartnerLoginPage } from "../features/partner/PartnerLoginPage";
 import { PartnerPortalPage } from "../features/partner/PartnerPortalPage";
@@ -57,6 +58,7 @@ type RedirectState = {
 
 export function normalizePath(pathname: string): RoutePath {
   if (pathname === "/login" || pathname === "/student/login") return pathname;
+  if (pathname === "/signup") return pathname;
   if (pathname === "/partner/login" || pathname === "/partner/dashboard") return pathname;
   if (pathname === "/trainer/login" || pathname === "/trainer/dashboard" || pathname === "/trainer/sessions") return pathname;
   if (studentRoutes.has(pathname as RoutePath)) return pathname as RoutePath;
@@ -160,6 +162,10 @@ export function Router() {
 
   if (path === "/trainer/login") {
     return <TrainerLoginPage sessionMessage={sessionMessage} onAuthenticated={() => navigate("/trainer/dashboard", true)} />;
+  }
+
+  if (path === "/signup") {
+    return <SignupPage onComplete={() => navigate("/app", true)} />;
   }
 
   if (path.startsWith("/trainer/")) {

@@ -739,7 +739,7 @@ async function defaultActivePersonId(c: AppContext, loginAccountId: string, orga
      join people on people.id = login_account_people.person_id
        and people.organisation_id = ?
        and people.status = 'active'
-     join referrer_profiles on referrer_profiles.person_id = people.id
+     left join referrer_profiles on referrer_profiles.person_id = people.id
        and referrer_profiles.organisation_id = people.organisation_id
        and referrer_profiles.active = 1
      where login_account_people.login_account_id = ?
@@ -878,7 +878,9 @@ export async function sessionView(c: AppContext, loginAccountId: string, activeP
        case when students.id is null then 0 else 1 end as has_student_profile
      from login_account_people
      join people on people.id = login_account_people.person_id
-     join referrer_profiles on referrer_profiles.person_id = people.id and referrer_profiles.active = 1
+     left join referrer_profiles on referrer_profiles.person_id = people.id
+       and referrer_profiles.organisation_id = people.organisation_id
+       and referrer_profiles.active = 1
      left join students on students.person_id = people.id
        and students.organisation_id = people.organisation_id
        and students.portal_status != 'disabled'
@@ -1711,15 +1713,28 @@ async function isLinkedProfileAvailable(c: AppContext, loginAccountId: string, p
     `select 1 as ok
      from login_account_people
      join people on people.id = login_account_people.person_id
-     join referrer_profiles on referrer_profiles.person_id = people.id and referrer_profiles.active = 1
      where login_account_people.login_account_id = ?
        and login_account_people.person_id = ?
        and login_account_people.is_available = 1
        and people.organisation_id = ?
-       and referrer_profiles.organisation_id = ?
-       and people.status = 'active'`,
+       and people.status = 'active'
+       and (
+         exists (
+           select 1 from referrer_profiles
+           where referrer_profiles.person_id = people.id
+             and referrer_profiles.organisation_id = people.organisation_id
+             and referrer_profiles.active = 1
+         )
+         or exists (
+           select 1 from login_account_roles
+           join roles on roles.id = login_account_roles.role_id
+             and roles.organisation_id = people.organisation_id
+             and roles.code not in ('student', 'alumni')
+           where login_account_roles.login_account_id = login_account_people.login_account_id
+         )
+       )`,
   )
-    .bind(loginAccountId, personId, organisationId, organisationId)
+    .bind(loginAccountId, personId, organisationId)
     .first<{ ok: number }>();
   return Boolean(linked);
 }

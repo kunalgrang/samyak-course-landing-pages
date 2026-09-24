@@ -13,6 +13,22 @@ export const organisations = sqliteTable(
     name: text("name").notNull(),
     slug: text("slug").notNull(),
     status: text("status").notNull(),
+    legalName: text("legal_name"),
+    organisationType: text("organisation_type"),
+    legalEntityType: text("legal_entity_type"),
+    addressLine1: text("address_line1"),
+    city: text("city"),
+    stateRegion: text("state_region"),
+    country: text("country"),
+    postcode: text("postcode"),
+    currency: text("currency"),
+    timezone: text("timezone"),
+    website: text("website"),
+    logoUrl: text("logo_url"),
+    taxIdentifiersJson: text("tax_identifiers_json"),
+    termsAcceptedAt: text("terms_accepted_at"),
+    termsVersion: text("terms_version"),
+    termsAcceptedByGlobalIdentityId: text("terms_accepted_by_global_identity_id").references((): AnySQLiteColumn => globalIdentities.id),
     ...timestamps,
   },
   (table) => [
@@ -32,10 +48,23 @@ export const branches = sqliteTable(
     code: text("code").notNull(),
     timezone: text("timezone").notNull().default("Asia/Kolkata"),
     status: text("status").notNull(),
+    addressLine1: text("address_line1"),
+    city: text("city"),
+    stateRegion: text("state_region"),
+    postcode: text("postcode"),
+    country: text("country"),
+    mobileHash: text("mobile_hash"),
+    mobileLastFour: text("mobile_last_four"),
+    email: text("email"),
+    currency: text("currency"),
+    operatingModel: text("operating_model"),
+    centreStatus: text("centre_status").notNull().default("active"),
+    taxIdentifiersJson: text("tax_identifiers_json"),
     ...timestamps,
   },
   (table) => [
     uniqueIndex("branches_organisation_code_unique").on(table.organisationId, table.code),
+    uniqueIndex("branches_organisation_name_unique").on(table.organisationId, table.name),
     index("branches_organisation_id_idx").on(table.organisationId),
     check("branches_status_check", sql`${table.status} in ('active', 'inactive')`),
   ],
@@ -360,6 +389,101 @@ export const authEvents = sqliteTable(
     index("auth_events_organisation_id_idx").on(table.organisationId),
     index("auth_events_login_account_id_idx").on(table.loginAccountId),
     index("auth_events_created_at_idx").on(table.createdAt),
+  ],
+);
+
+export const signupVerifications = sqliteTable(
+  "signup_verifications",
+  {
+    id: text("id").primaryKey(),
+    challengeId: text("challenge_id")
+      .notNull()
+      .references(() => otpChallenges.id),
+    globalIdentityId: text("global_identity_id")
+      .notNull()
+      .references(() => globalIdentities.id),
+    mobileHash: text("mobile_hash").notNull(),
+    mobileLastFour: text("mobile_last_four").notNull(),
+    status: text("status").notNull().default("verified"),
+    createdOrganisationId: text("created_organisation_id").references(() => organisations.id),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    usedAt: text("used_at"),
+  },
+  (table) => [
+    uniqueIndex("signup_verifications_challenge_unique").on(table.challengeId),
+    index("signup_verifications_global_identity_idx").on(table.globalIdentityId, table.status),
+    check("signup_verifications_status_check", sql`${table.status} in ('verified', 'used', 'expired')`),
+  ],
+);
+
+export const organisationAccountAuthorities = sqliteTable(
+  "organisation_account_authorities",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    globalIdentityId: text("global_identity_id")
+      .notNull()
+      .references(() => globalIdentities.id),
+    organisationMembershipId: text("organisation_membership_id")
+      .notNull()
+      .references(() => organisationMemberships.id),
+    personId: text("person_id").references(() => people.id),
+    authorityType: text("authority_type").notNull().default("primary"),
+    contactName: text("contact_name").notNull(),
+    mobileHash: text("mobile_hash").notNull(),
+    mobileLastFour: text("mobile_last_four").notNull(),
+    email: text("email").notNull(),
+    authorisationRequired: integer("authorisation_required", { mode: "boolean" }).notNull().default(false),
+    authorisationStatus: text("authorisation_status").notNull().default("not_required"),
+    documentReference: text("document_reference"),
+    status: text("status").notNull().default("active"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("organisation_account_authorities_primary_unique").on(table.organisationId).where(sql`${table.authorityType} = 'primary' and ${table.status} = 'active'`),
+    index("organisation_account_authorities_org_status_idx").on(table.organisationId, table.status),
+    check("organisation_account_authorities_type_check", sql`${table.authorityType} in ('primary', 'authorised')`),
+    check("organisation_account_authorities_auth_status_check", sql`${table.authorisationStatus} in ('not_required', 'pending_document', 'pending_review', 'verified')`),
+    check("organisation_account_authorities_status_check", sql`${table.status} in ('active', 'inactive')`),
+  ],
+);
+
+export const organisationCommercialAccess = sqliteTable(
+  "organisation_commercial_access",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    state: text("state").notNull(),
+    trialStartedAt: text("trial_started_at").notNull(),
+    trialEndsAt: text("trial_ends_at").notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("organisation_commercial_access_org_unique").on(table.organisationId),
+    index("organisation_commercial_access_state_idx").on(table.state, table.trialEndsAt),
+    check("organisation_commercial_access_state_check", sql`${table.state} in ('trial', 'active', 'past_due', 'grace', 'restricted_read_only', 'expired', 'suspended')`),
+  ],
+);
+
+export const organisationOnboardingProgress = sqliteTable(
+  "organisation_onboarding_progress",
+  {
+    organisationId: text("organisation_id")
+      .primaryKey()
+      .references(() => organisations.id),
+    status: text("status").notNull().default("in_progress"),
+    completedStepsJson: text("completed_steps_json").notNull().default("[]"),
+    checklistJson: text("checklist_json").notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    index("organisation_onboarding_progress_status_idx").on(table.status),
+    check("organisation_onboarding_progress_status_check", sql`${table.status} in ('in_progress', 'complete')`),
   ],
 );
 

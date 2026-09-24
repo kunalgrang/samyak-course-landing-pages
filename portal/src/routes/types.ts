@@ -44,4 +44,4 @@ export type TrainerRoute =
   | `/trainer/batches/${string}`
   | `/trainer/sessions/${string}`;
 
-export type RoutePath = "/login" | "/student/login" | PartnerRoute | TrainerRoute | AppRoute | StudentRoute;
+export type RoutePath = "/login" | "/signup" | "/student/login" | PartnerRoute | TrainerRoute | AppRoute | StudentRoute;

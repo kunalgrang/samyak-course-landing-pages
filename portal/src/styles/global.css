@@ -32,7 +32,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -58,6 +59,7 @@ button:disabled {
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 a:focus-visible {
   outline: 3px solid rgba(13, 148, 136, 0.35);
   outline-offset: 3px;
@@ -106,8 +108,26 @@ a:focus-visible {
     var(--color-navy);
 }
 
+.signup-page {
+  display: grid;
+  min-height: 100vh;
+  align-content: center;
+  justify-items: center;
+  gap: 18px;
+  padding: 24px;
+  background: #eef4f7;
+}
+
 .login-shell {
   width: min(100%, 430px);
+  padding: 28px;
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.signup-shell {
+  width: min(100%, 900px);
   padding: 28px;
   border-radius: var(--radius);
   background: var(--color-surface);
@@ -153,7 +173,9 @@ a:focus-visible {
   line-height: 1.5;
 }
 
-.login-form input {
+.login-form input,
+.signup-form input,
+.signup-form select {
   width: 100%;
   min-height: 48px;
   border: 1px solid var(--color-line);
@@ -161,6 +183,40 @@ a:focus-visible {
   padding: 0 14px;
   color: var(--color-ink);
   background: #ffffff;
+}
+
+.signup-form {
+  display: grid;
+  gap: 18px;
+}
+
+.signup-form fieldset {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+}
+
+.signup-form legend {
+  padding: 0 8px;
+  color: var(--color-navy);
+  font-weight: 800;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-navy);
+  font-weight: 700;
+}
+
+.checkbox-row input {
+  width: 18px;
+  min-height: 18px;
 }
 
 .turnstile-slot {
@@ -1037,6 +1093,10 @@ a:focus-visible {
 }
 
 @media (max-width: 520px) {
+  .signup-form fieldset {
+    grid-template-columns: 1fr;
+  }
+
   .brand-mark__sub {
     display: none;
   }

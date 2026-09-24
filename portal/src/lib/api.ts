@@ -77,6 +77,70 @@ const verifyOtpResponseSchema = z.object({
 
 export type VerifyOtpResponse = z.infer<typeof verifyOtpResponseSchema>;
 
+const signupVerifyOtpResponseSchema = z.object({
+  success: z.boolean(),
+  signupVerificationId: z.string().optional(),
+  code: z.string().optional(),
+  message: z.string().optional(),
+  requestId: z.string(),
+});
+
+const signupCreateResponseSchema = z.object({
+  success: z.boolean(),
+  code: z.string().optional(),
+  message: z.string().optional(),
+  organisation: z.object({ id: z.string(), name: z.string() }).optional(),
+  trial: z.object({ startedAt: z.string(), endsAt: z.string() }).optional(),
+  requestId: z.string(),
+});
+
+export type SignupCreateInput = {
+  signupVerificationId: string;
+  idempotencyKey: string;
+  organisation: {
+    brandName: string;
+    legalName: string;
+    organisationType: string;
+    legalEntityType: string;
+    address: string;
+    city: string;
+    stateRegion: string;
+    country: string;
+    postcode?: string;
+    website?: string;
+    logoUrl?: string;
+    pan?: string;
+    gstin?: string;
+    currency?: string;
+    timezone?: string;
+    termsAccepted: boolean;
+  };
+  authority: {
+    name: string;
+    mobile: string;
+    email: string;
+    documentReference?: string;
+  };
+  centre: {
+    name: string;
+    address: string;
+    city: string;
+    stateRegion: string;
+    postcode: string;
+    country: string;
+    mobile: string;
+    email?: string;
+    operatingModel: string;
+    status: string;
+    currency?: string;
+    timezone?: string;
+    pan?: string;
+    gstin?: string;
+  };
+};
+
+export type SignupCreateResponse = z.infer<typeof signupCreateResponseSchema>;
+
 const organisationListResponseSchema = z.object({
   success: z.boolean(),
   selectionRequired: z.boolean().optional(),
@@ -1703,6 +1767,22 @@ export async function resendOtp(challengeId: string) {
 
 export async function verifyOtp(challengeId: string, otp: string) {
   return postJson("/api/auth/verify-otp", { challengeId, otp }, verifyOtpResponseSchema);
+}
+
+export async function requestSignupOtp(mobile: string, turnstileToken: string) {
+  return postJson("/api/signup/request-otp", { mobile, turnstileToken }, requestOtpResponseSchema);
+}
+
+export async function resendSignupOtp(challengeId: string) {
+  return postJson("/api/signup/resend-otp", { challengeId }, requestOtpResponseSchema);
+}
+
+export async function verifySignupOtp(challengeId: string, otp: string) {
+  return postJson("/api/signup/verify-otp", { challengeId, otp }, signupVerifyOtpResponseSchema);
+}
+
+export async function createSignupOrganisation(input: SignupCreateInput) {
+  return postJson("/api/signup/create-organisation", input, signupCreateResponseSchema);
 }
 
 export async function getOrganisations() {
