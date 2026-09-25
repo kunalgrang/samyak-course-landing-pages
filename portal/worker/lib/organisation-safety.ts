@@ -1,4 +1,4 @@
-import { createOpaqueId } from "./crypto";
+import { createOpaqueId } from "./crypto.ts";
 
 export const ORGANISATION_KINDS = ["normal", "demo"] as const;
 export type OrganisationKind = typeof ORGANISATION_KINDS[number];

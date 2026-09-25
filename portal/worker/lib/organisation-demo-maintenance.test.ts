@@ -1,4 +1,6 @@
 /// <reference types="node" />
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { buildOrganisationDemoAuditValues } from "./organisation-safety";
@@ -37,6 +39,27 @@ describe("organisation demo maintenance command", () => {
       expectedName: "Demo Training Institute",
       databaseName: PRODUCTION_DEMO_DATABASE,
     });
+  });
+
+  it("loads the real CLI module graph under the package script Node execution model", () => {
+    let stderr = "";
+    try {
+      execFileSync(process.execPath, [
+        "--experimental-strip-types",
+        "--experimental-specifier-resolution=node",
+        join(process.cwd(), "worker", "lib", "organisation-demo-maintenance-cli.ts"),
+        "--preflight",
+      ], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      stderr = error && typeof error === "object" && "stderr" in error ? String(error.stderr) : String(error);
+    }
+
+    expect(stderr).toContain("Demo Organisation maintenance requires --remote.");
+    expect(stderr).not.toContain("ERR_MODULE_NOT_FOUND");
   });
 
   it("preflights a normal active Organisation with safe counts and zero-write proof", async () => {
