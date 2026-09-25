@@ -732,7 +732,7 @@ async function globalIdentityIdForLoginAccount(c: AppContext, loginAccountId: st
   return row?.global_identity_id || null;
 }
 
-async function defaultActivePersonId(c: AppContext, loginAccountId: string, organisationId: string) {
+export async function defaultActivePersonId(c: AppContext, loginAccountId: string, organisationId: string) {
   const rows = await c.env.DB.prepare(
     `select login_account_people.person_id
      from login_account_people

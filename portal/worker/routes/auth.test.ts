@@ -212,7 +212,6 @@ class FakeD1Statement {
         results: this.db.loginAccountPeople
           .filter((link) => link.login_account_id === loginAccountId && link.is_available === 1)
           .filter((link) => this.db.people.some((person) => person.id === link.person_id && person.organisation_id === organisationId && person.status === "active"))
-          .filter((link) => this.db.referrerProfiles.some((profile) => profile.person_id === link.person_id && profile.organisation_id === organisationId && profile.active === 1))
           .map((link) => ({ person_id: link.person_id })),
       } as T;
     }
@@ -270,9 +269,8 @@ class FakeD1Statement {
       const results: Row[] = [];
       for (const link of this.db.loginAccountPeople.filter((row) => row.login_account_id === accountId && row.is_available === 1)) {
         const person = this.db.people.find((row) => row.id === link.person_id && row.organisation_id === organisationId && row.status === "active");
-        const referrer = this.db.referrerProfiles.find((row) => row.person_id === link.person_id && row.organisation_id === organisationId && row.active === 1);
         const student = this.db.students.find((row) => row.person_id === link.person_id && row.organisation_id === person?.organisation_id && row.portal_status !== "disabled");
-        if (!person || !referrer) continue;
+        if (!person) continue;
         const personRoles = this.db.personRoles.filter((row) => row.person_id === person.id);
         if (personRoles.length === 0) {
           results.push({ person_id: person.id, public_name: person.public_name, access_type: link.access_type, role_code: null, has_student_profile: student ? 1 : 0 });
@@ -944,6 +942,52 @@ async function seedOtherOrganisationMembership(db: FakeD1, mobile: string) {
   db.loginAccountPeople.push({ login_account_id: "acct_other_org", person_id: "person_other_org", access_type: "self", is_default: 1, is_available: 1, created_at: "2026-07-01" });
   db.personRoles.push({ person_id: "person_other_org", role_id: "role_student", branch_id: null, branch_key: "", created_at: "2026-07-01" });
   db.referrerProfiles.push({ id: "ref_other_org", organisation_id: "org_other", person_id: "person_other_org", external_referrer_id: "OTHER_ORG", referral_token: "OTHER_TOKEN", personal_link: "https://example.test/r/OTHER", active: 1, created_at: "2026-07-01" });
+}
+
+async function seedMembershipOnlyOwner(
+  db: FakeD1,
+  mobile: string,
+  options: {
+    organisationId?: string;
+    organisationKind?: "normal" | "demo";
+    membershipStatus?: "active" | "suspended" | "revoked";
+    loginStatus?: "active" | "suspended" | "disabled";
+    loginEnabled?: 0 | 1;
+    globalIdentityStatus?: "active" | "suspended" | "disabled";
+  } = {},
+) {
+  const organisationId = options.organisationId ?? "org_other";
+  const suffix = organisationId.replace(/^org_/, "");
+  const mobileHash = await hmacHex("test-pepper", "mobile", mobile);
+  const organisation = db.organisations.find((row) => row.id === organisationId);
+  if (organisation) {
+    organisation.organisation_kind = options.organisationKind ?? organisation.organisation_kind ?? "normal";
+  } else {
+    db.organisations.push({ id: organisationId, name: `${suffix} Institute`, slug: suffix, status: "active", organisation_kind: options.organisationKind ?? "normal" });
+  }
+  const branchId = `branch_${suffix}`;
+  if (!db.branches.some((row) => row.id === branchId)) {
+    db.branches.push({ id: branchId, organisation_id: organisationId, name: "Main Centre", code: "MAIN", status: "active" });
+  }
+  db.globalIdentities.push({ id: `gident_${suffix}`, mobile_normalized: mobileHash, mobile_hash: mobileHash, mobile_last_four: mobile.slice(-4), status: options.globalIdentityStatus ?? "active" });
+  db.loginAccounts.push({
+    id: `acct_${suffix}`,
+    organisation_id: organisationId,
+    mobile_normalized: mobileHash,
+    mobile_hash: mobileHash,
+    mobile_last_four: mobile.slice(-4),
+    login_enabled: options.loginEnabled ?? 1,
+    status: options.loginStatus ?? "active",
+    global_identity_id: `gident_${suffix}`,
+    organisation_membership_id: `omem_${suffix}`,
+    created_at: "2026-07-01",
+    updated_at: "2026-07-01",
+  });
+  db.organisationMemberships.push({ id: `omem_${suffix}`, global_identity_id: `gident_${suffix}`, organisation_id: organisationId, login_account_id: `acct_${suffix}`, status: options.membershipStatus ?? "active" });
+  db.people.push({ id: `person_${suffix}_owner`, organisation_id: organisationId, home_branch_id: branchId, full_name: "Jim Parsons", public_name: "Jim Parsons", status: "active", created_at: "2026-07-01", updated_at: "2026-07-01" });
+  db.loginAccountPeople.push({ login_account_id: `acct_${suffix}`, person_id: `person_${suffix}_owner`, access_type: "staff", is_default: 1, is_available: 1, created_at: "2026-07-01" });
+  db.loginAccountRoles.push({ login_account_id: `acct_${suffix}`, role_id: "role_owner", branch_id: branchId, created_at: "2026-07-01" });
+  db.personRoles.push({ person_id: `person_${suffix}_owner`, role_id: "role_owner", branch_id: branchId, branch_key: branchId, status: "active", created_at: "2026-07-01" });
 }
 
 function sessionCookie(response: Response) {
@@ -1884,6 +1928,80 @@ describe("auth routes", () => {
       env(db),
     );
     expect(demoToSamyak.status).toBe(403);
+  });
+
+  it("sends and verifies OTP for an active membership owner without a legacy Samyak profile", async () => {
+    const db = new FakeD1();
+    installFetch({ eligible: false });
+    await seedMembershipOnlyOwner(db, "9876543210", { organisationId: "org_demo", organisationKind: "demo" });
+
+    const otpResponse = await requestOtp(db);
+    expect(otpResponse.status).toBe(200);
+    expect(db.otpChallenges[0]).toMatchObject({ status: "sent", provider: "development" });
+    expect(authResultCodes(db)).toContain("OTP_SENT");
+
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const body = await jsonBody(verifyResponse);
+
+    expect(verifyResponse.status).toBe(200);
+    expect(body.session).toMatchObject({
+      authenticated: true,
+      activeProfile: expect.objectContaining({
+        personId: "person_demo_owner",
+        publicName: "Jim Parsons",
+        roles: expect.arrayContaining(["owner"]),
+        effectiveRoles: expect.arrayContaining(["owner"]),
+      }),
+      organisations: [expect.objectContaining({ organisationId: "org_demo" })],
+    });
+    expect(db.userSessions.at(-1)).toMatchObject({
+      login_account_id: "acct_demo",
+      organisation_membership_id: "omem_demo",
+      active_person_id: "person_demo_owner",
+    });
+    expect(db.loginAccounts).toHaveLength(1);
+    expect(db.referrerProfiles).toHaveLength(0);
+  });
+
+  it("uses the same membership-driven OTP path for a normal non-Samyak Organisation", async () => {
+    const db = new FakeD1();
+    installFetch({ eligible: false });
+    await seedMembershipOnlyOwner(db, "9876543210", { organisationId: "org_other", organisationKind: "normal" });
+
+    const otpResponse = await requestOtp(db);
+    expect(db.otpChallenges[0]).toMatchObject({ status: "sent", provider: "development" });
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const body = await jsonBody(verifyResponse);
+
+    expect(verifyResponse.status).toBe(200);
+    expect(body.session).toMatchObject({
+      authenticated: true,
+      activeProfile: expect.objectContaining({ personId: "person_other_owner", roles: expect.arrayContaining(["owner"]) }),
+      organisations: [expect.objectContaining({ organisationId: "org_other" })],
+    });
+  });
+
+  it("preserves shaped OTP responses for numbers without an active membership or legacy profile", async () => {
+    const db = new FakeD1();
+    installFetch({ eligible: false });
+
+    const otpResponse = await requestOtp(db);
+
+    expect(otpResponse.status).toBe(200);
+    expect(db.otpChallenges[0]).toMatchObject({ status: "blocked", provider: "none", mobile_ciphertext: null });
+    expect(authResultCodes(db)).toContain("NOT_ELIGIBLE_SHAPED");
+  });
+
+  it("does not send OTP when the only provisioned membership is unusable and no legacy profile exists", async () => {
+    const db = new FakeD1();
+    installFetch({ eligible: false });
+    await seedMembershipOnlyOwner(db, "9876543210", { organisationId: "org_demo", organisationKind: "demo", membershipStatus: "suspended" });
+
+    const otpResponse = await requestOtp(db);
+
+    expect(otpResponse.status).toBe(200);
+    expect(db.otpChallenges[0]).toMatchObject({ status: "blocked", provider: "none", mobile_ciphertext: null });
+    expect(db.userSessions).toHaveLength(0);
   });
 
   it("switches organisations by membership and does not retain the previous tenant profile", async () => {

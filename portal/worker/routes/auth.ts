@@ -11,6 +11,7 @@ import {
   createOrganisationSelectionSession,
   createPendingChallenge,
   createSession,
+  defaultActivePersonId,
   decryptChallengeMobile,
   getChallenge,
   getSessionFromRequest,
@@ -119,9 +120,10 @@ export function registerAuthRoutes(app: PortalHono) {
       ipHash: fingerprint.ipHash,
     });
 
+    const memberships = await activeOrganisationMembershipsForMobile(c, mobile);
     const lookup = await lookupPortalProfilesByMobile(c, mobile);
 
-    if (!lookup.eligible) {
+    if (memberships.length === 0 && !lookup.eligible) {
       await markRequestedChallengeBlocked(c, challengeId);
       await recordAuthEvent(c, "otp_request", "NOT_ELIGIBLE_SHAPED", {
         mobileHash: hash,
@@ -144,7 +146,7 @@ export function registerAuthRoutes(app: PortalHono) {
       c,
       challengeId,
       mobile,
-      provider: lookup.eligible ? provider.name : "none",
+      provider: provider.name,
       providerRequestId,
     });
     await recordAuthEvent(c, "otp_request", "OTP_SENT", {
@@ -230,15 +232,15 @@ export function registerAuthRoutes(app: PortalHono) {
     }
 
     const lookup = await lookupPortalProfilesByMobile(c, mobile);
-    if (!lookup.eligible) {
-      return jsonWithRequestId(c, { success: false, code: "PROFILE_NOT_AVAILABLE", message: "Mobile login is temporarily unavailable." }, 403);
-    }
+    let memberships = await activeOrganisationMembershipsForMobile(c, mobile);
     const verified = await markChallengeVerified(c, challenge.id);
     if (!verified) {
       return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
     }
-    if (lookup.eligible) await bootstrapAccount(c, mobile, lookup);
-    const memberships = await activeOrganisationMembershipsForMobile(c, mobile);
+    if (lookup.eligible) {
+      await bootstrapAccount(c, mobile, lookup);
+      memberships = await activeOrganisationMembershipsForMobile(c, mobile);
+    }
     if (memberships.length === 0) {
       await recordAuthEvent(c, "otp_verify", "NO_ACTIVE_ORGANISATION", { mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
       return jsonWithRequestId(c, { success: false, code: "NO_ACTIVE_ORGANISATION", message: "No active organisation access is available for this mobile number." }, 403);
@@ -256,7 +258,8 @@ export function registerAuthRoutes(app: PortalHono) {
       return response;
     }
     const membership = memberships[0];
-    const activePersonId = lookup.profiles.length === 1 && membership.organisationId === "org_samyak" ? lookup.profiles[0].personId || null : null;
+    const legacyPersonId = lookup.profiles.length === 1 && membership.organisationId === "org_samyak" ? lookup.profiles[0].personId || null : null;
+    const activePersonId = legacyPersonId || await defaultActivePersonId(c, membership.loginAccountId, membership.organisationId);
     const token = await createSession(c, membership.loginAccountId, activePersonId);
     await recordAuthEvent(c, "otp_verify", "LOGIN_SUCCESS", { loginAccountId: membership.loginAccountId, mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
     await recordAuditLog(c, membership.loginAccountId, activePersonId, "login", membership.organisationId);
