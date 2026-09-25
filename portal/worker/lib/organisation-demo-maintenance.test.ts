@@ -1,11 +1,14 @@
 /// <reference types="node" />
 import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { buildOrganisationDemoAuditValues } from "./organisation-safety";
 import {
   applyRemoteDemoOrganisationClassification,
+  buildRemoteDemoOrganisationApplySql,
   buildRemotePreflightDemoOrganisation,
   PRODUCTION_DEMO_DATABASE,
   validateDemoMaintenanceRequest,
@@ -62,6 +65,35 @@ describe("organisation demo maintenance command", () => {
     expect(stderr).not.toContain("ERR_MODULE_NOT_FOUND");
   });
 
+  it("generates a guarded D1 batch without explicit transaction-control statements", () => {
+    const audit = buildOrganisationDemoAuditValues({ source: "maintenance", reason: "approved controlled demo" });
+    expect(audit.ok).toBe(true);
+    if (!audit.ok) return;
+
+    const sql = buildRemoteDemoOrganisationApplySql({
+      auditId: "audit_demo",
+      now: NOW,
+      organisationId: "org_demo",
+      expectedName: "Demo Training Institute",
+      auditValues: audit.values,
+    });
+
+    expect(sql).not.toMatch(/\bBEGIN\s+TRANSACTION\b/i);
+    expect(sql).not.toMatch(/\bCOMMIT\b/i);
+    expect(sql).not.toMatch(/\bSAVEPOINT\b/i);
+
+    const statements = sql.split(";").map((statement) => statement.trim()).filter(Boolean);
+    expect(statements).toHaveLength(2);
+    expect(statements[0]).toMatch(/^UPDATE organisations SET organisation_kind = 'demo'/);
+    expect(statements[0]).toContain("AND name = 'Demo Training Institute'");
+    expect(statements[0]).toContain("AND status = 'active'");
+    expect(statements[0]).toContain("AND organisation_kind = 'normal'");
+    expect(statements[1]).toMatch(/^INSERT INTO audit_logs/);
+    expect(statements[1]).toContain("WHERE id = 'org_demo'");
+    expect(statements[1]).toContain("AND organisation_kind = 'demo'");
+    expect(statements[1]).toContain("AND changes() = 1");
+  });
+
   it("preflights a normal active Organisation with safe counts and zero-write proof", async () => {
     const fixture = createFixture();
     try {
@@ -93,6 +125,32 @@ describe("organisation demo maintenance command", () => {
     }
   });
 
+  it("blocks preflight when the controlled Organisation is missing or has the wrong expected name", async () => {
+    const fixture = createFixture();
+    try {
+      await expect(buildRemotePreflightDemoOrganisation(fixture.client, {
+        organisationId: "org_missing",
+        expectedName: "Demo Training Institute",
+      })).resolves.toMatchObject({
+        status: "BLOCKED",
+        code: "ORGANISATION_NOT_FOUND",
+        writeOperationsPerformed: false,
+      });
+
+      await expect(buildRemotePreflightDemoOrganisation(fixture.client, {
+        organisationId: "org_demo",
+        expectedName: "Wrong Name",
+      })).resolves.toMatchObject({
+        status: "BLOCKED",
+        code: "EXPECTED_NAME_MISMATCH",
+        writeOperationsPerformed: false,
+      });
+      expect(row(fixture.db, "select organisation_kind from organisations where id = 'org_demo'")).toEqual({ organisation_kind: "normal" });
+    } finally {
+      fixture.close();
+    }
+  });
+
   it("reports already-demo Organisations without creating another audit row", async () => {
     const fixture = createFixture();
     try {
@@ -107,6 +165,7 @@ describe("organisation demo maintenance command", () => {
         status: "ALREADY_DEMO",
         code: "ALREADY_DEMO",
         remoteWriteExecuted: false,
+        remoteWriteModel: "d1_execute_file_guarded_batch",
         auditId: null,
       });
       expect(count(fixture.db, "audit_logs")).toBe(0);
@@ -128,7 +187,7 @@ describe("organisation demo maintenance command", () => {
         status: "APPLIED",
         code: "DEMO_CLASSIFICATION_APPLIED",
         remoteWriteExecuted: true,
-        remoteWriteModel: "d1_execute_file_guarded_transaction",
+        remoteWriteModel: "d1_execute_file_guarded_batch",
         verification: {
           organisationKind: "demo",
           auditRowsCreated: 1,
@@ -137,6 +196,7 @@ describe("organisation demo maintenance command", () => {
         },
       });
       expect(row(fixture.db, "select organisation_kind from organisations where id = 'org_demo'")).toEqual({ organisation_kind: "demo" });
+      expect(row(fixture.db, "select organisation_kind from organisations where id = 'org_other'")).toEqual({ organisation_kind: "normal" });
 
       const expectedAudit = buildOrganisationDemoAuditValues({ source: "maintenance", reason: " approved controlled demo " });
       expect(expectedAudit.ok).toBe(true);
@@ -150,6 +210,29 @@ describe("organisation demo maintenance command", () => {
         new_values_json: expectedAudit.ok ? expectedAudit.values.newValuesJson : "",
         metadata_json: expectedAudit.ok ? expectedAudit.values.metadataJson : "",
       });
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("does not create a false audit row when the target changes after preflight", async () => {
+    const fixture = createFixture({
+      beforeExecuteSqlFile: (db) => {
+        db.prepare("update organisations set name = 'Renamed Demo Institute' where id = 'org_demo'").run();
+      },
+    });
+    try {
+      await expect(applyRemoteDemoOrganisationClassification(fixture.client, {
+        organisationId: "org_demo",
+        expectedName: "Demo Training Institute",
+        reason: "approved controlled demo",
+      })).rejects.toThrow("kind=normal");
+
+      expect(row(fixture.db, "select name, organisation_kind from organisations where id = 'org_demo'")).toEqual({
+        name: "Renamed Demo Institute",
+        organisation_kind: "normal",
+      });
+      expect(count(fixture.db, "audit_logs")).toBe(0);
     } finally {
       fixture.close();
     }
@@ -182,6 +265,41 @@ describe("organisation demo maintenance command", () => {
       fixture.close();
     }
   });
+
+  it("proves local Wrangler D1 batch execution rolls back all statements when one statement fails", () => {
+    const persistTo = mkdtempSync(join(tmpdir(), "samyak-d1-batch-"));
+    const failingSql = join(persistTo, "failing-batch.sql");
+    const passingSql = join(persistTo, "passing-batch.sql");
+    try {
+      runLocalWranglerD1([
+        "--command",
+        [
+          "CREATE TABLE IF NOT EXISTS demo_batch_atomicity (id TEXT PRIMARY KEY, value TEXT NOT NULL);",
+          "DELETE FROM demo_batch_atomicity;",
+          "INSERT INTO demo_batch_atomicity (id, value) VALUES ('target', 'normal');",
+        ].join("\n"),
+      ], persistTo);
+
+      writeFileSync(failingSql, [
+        "UPDATE demo_batch_atomicity SET value = 'demo' WHERE id = 'target';",
+        "INSERT INTO demo_batch_atomicity (id, value) VALUES ('target', 'duplicate');",
+      ].join("\n"), "utf8");
+
+      expect(() => runLocalWranglerD1(["--file", failingSql], persistTo)).toThrow(/UNIQUE|constraint|D1_ERROR/i);
+      expect(queryLocalWranglerD1<{ value: string }>("SELECT value FROM demo_batch_atomicity WHERE id = 'target';", persistTo)[0]).toEqual({ value: "normal" });
+
+      writeFileSync(passingSql, [
+        "UPDATE demo_batch_atomicity SET value = 'demo' WHERE id = 'target';",
+        "INSERT INTO demo_batch_atomicity (id, value) VALUES ('audit', 'created');",
+      ].join("\n"), "utf8");
+
+      runLocalWranglerD1(["--file", passingSql], persistTo);
+      expect(queryLocalWranglerD1<{ value: string }>("SELECT value FROM demo_batch_atomicity WHERE id = 'target';", persistTo)[0]).toEqual({ value: "demo" });
+      expect(queryLocalWranglerD1<{ count: number }>("SELECT count(*) AS count FROM demo_batch_atomicity;", persistTo)[0]).toEqual({ count: 2 });
+    } finally {
+      if (existsSync(persistTo)) rmSync(persistTo, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 function baseArgs(overrides: Partial<Parameters<typeof validateDemoMaintenanceRequest>[0]> = {}) {
@@ -199,7 +317,7 @@ function baseArgs(overrides: Partial<Parameters<typeof validateDemoMaintenanceRe
   };
 }
 
-function createFixture() {
+function createFixture(options: { beforeExecuteSqlFile?: (db: DatabaseSync) => void } = {}) {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     create table organisations (id text primary key, name text not null, slug text, status text not null, organisation_kind text default 'normal', created_at text, updated_at text);
@@ -209,13 +327,14 @@ function createFixture() {
     create table audit_logs (id text primary key, organisation_id text, actor_login_account_id text, actor_person_id text, action text, entity_type text, entity_id text, old_values_json text, new_values_json text, metadata_json text, created_at text);
   `);
   db.prepare("insert into organisations (id, name, slug, status, organisation_kind, created_at, updated_at) values ('org_demo', 'Demo Training Institute', 'demo-training-institute', 'active', 'normal', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into organisations (id, name, slug, status, organisation_kind, created_at, updated_at) values ('org_other', 'Other Institute', 'other-institute', 'active', 'normal', ?, ?)").run(NOW, NOW);
   db.prepare("insert into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at) values ('branch_demo_1', 'org_demo', 'Demo Main', 'DEMO', 'Asia/Kolkata', 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at) values ('branch_demo_2', 'org_demo', 'Demo Annex', 'DEMO2', 'Asia/Kolkata', 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into organisation_memberships (id, organisation_id, status, created_at, updated_at) values ('membership_demo_owner', 'org_demo', 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into organisation_commercial_access (id, organisation_id, state, created_at, updated_at) values ('commercial_demo', 'org_demo', 'trial', ?, ?)").run(NOW, NOW);
   return {
     db,
-    client: new SqliteRemoteD1WriteClient(db),
+    client: new SqliteRemoteD1WriteClient(db, options.beforeExecuteSqlFile),
     close: () => db.close(),
   };
 }
@@ -233,7 +352,10 @@ class SqliteRemoteD1WriteClient implements RemoteD1WriteClient {
   readonly cwd = process.cwd();
   readonly metas: Array<{ changed_db?: boolean; changes?: number; rows_written?: number }> = [];
 
-  constructor(private readonly db: DatabaseSync) {}
+  constructor(
+    private readonly db: DatabaseSync,
+    private readonly beforeExecuteSqlFile?: (db: DatabaseSync) => void,
+  ) {}
 
   async execute<T extends Record<string, unknown> = Record<string, unknown>>(sql: string): Promise<RemoteD1QueryResult<T>> {
     const results = this.db.prepare(sql).all() as T[];
@@ -243,6 +365,44 @@ class SqliteRemoteD1WriteClient implements RemoteD1WriteClient {
   }
 
   executeSqlFile(sql: string) {
+    this.beforeExecuteSqlFile?.(this.db);
     this.db.exec(sql);
   }
+}
+
+function runLocalWranglerD1(args: string[], persistTo: string) {
+  try {
+    return execFileSync(process.execPath, [
+      join(process.cwd(), "node_modules", "wrangler", "bin", "wrangler.js"),
+      "d1",
+      "execute",
+      PRODUCTION_DEMO_DATABASE,
+      "--local",
+      "--json",
+      "--persist-to",
+      persistTo,
+      ...args,
+    ], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        WRANGLER_LOG_PATH: join(persistTo, "wrangler-logs"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    if (error && typeof error === "object") {
+      const stderr = "stderr" in error ? String(error.stderr) : "";
+      const stdout = "stdout" in error ? String(error.stdout) : "";
+      throw new Error([stderr, stdout].filter(Boolean).join("\n") || String(error));
+    }
+    throw error;
+  }
+}
+
+function queryLocalWranglerD1<T extends Record<string, unknown>>(sql: string, persistTo: string) {
+  const output = runLocalWranglerD1(["--command", sql], persistTo);
+  const parsed = JSON.parse(output) as Array<{ results: T[] }>;
+  return parsed[0]?.results || [];
 }

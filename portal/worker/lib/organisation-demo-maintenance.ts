@@ -50,7 +50,7 @@ export type DemoMaintenanceApplyReport = {
   status: "APPLIED" | "ALREADY_DEMO";
   code: string;
   remoteWriteExecuted: boolean;
-  remoteWriteModel: "d1_execute_file_guarded_transaction";
+  remoteWriteModel: "d1_execute_file_guarded_batch";
   auditId: string | null;
   preflight: DemoMaintenancePreflightReport;
   verification: {
@@ -124,7 +124,7 @@ export async function applyRemoteDemoOrganisationClassification(
       status: "ALREADY_DEMO",
       code: "ALREADY_DEMO",
       remoteWriteExecuted: false,
-      remoteWriteModel: "d1_execute_file_guarded_transaction",
+      remoteWriteModel: "d1_execute_file_guarded_batch",
       auditId: null,
       preflight,
       verification: {
@@ -176,7 +176,7 @@ export async function applyRemoteDemoOrganisationClassification(
     status: "APPLIED",
     code: "DEMO_CLASSIFICATION_APPLIED",
     remoteWriteExecuted: true,
-    remoteWriteModel: "d1_execute_file_guarded_transaction",
+    remoteWriteModel: "d1_execute_file_guarded_batch",
     auditId,
     preflight,
     verification: {
@@ -202,13 +202,11 @@ export function buildRemoteDemoOrganisationApplySql(input: {
   };
 }) {
   return [
-    "BEGIN TRANSACTION;",
     `UPDATE organisations SET organisation_kind = 'demo', updated_at = ${q(input.now)} WHERE id = ${q(input.organisationId)} AND name = ${q(input.expectedName)} AND status = 'active' AND organisation_kind = 'normal';`,
     `INSERT INTO audit_logs (id, organisation_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, old_values_json, new_values_json, metadata_json, created_at)
 SELECT ${q(input.auditId)}, id, NULL, NULL, ${q(input.auditValues.action)}, ${q(input.auditValues.entityType)}, id, ${q(input.auditValues.oldValuesJson)}, ${q(input.auditValues.newValuesJson)}, ${q(input.auditValues.metadataJson)}, ${q(input.now)}
 FROM organisations
 WHERE id = ${q(input.organisationId)} AND name = ${q(input.expectedName)} AND organisation_kind = 'demo' AND changes() = 1;`,
-    "COMMIT;",
     "",
   ].join("\n");
 }
