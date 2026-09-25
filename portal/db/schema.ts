@@ -13,6 +13,7 @@ export const organisations = sqliteTable(
     name: text("name").notNull(),
     slug: text("slug").notNull(),
     status: text("status").notNull(),
+    organisationKind: text("organisation_kind").notNull().default("normal"),
     legalName: text("legal_name"),
     organisationType: text("organisation_type"),
     legalEntityType: text("legal_entity_type"),
@@ -33,7 +34,9 @@ export const organisations = sqliteTable(
   },
   (table) => [
     uniqueIndex("organisations_slug_unique").on(table.slug),
+    index("organisations_kind_idx").on(table.organisationKind),
     check("organisations_status_check", sql`${table.status} in ('active', 'inactive')`),
+    check("organisations_kind_check", sql`${table.organisationKind} in ('normal', 'demo')`),
   ],
 );
 

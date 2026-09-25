@@ -173,11 +173,11 @@ export async function createOrganisationFromSignup(c: AppContext, input: Organis
   await c.env.DB.batch([
     c.env.DB.prepare(
       `insert into organisations (
-        id, name, slug, status, legal_name, organisation_type, legal_entity_type,
+        id, name, slug, status, organisation_kind, legal_name, organisation_type, legal_entity_type,
         address_line1, city, state_region, country, postcode, currency, timezone,
         website, logo_url, tax_identifiers_json, terms_accepted_at, terms_version,
         terms_accepted_by_global_identity_id, created_at, updated_at
-      ) values (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) values (?, ?, ?, 'active', 'normal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       organisationId,
       input.organisation.brandName.trim(),

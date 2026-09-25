@@ -45,6 +45,7 @@ describe("organisation signup onboarding", () => {
         legal_entity_type: "private_limited",
         terms_version: "2026-09-24",
       });
+      expect(row(fixture.sqlite, "select organisation_kind from organisations where id = ?", orgId)).toEqual({ organisation_kind: "normal" });
       expect(row(fixture.sqlite, "select name, code, operating_model, centre_status from branches where organisation_id = ?", orgId)).toMatchObject({
         name: "Sion Centre",
         code: "CTR-001",
@@ -104,14 +105,14 @@ describe("organisation signup onboarding", () => {
     }
   });
 
-  it("allows duplicate display names across organisations, blocks duplicate retry creation, and ignores client trial dates", async () => {
+  it("allows duplicate display names across organisations, blocks duplicate retry creation, and ignores client trial dates and demo flags", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(NOW));
     installTurnstile();
     const fixture = createFixture();
     try {
       const firstVerification = await verifiedSignupId(fixture.env, "9876543210");
-      const first = await createOrganisation(fixture.env, firstVerification, "same-submit", { brandName: "Shared Academy", trialEndsAt: "2099-01-01T00:00:00.000Z" });
+      const first = await createOrganisation(fixture.env, firstVerification, "same-submit", { brandName: "Shared Academy", trialEndsAt: "2099-01-01T00:00:00.000Z", organisationKind: "demo" });
       const firstBody = await first.json() as Row;
       const retry = await createOrganisation(fixture.env, firstVerification, "same-submit", { brandName: "Shared Academy" });
       const retryBody = await retry.json() as Row;
@@ -119,6 +120,8 @@ describe("organisation signup onboarding", () => {
       expect(count(fixture.sqlite, "organisations where name = 'Shared Academy'")).toBe(1);
       expect(row(fixture.sqlite, "select trial_ends_at from organisation_commercial_access where organisation_id = ?", String(firstBody.organisation.id))?.trial_ends_at)
         .toBe("2026-10-09T10:00:00.000Z");
+      expect(row(fixture.sqlite, "select organisation_kind from organisations where id = ?", String(firstBody.organisation.id))?.organisation_kind)
+        .toBe("normal");
 
       const secondVerification = await verifiedSignupId(fixture.env, "9876543211");
       const second = await createOrganisation(fixture.env, secondVerification, "second-submit", { brandName: "Shared Academy", centreName: "Dadar Centre", centreMobile: "9876543211" });
@@ -179,6 +182,33 @@ describe("organisation signup onboarding", () => {
       db.close();
     }
   });
+
+  it("applies 0035 over existing Samyak rows with a normal demo-safety default", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec("pragma foreign_keys = on");
+    try {
+      applyMigrationsThrough(db, "0034_organisation_signup_trial_onboarding.sql");
+      seedSamyakOperationalRows(db);
+      const before = {
+        organisations: rows(db, "select id, name, slug, status, created_at, updated_at from organisations order by id"),
+        commercialAccess: count(db, "organisation_commercial_access"),
+        memberships: count(db, "organisation_memberships"),
+        auditLogs: count(db, "audit_logs"),
+      };
+
+      applyMigrationFile(db, "0035_demo_organisation_safety_controls.sql");
+
+      expect(rows(db, "select id, name, slug, status, created_at, updated_at from organisations order by id")).toEqual(before.organisations);
+      expect(row(db, "select organisation_kind from organisations where id = 'org_samyak'")).toEqual({ organisation_kind: "normal" });
+      expect(count(db, "organisation_commercial_access")).toBe(before.commercialAccess);
+      expect(count(db, "organisation_memberships")).toBe(before.memberships);
+      expect(count(db, "audit_logs")).toBe(before.auditLogs);
+      expect(columns(db, "organisations")).toEqual(expect.arrayContaining(["organisation_kind"]));
+      expect(indexNames(db)).toEqual(expect.arrayContaining(["organisations_kind_idx"]));
+    } finally {
+      db.close();
+    }
+  });
 });
 
 async function verifiedSignupId(env: WorkerBindings, mobile: string) {
@@ -211,6 +241,7 @@ async function createOrganisation(env: WorkerBindings, signupVerificationId: str
     trialEndsAt: overrides.trialEndsAt,
     organisation: {
       brandName: overrides.brandName || "Apex Skills",
+      organisationKind: overrides.organisationKind,
       legalName: "Apex Skills Private Limited",
       organisationType: overrides.organisationType || "computer_training_institute",
       legalEntityType: "private_limited",

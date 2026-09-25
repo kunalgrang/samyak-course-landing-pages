@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../index";
 import type { WorkerBindings } from "../bindings";
-import { bootstrapTrainerAccount } from "../lib/auth-store";
+import { bootstrapTrainerAccount, createSession } from "../lib/auth-store";
 import { hmacHex } from "../lib/crypto";
 import { ensureOrganisationMembershipForLoginAccount } from "../lib/identity-membership";
 
@@ -1854,6 +1854,36 @@ describe("auth routes", () => {
       env(db),
     );
     expect(suspended.status).toBe(403);
+  });
+
+  it("does not let demo classification bypass normal organisation membership boundaries", async () => {
+    const db = new FakeD1();
+    installFetch();
+    db.organisations.find((organisation) => organisation.id === "org_other")!.organisation_kind = "demo";
+
+    const samyakOtp = await requestOtp(db, "9876543210");
+    const samyakVerify = await verifyOtp(db, String((await jsonBody(samyakOtp)).challengeId), "123456");
+    const samyakBody = await jsonBody(samyakVerify);
+    expect(samyakBody.session.organisations).toEqual(expect.arrayContaining([expect.objectContaining({ organisationId: "org_samyak" })]));
+    expect(samyakBody.session.organisations).not.toEqual(expect.arrayContaining([expect.objectContaining({ organisationId: "org_other" })]));
+    const samyakMembership = db.organisationMemberships.find((membership) => membership.organisation_id === "org_samyak")!;
+    const samyakCookie = sessionCookie(samyakVerify);
+    await seedOtherOrganisationMembership(db, "9876543211");
+    const samyakToDemo = await app.request(
+      "http://localhost/api/auth/switch-organisation",
+      { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: samyakCookie }, body: JSON.stringify({ membershipId: "omem_other_org" }) },
+      env(db),
+    );
+    expect(samyakToDemo.status).toBe(403);
+
+    const demoToken = await createSession(testContext(db), "acct_other_org", "person_other_org");
+    const demoCookie = `samyak_session=${demoToken}`;
+    const demoToSamyak = await app.request(
+      "http://localhost/api/auth/switch-organisation",
+      { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: demoCookie }, body: JSON.stringify({ membershipId: samyakMembership.id }) },
+      env(db),
+    );
+    expect(demoToSamyak.status).toBe(403);
   });
 
   it("switches organisations by membership and does not retain the previous tenant profile", async () => {
