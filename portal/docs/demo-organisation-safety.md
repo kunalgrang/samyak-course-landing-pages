@@ -17,6 +17,20 @@ A future demo tenant should be created through the ordinary signup/onboarding fl
 
 Do not reuse the Phase 4 smoke-test signup identity for a demo tenant unless the owner explicitly authorises that later.
 
+The production maintenance command is intentionally not exposed through HTTP. It can only classify an existing, active Organisation after a read-only preflight confirms the exact Organisation ID, expected name, current kind, Centre count, membership count, and commercial access state:
+
+```sh
+npm run maintenance:organisation-demo -- --remote --preflight --organisation <ORG_ID> --expected-name "Demo Training Institute"
+```
+
+The write path is locked to the production D1 database `samyak-student-portal` and requires all confirmation flags plus an audit reason:
+
+```sh
+npm run maintenance:organisation-demo -- --remote --apply --confirm-apply --confirm-production-demo --organisation <ORG_ID> --expected-name "Demo Training Institute" --reason "Approved controlled demo tenant setup"
+```
+
+The command only changes `organisations.organisation_kind` from `normal` to `demo` for the exact active Organisation/name pair and writes one `organisation_marked_demo` audit row with maintenance actor IDs left null. If the Organisation is already `demo`, it reports `ALREADY_DEMO` and does not write another audit row.
+
 ## Messaging
 
 Platform authentication OTP remains allowed for both normal and demo Organisations.

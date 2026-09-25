@@ -15,6 +15,7 @@
     "test:migration-line-endings": "node ./scripts/check-migration-line-endings.mjs",
     "test:d1-migration-wrangler-local": "node ./scripts/check-d1-migration-wrangler-local.mjs",
     "import:legacy-students": "node --experimental-strip-types --experimental-specifier-resolution=node ./worker/lib/legacy-import-cli.ts",
+    "maintenance:organisation-demo": "node --experimental-strip-types --experimental-specifier-resolution=node ./worker/lib/organisation-demo-maintenance-cli.ts",
     "smoke:production": "node ./scripts/smoke-production.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply samyak-student-portal --local",

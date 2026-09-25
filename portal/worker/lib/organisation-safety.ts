@@ -24,6 +24,16 @@ export type OrganisationSafetyProfile = {
   billableCustomer: boolean;
 };
 
+export type OrganisationDemoMarkSource = "platform_admin" | "maintenance";
+
+export type OrganisationDemoAuditValues = {
+  action: "organisation_marked_demo";
+  entityType: "organisation";
+  oldValuesJson: string;
+  newValuesJson: string;
+  metadataJson: string;
+};
+
 type DbContext = {
   env: {
     DB: D1Database;
@@ -76,6 +86,27 @@ export async function getOrganisationSafetyProfile(c: DbContext, organisationId:
   };
 }
 
+export function buildOrganisationDemoAuditValues(input: {
+  reason: string;
+  source: OrganisationDemoMarkSource;
+}): { ok: true; values: OrganisationDemoAuditValues } | { ok: false; status: 400; code: "DEMO_REASON_REQUIRED"; message: string } {
+  const reason = input.reason.trim();
+  if (!reason) {
+    return { ok: false, status: 400, code: "DEMO_REASON_REQUIRED", message: "Record why the Organisation is being marked as demo." };
+  }
+
+  return {
+    ok: true,
+    values: {
+      action: "organisation_marked_demo",
+      entityType: "organisation",
+      oldValuesJson: JSON.stringify({ organisationKind: "normal" }),
+      newValuesJson: JSON.stringify({ organisationKind: "demo" }),
+      metadataJson: JSON.stringify({ source: input.source, reason }),
+    },
+  };
+}
+
 export async function markOrganisationDemoForControlledSetup(
   c: DbContext,
   input: {
@@ -83,7 +114,7 @@ export async function markOrganisationDemoForControlledSetup(
     actorLoginAccountId?: string | null;
     actorPersonId?: string | null;
     reason: string;
-    source: "platform_admin" | "maintenance";
+    source: OrganisationDemoMarkSource;
     now?: string;
   },
 ) {
@@ -96,29 +127,37 @@ export async function markOrganisationDemoForControlledSetup(
   }
 
   const now = input.now || new Date().toISOString();
-  const reason = input.reason.trim();
-  if (!reason) {
-    return { ok: false as const, status: 400, code: "DEMO_REASON_REQUIRED", message: "Record why the Organisation is being marked as demo." };
+  const audit = buildOrganisationDemoAuditValues({ reason: input.reason, source: input.source });
+  if (!audit.ok) return audit;
+
+  const update = await c.env.DB.prepare("update organisations set organisation_kind = 'demo', updated_at = ? where id = ? and organisation_kind = 'normal'")
+    .bind(now, input.organisationId)
+    .run();
+  const changes = Number(update.meta?.changes || update.meta?.rows_written || 0);
+  if (changes === 0) {
+    const refreshed = await getOrganisationSafetyProfile(c, input.organisationId);
+    if (refreshed?.organisationKind === "demo") {
+      return { ok: true as const, organisationId: input.organisationId, organisationKind: "demo" as const, changed: false };
+    }
+    return { ok: false as const, status: 409, code: "ORGANISATION_DEMO_TRANSITION_CONFLICT", message: "Organisation was not updated; reload the Organisation safety profile before retrying." };
   }
 
-  await c.env.DB.batch([
-    c.env.DB.prepare("update organisations set organisation_kind = 'demo', updated_at = ? where id = ? and organisation_kind = 'normal'")
-      .bind(now, input.organisationId),
-    c.env.DB.prepare(
-      `insert into audit_logs (id, organisation_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, old_values_json, new_values_json, metadata_json, created_at)
-       values (?, ?, ?, ?, 'organisation_marked_demo', 'organisation', ?, ?, ?, ?, ?)`,
-    ).bind(
-      createOpaqueId("audit"),
-      input.organisationId,
-      input.actorLoginAccountId || null,
-      input.actorPersonId || null,
-      input.organisationId,
-      JSON.stringify({ organisationKind: "normal" }),
-      JSON.stringify({ organisationKind: "demo" }),
-      JSON.stringify({ source: input.source, reason }),
-      now,
-    ),
-  ]);
+  await c.env.DB.prepare(
+    `insert into audit_logs (id, organisation_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, old_values_json, new_values_json, metadata_json, created_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    createOpaqueId("audit"),
+    input.organisationId,
+    input.actorLoginAccountId || null,
+    input.actorPersonId || null,
+    audit.values.action,
+    audit.values.entityType,
+    input.organisationId,
+    audit.values.oldValuesJson,
+    audit.values.newValuesJson,
+    audit.values.metadataJson,
+    now,
+  ).run();
 
   return { ok: true as const, organisationId: input.organisationId, organisationKind: "demo" as const, changed: true };
 }
