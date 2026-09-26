@@ -30,6 +30,8 @@ try {
   const organisationTermsActor = query("select name from pragma_table_info('organisations') where name = 'terms_accepted_by_global_identity_id';");
   const branchCentreStatus = query("select name from pragma_table_info('branches') where name = 'centre_status';");
   const branchOperatingModel = query("select name from pragma_table_info('branches') where name = 'operating_model';");
+  const onboardingReportedCentreCount = query("select name from pragma_table_info('organisation_onboarding_progress') where name = 'reported_centre_count';");
+  const onboardingTable = query("select sql from sqlite_master where type = 'table' and name = 'organisation_onboarding_progress';");
   const migrations = query("select name from d1_migrations where name = '0027_trainer_attendance_sessions.sql';");
   const materialMigration = query("select name from d1_migrations where name = '0028_session_materials_student_academic.sql';");
   const trainerManagementMigration = query("select name from d1_migrations where name = '0029_trainer_management_role_status.sql';");
@@ -39,6 +41,7 @@ try {
   const identityMembershipMigration = query("select name from d1_migrations where name = '0033_global_identity_memberships.sql';");
   const organisationSignupMigration = query("select name from d1_migrations where name = '0034_organisation_signup_trial_onboarding.sql';");
   const demoSafetyMigration = query("select name from d1_migrations where name = '0035_demo_organisation_safety_controls.sql';");
+  const reportedCentreCountMigration = query("select name from d1_migrations where name = '0036_signup_reported_centre_count.sql';");
   const duplicateMigrationState = query("select name, count(*) as count from d1_migrations group by name having count(*) > 1;");
   const subjectTriggers = query("select name from sqlite_master where type = 'trigger' and name like 'user_sessions_active_subject_%';");
   const preconfirmIndex = query("select name from sqlite_master where type = 'index' and name = 'receipts_one_preconfirm_token_per_draft';");
@@ -59,6 +62,10 @@ try {
   expectSome(organisationTermsActor, "organisations.terms_accepted_by_global_identity_id column");
   expectSome(branchCentreStatus, "branches.centre_status column");
   expectSome(branchOperatingModel, "branches.operating_model column");
+  expectSome(onboardingReportedCentreCount, "organisation_onboarding_progress.reported_centre_count column");
+  if (!String(onboardingTable[0]?.sql || "").includes("reported_centre_count") || !String(onboardingTable[0]?.sql || "").includes(">= 1")) {
+    throw new Error("Expected organisation_onboarding_progress.reported_centre_count CHECK constraint.");
+  }
   expectSome(migrations, "0027 migration record");
   expectSome(materialMigration, "0028 migration record");
   expectSome(trainerManagementMigration, "0029 migration record");
@@ -68,6 +75,7 @@ try {
   expectSome(identityMembershipMigration, "0033 migration record");
   expectSome(organisationSignupMigration, "0034 migration record");
   expectSome(demoSafetyMigration, "0035 migration record");
+  expectSome(reportedCentreCountMigration, "0036 migration record");
   if (duplicateMigrationState.length !== 0) {
     throw new Error(`Duplicate migration state rows found: ${duplicateMigrationState.map((row) => row.name).join(", ")}`);
   }
@@ -124,7 +132,7 @@ try {
     throw new Error("0032 should drop receipts_one_preconfirm_token_per_draft; effective pre-confirm token protection is guarded against receipt_reversals.");
   }
 
-  console.log("Wrangler local D1 migration apply passed through 0035.");
+  console.log("Wrangler local D1 migration apply passed through 0036.");
 } finally {
   rmSync(persistTo, { recursive: true, force: true });
 }

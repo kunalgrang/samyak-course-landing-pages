@@ -56,7 +56,7 @@ describe("organisation signup onboarding", () => {
       expect(count(fixture.sqlite, `organisation_memberships where organisation_id = '${orgId}' and status = 'active'`)).toBe(1);
       expect(count(fixture.sqlite, `login_account_people join people on people.id = login_account_people.person_id where people.organisation_id = '${orgId}' and login_account_people.access_type = 'staff'`)).toBe(1);
       expect(count(fixture.sqlite, `organisation_commercial_access where organisation_id = '${orgId}' and state = 'trial'`)).toBe(1);
-      expect(count(fixture.sqlite, `organisation_onboarding_progress where organisation_id = '${orgId}'`)).toBe(1);
+      expect(count(fixture.sqlite, `organisation_onboarding_progress where organisation_id = '${orgId}' and reported_centre_count = 1`)).toBe(1);
       expect(count(fixture.sqlite, `audit_logs where organisation_id = '${orgId}' and action in ('organisation_created', 'initial_centre_created', 'account_authority_established', 'trial_started', 'legal_entity_type_captured', 'initial_tenant_context_established')`)).toBe(6);
 
       const session = await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, fixture.env);
@@ -150,6 +150,25 @@ describe("organisation signup onboarding", () => {
     }
   });
 
+  it("persists reported Centre count as onboarding metadata while creating exactly one Centre", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+    installTurnstile();
+    const fixture = createFixture();
+    try {
+      const verificationId = await verifiedSignupId(fixture.env, "9876543210");
+      const created = await createOrganisation(fixture.env, verificationId, "multi-centre-request", { reportedCentreCount: 4 });
+      expect(created.status).toBe(200);
+      const orgId = String(((await created.json()) as Row).organisation.id);
+
+      expect(row(fixture.sqlite, "select reported_centre_count from organisation_onboarding_progress where organisation_id = ?", orgId)).toEqual({ reported_centre_count: 4 });
+      expect(count(fixture.sqlite, `branches where organisation_id = '${orgId}'`)).toBe(1);
+      expect(rows(fixture.sqlite, `select name from branches where organisation_id = '${orgId}' order by name`)).toEqual([{ name: "Sion Centre" }]);
+    } finally {
+      fixture.close();
+    }
+  });
+
   it("applies 0034 over existing Samyak rows without rewriting auth, session or audit actors", async () => {
     const db = new DatabaseSync(":memory:");
     db.exec("pragma foreign_keys = on");
@@ -209,6 +228,25 @@ describe("organisation signup onboarding", () => {
       db.close();
     }
   });
+
+  it("applies 0036 as nullable onboarding metadata without touching existing tenant rows", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec("pragma foreign_keys = on");
+    try {
+      applyMigrationsThrough(db, "0035_demo_organisation_safety_controls.sql");
+      seedSamyakOperationalRows(db);
+      const beforeBranches = rows(db, "select id, organisation_id, name from branches order by id");
+      const beforeFinance = count(db, "organisation_commercial_access");
+
+      applyMigrationFile(db, "0036_signup_reported_centre_count.sql");
+
+      expect(columns(db, "organisation_onboarding_progress")).toContain("reported_centre_count");
+      expect(rows(db, "select id, organisation_id, name from branches order by id")).toEqual(beforeBranches);
+      expect(count(db, "organisation_commercial_access")).toBe(beforeFinance);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 async function verifiedSignupId(env: WorkerBindings, mobile: string) {
@@ -258,6 +296,9 @@ async function createOrganisation(env: WorkerBindings, signupVerificationId: str
       name: "Asha Owner",
       mobile: overrides.authorityMobile || overrides.centreMobile || "9876543210",
       email: "asha.owner@example.com",
+    },
+    onboarding: {
+      reportedCentreCount: overrides.reportedCentreCount || 1,
     },
     centre: {
       name: overrides.centreName || "Sion Centre",

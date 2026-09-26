@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useId, useRef, useState } from "react";
+import React, { FormEvent, useEffect, useId, useRef, useState } from "react";
 import { BrandMark } from "../../components/BrandMark";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
@@ -12,6 +12,15 @@ import {
   type PublicConfig,
   type SignupCreateInput,
 } from "../../lib/api";
+import {
+  DEFAULT_COUNTRY_CODE,
+  countries,
+  countryByCode,
+  countryName,
+  hasCuratedSubdivisions,
+  isValidSubdivision,
+  subdivisionLabel,
+} from "../../lib/geography";
 import { useAuth } from "./AuthContext";
 import { OTP_LENGTH, isCompleteOtp, otpHelperText, sanitizeOtpInput } from "./LoginPage";
 
@@ -40,7 +49,7 @@ const legalEntityTypes = [
   ["other", "Other"],
 ] as const;
 
-const defaultForm = {
+export const signupDefaultForm = {
   mobile: "",
   brandName: "",
   legalName: "",
@@ -51,7 +60,7 @@ const defaultForm = {
   address: "",
   city: "",
   stateRegion: "",
-  country: "India",
+  countryCode: DEFAULT_COUNTRY_CODE,
   postcode: "",
   pan: "",
   gstin: "",
@@ -61,18 +70,125 @@ const defaultForm = {
   centreCity: "",
   centreStateRegion: "",
   centrePostcode: "",
-  centreCountry: "India",
+  centreCountryCode: DEFAULT_COUNTRY_CODE,
   centreMobile: "",
   centreEmail: "",
   centreOperatingModel: "company_owned",
   centreStatus: "active",
+  sameCentreAddress: true,
+  sameCentreContact: true,
+  hasMultipleCentres: false,
+  reportedCentreCount: "1",
   termsAccepted: false,
 };
+
+export type SignupFormState = typeof signupDefaultForm;
+
+export function buildSignupCreatePayload(form: SignupFormState, signupVerificationId: string, idempotencyKey: string): SignupCreateInput {
+  const centreAddress = centreAddressValues(form);
+  const centreContact = centreContactValues(form);
+  return {
+    signupVerificationId,
+    idempotencyKey,
+    organisation: {
+      brandName: form.brandName,
+      legalName: form.legalName,
+      organisationType: form.organisationType,
+      legalEntityType: form.legalEntityType,
+      address: form.address,
+      city: form.city,
+      stateRegion: form.stateRegion,
+      country: countryName(form.countryCode),
+      postcode: form.postcode,
+      pan: form.pan,
+      gstin: form.gstin,
+      website: form.website,
+      termsAccepted: form.termsAccepted,
+    },
+    authority: {
+      name: form.authorityName,
+      mobile: form.mobile,
+      email: form.authorityEmail,
+    },
+    onboarding: {
+      reportedCentreCount: reportedCentreCount(form),
+    },
+    centre: {
+      name: form.centreName,
+      address: centreAddress.address,
+      city: centreAddress.city,
+      stateRegion: centreAddress.stateRegion,
+      postcode: centreAddress.postcode,
+      country: centreAddress.country,
+      mobile: centreContact.mobile,
+      email: centreContact.email,
+      operatingModel: form.centreOperatingModel,
+      status: form.centreStatus,
+    },
+  };
+}
+
+export function validateSignupFormDetails(form: SignupFormState) {
+  const centreAddress = centreAddressValues(form);
+  const centreContact = centreContactValues(form);
+  const required = [
+    form.brandName,
+    form.legalName,
+    form.authorityName,
+    form.authorityEmail,
+    form.address,
+    form.city,
+    form.countryCode,
+    form.centreName,
+    centreAddress.address,
+    centreAddress.city,
+    centreAddress.postcode,
+    centreAddress.country,
+    centreContact.mobile,
+  ];
+  if (required.some((value) => !String(value).trim())) return "Complete all required fields.";
+  if (hasCuratedSubdivisions(form.countryCode) && !form.stateRegion) return `Choose the organisation ${subdivisionLabel(form.countryCode)}.`;
+  if (!form.sameCentreAddress && hasCuratedSubdivisions(form.centreCountryCode) && !form.centreStateRegion) return `Choose the Centre ${subdivisionLabel(form.centreCountryCode)}.`;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.authorityEmail.trim())) return "Enter a valid authorised contact email.";
+  if (centreContact.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(centreContact.email.trim())) return "Enter a valid Centre email.";
+  if (form.hasMultipleCentres && reportedCentreCount(form) < 2) return "Enter at least 2 Centres, or choose No.";
+  if (!form.termsAccepted) return "Accept the platform terms and data policy to continue.";
+  return null;
+}
+
+function centreAddressValues(form: SignupFormState) {
+  if (form.sameCentreAddress) {
+    return {
+      address: form.address,
+      city: form.city,
+      stateRegion: form.stateRegion,
+      postcode: form.postcode,
+      country: countryName(form.countryCode),
+    };
+  }
+  return {
+    address: form.centreAddress,
+    city: form.centreCity,
+    stateRegion: form.centreStateRegion,
+    postcode: form.centrePostcode,
+    country: countryName(form.centreCountryCode),
+  };
+}
+
+function centreContactValues(form: SignupFormState) {
+  if (form.sameCentreContact) return { mobile: form.mobile, email: form.authorityEmail };
+  return { mobile: form.centreMobile, email: form.centreEmail };
+}
+
+function reportedCentreCount(form: SignupFormState) {
+  if (!form.hasMultipleCentres) return 1;
+  return Number.parseInt(form.reportedCentreCount, 10);
+}
 
 export function SignupPage({ onComplete }: SignupPageProps) {
   const { refreshSession } = useAuth();
   const [config, setConfig] = useState<PublicConfig | null>(null);
-  const [form, setForm] = useState(defaultForm);
+  const [form, setForm] = useState(signupDefaultForm);
   const [step, setStep] = useState<"mobile" | "otp" | "details" | "done">("mobile");
   const [turnstileToken, setTurnstileToken] = useState("");
   const [turnstileReady, setTurnstileReady] = useState(false);
@@ -131,8 +247,20 @@ export function SignupPage({ onComplete }: SignupPageProps) {
     return () => window.clearTimeout(timer);
   }, [cooldown]);
 
-  function update<K extends keyof typeof defaultForm>(key: K, value: (typeof defaultForm)[K]) {
+  function update<K extends keyof SignupFormState>(key: K, value: SignupFormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function updateCountry(key: "countryCode" | "centreCountryCode", stateKey: "stateRegion" | "centreStateRegion", value: string) {
+    setForm((current) => {
+      const currentState = current[stateKey];
+      const nextState = current[key] === value && isValidSubdivision(value, currentState) ? currentState : "";
+      return { ...current, [key]: value, [stateKey]: nextState };
+    });
+  }
+
+  function updateMultipleCentres(value: boolean) {
+    setForm((current) => ({ ...current, hasMultipleCentres: value, reportedCentreCount: value ? current.reportedCentreCount === "1" ? "2" : current.reportedCentreCount : "1" }));
   }
 
   async function handleRequestOtp(event: FormEvent<HTMLFormElement>) {
@@ -229,67 +357,11 @@ export function SignupPage({ onComplete }: SignupPageProps) {
   }
 
   function buildPayload(): SignupCreateInput {
-    return {
-      signupVerificationId,
-      idempotencyKey,
-      organisation: {
-        brandName: form.brandName,
-        legalName: form.legalName,
-        organisationType: form.organisationType,
-        legalEntityType: form.legalEntityType,
-        address: form.address,
-        city: form.city,
-        stateRegion: form.stateRegion,
-        country: form.country,
-        postcode: form.postcode,
-        pan: form.pan,
-        gstin: form.gstin,
-        website: form.website,
-        termsAccepted: form.termsAccepted,
-      },
-      authority: {
-        name: form.authorityName,
-        mobile: form.mobile,
-        email: form.authorityEmail,
-      },
-      centre: {
-        name: form.centreName,
-        address: form.centreAddress,
-        city: form.centreCity,
-        stateRegion: form.centreStateRegion,
-        postcode: form.centrePostcode,
-        country: form.centreCountry,
-        mobile: form.centreMobile,
-        email: form.centreEmail,
-        operatingModel: form.centreOperatingModel,
-        status: form.centreStatus,
-      },
-    };
+    return buildSignupCreatePayload(form, signupVerificationId, idempotencyKey);
   }
 
   function validateDetails() {
-    const required = [
-      form.brandName,
-      form.legalName,
-      form.authorityName,
-      form.authorityEmail,
-      form.address,
-      form.city,
-      form.stateRegion,
-      form.country,
-      form.centreName,
-      form.centreAddress,
-      form.centreCity,
-      form.centreStateRegion,
-      form.centrePostcode,
-      form.centreCountry,
-      form.centreMobile,
-    ];
-    if (required.some((value) => !String(value).trim())) return "Complete all required fields.";
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.authorityEmail.trim())) return "Enter a valid authorised contact email.";
-    if (form.centreEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.centreEmail.trim())) return "Enter a valid Centre email.";
-    if (!form.termsAccepted) return "Accept the platform terms and data policy to continue.";
-    return null;
+    return validateSignupFormDetails(form);
   }
 
   function resetTurnstile() {
@@ -343,44 +415,77 @@ export function SignupPage({ onComplete }: SignupPageProps) {
           <form className="signup-form" onSubmit={handleCreateOrganisation}>
             <fieldset>
               <legend>Organisation</legend>
-              <input aria-label="Institute / Brand Name" placeholder="Institute / Brand Name" value={form.brandName} onChange={(event) => update("brandName", event.target.value)} />
-              <input aria-label="Legal Name" placeholder="Legal Name" value={form.legalName} onChange={(event) => update("legalName", event.target.value)} />
-              <select aria-label="Organisation Type" value={form.organisationType} onChange={(event) => update("organisationType", event.target.value)}>
-                {organisationTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
-              <select aria-label="Legal Entity Type" value={form.legalEntityType} onChange={(event) => update("legalEntityType", event.target.value)}>
-                {legalEntityTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
-              <input aria-label="Address" placeholder="Address" value={form.address} onChange={(event) => update("address", event.target.value)} />
-              <input aria-label="City" placeholder="City" value={form.city} onChange={(event) => update("city", event.target.value)} />
-              <input aria-label="State / Region" placeholder="State / Region" value={form.stateRegion} onChange={(event) => update("stateRegion", event.target.value)} />
-              <input aria-label="Country" placeholder="Country" value={form.country} onChange={(event) => update("country", event.target.value)} />
-              <input aria-label="Postcode / PIN" placeholder="Postcode / PIN" value={form.postcode} onChange={(event) => update("postcode", event.target.value)} />
-              <input aria-label="PAN" placeholder="PAN, if applicable" value={form.pan} onChange={(event) => update("pan", event.target.value.toUpperCase())} />
-              <input aria-label="GSTIN" placeholder="GSTIN, if applicable" value={form.gstin} onChange={(event) => update("gstin", event.target.value.toUpperCase())} />
-              <input aria-label="Website" placeholder="Website, optional" value={form.website} onChange={(event) => update("website", event.target.value)} />
+              <Field label="Institute / Brand Name"><input value={form.brandName} onChange={(event) => update("brandName", event.target.value)} /></Field>
+              <Field label="Legal Name"><input value={form.legalName} onChange={(event) => update("legalName", event.target.value)} /></Field>
+              <Field label="Organisation Type">
+                <select value={form.organisationType} onChange={(event) => update("organisationType", event.target.value)}>
+                  {organisationTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </Field>
+              <Field label="Legal Entity Type">
+                <select value={form.legalEntityType} onChange={(event) => update("legalEntityType", event.target.value)}>
+                  {legalEntityTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </Field>
+              <CountryField label="Country" value={form.countryCode} onChange={(value) => updateCountry("countryCode", "stateRegion", value)} />
+              <SubdivisionField countryCode={form.countryCode} value={form.stateRegion} onChange={(value) => update("stateRegion", value)} />
+              <Field label="City"><input value={form.city} onChange={(event) => update("city", event.target.value)} /></Field>
+              <Field label="Postcode / PIN"><input value={form.postcode} onChange={(event) => update("postcode", event.target.value)} /></Field>
+              <Field label="Address"><input value={form.address} onChange={(event) => update("address", event.target.value)} /></Field>
+              <Field label="PAN"><input placeholder="If applicable" value={form.pan} onChange={(event) => update("pan", event.target.value.toUpperCase())} /></Field>
+              <Field label="GSTIN"><input placeholder="If applicable" value={form.gstin} onChange={(event) => update("gstin", event.target.value.toUpperCase())} /></Field>
+              <Field label="Website"><input placeholder="Optional" value={form.website} onChange={(event) => update("website", event.target.value)} /></Field>
             </fieldset>
 
             <fieldset>
               <legend>Authorised Account</legend>
-              <input aria-label="Owner / Authorised Contact Name" placeholder="Owner / Authorised Contact Name" value={form.authorityName} onChange={(event) => update("authorityName", event.target.value)} />
-              <input aria-label="Owner / Authorised Contact Email" placeholder="Owner / Authorised Contact Email" value={form.authorityEmail} onChange={(event) => update("authorityEmail", event.target.value)} />
+              <Field label="Owner / Authorised Contact Name"><input value={form.authorityName} onChange={(event) => update("authorityName", event.target.value)} /></Field>
+              <Field label="Owner / Authorised Contact Email"><input type="email" value={form.authorityEmail} onChange={(event) => update("authorityEmail", event.target.value)} /></Field>
+              <p className="signup-form__note">Verified mobile: {maskedMobile || "the OTP-verified signup mobile"}</p>
             </fieldset>
 
             <fieldset>
               <legend>Initial Centre</legend>
-              <input aria-label="Centre Name" placeholder="Centre Name" value={form.centreName} onChange={(event) => update("centreName", event.target.value)} />
-              <input aria-label="Centre Address" placeholder="Centre Address" value={form.centreAddress} onChange={(event) => update("centreAddress", event.target.value)} />
-              <input aria-label="Centre City" placeholder="Centre City" value={form.centreCity} onChange={(event) => update("centreCity", event.target.value)} />
-              <input aria-label="Centre State / Region" placeholder="Centre State / Region" value={form.centreStateRegion} onChange={(event) => update("centreStateRegion", event.target.value)} />
-              <input aria-label="Centre Postcode / PIN" placeholder="Centre Postcode / PIN" value={form.centrePostcode} onChange={(event) => update("centrePostcode", event.target.value)} />
-              <input aria-label="Centre Country" placeholder="Centre Country" value={form.centreCountry} onChange={(event) => update("centreCountry", event.target.value)} />
-              <input aria-label="Centre Mobile" placeholder="Centre Mobile" value={form.centreMobile} onChange={(event) => update("centreMobile", event.target.value)} />
-              <input aria-label="Centre Email" placeholder="Centre Email, optional" value={form.centreEmail} onChange={(event) => update("centreEmail", event.target.value)} />
-              <select aria-label="Operating Model" value={form.centreOperatingModel} onChange={(event) => update("centreOperatingModel", event.target.value)}>
-                <option value="company_owned">Company-owned</option>
-                <option value="franchise_operated">Franchise-operated</option>
-              </select>
+              <div className="signup-form__full">
+                <p className="field-label">Does your organisation operate more than one Centre?</p>
+                <div className="segmented-control" role="group" aria-label="Does your organisation operate more than one Centre?">
+                  <button type="button" className={!form.hasMultipleCentres ? "segmented-control__button segmented-control__button--active" : "segmented-control__button"} onClick={() => updateMultipleCentres(false)}>No</button>
+                  <button type="button" className={form.hasMultipleCentres ? "segmented-control__button segmented-control__button--active" : "segmented-control__button"} onClick={() => updateMultipleCentres(true)}>Yes</button>
+                </div>
+              </div>
+              {form.hasMultipleCentres ? (
+                <Field label="How many Centres do you currently operate?"><input type="number" min="2" max="500" value={form.reportedCentreCount} onChange={(event) => update("reportedCentreCount", event.target.value)} /></Field>
+              ) : null}
+              <Field label="Centre Name"><input value={form.centreName} onChange={(event) => update("centreName", event.target.value)} /></Field>
+              <label className="checkbox-row signup-form__full">
+                <input type="checkbox" checked={form.sameCentreAddress} onChange={(event) => update("sameCentreAddress", event.target.checked)} />
+                <span>Same as organisation address</span>
+              </label>
+              {!form.sameCentreAddress ? (
+                <>
+                  <CountryField label="Centre Country" value={form.centreCountryCode} onChange={(value) => updateCountry("centreCountryCode", "centreStateRegion", value)} />
+                  <SubdivisionField labelPrefix="Centre" countryCode={form.centreCountryCode} value={form.centreStateRegion} onChange={(value) => update("centreStateRegion", value)} />
+                  <Field label="Centre City"><input value={form.centreCity} onChange={(event) => update("centreCity", event.target.value)} /></Field>
+                  <Field label="Centre Postcode / PIN"><input value={form.centrePostcode} onChange={(event) => update("centrePostcode", event.target.value)} /></Field>
+                  <Field label="Centre Address"><input value={form.centreAddress} onChange={(event) => update("centreAddress", event.target.value)} /></Field>
+                </>
+              ) : null}
+              <label className="checkbox-row signup-form__full">
+                <input type="checkbox" checked={form.sameCentreContact} onChange={(event) => update("sameCentreContact", event.target.checked)} />
+                <span>Same contact details as authorised account</span>
+              </label>
+              {!form.sameCentreContact ? (
+                <>
+                  <Field label="Centre Mobile"><input type="tel" inputMode="tel" value={form.centreMobile} onChange={(event) => update("centreMobile", event.target.value)} /></Field>
+                  <Field label="Centre Email"><input type="email" placeholder="Optional" value={form.centreEmail} onChange={(event) => update("centreEmail", event.target.value)} /></Field>
+                </>
+              ) : null}
+              <Field label="Operating Model">
+                <select value={form.centreOperatingModel} onChange={(event) => update("centreOperatingModel", event.target.value)}>
+                  <option value="company_owned">Company-owned</option>
+                  <option value="franchise_operated">Franchise-operated</option>
+                </select>
+              </Field>
             </fieldset>
 
             <label className="checkbox-row">
@@ -402,5 +507,57 @@ export function SignupPage({ onComplete }: SignupPageProps) {
       </section>
       <TrustFooter />
     </main>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactElement<{ "aria-label"?: string; placeholder?: string }> }) {
+  return (
+    <label className="signup-field">
+      <span>{label}</span>
+      {React.cloneElement(children, {
+        "aria-label": children.props["aria-label"] || label,
+        placeholder: children.props.placeholder,
+      })}
+    </label>
+  );
+}
+
+function CountryField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <Field label={label}>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {countries.map((country) => <option key={country.code} value={country.code}>{country.name}</option>)}
+      </select>
+    </Field>
+  );
+}
+
+function SubdivisionField({
+  labelPrefix = "",
+  countryCode,
+  value,
+  onChange,
+}: {
+  labelPrefix?: string;
+  countryCode: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const country = countryByCode(countryCode);
+  const label = [labelPrefix, subdivisionLabel(countryCode)].filter(Boolean).join(" ");
+  if (country?.subdivisions?.length) {
+    return (
+      <Field label={label}>
+        <select value={value} onChange={(event) => onChange(event.target.value)}>
+          <option value="">Choose {label}</option>
+          {country.subdivisions.map((subdivision) => <option key={subdivision.name} value={subdivision.name}>{subdivision.name}</option>)}
+        </select>
+      </Field>
+    );
+  }
+  return (
+    <Field label={label}>
+      <input value={value} onChange={(event) => onChange(event.target.value)} />
+    </Field>
   );
 }

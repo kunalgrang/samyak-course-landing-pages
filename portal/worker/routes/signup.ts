@@ -78,11 +78,14 @@ const signupCreateSchema = z.object({
     email: z.string().min(3).max(200),
     documentReference: z.string().max(240).optional(),
   }),
+  onboarding: z.object({
+    reportedCentreCount: z.number().int().min(1).max(500),
+  }),
   centre: z.object({
     name: z.string().min(1).max(160),
     address: z.string().min(1).max(300),
     city: z.string().min(1).max(120),
-    stateRegion: z.string().min(1).max(120),
+    stateRegion: z.string().max(120).optional().default(""),
     postcode: z.string().min(1).max(20),
     country: z.string().min(1).max(80),
     mobile: z.string().min(1).max(40),

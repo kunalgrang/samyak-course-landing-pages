@@ -135,6 +135,9 @@ export type SignupCreateInput = {
     email: string;
     documentReference?: string;
   };
+  onboarding: {
+    reportedCentreCount: number;
+  };
   centre: {
     name: string;
     address: string;

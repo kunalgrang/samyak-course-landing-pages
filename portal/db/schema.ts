@@ -482,11 +482,13 @@ export const organisationOnboardingProgress = sqliteTable(
     status: text("status").notNull().default("in_progress"),
     completedStepsJson: text("completed_steps_json").notNull().default("[]"),
     checklistJson: text("checklist_json").notNull(),
+    reportedCentreCount: integer("reported_centre_count"),
     ...timestamps,
   },
   (table) => [
     index("organisation_onboarding_progress_status_idx").on(table.status),
     check("organisation_onboarding_progress_status_check", sql`${table.status} in ('in_progress', 'complete')`),
+    check("organisation_onboarding_progress_reported_centre_count_check", sql`${table.reportedCentreCount} is null or ${table.reportedCentreCount} >= 1`),
   ],
 );
 

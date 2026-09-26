@@ -56,11 +56,14 @@ export type OrganisationSignupInput = {
     email: string;
     documentReference?: string;
   };
+  onboarding: {
+    reportedCentreCount: number;
+  };
   centre: {
     name: string;
     address: string;
     city: string;
-    stateRegion: string;
+    stateRegion?: string;
     postcode: string;
     country: string;
     mobile: string;
@@ -215,7 +218,7 @@ export async function createOrganisationFromSignup(c: AppContext, input: Organis
       cleanOptional(input.centre.timezone) || centreDefaults.timezone,
       input.centre.address.trim(),
       input.centre.city.trim(),
-      input.centre.stateRegion.trim(),
+      cleanOptional(input.centre.stateRegion),
       input.centre.postcode.trim(),
       centreDefaults.country,
       centreMobileHash,
@@ -275,8 +278,8 @@ export async function createOrganisationFromSignup(c: AppContext, input: Organis
     ),
     c.env.DB.prepare("insert into organisation_commercial_access (id, organisation_id, state, trial_started_at, trial_ends_at, created_at, updated_at) values (?, ?, 'trial', ?, ?, ?, ?)")
       .bind(trialId, organisationId, now, trialEndsAt, now, now),
-    c.env.DB.prepare("insert into organisation_onboarding_progress (organisation_id, status, completed_steps_json, checklist_json, created_at, updated_at) values (?, 'in_progress', ?, ?, ?, ?)")
-      .bind(organisationId, JSON.stringify(["organisation_profile", "centre_profile", "owner_account"]), checklist, now, now),
+    c.env.DB.prepare("insert into organisation_onboarding_progress (organisation_id, status, completed_steps_json, checklist_json, reported_centre_count, created_at, updated_at) values (?, 'in_progress', ?, ?, ?, ?, ?)")
+      .bind(organisationId, JSON.stringify(["organisation_profile", "centre_profile", "owner_account"]), checklist, input.onboarding.reportedCentreCount, now, now),
     c.env.DB.prepare("update signup_verifications set status = 'used', created_organisation_id = ?, used_at = ? where id = ? and status = 'verified'")
       .bind(organisationId, now, verification.id),
     ...auditStatements(c, organisationId, branchId, accountId, personId, input.idempotencyKey, now, input.organisation.legalEntityType, trialEndsAt),
@@ -294,12 +297,13 @@ async function validateSignupInput(c: AppContext, input: OrganisationSignupInput
     if (!nonEmpty(value)) return invalid("ORGANISATION_ADDRESS_REQUIRED", "Enter the organisation address.");
   }
   if (!nonEmpty(input.authority.name) || !emailOk(input.authority.email)) return invalid("AUTHORITY_REQUIRED", "Enter valid authorised account contact details.");
+  if (!Number.isInteger(input.onboarding.reportedCentreCount) || input.onboarding.reportedCentreCount < 1) return invalid("REPORTED_CENTRE_COUNT_INVALID", "Enter how many Centres your organisation currently operates.");
   const authorityMobileHash = await mobileHash(c, input.authority.mobile);
   if (authorityMobileHash !== verification.mobile_hash) return invalid("AUTHORITY_MOBILE_MISMATCH", "The authorised contact mobile must match the verified mobile.");
   if (!nonEmpty(input.centre.name)) return invalid("CENTRE_REQUIRED", "Enter the initial Centre name.");
   if (!CENTRE_OPERATING_MODELS.includes(input.centre.operatingModel)) return invalid("INVALID_CENTRE_OPERATING_MODEL", "Choose a supported Centre operating model.");
   if (!CENTRE_STATUSES.includes(input.centre.status)) return invalid("INVALID_CENTRE_STATUS", "Choose a supported Centre status.");
-  for (const value of [input.centre.address, input.centre.city, input.centre.stateRegion, input.centre.postcode, input.centre.country]) {
+  for (const value of [input.centre.address, input.centre.city, input.centre.postcode, input.centre.country]) {
     if (!nonEmpty(value)) return invalid("CENTRE_ADDRESS_REQUIRED", "Enter the initial Centre address.");
   }
   if (!nonEmpty(input.centre.mobile)) return invalid("CENTRE_MOBILE_REQUIRED", "Enter the initial Centre mobile number.");
