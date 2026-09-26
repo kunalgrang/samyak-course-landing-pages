@@ -65,6 +65,7 @@ const dashboard: ReferralDashboard = {
 
 const session: SessionResponse = {
   authenticated: true,
+  activeOrganisation: null,
   activeProfile: {
     personId: "person_ssc_001",
     publicName: "Asha S.",
@@ -88,6 +89,7 @@ const session: SessionResponse = {
       effectiveRoles: [],
     },
   ],
+  homeCentre: null,
   mobileLastFour: "3210",
   accountRoles: [],
   organisations: [],

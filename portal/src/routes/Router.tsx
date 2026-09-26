@@ -220,7 +220,7 @@ export function Router() {
 
   if (path.startsWith("/student/") && !isStaff) {
     return (
-      <AppShell activePath={activeStudentPath} navigation={studentNavigation} onNavigate={navigate} onSignOut={handleStudentSignOut} organisations={session?.organisations || []}>
+      <AppShell activePath={activeStudentPath} navigation={studentNavigation} onNavigate={navigate} onSignOut={handleStudentSignOut} organisations={session?.organisations || []} session={session}>
         {activeStudentPath === "/student/dashboard" ? <ShellHomePage referralPath="/student/referrals" profilePath="/student/profile" /> : null}
         {activeStudentPath === "/student/learning" ? <StudentLearningPage /> : null}
         {activeStudentPath === "/student/certificates" ? <CertificatesPage /> : null}
@@ -232,7 +232,7 @@ export function Router() {
   }
 
   return (
-    <AppShell activePath={activeAppPath} navigation={navigation} onNavigate={navigate} onSignOut={handleSignOut} organisations={session?.organisations || []}>
+    <AppShell activePath={activeAppPath} navigation={navigation} onNavigate={navigate} onSignOut={handleSignOut} organisations={session?.organisations || []} session={session}>
       {activeAppPath === "/app" ? <ShellHomePage /> : null}
       {activeAppPath === "/app/enquiries" && canAccessEnquiries ? <EnquiriesPage /> : null}
       {activeAppPath === "/app/students" && canAccessStudents ? <StudentsPage /> : null}

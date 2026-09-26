@@ -327,9 +327,35 @@ a:focus-visible {
 .organisation-switcher {
   display: grid;
   gap: 6px;
-  margin-top: 12px;
   color: var(--color-muted);
   font-size: 0.8rem;
+}
+
+.tenant-identity {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: #f8fbfb;
+}
+
+.tenant-identity p {
+  margin: 0;
+}
+
+.tenant-identity__organisation {
+  color: var(--color-navy);
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.tenant-identity__meta,
+.tenant-identity__user {
+  color: var(--color-muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.35;
 }
 
 .organisation-switcher select,

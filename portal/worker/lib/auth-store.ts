@@ -38,11 +38,25 @@ export type ProfileChoice = {
 
 export type SessionView = {
   authenticated: boolean;
+  activeOrganisation: ActiveOrganisation | null;
   activeProfile: ProfileChoice | null;
   profiles: ProfileChoice[];
+  homeCentre: HomeCentre | null;
   mobileLastFour?: string;
   accountRoles?: string[];
   organisations?: OrganisationChoice[];
+};
+
+export type ActiveOrganisation = {
+  organisationId: string;
+  organisationName: string;
+  organisationKind: "normal" | "demo";
+};
+
+export type HomeCentre = {
+  centreId: string;
+  centreCode: string;
+  centreName: string;
 };
 
 export type OrganisationChoice = {
@@ -866,12 +880,15 @@ export function sessionCookieName(c: AppContext, scope: SessionCookieScope = "de
 }
 
 export async function sessionView(c: AppContext, loginAccountId: string, activePersonId: string | null, organisationId = ORG_ID): Promise<SessionView> {
-  const account = await c.env.DB.prepare("select mobile_last_four from login_accounts where id = ?")
+  const accountPromise = c.env.DB.prepare("select mobile_last_four from login_accounts where id = ?")
     .bind(loginAccountId)
     .first<{ mobile_last_four: string | null }>();
-  const rows = await c.env.DB.prepare(
+  const activeOrganisationPromise = activeOrganisationForSession(c, organisationId);
+  const homeCentrePromise = activePersonId ? homeCentreForActivePerson(c, activePersonId, organisationId) : Promise.resolve(null);
+  const rowsPromise = c.env.DB.prepare(
     `select
        people.id as person_id,
+       people.full_name,
        people.public_name as public_name,
        login_account_people.access_type as access_type,
        roles.code as role_code,
@@ -886,13 +903,16 @@ export async function sessionView(c: AppContext, loginAccountId: string, activeP
        and students.portal_status != 'disabled'
      left join person_roles on person_roles.person_id = people.id
      left join roles on roles.id = person_roles.role_id
+       and roles.organisation_id = people.organisation_id
      where login_account_people.login_account_id = ?
        and login_account_people.is_available = 1
        and people.organisation_id = ?
        and people.status = 'active'`,
   )
     .bind(loginAccountId, organisationId)
-    .all<{ person_id: string; public_name: string | null; access_type: string; role_code: string | null; has_student_profile: number }>();
+    .all<{ person_id: string; full_name: string; public_name: string | null; access_type: string; role_code: string | null; has_student_profile: number }>();
+
+  const [account, activeOrganisation, homeCentre, rows] = await Promise.all([accountPromise, activeOrganisationPromise, homeCentrePromise, rowsPromise]);
 
   const byPerson = new Map<string, ProfileChoice>();
   for (const row of rows.results || []) {
@@ -902,7 +922,7 @@ export async function sessionView(c: AppContext, loginAccountId: string, activeP
     } else {
       byPerson.set(row.person_id, {
         personId: row.person_id,
-        publicName: row.public_name || "Student",
+        publicName: row.public_name || row.full_name || "Profile",
         accessType: row.access_type,
         roles: row.role_code ? [row.role_code] : [],
         hasStudentProfile: row.has_student_profile === 1,
@@ -915,10 +935,48 @@ export async function sessionView(c: AppContext, loginAccountId: string, activeP
   const activeProfile = profiles.find((profile) => profile.personId === activePersonId) || null;
   return {
     authenticated: true,
+    activeOrganisation,
     activeProfile: activeProfile ? { ...activeProfile, effectiveRoles } : null,
     profiles,
+    homeCentre,
     mobileLastFour: account?.mobile_last_four || undefined,
     accountRoles,
+  };
+}
+
+async function activeOrganisationForSession(c: AppContext, organisationId: string): Promise<ActiveOrganisation | null> {
+  const row = await c.env.DB.prepare(
+    `select id, name, organisation_kind
+     from organisations
+     where id = ?`,
+  )
+    .bind(organisationId)
+    .first<{ id: string; name: string; organisation_kind: string | null }>();
+  if (!row) return null;
+  return {
+    organisationId: row.id,
+    organisationName: row.name,
+    organisationKind: row.organisation_kind === "demo" ? "demo" : "normal",
+  };
+}
+
+async function homeCentreForActivePerson(c: AppContext, personId: string, organisationId: string): Promise<HomeCentre | null> {
+  const row = await c.env.DB.prepare(
+    `select branches.id as centre_id, branches.code as centre_code, branches.name as centre_name
+     from people
+     join branches on branches.id = people.home_branch_id
+       and branches.organisation_id = people.organisation_id
+     where people.id = ?
+       and people.organisation_id = ?
+       and people.status = 'active'`,
+  )
+    .bind(personId, organisationId)
+    .first<{ centre_id: string; centre_code: string; centre_name: string }>();
+  if (!row) return null;
+  return {
+    centreId: row.centre_id,
+    centreCode: row.centre_code,
+    centreName: row.centre_name,
   };
 }
 
@@ -944,6 +1002,7 @@ export async function getPersonRoles(c: AppContext, personId: string, organisati
      join roles on roles.id = person_roles.role_id
      where person_roles.person_id = ?
        and roles.organisation_id = ?
+       and coalesce(person_roles.status, 'active') = 'active'
      order by roles.code`,
   )
     .bind(personId, organisationId)

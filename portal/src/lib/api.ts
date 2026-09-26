@@ -32,10 +32,24 @@ const organisationChoiceSchema = z.object({
   organisationName: z.string(),
 });
 
+const activeOrganisationSchema = z.object({
+  organisationId: z.string(),
+  organisationName: z.string(),
+  organisationKind: z.union([z.literal("normal"), z.literal("demo")]),
+});
+
+const homeCentreSchema = z.object({
+  centreId: z.string(),
+  centreCode: z.string(),
+  centreName: z.string(),
+});
+
 export const sessionSchema = z.object({
   authenticated: z.boolean(),
+  activeOrganisation: activeOrganisationSchema.nullable().default(null),
   activeProfile: profileSchema.nullable(),
   profiles: z.array(profileSchema),
+  homeCentre: homeCentreSchema.nullable().default(null),
   mobileLastFour: z.string().optional(),
   accountRoles: z.array(z.string()).default([]),
   organisations: z.array(organisationChoiceSchema).default([]),

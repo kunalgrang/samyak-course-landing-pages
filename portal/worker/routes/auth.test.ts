@@ -34,6 +34,17 @@ class FakeD1Statement {
     if (sql.includes("select mobile_last_four from login_accounts where id = ?")) {
       return (this.db.loginAccounts.find((row) => row.id === this.values[0]) ?? null) as T;
     }
+    if (sql.includes("select id, name, organisation_kind from organisations where id = ?")) {
+      const organisation = this.db.organisations.find((row) => row.id === this.values[0]);
+      return (organisation ? { id: organisation.id, name: organisation.name, organisation_kind: organisation.organisation_kind ?? "normal" } : null) as T;
+    }
+    if (sql.includes("select branches.id as centre_id")) {
+      const [personId, organisationId] = this.values;
+      const person = this.db.people.find((row) => row.id === personId && row.organisation_id === organisationId && row.status === "active");
+      if (!person?.home_branch_id) return null as T;
+      const branch = this.db.branches.find((row) => row.id === person.home_branch_id && row.organisation_id === person.organisation_id);
+      return (branch ? { centre_id: branch.id, centre_code: branch.code, centre_name: branch.name } : null) as T;
+    }
     if (sql.includes("from login_accounts where id = ?")) {
       const row = this.db.loginAccounts.find((account) => account.id === this.values[0]);
       return (row ? this.db.loginAccountMembershipRow(row) : null) as T;
@@ -273,12 +284,12 @@ class FakeD1Statement {
         if (!person) continue;
         const personRoles = this.db.personRoles.filter((row) => row.person_id === person.id);
         if (personRoles.length === 0) {
-          results.push({ person_id: person.id, public_name: person.public_name, access_type: link.access_type, role_code: null, has_student_profile: student ? 1 : 0 });
+          results.push({ person_id: person.id, full_name: person.full_name, public_name: person.public_name, access_type: link.access_type, role_code: null, has_student_profile: student ? 1 : 0 });
           continue;
         }
         for (const personRole of personRoles) {
           const role = this.db.roles.find((row) => row.id === personRole.role_id);
-          results.push({ person_id: person.id, public_name: person.public_name, access_type: link.access_type, role_code: role?.code ?? null, has_student_profile: student ? 1 : 0 });
+          results.push({ person_id: person.id, full_name: person.full_name, public_name: person.public_name, access_type: link.access_type, role_code: role?.code ?? null, has_student_profile: student ? 1 : 0 });
         }
       }
       return { results } as T;
@@ -356,10 +367,10 @@ class FakeD1 {
   globalIdentities: Row[] = [];
   organisationMemberships: Row[] = [];
   organisations: Row[] = [
-    { id: "org_samyak", name: "Samyak Computer Classes", slug: "samyak", status: "active" },
-    { id: "org_other", name: "Other Institute", slug: "other", status: "active" },
+    { id: "org_samyak", name: "Samyak Computer Classes", slug: "samyak", status: "active", organisation_kind: "normal" },
+    { id: "org_other", name: "Other Institute", slug: "other", status: "active", organisation_kind: "normal" },
   ];
-  branches: Row[] = [{ id: "branch_sion", name: "Sion", code: "SION" }];
+  branches: Row[] = [{ id: "branch_sion", organisation_id: "org_samyak", name: "Sion", code: "SION", status: "active" }];
   people: Row[] = [];
   personContacts: Row[] = [];
   personContactDetails: Row[] = [];
@@ -415,7 +426,11 @@ class FakeD1 {
     const link = this.loginAccountPeople.find((row) => row.login_account_id === loginAccountId && row.person_id === personId && row.is_available === 1);
     const person = this.people.find((row) => row.id === personId && row.organisation_id === organisationId && row.status === "active");
     const referrer = this.referrerProfiles.find((row) => row.person_id === personId && row.organisation_id === organisationId && row.active === 1);
-    return Boolean(link && person && referrer);
+    const staffRole = this.loginAccountRoles
+      .filter((row) => row.login_account_id === loginAccountId)
+      .map((accountRole) => this.roles.find((role) => role.id === accountRole.role_id))
+      .some((role) => role && !["student", "alumni"].includes(String(role.code)));
+    return Boolean(link && person && (referrer || staffRole));
   }
 
   isLinkedTrainerAvailable(loginAccountId: string, personId: string, organisationId = "org_samyak") {
@@ -1761,6 +1776,7 @@ describe("auth routes", () => {
     });
     db.globalIdentities.push({ id: "gident_other", mobile_normalized: "mobile_hash_other", mobile_hash: "mobile_hash_other", mobile_last_four: "3210", status: "active" });
     db.organisationMemberships.push({ id: "omem_other", global_identity_id: "gident_other", organisation_id: "org_other", login_account_id: "acct_other", status: "active" });
+    db.branches.push({ id: "branch_other", organisation_id: "org_other", name: "Other Centre", code: "OTHER", status: "active" });
     db.people.push({ id: "person_other_org", organisation_id: "org_other", full_name: "Other Student", public_name: "Other", status: "active" });
     db.referrerProfiles.push({ id: "ref_other_org", organisation_id: "org_other", person_id: "person_other_org", external_referrer_id: "OTHER_ORG", referral_token: "OTHER_TOKEN", personal_link: "https://other.test/r/OTHER", active: 1, created_at: "2026-07-01" });
     db.students.push({ id: "student_other_org", organisation_id: "org_other", person_id: "person_other_org", home_branch_id: "branch_other", student_number: "OTH-0001", sequence_number: 1, student_since: "2026-07-01", current_status: "active", portal_status: "active" });
@@ -1789,8 +1805,40 @@ describe("auth routes", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       authenticated: true,
+      activeOrganisation: {
+        organisationId: "org_other",
+        organisationName: "Other Institute",
+        organisationKind: "normal",
+      },
       activeProfile: { personId: "person_other_org", publicName: "Other" },
       profiles: [expect.objectContaining({ personId: "person_other_org" })],
+    });
+  });
+
+  it("does not expose a home Centre when the active person's branch belongs to another organisation", async () => {
+    const db = new FakeD1();
+    installFetch({ eligible: false });
+    await seedMembershipOnlyOwner(db, "9876543210", { organisationId: "org_demo", organisationKind: "demo" });
+    const person = db.people.find((row) => row.id === "person_demo_owner")!;
+    person.home_branch_id = "branch_sion";
+
+    const token = await createSession(testContext(db), "acct_demo", "person_demo_owner");
+    const response = await app.request(
+      "http://localhost/api/auth/session?organisation_id=org_samyak",
+      { headers: { Cookie: `samyak_session=${token}`, "X-Organisation-Id": "org_samyak" } },
+      env(db),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      authenticated: true,
+      activeOrganisation: {
+        organisationId: "org_demo",
+        organisationName: "demo Institute",
+        organisationKind: "demo",
+      },
+      activeProfile: { personId: "person_demo_owner", publicName: "Jim Parsons" },
+      homeCentre: null,
     });
   });
 
@@ -1946,12 +1994,23 @@ describe("auth routes", () => {
     expect(verifyResponse.status).toBe(200);
     expect(body.session).toMatchObject({
       authenticated: true,
+      activeOrganisation: {
+        organisationId: "org_demo",
+        organisationName: "demo Institute",
+        organisationKind: "demo",
+      },
       activeProfile: expect.objectContaining({
         personId: "person_demo_owner",
         publicName: "Jim Parsons",
         roles: expect.arrayContaining(["owner"]),
         effectiveRoles: expect.arrayContaining(["owner"]),
       }),
+      homeCentre: {
+        centreId: "branch_demo",
+        centreCode: "MAIN",
+        centreName: "Main Centre",
+      },
+      accountRoles: expect.arrayContaining(["owner"]),
       organisations: [expect.objectContaining({ organisationId: "org_demo" })],
     });
     expect(db.userSessions.at(-1)).toMatchObject({
@@ -1976,7 +2035,13 @@ describe("auth routes", () => {
     expect(verifyResponse.status).toBe(200);
     expect(body.session).toMatchObject({
       authenticated: true,
+      activeOrganisation: {
+        organisationId: "org_other",
+        organisationName: "Other Institute",
+        organisationKind: "normal",
+      },
       activeProfile: expect.objectContaining({ personId: "person_other_owner", roles: expect.arrayContaining(["owner"]) }),
+      homeCentre: expect.objectContaining({ centreName: "Main Centre" }),
       organisations: [expect.objectContaining({ organisationId: "org_other" })],
     });
   });

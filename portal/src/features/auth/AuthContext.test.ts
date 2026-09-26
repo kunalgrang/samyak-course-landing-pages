@@ -4,6 +4,7 @@ import type { SessionResponse } from "../../lib/api";
 
 const authenticatedSession: SessionResponse = {
   authenticated: true,
+  activeOrganisation: null,
   activeProfile: {
     personId: "person_stu1",
     publicName: "Asha",
@@ -20,6 +21,7 @@ const authenticatedSession: SessionResponse = {
       effectiveRoles: [],
     },
   ],
+  homeCentre: null,
   mobileLastFour: "3210",
   accountRoles: [],
   organisations: [],
@@ -37,8 +39,10 @@ describe("AuthContext session refresh state", () => {
   it("keeps the expired-session message only for an unauthenticated session response", () => {
     const next = applySessionRefreshSuccess({
       authenticated: false,
+      activeOrganisation: null,
       activeProfile: null,
       profiles: [],
+      homeCentre: null,
       accountRoles: [],
       organisations: [],
       message: "Your session has expired. Please sign in again.",
@@ -51,8 +55,10 @@ describe("AuthContext session refresh state", () => {
   it("keeps server-issued organisation choices separate from authenticated tenant sessions", () => {
     const next = applySessionRefreshSuccess({
       authenticated: false,
+      activeOrganisation: null,
       activeProfile: null,
       profiles: [],
+      homeCentre: null,
       accountRoles: [],
       organisations: [{ membershipId: "omem_other", organisationId: "org_other", organisationName: "Other Institute" }],
       code: "ORGANISATION_SELECTION_REQUIRED",
