@@ -12,7 +12,7 @@ function context(url: string, environment: "development" | "preview" | "producti
 
 type ChallengeLimitRow = {
   mobile_hash: string;
-  purpose: OtpChallengePurpose;
+  challenge_purpose: OtpChallengePurpose;
   ip_hash: string;
   requested_at: string;
 };
@@ -26,7 +26,7 @@ function rateLimitContext(challenges: ChallengeLimitRow[]) {
             first: async () => {
               if (sql.includes("mobile_hash = ?")) {
                 const [hash, purpose, since] = values as [string, OtpChallengePurpose, string];
-                return { count: challenges.filter((row) => row.mobile_hash === hash && row.purpose === purpose && row.requested_at >= since).length };
+                return { count: challenges.filter((row) => row.mobile_hash === hash && row.challenge_purpose === purpose && row.requested_at >= since).length };
               }
               const [hash, since] = values as [string, string];
               return { count: challenges.filter((row) => row.ip_hash === hash && row.requested_at >= since).length };
@@ -115,7 +115,7 @@ describe("OTP request limits", () => {
   it("counts mobile request limits per OTP purpose", async () => {
     const signupRows = Array.from({ length: 8 }, (_, index) => ({
       mobile_hash: "mobile-one",
-      purpose: "signup" as const,
+      challenge_purpose: "signup" as const,
       ip_hash: `ip-signup-${index}`,
       requested_at: "2026-09-28T09:30:00.000Z",
     }));
@@ -128,7 +128,7 @@ describe("OTP request limits", () => {
   it("keeps IP request limits shared across OTP purposes", async () => {
     const mixedPurposeRows = Array.from({ length: 10 }, (_, index) => ({
       mobile_hash: `mobile-${index}`,
-      purpose: index % 2 === 0 ? ("signup" as const) : ("login" as const),
+      challenge_purpose: index % 2 === 0 ? ("signup" as const) : ("login" as const),
       ip_hash: "shared-ip",
       requested_at: "2026-09-28T09:55:00.000Z",
     }));

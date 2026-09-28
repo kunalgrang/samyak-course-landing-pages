@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -18,7 +18,7 @@ try {
     persistTo,
   ]);
 
-  const schema = query("select name, type from sqlite_master where name in ('class_sessions','attendance_records','session_materials','collection_followups','fee_schedule_revisions','receipt_reversals','global_identities','organisation_memberships','signup_verifications','organisation_account_authorities','organisation_commercial_access','organisation_onboarding_progress','user_sessions_active_subject_type_idx','class_sessions_batch_date_start_unique','attendance_records_session_membership_unique','session_materials_class_session_idx','session_materials_org_session_idx','session_materials_org_trainer_created_idx','person_roles_role_status_branch_idx','collection_followups_org_branch_next_idx','collection_followups_org_enrolment_created_idx','collection_followups_org_promise_idx','fee_schedule_revisions_fee_revision_unique','fee_schedule_revisions_enrolment_created_idx','receipt_reversals_receipt_unique','receipt_reversals_idempotency_unique','receipt_reversals_org_enrolment_created_idx','global_identities_mobile_normalized_unique','global_identities_mobile_hash_idx','organisation_memberships_identity_org_unique','organisation_memberships_login_account_unique','organisation_memberships_org_status_idx','login_accounts_global_identity_id_idx','login_accounts_organisation_membership_id_idx','user_sessions_organisation_membership_id_idx','branches_organisation_name_unique','signup_verifications_challenge_unique','signup_verifications_global_identity_idx','organisation_account_authorities_primary_unique','organisation_account_authorities_org_status_idx','organisation_commercial_access_org_unique','organisation_commercial_access_state_idx','organisation_onboarding_progress_status_idx','organisations_kind_idx') order by type, name;");
+  const schema = query("select name, type from sqlite_master where name in ('class_sessions','attendance_records','session_materials','collection_followups','fee_schedule_revisions','receipt_reversals','global_identities','organisation_memberships','signup_verifications','organisation_account_authorities','organisation_commercial_access','organisation_onboarding_progress','user_sessions_active_subject_type_idx','class_sessions_batch_date_start_unique','attendance_records_session_membership_unique','session_materials_class_session_idx','session_materials_org_session_idx','session_materials_org_trainer_created_idx','person_roles_role_status_branch_idx','collection_followups_org_branch_next_idx','collection_followups_org_enrolment_created_idx','collection_followups_org_promise_idx','fee_schedule_revisions_fee_revision_unique','fee_schedule_revisions_enrolment_created_idx','receipt_reversals_receipt_unique','receipt_reversals_idempotency_unique','receipt_reversals_org_enrolment_created_idx','global_identities_mobile_normalized_unique','global_identities_mobile_hash_idx','organisation_memberships_identity_org_unique','organisation_memberships_login_account_unique','organisation_memberships_org_status_idx','login_accounts_global_identity_id_idx','login_accounts_organisation_membership_id_idx','user_sessions_organisation_membership_id_idx','branches_organisation_name_unique','otp_challenges_mobile_hash_challenge_purpose_requested_at_idx','signup_verifications_challenge_unique','signup_verifications_global_identity_idx','organisation_account_authorities_primary_unique','organisation_account_authorities_org_status_idx','organisation_commercial_access_org_unique','organisation_commercial_access_state_idx','organisation_onboarding_progress_status_idx','organisations_kind_idx') order by type, name;");
   const columns = query("select name from pragma_table_info('user_sessions') where name = 'active_subject_type';");
   const sessionMembershipColumn = query("select name from pragma_table_info('user_sessions') where name = 'organisation_membership_id';");
   const accountIdentityColumn = query("select name from pragma_table_info('login_accounts') where name = 'global_identity_id';");
@@ -44,9 +44,11 @@ try {
   const reportedCentreCountMigration = query("select name from d1_migrations where name = '0036_signup_reported_centre_count.sql';");
   const otpSignupPurposeMigration = query("select name from d1_migrations where name = '0037_otp_challenge_signup_purpose.sql';");
   const otpChallengeTable = query("select sql from sqlite_master where type = 'table' and name = 'otp_challenges';");
+  const otpChallengePurposeColumn = query("select name, dflt_value from pragma_table_info('otp_challenges') where name = 'challenge_purpose';");
   const duplicateMigrationState = query("select name, count(*) as count from d1_migrations group by name having count(*) > 1;");
   const subjectTriggers = query("select name from sqlite_master where type = 'trigger' and name like 'user_sessions_active_subject_%';");
   const preconfirmIndex = query("select name from sqlite_master where type = 'index' and name = 'receipts_one_preconfirm_token_per_draft';");
+  const otpPurposeMigrationSql = readFileSync(join(projectRoot, "migrations", "0037_otp_challenge_signup_purpose.sql"), "utf8");
 
   expectSome(columns, "active_subject_type column");
   expectSome(sessionMembershipColumn, "user_sessions.organisation_membership_id column");
@@ -79,8 +81,22 @@ try {
   expectSome(demoSafetyMigration, "0035 migration record");
   expectSome(reportedCentreCountMigration, "0036 migration record");
   expectSome(otpSignupPurposeMigration, "0037 migration record");
-  if (!String(otpChallengeTable[0]?.sql || "").includes("CHECK(`purpose` in ('login', 'signup'))")) {
-    throw new Error("Expected otp_challenges purpose CHECK constraint to allow login and signup.");
+  expectSome(otpChallengePurposeColumn, "otp_challenges.challenge_purpose column");
+  if (otpChallengePurposeColumn[0]?.dflt_value !== "'login'") {
+    throw new Error(`Expected otp_challenges.challenge_purpose default 'login', got ${otpChallengePurposeColumn[0]?.dflt_value || "none"}.`);
+  }
+  if (/PRAGMA\s+foreign_keys\s*=\s*OFF/i.test(otpPurposeMigrationSql) || /PRAGMA\s+foreign_keys\s*=\s*ON/i.test(otpPurposeMigrationSql)) {
+    throw new Error("0037 must not rely on PRAGMA foreign_keys toggles.");
+  }
+  if (/otp_challenges_new/i.test(otpPurposeMigrationSql) || /drop\s+table\s+`?otp_challenges`?/i.test(otpPurposeMigrationSql)) {
+    throw new Error("0037 must be additive and must not rebuild otp_challenges.");
+  }
+  const otpChallengeSql = String(otpChallengeTable[0]?.sql || "");
+  if (!otpChallengeSql.includes("CHECK(`purpose` in ('login'))")) {
+    throw new Error("Expected legacy otp_challenges.purpose CHECK constraint to remain login-only.");
+  }
+  if (!otpChallengeSql.includes("CHECK(`challenge_purpose` in ('login', 'signup'))")) {
+    throw new Error("Expected otp_challenges.challenge_purpose CHECK constraint to allow login and signup.");
   }
   if (duplicateMigrationState.length !== 0) {
     throw new Error(`Duplicate migration state rows found: ${duplicateMigrationState.map((row) => row.name).join(", ")}`);
@@ -111,6 +127,7 @@ try {
     "global_identities_mobile_hash_idx",
     "global_identities_mobile_normalized_unique",
     "branches_organisation_name_unique",
+    "otp_challenges_mobile_hash_challenge_purpose_requested_at_idx",
     "login_accounts_global_identity_id_idx",
     "login_accounts_organisation_membership_id_idx",
     "organisation_account_authorities_org_status_idx",

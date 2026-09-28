@@ -177,8 +177,9 @@ describe("organisation signup onboarding", () => {
     try {
       const otp = await requestSignupOtp(fixture.env, "9876543210");
       const challengeId = String((await otp.json() as Row).challengeId);
-      expect(row(fixture.sqlite, "select purpose, status, verification_attempts, resend_count from otp_challenges where id = ?", challengeId)).toMatchObject({
-        purpose: "signup",
+      expect(row(fixture.sqlite, "select purpose, challenge_purpose, status, verification_attempts, resend_count from otp_challenges where id = ?", challengeId)).toMatchObject({
+        purpose: "login",
+        challenge_purpose: "signup",
         status: "sent",
         verification_attempts: 0,
         resend_count: 0,
@@ -209,8 +210,9 @@ describe("organisation signup onboarding", () => {
     try {
       const otp = await requestLoginOtp(fixture.env, "9876543210");
       const challengeId = String((await otp.json() as Row).challengeId);
-      expect(row(fixture.sqlite, "select purpose, verification_attempts, resend_count from otp_challenges where id = ?", challengeId)).toMatchObject({
+      expect(row(fixture.sqlite, "select purpose, challenge_purpose, verification_attempts, resend_count from otp_challenges where id = ?", challengeId)).toMatchObject({
         purpose: "login",
+        challenge_purpose: "login",
         verification_attempts: 0,
         resend_count: 0,
       });
@@ -308,12 +310,19 @@ describe("organisation signup onboarding", () => {
     }
   });
 
-  it("applies 0037 by allowing signup OTP purpose without rewriting existing challenges", () => {
+  it("applies additive 0037 while preserving dependent signup verification references", () => {
     const db = new DatabaseSync(":memory:");
     db.exec("pragma foreign_keys = on");
     try {
       applyMigrationsThrough(db, "0036_signup_reported_centre_count.sql");
       seedSamyakOperationalRows(db);
+      const migrationSql = readFileSync(join(process.cwd(), "migrations", "0037_otp_challenge_signup_purpose.sql"), "utf8");
+      expect(migrationSql).toContain("ADD COLUMN `challenge_purpose`");
+      expect(migrationSql).not.toMatch(/PRAGMA\s+foreign_keys\s*=\s*OFF/i);
+      expect(migrationSql).not.toMatch(/PRAGMA\s+foreign_keys\s*=\s*ON/i);
+      expect(migrationSql).not.toContain("otp_challenges_new");
+      expect(migrationSql).not.toMatch(/DROP TABLE `?otp_challenges`?/i);
+      expect(migrationSql).not.toMatch(/ALTER TABLE `?otp_challenges_new`? RENAME/i);
       db.prepare(
         `insert into otp_challenges (
           id, organisation_id, login_account_id, mobile_hash, mobile_last_four, mobile_ciphertext, provider,
@@ -326,29 +335,66 @@ describe("organisation signup onboarding", () => {
           id, challenge_id, global_identity_id, mobile_hash, mobile_last_four, status, created_organisation_id, created_at, expires_at, used_at
         ) values ('signup_existing', 'otp_existing_login', 'gident_existing_owner', 'mobile_hash_existing', '3210', 'verified', null, ?, ?, null)`,
       ).run(NOW, "2026-09-24T10:05:00.000Z");
+      const before = {
+        otpChallenges: count(db, "otp_challenges"),
+        signupVerifications: count(db, "signup_verifications"),
+        signupVerificationOrphans: count(db, "signup_verifications sv left join otp_challenges oc on oc.id = sv.challenge_id where oc.id is null"),
+      };
 
       applyMigrationFile(db, "0037_otp_challenge_signup_purpose.sql");
 
-      expect(row(db, "select purpose, status, verification_attempts from otp_challenges where id = 'otp_existing_login'")).toEqual({
+      expect(count(db, "otp_challenges")).toBe(before.otpChallenges);
+      expect(count(db, "signup_verifications")).toBe(before.signupVerifications);
+      expect(count(db, "signup_verifications sv left join otp_challenges oc on oc.id = sv.challenge_id where oc.id is null")).toBe(0);
+      expect(before.signupVerificationOrphans).toBe(0);
+      expect(row(db, "select purpose, challenge_purpose, status, verification_attempts from otp_challenges where id = 'otp_existing_login'")).toEqual({
         purpose: "login",
+        challenge_purpose: "login",
         status: "sent",
         verification_attempts: 1,
       });
-      expect(row(db, "select challenge_id from signup_verifications where id = 'signup_existing'")).toEqual({ challenge_id: "otp_existing_login" });
+      expect(row(db, "select signup_verifications.challenge_id, otp_challenges.id as challenge_exists from signup_verifications join otp_challenges on otp_challenges.id = signup_verifications.challenge_id where signup_verifications.id = 'signup_existing'")).toEqual({
+        challenge_id: "otp_existing_login",
+        challenge_exists: "otp_existing_login",
+      });
       db.prepare(
         `insert into otp_challenges (
           id, organisation_id, login_account_id, mobile_hash, mobile_last_four, mobile_ciphertext, provider,
           provider_request_id, provider_challenge_id, purpose, status, verification_attempts, resend_count,
           last_sent_at, requested_at, expires_at, verified_at, ip_hash
-        ) values ('otp_signup_new', 'org_samyak', null, 'mobile_hash_signup', '9999', null, 'none', null, null, 'signup', 'requested', 0, 0, null, ?, ?, null, 'ip_signup')`,
+        ) values ('otp_login_new', 'org_samyak', null, 'mobile_hash_login', '1111', null, 'none', null, null, 'login', 'requested', 0, 0, null, ?, ?, null, 'ip_login')`,
       ).run(NOW, "2026-09-24T10:05:00.000Z");
+      expect(row(db, "select purpose, challenge_purpose from otp_challenges where id = 'otp_login_new'")).toEqual({
+        purpose: "login",
+        challenge_purpose: "login",
+      });
+      db.prepare(
+        `insert into otp_challenges (
+          id, organisation_id, login_account_id, mobile_hash, mobile_last_four, mobile_ciphertext, provider,
+          provider_request_id, provider_challenge_id, purpose, challenge_purpose, status, verification_attempts, resend_count,
+          last_sent_at, requested_at, expires_at, verified_at, ip_hash
+        ) values ('otp_signup_new', 'org_samyak', null, 'mobile_hash_signup', '9999', null, 'none', null, null, 'login', 'signup', 'requested', 0, 0, null, ?, ?, null, 'ip_signup')`,
+      ).run(NOW, "2026-09-24T10:05:00.000Z");
+      expect(row(db, "select purpose, challenge_purpose from otp_challenges where id = 'otp_signup_new'")).toEqual({
+        purpose: "login",
+        challenge_purpose: "signup",
+      });
       expect(() =>
         db.prepare(
           `insert into otp_challenges (
             id, organisation_id, login_account_id, mobile_hash, mobile_last_four, mobile_ciphertext, provider,
-            provider_request_id, provider_challenge_id, purpose, status, verification_attempts, resend_count,
+            provider_request_id, provider_challenge_id, purpose, challenge_purpose, status, verification_attempts, resend_count,
             last_sent_at, requested_at, expires_at, verified_at, ip_hash
-          ) values ('otp_invalid_purpose', 'org_samyak', null, 'mobile_hash_invalid', '0000', null, 'none', null, null, 'reset', 'requested', 0, 0, null, ?, ?, null, 'ip_invalid')`,
+          ) values ('otp_invalid_challenge_purpose', 'org_samyak', null, 'mobile_hash_invalid', '0000', null, 'none', null, null, 'login', 'reset', 'requested', 0, 0, null, ?, ?, null, 'ip_invalid')`,
+        ).run(NOW, "2026-09-24T10:05:00.000Z"),
+      ).toThrow();
+      expect(() =>
+        db.prepare(
+          `insert into otp_challenges (
+            id, organisation_id, login_account_id, mobile_hash, mobile_last_four, mobile_ciphertext, provider,
+            provider_request_id, provider_challenge_id, purpose, challenge_purpose, status, verification_attempts, resend_count,
+            last_sent_at, requested_at, expires_at, verified_at, ip_hash
+          ) values ('otp_invalid_legacy_purpose', 'org_samyak', null, 'mobile_hash_invalid_legacy', '0000', null, 'none', null, null, 'signup', 'signup', 'requested', 0, 0, null, ?, ?, null, 'ip_invalid_legacy')`,
         ).run(NOW, "2026-09-24T10:05:00.000Z"),
       ).toThrow();
       expect(rows(db, "pragma foreign_key_check")).toEqual([]);
@@ -357,7 +403,11 @@ describe("organisation signup onboarding", () => {
         "otp_challenges_ip_hash_requested_at_idx",
         "otp_challenges_login_account_id_idx",
         "otp_challenges_expires_at_idx",
+        "otp_challenges_mobile_hash_challenge_purpose_requested_at_idx",
       ]));
+      const tableSql = String(row(db, "select sql from sqlite_master where type = 'table' and name = 'otp_challenges'")?.sql || "");
+      expect(tableSql).toContain("CHECK(`purpose` in ('login'))");
+      expect(tableSql).toContain("CHECK(`challenge_purpose` in ('login', 'signup'))");
     } finally {
       db.close();
     }

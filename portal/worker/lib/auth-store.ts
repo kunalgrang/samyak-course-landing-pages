@@ -154,7 +154,8 @@ export type ChallengeRecord = {
   mobile_last_four: string | null;
   mobile_ciphertext: string | null;
   provider: string;
-  purpose: OtpChallengePurpose;
+  purpose: "login";
+  challenge_purpose: OtpChallengePurpose;
   status: string;
   verification_attempts: number;
   resend_count: number;
@@ -290,9 +291,9 @@ export async function checkOtpRequestLimits(c: AppContext, hash: string, ipHash:
   const oneMinute = new Date(now.getTime() - 60_000).toISOString();
   const fifteenMinutes = new Date(now.getTime() - 15 * 60_000).toISOString();
   const oneDay = new Date(now.getTime() - 24 * 60 * 60_000).toISOString();
-  const recentMobile = await countRows(c, "select count(*) as count from otp_challenges where mobile_hash = ? and purpose = ? and requested_at >= ?", hash, purpose, oneMinute);
-  const mobile15 = await countRows(c, "select count(*) as count from otp_challenges where mobile_hash = ? and purpose = ? and requested_at >= ?", hash, purpose, fifteenMinutes);
-  const mobile24 = await countRows(c, "select count(*) as count from otp_challenges where mobile_hash = ? and purpose = ? and requested_at >= ?", hash, purpose, oneDay);
+  const recentMobile = await countRows(c, "select count(*) as count from otp_challenges where mobile_hash = ? and challenge_purpose = ? and requested_at >= ?", hash, purpose, oneMinute);
+  const mobile15 = await countRows(c, "select count(*) as count from otp_challenges where mobile_hash = ? and challenge_purpose = ? and requested_at >= ?", hash, purpose, fifteenMinutes);
+  const mobile24 = await countRows(c, "select count(*) as count from otp_challenges where mobile_hash = ? and challenge_purpose = ? and requested_at >= ?", hash, purpose, oneDay);
   const ip15 = await countRows(c, "select count(*) as count from otp_challenges where ip_hash = ? and requested_at >= ?", ipHash, fifteenMinutes);
   const ip24 = await countRows(c, "select count(*) as count from otp_challenges where ip_hash = ? and requested_at >= ?", ipHash, oneDay);
   return recentMobile < 1 && mobile15 < 3 && mobile24 < 8 && ip15 < 10 && ip24 < 30;
@@ -317,9 +318,11 @@ export async function createPendingChallenge({
   await c.env.DB.prepare(
     `insert into otp_challenges (
       id, organisation_id, mobile_hash, mobile_last_four, mobile_ciphertext, provider,
-      purpose, status, verification_attempts, resend_count, last_sent_at, requested_at, expires_at, ip_hash
-    ) values (?, ?, ?, ?, null, 'none', ?, 'requested', 0, 0, null, ?, ?, ?)`,
+      purpose, challenge_purpose, status, verification_attempts, resend_count, last_sent_at, requested_at, expires_at, ip_hash
+    ) values (?, ?, ?, ?, null, 'none', 'login', ?, 'requested', 0, 0, null, ?, ?, ?)`,
   )
+    // `purpose` is kept as legacy login-only compatibility for the deployed old Worker;
+    // `challenge_purpose` is the authoritative login/signup flow discriminator.
     .bind(id, organisationId, hash, mobileLastFour, purpose, now, secondsFromNow(OTP_EXPIRY_SECONDS), ipHash)
     .run();
   return id;
@@ -365,7 +368,7 @@ export async function markChallengeFailed(c: AppContext, challengeId: string) {
 }
 
 export async function getChallenge(c: AppContext, id: string, purpose?: OtpChallengePurpose) {
-  if (purpose) return c.env.DB.prepare("select * from otp_challenges where id = ? and purpose = ?").bind(id, purpose).first<ChallengeRecord>();
+  if (purpose) return c.env.DB.prepare("select * from otp_challenges where id = ? and challenge_purpose = ?").bind(id, purpose).first<ChallengeRecord>();
   return c.env.DB.prepare("select * from otp_challenges where id = ?").bind(id).first<ChallengeRecord>();
 }
 
@@ -374,7 +377,7 @@ export async function incrementChallengeAttemptsIfAllowed(c: AppContext, id: str
     `update otp_challenges
      set verification_attempts = verification_attempts + 1
      where id = ?
-       and purpose = ?
+       and challenge_purpose = ?
        and status in ('sent', 'blocked')
        and verification_attempts < ?
        and expires_at > ?`,
@@ -389,10 +392,10 @@ export async function updateChallengeResent(c: AppContext, id: string, purpose: 
   const result = await c.env.DB.prepare(
     `update otp_challenges
      set resend_count = resend_count + 1,
-         last_sent_at = ?,
+       last_sent_at = ?,
          provider_request_id = coalesce(?, provider_request_id)
      where id = ?
-       and purpose = ?
+       and challenge_purpose = ?
        and status = 'sent'
        and resend_count < 2
        and expires_at > ?
@@ -405,7 +408,7 @@ export async function updateChallengeResent(c: AppContext, id: string, purpose: 
 
 export async function markChallengeVerified(c: AppContext, id: string, purpose: OtpChallengePurpose, now = new Date()) {
   const result = await c.env.DB.prepare(
-    "update otp_challenges set status = 'verified', verified_at = ? where id = ? and purpose = ? and status = 'sent' and verified_at is null and expires_at > ?",
+    "update otp_challenges set status = 'verified', verified_at = ? where id = ? and challenge_purpose = ? and status = 'sent' and verified_at is null and expires_at > ?",
   )
     .bind(now.toISOString(), id, purpose, now.toISOString())
     .run();
