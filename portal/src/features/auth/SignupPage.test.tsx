@@ -42,6 +42,7 @@ describe("SignupPage organisation details", () => {
     (globalThis as any).HTMLElement = window.HTMLElement;
     (globalThis as any).HTMLInputElement = window.HTMLInputElement;
     (globalThis as any).HTMLSelectElement = window.HTMLSelectElement;
+    (globalThis as any).Node = window.Node;
     (globalThis as any).Event = window.Event;
     (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
     (window as any).turnstile = {
@@ -150,6 +151,60 @@ describe("SignupPage organisation details", () => {
     expect(buildSignupCreatePayload(completeForm({ hasMultipleCentres: true, reportedCentreCount: "4" }), "signup_1", "idem_1").onboarding.reportedCentreCount).toBe(4);
   });
 
+  it("renders Main Centre Name helper copy and keeps multi-Centre controls last", async () => {
+    await renderDetails();
+
+    expect(fieldLabel("Main Centre Name")).toBeTruthy();
+    expect(textElement("Set a name for the main Centre being created, for example Sion, Andheri or Main Centre.")).toBeTruthy();
+    expect(fieldLabel("Centre Name")).toBeNull();
+    expect(input("Main Centre Name").getAttribute("aria-describedby")).toBeTruthy();
+
+    const initialCentre = fieldset("Initial Centre");
+    expect(follows(fieldLabel("Main Centre Name"), textElement("Same as organisation address"), initialCentre)).toBe(true);
+    expect(follows(textElement("Same as organisation address"), textElement("Same contact details as authorised account"), initialCentre)).toBe(true);
+    expect(follows(textElement("Same contact details as authorised account"), fieldLabel("Operating Model"), initialCentre)).toBe(true);
+    expect(follows(fieldLabel("Operating Model"), textElement("Does your organisation operate more than one Centre?"), initialCentre)).toBe(true);
+    expect(fieldLabel("How many Centres do you currently operate?")).toBeNull();
+
+    clickCheckbox("Same as organisation address");
+    clickCheckbox("Same contact details as authorised account");
+
+    expect(follows(textElement("Same as organisation address"), fieldLabel("Centre Country"), initialCentre)).toBe(true);
+    expect(follows(fieldLabel("Centre Address"), textElement("Same contact details as authorised account"), initialCentre)).toBe(true);
+    expect(follows(textElement("Same contact details as authorised account"), fieldLabel("Centre Mobile"), initialCentre)).toBe(true);
+    expect(follows(fieldLabel("Centre Email"), fieldLabel("Operating Model"), initialCentre)).toBe(true);
+
+    clickButton("Yes");
+
+    expect(follows(textElement("Does your organisation operate more than one Centre?"), fieldLabel("How many Centres do you currently operate?"), initialCentre)).toBe(true);
+  });
+
+  it("keeps Main Centre Name wired to the existing centreName payload and only one Centre object", async () => {
+    await renderDetails();
+
+    fill("Main Centre Name", "Sion");
+    expect(input("Main Centre Name").value).toBe("Sion");
+
+    const payload = buildSignupCreatePayload(completeForm({ centreName: "Sion", hasMultipleCentres: true, reportedCentreCount: "3" }), "signup_1", "idem_1");
+    expect(payload.centre.name).toBe("Sion");
+    expect(payload.onboarding.reportedCentreCount).toBe(3);
+    expect(payload).toHaveProperty("centre");
+    expect(payload).not.toHaveProperty("branches");
+    expect(payload).not.toHaveProperty("centres");
+  });
+
+  it("keeps Centre count absent for No and reports one Centre", async () => {
+    await renderDetails();
+
+    expect(fieldLabel("How many Centres do you currently operate?")).toBeNull();
+
+    const payload = buildSignupCreatePayload(completeForm({ hasMultipleCentres: false, reportedCentreCount: "4" }), "signup_1", "idem_1");
+    expect(payload.onboarding.reportedCentreCount).toBe(1);
+    expect(payload).toHaveProperty("centre");
+    expect(payload).not.toHaveProperty("branches");
+    expect(payload).not.toHaveProperty("centres");
+  });
+
   async function renderDetails() {
     apiMocks.createSignupOrganisation.mockClear();
     root.unmount();
@@ -184,6 +239,42 @@ describe("SignupPage organisation details", () => {
     const forId = labelElement?.getAttribute("for");
     if (forId) return container.querySelector(`#${forId}`);
     return labelElement?.querySelector("input,select") || null;
+  }
+
+  function fieldset(legend: string) {
+    const element = Array.from(container.querySelectorAll("fieldset")).find((item) => item.querySelector("legend")?.textContent === legend);
+    if (!element) throw new Error(`Fieldset not found: ${legend}`);
+    return element;
+  }
+
+  function fieldLabel(label: string) {
+    return Array.from(container.querySelectorAll("label.signup-field > span:first-child")).find((item) => item.textContent === label) || null;
+  }
+
+  function textElement(text: string) {
+    return Array.from(container.querySelectorAll("span,p")).find((item) => item.textContent === text) || null;
+  }
+
+  function follows(first: Element | null, second: Element | null, rootElement: Element) {
+    if (!first || !second || !rootElement.contains(first) || !rootElement.contains(second)) return false;
+    return Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }
+
+  function clickButton(text: string) {
+    const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent === text);
+    if (!button) throw new Error(`Button not found: ${text}`);
+    act(() => {
+      button.click();
+    });
+  }
+
+  function clickCheckbox(label: string) {
+    const labelElement = Array.from(container.querySelectorAll("label")).find((item) => item.textContent?.includes(label));
+    const element = labelElement?.querySelector("input");
+    if (!element) throw new Error(`Checkbox not found: ${label}`);
+    act(() => {
+      element.click();
+    });
   }
 
   function fill(label: string, value: string) {

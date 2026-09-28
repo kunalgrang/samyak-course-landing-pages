@@ -446,17 +446,7 @@ export function SignupPage({ onComplete }: SignupPageProps) {
 
             <fieldset>
               <legend>Initial Centre</legend>
-              <div className="signup-form__full">
-                <p className="field-label">Does your organisation operate more than one Centre?</p>
-                <div className="segmented-control" role="group" aria-label="Does your organisation operate more than one Centre?">
-                  <button type="button" className={!form.hasMultipleCentres ? "segmented-control__button segmented-control__button--active" : "segmented-control__button"} onClick={() => updateMultipleCentres(false)}>No</button>
-                  <button type="button" className={form.hasMultipleCentres ? "segmented-control__button segmented-control__button--active" : "segmented-control__button"} onClick={() => updateMultipleCentres(true)}>Yes</button>
-                </div>
-              </div>
-              {form.hasMultipleCentres ? (
-                <Field label="How many Centres do you currently operate?"><input type="number" min="2" max="500" value={form.reportedCentreCount} onChange={(event) => update("reportedCentreCount", event.target.value)} /></Field>
-              ) : null}
-              <Field label="Centre Name"><input value={form.centreName} onChange={(event) => update("centreName", event.target.value)} /></Field>
+              <Field label="Main Centre Name" helper="Set a name for the main Centre being created, for example Sion, Andheri or Main Centre."><input value={form.centreName} onChange={(event) => update("centreName", event.target.value)} /></Field>
               <label className="checkbox-row signup-form__full">
                 <input type="checkbox" checked={form.sameCentreAddress} onChange={(event) => update("sameCentreAddress", event.target.checked)} />
                 <span>Same as organisation address</span>
@@ -486,6 +476,16 @@ export function SignupPage({ onComplete }: SignupPageProps) {
                   <option value="franchise_operated">Franchise-operated</option>
                 </select>
               </Field>
+              <div className="signup-form__full">
+                <p className="field-label">Does your organisation operate more than one Centre?</p>
+                <div className="segmented-control" role="group" aria-label="Does your organisation operate more than one Centre?">
+                  <button type="button" className={!form.hasMultipleCentres ? "segmented-control__button segmented-control__button--active" : "segmented-control__button"} onClick={() => updateMultipleCentres(false)}>No</button>
+                  <button type="button" className={form.hasMultipleCentres ? "segmented-control__button segmented-control__button--active" : "segmented-control__button"} onClick={() => updateMultipleCentres(true)}>Yes</button>
+                </div>
+              </div>
+              {form.hasMultipleCentres ? (
+                <Field label="How many Centres do you currently operate?"><input type="number" min="2" max="500" value={form.reportedCentreCount} onChange={(event) => update("reportedCentreCount", event.target.value)} /></Field>
+              ) : null}
             </fieldset>
 
             <label className="checkbox-row">
@@ -510,11 +510,14 @@ export function SignupPage({ onComplete }: SignupPageProps) {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactElement<{ "aria-label"?: string; placeholder?: string }> }) {
+function Field({ label, helper, children }: { label: string; helper?: string; children: React.ReactElement<{ "aria-describedby"?: string; "aria-label"?: string; placeholder?: string }> }) {
+  const helperId = useId();
   return (
     <label className="signup-field">
       <span>{label}</span>
+      {helper ? <span id={helperId} className="field-help">{helper}</span> : null}
       {React.cloneElement(children, {
+        "aria-describedby": helper ? [children.props["aria-describedby"], helperId].filter(Boolean).join(" ") : children.props["aria-describedby"],
         "aria-label": children.props["aria-label"] || label,
         placeholder: children.props.placeholder,
       })}
