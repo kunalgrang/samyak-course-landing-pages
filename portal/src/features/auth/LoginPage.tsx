@@ -3,7 +3,7 @@ import { BrandMark } from "../../components/BrandMark";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/LoadingState";
 import { TrustFooter } from "../../components/TrustFooter";
-import { getPublicConfig, requestOtp, resendOtp, selectOrganisation, selectProfile, verifyOtp, type OrganisationChoice, type PublicConfig, type SessionResponse } from "../../lib/api";
+import { ApiError, getPublicConfig, requestOtp, resendOtp, selectOrganisation, selectProfile, verifyOtp, type OrganisationChoice, type PublicConfig, type SessionResponse } from "../../lib/api";
 import { useAuth } from "./AuthContext";
 
 type LoginPageProps = {
@@ -22,6 +22,10 @@ export function sanitizeOtpInput(value: string) {
 
 export function isCompleteOtp(value: string) {
   return new RegExp(`^\\d{${OTP_LENGTH}}$`).test(value);
+}
+
+export function otpErrorMessage(error: unknown, fallback = "Network error. Please try again.") {
+  return error instanceof ApiError ? error.message : fallback;
 }
 
 export function LoginPage({
@@ -116,9 +120,9 @@ export function LoginPage({
       setMaskedMobile(result.maskedMobile || "******");
       setCooldown(60);
       setStep("otp");
-    } catch {
+    } catch (error) {
       resetTurnstile();
-      setError("Network error. Please try again.");
+      setError(otpErrorMessage(error));
     } finally {
       setIsSubmitting(false);
     }
@@ -159,8 +163,8 @@ export function LoginPage({
         return;
       }
       setCooldown(60);
-    } catch {
-      setError("Network error. Please try again.");
+    } catch (error) {
+      setError(otpErrorMessage(error));
     } finally {
       setIsSubmitting(false);
     }
@@ -193,8 +197,8 @@ export function LoginPage({
         return;
       }
       handleSession(result.session);
-    } catch {
-      setError("Network error. Please try again.");
+    } catch (error) {
+      setError(otpErrorMessage(error));
     } finally {
       setIsSubmitting(false);
     }

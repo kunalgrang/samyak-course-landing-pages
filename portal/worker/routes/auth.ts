@@ -107,7 +107,7 @@ export function registerAuthRoutes(app: PortalHono) {
 
     const hash = await mobileHash(c, mobile);
     const fingerprint = await requestFingerprint(c);
-    const allowed = await checkOtpRequestLimits(c, hash, fingerprint.ipHash);
+    const allowed = await checkOtpRequestLimits(c, hash, fingerprint.ipHash, "login");
     if (!allowed) {
       await recordAuthEvent(c, "otp_request", "RATE_LIMITED", { mobileHash: hash, mobileLastFour: mobile.slice(-4), ipHash: fingerprint.ipHash });
       return jsonWithRequestId(c, { success: false, code: "RATE_LIMITED", message: "Please wait before requesting another OTP." }, 429);
@@ -118,6 +118,7 @@ export function registerAuthRoutes(app: PortalHono) {
       hash,
       mobileLastFour: mobile.slice(-4),
       ipHash: fingerprint.ipHash,
+      purpose: "login",
     });
 
     const memberships = await activeOrganisationMembershipsForMobile(c, mobile);
@@ -163,7 +164,7 @@ export function registerAuthRoutes(app: PortalHono) {
     const body = await readJsonBody(c, challengeSchema);
     if (isResponse(body)) return body;
 
-    const challenge = await getChallenge(c, body.challengeId);
+    const challenge = await getChallenge(c, body.challengeId, "login");
     if (!challenge || challenge.status !== "sent" || !challenge.mobile_ciphertext) {
       return jsonWithRequestId(c, { success: true, message: genericOtpMessage });
     }
@@ -181,7 +182,7 @@ export function registerAuthRoutes(app: PortalHono) {
       await markChallengeFailed(c, challenge.id);
       return jsonWithRequestId(c, { success: false, code: "OTP_SEND_FAILED", message: "Mobile login is temporarily unavailable." }, 503);
     }
-    const updated = await updateChallengeResent(c, challenge.id, result.providerRequestId);
+    const updated = await updateChallengeResent(c, challenge.id, "login", result.providerRequestId);
     if (!updated) return jsonWithRequestId(c, { success: false, code: "RESEND_LIMITED", message: "Please use the latest OTP or change number." }, 429);
     return jsonWithRequestId(c, { success: true, message: genericOtpMessage });
   });
@@ -192,16 +193,16 @@ export function registerAuthRoutes(app: PortalHono) {
     const body = await readJsonBody(c, verifyOtpSchema);
     if (isResponse(body)) return body;
 
-    const challenge = await getChallenge(c, body.challengeId);
+    const challenge = await getChallenge(c, body.challengeId, "login");
     if (!challenge || !["sent", "blocked"].includes(challenge.status) || Date.parse(challenge.expires_at) <= Date.now()) {
       return jsonWithRequestId(c, { success: false, code: "OTP_EXPIRED", message: "The OTP has expired. Please request a new one." }, 400);
     }
     if (challenge.verification_attempts >= OTP_MAX_ATTEMPTS) {
       return jsonWithRequestId(c, { success: false, code: "TOO_MANY_ATTEMPTS", message: "Too many attempts. Please request a new OTP." }, 429);
     }
-    const attemptRecorded = await incrementChallengeAttemptsIfAllowed(c, challenge.id);
+    const attemptRecorded = await incrementChallengeAttemptsIfAllowed(c, challenge.id, "login");
     if (!attemptRecorded) {
-      const fresh = await getChallenge(c, body.challengeId);
+      const fresh = await getChallenge(c, body.challengeId, "login");
       if (fresh && fresh.verification_attempts >= OTP_MAX_ATTEMPTS) {
         return jsonWithRequestId(c, { success: false, code: "TOO_MANY_ATTEMPTS", message: "Too many attempts. Please request a new OTP." }, 429);
       }
@@ -233,7 +234,7 @@ export function registerAuthRoutes(app: PortalHono) {
 
     const lookup = await lookupPortalProfilesByMobile(c, mobile);
     let memberships = await activeOrganisationMembershipsForMobile(c, mobile);
-    const verified = await markChallengeVerified(c, challenge.id);
+    const verified = await markChallengeVerified(c, challenge.id, "login");
     if (!verified) {
       return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
     }

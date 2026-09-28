@@ -22,7 +22,7 @@ import {
   subdivisionLabel,
 } from "../../lib/geography";
 import { useAuth } from "./AuthContext";
-import { OTP_LENGTH, isCompleteOtp, otpHelperText, sanitizeOtpInput } from "./LoginPage";
+import { OTP_LENGTH, isCompleteOtp, otpErrorMessage, otpHelperText, sanitizeOtpInput } from "./LoginPage";
 
 type SignupPageProps = {
   onComplete: () => void;
@@ -286,9 +286,9 @@ export function SignupPage({ onComplete }: SignupPageProps) {
       setMaskedMobile(result.maskedMobile || "******");
       setCooldown(60);
       setStep("otp");
-    } catch {
+    } catch (error) {
       resetTurnstile();
-      setError("Network error. Please try again.");
+      setError(otpErrorMessage(error));
     } finally {
       setIsSubmitting(false);
     }
@@ -306,8 +306,8 @@ export function SignupPage({ onComplete }: SignupPageProps) {
       }
       setSignupVerificationId(result.signupVerificationId);
       setStep("details");
-    } catch {
-      setError("Network error. Please try again.");
+    } catch (error) {
+      setError(otpErrorMessage(error));
     } finally {
       setIsSubmitting(false);
     }
@@ -324,8 +324,8 @@ export function SignupPage({ onComplete }: SignupPageProps) {
         return;
       }
       setCooldown(60);
-    } catch {
-      setError("Network error. Please try again.");
+    } catch (error) {
+      setError(otpErrorMessage(error));
     } finally {
       setIsSubmitting(false);
     }

@@ -336,7 +336,7 @@ export const otpChallenges = sqliteTable(
     index("otp_challenges_login_account_id_idx").on(table.loginAccountId),
     index("otp_challenges_expires_at_idx").on(table.expiresAt),
     check("otp_challenges_provider_check", sql`${table.provider} in ('msg91', 'development', 'none')`),
-    check("otp_challenges_purpose_check", sql`${table.purpose} in ('login')`),
+    check("otp_challenges_purpose_check", sql`${table.purpose} in ('login', 'signup')`),
     check(
       "otp_challenges_status_check",
       sql`${table.status} in ('requested', 'sent', 'verified', 'expired', 'failed', 'blocked')`,

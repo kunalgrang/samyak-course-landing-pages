@@ -26,7 +26,8 @@ class FakeD1Statement {
     const sql = compactSql(this.sql);
     if (sql.includes("count(*) as count from otp_challenges")) return { count: this.db.countChallenges(sql, this.values) } as T;
     if (sql.includes("select * from otp_challenges where id = ?")) {
-      return (this.db.otpChallenges.find((row) => row.id === this.values[0]) ?? null) as T;
+      const [id, purpose] = this.values;
+      return (this.db.otpChallenges.find((row) => row.id === id && (!sql.includes("and purpose = ?") || row.purpose === purpose)) ?? null) as T;
     }
     if (sql.includes("select id from login_accounts where organisation_id = ? and mobile_normalized = ?")) {
       return (this.db.loginAccounts.find((row) => row.organisation_id === this.values[0] && row.mobile_normalized === this.values[1]) ?? null) as T;
@@ -415,10 +416,11 @@ class FakeD1 {
   }
 
   countChallenges(sql: string, values: unknown[]) {
-    const [hash, since] = values as [unknown, string];
     if (sql.includes("mobile_hash = ?")) {
-      return this.otpChallenges.filter((row) => row.mobile_hash === hash && row.requested_at >= since).length;
+      const [hash, purpose, since] = values as [unknown, unknown, string];
+      return this.otpChallenges.filter((row) => row.mobile_hash === hash && row.purpose === purpose && row.requested_at >= since).length;
     }
+    const [hash, since] = values as [unknown, string];
     return this.otpChallenges.filter((row) => row.ip_hash === hash && row.requested_at >= since).length;
   }
 
@@ -446,7 +448,7 @@ class FakeD1 {
 
   run(sql: string, values: unknown[]) {
     if (sql.startsWith("insert into otp_challenges")) {
-      const [id, organisationId, mobileHash, mobileLastFour, requestedAt, expiresAt, ipHash] = values;
+      const [id, organisationId, mobileHash, mobileLastFour, purpose, requestedAt, expiresAt, ipHash] = values;
       this.otpChallenges.push({
         id,
         organisation_id: organisationId,
@@ -454,6 +456,7 @@ class FakeD1 {
         mobile_last_four: mobileLastFour,
         mobile_ciphertext: null,
         provider: "none",
+        purpose,
         status: "requested",
         verification_attempts: 0,
         resend_count: 0,
@@ -486,19 +489,20 @@ class FakeD1 {
       return 1;
     }
     if (sql.startsWith("update otp_challenges set verification_attempts")) {
-      const [id, maxAttempts, now] = values as [unknown, number, string];
+      const [id, purpose, maxAttempts, now] = values as [unknown, unknown, number, string];
       const row = this.otpChallenges.find(
-        (challenge) => challenge.id === id && ["sent", "blocked"].includes(challenge.status) && challenge.verification_attempts < maxAttempts && challenge.expires_at > now,
+        (challenge) => challenge.id === id && challenge.purpose === purpose && ["sent", "blocked"].includes(challenge.status) && challenge.verification_attempts < maxAttempts && challenge.expires_at > now,
       );
       if (!row) return 0;
       row.verification_attempts += 1;
       return 1;
     }
     if (sql.startsWith("update otp_challenges set resend_count")) {
-      const [lastSentAt, providerRequestId, id, now, cooldownBefore] = values as [string, unknown, unknown, string, string];
+      const [lastSentAt, providerRequestId, id, purpose, now, cooldownBefore] = values as [string, unknown, unknown, unknown, string, string];
       const row = this.otpChallenges.find(
         (challenge) =>
           challenge.id === id &&
+          challenge.purpose === purpose &&
           challenge.status === "sent" &&
           challenge.resend_count < 2 &&
           challenge.expires_at > now &&
@@ -511,8 +515,8 @@ class FakeD1 {
       return 1;
     }
     if (sql.startsWith("update otp_challenges set status = 'verified'")) {
-      const [verifiedAt, id, now] = values as [string, unknown, string];
-      const row = this.otpChallenges.find((challenge) => challenge.id === id && challenge.status === "sent" && !challenge.verified_at && challenge.expires_at > now);
+      const [verifiedAt, id, purpose, now] = values as [string, unknown, unknown, string];
+      const row = this.otpChallenges.find((challenge) => challenge.id === id && challenge.purpose === purpose && challenge.status === "sent" && !challenge.verified_at && challenge.expires_at > now);
       if (!row) return 0;
       row.status = "verified";
       row.verified_at = verifiedAt;
@@ -1080,6 +1084,16 @@ describe("auth routes", () => {
     });
     expect(db.otpChallenges[0]).toMatchObject({ status: "blocked", provider: "none", mobile_ciphertext: null });
     expect(JSON.stringify(db)).not.toContain("9876543210");
+  });
+
+  it("creates login-purpose OTP challenges for auth login", async () => {
+    const db = new FakeD1();
+    installFetch({ eligible: true });
+    const response = await requestOtp(db);
+
+    expect(response.status).toBe(200);
+    expect(db.otpChallenges).toHaveLength(1);
+    expect(db.otpChallenges[0]).toMatchObject({ purpose: "login", status: "sent" });
   });
 
   it("matches known and unknown invalid OTP response structure while counting attempts", async () => {

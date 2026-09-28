@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isCompleteOtp, OTP_LENGTH, otpHelperText, sanitizeOtpInput } from "./LoginPage";
+import { ApiError } from "../../lib/api";
+import { isCompleteOtp, OTP_LENGTH, otpErrorMessage, otpHelperText, sanitizeOtpInput } from "./LoginPage";
 
 describe("LoginPage OTP field", () => {
   it("uses 4-digit student-facing OTP wording and constraints", () => {
@@ -10,5 +11,10 @@ describe("LoginPage OTP field", () => {
     expect(isCompleteOtp("123")).toBe(false);
     expect(isCompleteOtp("12345")).toBe(false);
     expect(isCompleteOtp("12a4")).toBe(false);
+  });
+
+  it("uses structured API error messages for OTP failures", () => {
+    expect(otpErrorMessage(new ApiError("Please wait before requesting another OTP.", undefined, "RATE_LIMITED"))).toBe("Please wait before requesting another OTP.");
+    expect(otpErrorMessage(new Error("offline"))).toBe("Network error. Please try again.");
   });
 });

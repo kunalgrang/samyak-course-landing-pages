@@ -130,13 +130,13 @@ export function registerSignupRoutes(app: PortalHono) {
 
     const hash = await mobileHash(c, mobile);
     const fingerprint = await requestFingerprint(c);
-    const allowed = await checkOtpRequestLimits(c, hash, fingerprint.ipHash);
+    const allowed = await checkOtpRequestLimits(c, hash, fingerprint.ipHash, "signup");
     if (!allowed) {
       await recordAuthEvent(c, "signup_otp_request", "RATE_LIMITED", { mobileHash: hash, mobileLastFour: mobile.slice(-4), ipHash: fingerprint.ipHash });
       return jsonWithRequestId(c, { success: false, code: "RATE_LIMITED", message: "Please wait before requesting another OTP." }, 429);
     }
 
-    const challengeId = await createPendingChallenge({ c, hash, mobileLastFour: mobile.slice(-4), ipHash: fingerprint.ipHash });
+    const challengeId = await createPendingChallenge({ c, hash, mobileLastFour: mobile.slice(-4), ipHash: fingerprint.ipHash, purpose: "signup" });
     const sent = await provider.sendOtp(mobile);
     if (!sent.ok) {
       await markChallengeFailed(c, challengeId);
@@ -153,7 +153,7 @@ export function registerSignupRoutes(app: PortalHono) {
     if (originError) return originError;
     const body = await readJsonBody(c, challengeSchema);
     if (isResponse(body)) return body;
-    const challenge = await getChallenge(c, body.challengeId);
+    const challenge = await getChallenge(c, body.challengeId, "signup");
     if (!challenge || challenge.status !== "sent" || !challenge.mobile_ciphertext) return jsonWithRequestId(c, { success: true, message: genericOtpMessage });
     if (challenge.resend_count >= 2) return jsonWithRequestId(c, { success: false, code: "RESEND_LIMITED", message: "Please use the latest OTP or change number." }, 429);
     if (challenge.last_sent_at && Date.parse(challenge.last_sent_at) > Date.now() - 60_000) {
@@ -167,7 +167,7 @@ export function registerSignupRoutes(app: PortalHono) {
       await markChallengeFailed(c, challenge.id);
       return jsonWithRequestId(c, { success: false, code: "OTP_SEND_FAILED", message: "Mobile signup is temporarily unavailable." }, 503);
     }
-    const updated = await updateChallengeResent(c, challenge.id, result.providerRequestId);
+    const updated = await updateChallengeResent(c, challenge.id, "signup", result.providerRequestId);
     if (!updated) return jsonWithRequestId(c, { success: false, code: "RESEND_LIMITED", message: "Please use the latest OTP or change number." }, 429);
     return jsonWithRequestId(c, { success: true, message: genericOtpMessage });
   });
@@ -178,14 +178,14 @@ export function registerSignupRoutes(app: PortalHono) {
     const body = await readJsonBody(c, verifySignupOtpSchema);
     if (isResponse(body)) return body;
 
-    const challenge = await getChallenge(c, body.challengeId);
+    const challenge = await getChallenge(c, body.challengeId, "signup");
     if (!challenge || !["sent", "blocked"].includes(challenge.status) || Date.parse(challenge.expires_at) <= Date.now()) {
       return jsonWithRequestId(c, { success: false, code: "OTP_EXPIRED", message: "The OTP has expired. Please request a new one." }, 400);
     }
     if (challenge.verification_attempts >= OTP_MAX_ATTEMPTS) {
       return jsonWithRequestId(c, { success: false, code: "TOO_MANY_ATTEMPTS", message: "Too many attempts. Please request a new OTP." }, 429);
     }
-    const attemptRecorded = await incrementChallengeAttemptsIfAllowed(c, challenge.id);
+    const attemptRecorded = await incrementChallengeAttemptsIfAllowed(c, challenge.id, "signup");
     if (!attemptRecorded) return jsonWithRequestId(c, { success: false, code: "OTP_EXPIRED", message: "The OTP has expired. Please request a new one." }, 400);
     if (challenge.status === "blocked") {
       await runDummyOtpComparison(c, body.otp);
@@ -199,7 +199,7 @@ export function registerSignupRoutes(app: PortalHono) {
       await recordAuthEvent(c, "signup_otp_verify", providerResult.resultCode, { mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });
       return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
     }
-    const verified = await markChallengeVerified(c, challenge.id);
+    const verified = await markChallengeVerified(c, challenge.id, "signup");
     if (!verified) return jsonWithRequestId(c, { success: false, code: "INVALID_OTP", message: "The OTP could not be verified." }, 400);
     const signup = await createSignupVerification(c, challenge.id, mobile);
     await recordAuthEvent(c, "signup_otp_verify", "SIGNUP_VERIFIED", { mobileHash: challenge.mobile_hash, mobileLastFour: challenge.mobile_last_four });

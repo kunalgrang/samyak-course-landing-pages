@@ -42,6 +42,8 @@ try {
   const organisationSignupMigration = query("select name from d1_migrations where name = '0034_organisation_signup_trial_onboarding.sql';");
   const demoSafetyMigration = query("select name from d1_migrations where name = '0035_demo_organisation_safety_controls.sql';");
   const reportedCentreCountMigration = query("select name from d1_migrations where name = '0036_signup_reported_centre_count.sql';");
+  const otpSignupPurposeMigration = query("select name from d1_migrations where name = '0037_otp_challenge_signup_purpose.sql';");
+  const otpChallengeTable = query("select sql from sqlite_master where type = 'table' and name = 'otp_challenges';");
   const duplicateMigrationState = query("select name, count(*) as count from d1_migrations group by name having count(*) > 1;");
   const subjectTriggers = query("select name from sqlite_master where type = 'trigger' and name like 'user_sessions_active_subject_%';");
   const preconfirmIndex = query("select name from sqlite_master where type = 'index' and name = 'receipts_one_preconfirm_token_per_draft';");
@@ -76,6 +78,10 @@ try {
   expectSome(organisationSignupMigration, "0034 migration record");
   expectSome(demoSafetyMigration, "0035 migration record");
   expectSome(reportedCentreCountMigration, "0036 migration record");
+  expectSome(otpSignupPurposeMigration, "0037 migration record");
+  if (!String(otpChallengeTable[0]?.sql || "").includes("CHECK(`purpose` in ('login', 'signup'))")) {
+    throw new Error("Expected otp_challenges purpose CHECK constraint to allow login and signup.");
+  }
   if (duplicateMigrationState.length !== 0) {
     throw new Error(`Duplicate migration state rows found: ${duplicateMigrationState.map((row) => row.name).join(", ")}`);
   }
@@ -132,7 +138,7 @@ try {
     throw new Error("0032 should drop receipts_one_preconfirm_token_per_draft; effective pre-confirm token protection is guarded against receipt_reversals.");
   }
 
-  console.log("Wrangler local D1 migration apply passed through 0036.");
+  console.log("Wrangler local D1 migration apply passed through 0037.");
 } finally {
   rmSync(persistTo, { recursive: true, force: true });
 }

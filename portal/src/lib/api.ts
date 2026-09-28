@@ -2468,14 +2468,17 @@ async function deleteJson<T extends z.ZodType>(url: string, schema: T): Promise<
 
 function apiErrorMessage(data: unknown) {
   if (!data || typeof data !== "object") return "The request could not be completed.";
+  const message = (data as { message?: unknown }).message;
+  if (typeof message === "string") return message;
   const error = (data as { error?: { message?: unknown } }).error;
   return typeof error?.message === "string" ? error.message : "The request could not be completed.";
 }
 
 function apiError(data: unknown) {
   const error = data && typeof data === "object" ? (data as { error?: { code?: unknown; fieldErrors?: unknown; details?: unknown } }).error : undefined;
+  const topLevelCode = data && typeof data === "object" ? (data as { code?: unknown }).code : undefined;
   const fieldErrors = error?.fieldErrors;
-  const code = typeof error?.code === "string" ? error.code : undefined;
+  const code = typeof error?.code === "string" ? error.code : typeof topLevelCode === "string" ? topLevelCode : undefined;
   const details = error?.details && typeof error.details === "object" ? (error.details as Record<string, unknown>) : undefined;
   return new ApiError(apiErrorMessage(data), isFieldErrors(fieldErrors) ? fieldErrors : undefined, code, details);
 }

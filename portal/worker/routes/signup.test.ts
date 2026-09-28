@@ -169,6 +169,66 @@ describe("organisation signup onboarding", () => {
     }
   });
 
+  it("creates signup-purpose OTP challenges and does not let login endpoints consume them", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+    installTurnstile();
+    const fixture = createFixture();
+    try {
+      const otp = await requestSignupOtp(fixture.env, "9876543210");
+      const challengeId = String((await otp.json() as Row).challengeId);
+      expect(row(fixture.sqlite, "select purpose, status, verification_attempts, resend_count from otp_challenges where id = ?", challengeId)).toMatchObject({
+        purpose: "signup",
+        status: "sent",
+        verification_attempts: 0,
+        resend_count: 0,
+      });
+
+      const loginVerify = await verifyLoginOtp(fixture.env, challengeId);
+      expect(loginVerify.status).toBe(400);
+      await expect(loginVerify.json()).resolves.toMatchObject({ success: false, code: "OTP_EXPIRED" });
+      expect(row(fixture.sqlite, "select status, verification_attempts from otp_challenges where id = ?", challengeId)).toMatchObject({
+        status: "sent",
+        verification_attempts: 0,
+      });
+
+      const loginResend = await resendLoginOtp(fixture.env, challengeId);
+      expect(loginResend.status).toBe(200);
+      await expect(loginResend.json()).resolves.toMatchObject({ success: true });
+      expect(row(fixture.sqlite, "select resend_count from otp_challenges where id = ?", challengeId)).toEqual({ resend_count: 0 });
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("creates login-purpose auth challenges and does not let signup endpoints consume them", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+    installTurnstile();
+    const fixture = createFixture();
+    try {
+      const otp = await requestLoginOtp(fixture.env, "9876543210");
+      const challengeId = String((await otp.json() as Row).challengeId);
+      expect(row(fixture.sqlite, "select purpose, verification_attempts, resend_count from otp_challenges where id = ?", challengeId)).toMatchObject({
+        purpose: "login",
+        verification_attempts: 0,
+        resend_count: 0,
+      });
+
+      const signupVerify = await verifySignupOtp(fixture.env, challengeId);
+      expect(signupVerify.status).toBe(400);
+      await expect(signupVerify.json()).resolves.toMatchObject({ success: false, code: "OTP_EXPIRED" });
+      expect(row(fixture.sqlite, "select verification_attempts from otp_challenges where id = ?", challengeId)).toEqual({ verification_attempts: 0 });
+
+      const signupResend = await resendSignupOtp(fixture.env, challengeId);
+      expect(signupResend.status).toBe(200);
+      await expect(signupResend.json()).resolves.toMatchObject({ success: true });
+      expect(row(fixture.sqlite, "select resend_count from otp_challenges where id = ?", challengeId)).toEqual({ resend_count: 0 });
+    } finally {
+      fixture.close();
+    }
+  });
+
   it("applies 0034 over existing Samyak rows without rewriting auth, session or audit actors", async () => {
     const db = new DatabaseSync(":memory:");
     db.exec("pragma foreign_keys = on");
@@ -247,6 +307,61 @@ describe("organisation signup onboarding", () => {
       db.close();
     }
   });
+
+  it("applies 0037 by allowing signup OTP purpose without rewriting existing challenges", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec("pragma foreign_keys = on");
+    try {
+      applyMigrationsThrough(db, "0036_signup_reported_centre_count.sql");
+      seedSamyakOperationalRows(db);
+      db.prepare(
+        `insert into otp_challenges (
+          id, organisation_id, login_account_id, mobile_hash, mobile_last_four, mobile_ciphertext, provider,
+          provider_request_id, provider_challenge_id, purpose, status, verification_attempts, resend_count,
+          last_sent_at, requested_at, expires_at, verified_at, ip_hash
+        ) values (?, 'org_samyak', null, 'mobile_hash_existing', '3210', null, 'none', null, null, 'login', 'sent', 1, 0, null, ?, ?, null, 'ip_existing')`,
+      ).run("otp_existing_login", NOW, "2026-09-24T10:05:00.000Z");
+      db.prepare(
+        `insert into signup_verifications (
+          id, challenge_id, global_identity_id, mobile_hash, mobile_last_four, status, created_organisation_id, created_at, expires_at, used_at
+        ) values ('signup_existing', 'otp_existing_login', 'gident_existing_owner', 'mobile_hash_existing', '3210', 'verified', null, ?, ?, null)`,
+      ).run(NOW, "2026-09-24T10:05:00.000Z");
+
+      applyMigrationFile(db, "0037_otp_challenge_signup_purpose.sql");
+
+      expect(row(db, "select purpose, status, verification_attempts from otp_challenges where id = 'otp_existing_login'")).toEqual({
+        purpose: "login",
+        status: "sent",
+        verification_attempts: 1,
+      });
+      expect(row(db, "select challenge_id from signup_verifications where id = 'signup_existing'")).toEqual({ challenge_id: "otp_existing_login" });
+      db.prepare(
+        `insert into otp_challenges (
+          id, organisation_id, login_account_id, mobile_hash, mobile_last_four, mobile_ciphertext, provider,
+          provider_request_id, provider_challenge_id, purpose, status, verification_attempts, resend_count,
+          last_sent_at, requested_at, expires_at, verified_at, ip_hash
+        ) values ('otp_signup_new', 'org_samyak', null, 'mobile_hash_signup', '9999', null, 'none', null, null, 'signup', 'requested', 0, 0, null, ?, ?, null, 'ip_signup')`,
+      ).run(NOW, "2026-09-24T10:05:00.000Z");
+      expect(() =>
+        db.prepare(
+          `insert into otp_challenges (
+            id, organisation_id, login_account_id, mobile_hash, mobile_last_four, mobile_ciphertext, provider,
+            provider_request_id, provider_challenge_id, purpose, status, verification_attempts, resend_count,
+            last_sent_at, requested_at, expires_at, verified_at, ip_hash
+          ) values ('otp_invalid_purpose', 'org_samyak', null, 'mobile_hash_invalid', '0000', null, 'none', null, null, 'reset', 'requested', 0, 0, null, ?, ?, null, 'ip_invalid')`,
+        ).run(NOW, "2026-09-24T10:05:00.000Z"),
+      ).toThrow();
+      expect(rows(db, "pragma foreign_key_check")).toEqual([]);
+      expect(indexNames(db)).toEqual(expect.arrayContaining([
+        "otp_challenges_mobile_hash_requested_at_idx",
+        "otp_challenges_ip_hash_requested_at_idx",
+        "otp_challenges_login_account_id_idx",
+        "otp_challenges_expires_at_idx",
+      ]));
+    } finally {
+      db.close();
+    }
+  });
 });
 
 async function verifiedSignupId(env: WorkerBindings, mobile: string) {
@@ -264,11 +379,43 @@ async function requestSignupOtp(env: WorkerBindings, mobile: string) {
   }, env);
 }
 
+async function requestLoginOtp(env: WorkerBindings, mobile: string) {
+  return app.request("http://localhost/api/auth/request-otp", {
+    method: "POST",
+    headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+    body: JSON.stringify({ mobile, turnstileToken: "turnstile-token" }),
+  }, env);
+}
+
 async function verifySignupOtp(env: WorkerBindings, challengeId: string) {
   return app.request("http://localhost/api/signup/verify-otp", {
     method: "POST",
     headers: { Origin: "http://localhost", "Content-Type": "application/json" },
     body: JSON.stringify({ challengeId, otp: "123456" }),
+  }, env);
+}
+
+async function verifyLoginOtp(env: WorkerBindings, challengeId: string) {
+  return app.request("http://localhost/api/auth/verify-otp", {
+    method: "POST",
+    headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+    body: JSON.stringify({ challengeId, otp: "123456" }),
+  }, env);
+}
+
+async function resendSignupOtp(env: WorkerBindings, challengeId: string) {
+  return app.request("http://localhost/api/signup/resend-otp", {
+    method: "POST",
+    headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+    body: JSON.stringify({ challengeId }),
+  }, env);
+}
+
+async function resendLoginOtp(env: WorkerBindings, challengeId: string) {
+  return app.request("http://localhost/api/auth/resend-otp", {
+    method: "POST",
+    headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+    body: JSON.stringify({ challengeId }),
   }, env);
 }
 

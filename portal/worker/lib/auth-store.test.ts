@@ -1,12 +1,40 @@
 import { describe, expect, it } from "vitest";
 import { hmacHex } from "./crypto";
-import { buildSessionCookie, clearSessionCookie, hasSessionCookie, sessionCookieName } from "./auth-store";
+import { buildSessionCookie, checkOtpRequestLimits, clearSessionCookie, hasSessionCookie, sessionCookieName, type OtpChallengePurpose } from "./auth-store";
 import type { AppContext } from "./http";
 
 function context(url: string, environment: "development" | "preview" | "production", cookie = "") {
   return {
     req: { url, header: (name: string) => (name.toLowerCase() === "cookie" ? cookie : undefined) },
     env: { ENVIRONMENT: environment },
+  } as unknown as AppContext;
+}
+
+type ChallengeLimitRow = {
+  mobile_hash: string;
+  purpose: OtpChallengePurpose;
+  ip_hash: string;
+  requested_at: string;
+};
+
+function rateLimitContext(challenges: ChallengeLimitRow[]) {
+  return {
+    env: {
+      DB: {
+        prepare: (sql: string) => ({
+          bind: (...values: unknown[]) => ({
+            first: async () => {
+              if (sql.includes("mobile_hash = ?")) {
+                const [hash, purpose, since] = values as [string, OtpChallengePurpose, string];
+                return { count: challenges.filter((row) => row.mobile_hash === hash && row.purpose === purpose && row.requested_at >= since).length };
+              }
+              const [hash, since] = values as [string, string];
+              return { count: challenges.filter((row) => row.ip_hash === hash && row.requested_at >= since).length };
+            },
+          }),
+        }),
+      },
+    },
   } as unknown as AppContext;
 }
 
@@ -78,5 +106,35 @@ describe("session security helpers", () => {
     expect(hasSessionCookie(context("https://portal.samyaksion.com/trainer/login", "production", "__Host-samyak_trainer_session=token"), "trainer")).toBe(true);
     expect(hasSessionCookie(context("https://portal.samyaksion.com/login", "production", "samyak_session=token"))).toBe(false);
     expect(hasSessionCookie(context("https://portal.samyaksion.com/trainer/login", "production", "__Host-samyak_session=token"), "trainer")).toBe(false);
+  });
+});
+
+describe("OTP request limits", () => {
+  const now = new Date("2026-09-28T10:00:00.000Z");
+
+  it("counts mobile request limits per OTP purpose", async () => {
+    const signupRows = Array.from({ length: 8 }, (_, index) => ({
+      mobile_hash: "mobile-one",
+      purpose: "signup" as const,
+      ip_hash: `ip-signup-${index}`,
+      requested_at: "2026-09-28T09:30:00.000Z",
+    }));
+    const c = rateLimitContext(signupRows);
+
+    await expect(checkOtpRequestLimits(c, "mobile-one", "new-ip", "signup", now)).resolves.toBe(false);
+    await expect(checkOtpRequestLimits(c, "mobile-one", "new-ip", "login", now)).resolves.toBe(true);
+  });
+
+  it("keeps IP request limits shared across OTP purposes", async () => {
+    const mixedPurposeRows = Array.from({ length: 10 }, (_, index) => ({
+      mobile_hash: `mobile-${index}`,
+      purpose: index % 2 === 0 ? ("signup" as const) : ("login" as const),
+      ip_hash: "shared-ip",
+      requested_at: "2026-09-28T09:55:00.000Z",
+    }));
+    const c = rateLimitContext(mixedPurposeRows);
+
+    await expect(checkOtpRequestLimits(c, "fresh-mobile", "shared-ip", "login", now)).resolves.toBe(false);
+    await expect(checkOtpRequestLimits(c, "fresh-mobile", "shared-ip", "signup", now)).resolves.toBe(false);
   });
 });
