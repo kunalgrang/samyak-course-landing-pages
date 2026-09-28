@@ -97,6 +97,27 @@ describe("student certificate UX", () => {
           certificate: null,
           application: null,
           applicationEligibility: { eligible: true, reasons: [] },
+        }, {
+          enrolment: {
+            enrolment_id: "enrol_2",
+            enrolment_number: "ENR-002",
+            student_name: "Asha Student",
+            student_number: "DEMO-MAIN-001",
+            student_status: "active",
+            course_id: "course_2",
+            course_code: "UXD",
+            course_name: "UX Design",
+            course_status: "active",
+            duration_label: "3 months",
+            joining_date: "2026-02-10",
+            actual_completion_date: null,
+            status: "cancelled",
+            batch_id: null,
+            batch_name: null,
+          },
+          certificate: null,
+          application: null,
+          applicationEligibility: { eligible: false, reasons: ["enrolment_cancelled"] },
         }],
       },
     };
@@ -114,6 +135,8 @@ describe("student certificate UX", () => {
     expect(verifyLinks.map((link) => link.getAttribute("href"))).toContain("/verify/CERT-ABCDEFG123456789");
     expect(container.textContent).not.toContain("Samyak");
     expect(container.innerHTML).not.toContain("go.samyaksion.com");
+    expect(container.textContent).toContain("Certificate requests are available for eligible current course enrolments. Please contact your institute if you have finished training and this option is not available.");
+    expect(container.textContent).not.toContain("Certificate requests are available only for active course enrolments.");
 
     click(button("Confirm completion & request certificate"));
     expect(container.textContent).toContain("To be confirmed by the institute");

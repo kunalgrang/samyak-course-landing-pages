@@ -652,7 +652,7 @@ function stateKind(item: StudentCertificateApplicationItem) {
 function ineligibleMessage(reasons: string[]) {
   if (reasons.includes("certificate_already_issued")) return "Certificate already issued.";
   if (reasons.some((reason) => reason.startsWith("enrolment_completed"))) return "Course completion is already approved. Certificate is being processed.";
-  if (reasons.some((reason) => reason.startsWith("enrolment_"))) return "Certificate requests are available only for active course enrolments. Please contact your institute if you have finished training and this option is not available.";
+  if (reasons.some((reason) => reason.startsWith("enrolment_"))) return "Certificate requests are available for eligible current course enrolments. Please contact your institute if you have finished training and this option is not available.";
   if (reasons.includes("course_inactive")) return "Please contact your institute about this course record.";
   return "Please contact your institute before applying for this certificate.";
 }

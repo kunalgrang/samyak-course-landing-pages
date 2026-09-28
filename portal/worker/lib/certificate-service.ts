@@ -562,8 +562,8 @@ async function activeTemplate(c: AppContext, issuer: CertificateIssuerProfile) {
 async function allocateCertificateNumber(c: AppContext, issuer: CertificateIssuerProfile, branchId: string, branchCode: string, issueDate: string) {
   const year = issueDate.slice(0, 4);
   const sequence = await allocateSequence(c, issuer.organisation_id, branchId, `certificate:${year}`);
-  const orgPrefix = issuer.organisation_id === SAMYAK_ORGANISATION_ID ? "SYK" : uppercaseToken(issuer.organisation_slug || issuer.organisation_name || issuer.organisation_id);
-  return `${orgPrefix}-${uppercaseToken(branchCode)}-CERT-${year}-${String(sequence).padStart(6, "0")}`;
+  const orgPrefix = issuer.organisation_id === SAMYAK_ORGANISATION_ID ? "SYK" : nonSamyakIssuerPrefix(issuer);
+  return `${orgPrefix}-${certificateToken(branchCode, "BRANCH")}-CERT-${year}-${String(sequence).padStart(6, "0")}`;
 }
 
 async function allocateSequence(c: AppContext, organisationId: string, branchId: string, sequenceKey: string) {
@@ -635,9 +635,15 @@ function safeIdentifier(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "organisation";
 }
 
-function uppercaseToken(value: string) {
-  const token = value.toUpperCase().replace(/[^A-Z0-9]+/g, "").slice(0, 12);
-  return token || "ORG";
+function nonSamyakIssuerPrefix(issuer: CertificateIssuerProfile) {
+  const slugToken = certificateToken(issuer.organisation_slug || issuer.organisation_name || issuer.organisation_id, "ORG");
+  const idToken = certificateToken(issuer.organisation_id, "ORG");
+  return slugToken === idToken ? idToken : `${slugToken}-${idToken}`;
+}
+
+function certificateToken(value: string, fallback: string) {
+  const token = value.toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/-{2,}/g, "-");
+  return token || fallback;
 }
 
 function publicIssuer(issuer: CertificateIssuerProfile): PublicCertificateIssuer {

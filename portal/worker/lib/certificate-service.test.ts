@@ -189,9 +189,9 @@ describe("certificate service synthetic issuance flow", () => {
     expect(demoIssued.ok).toBe(true);
     if (!demoIssued.ok) throw new Error("expected Demo certificate issuance to succeed");
     expect(demoIssued.certificate.organisation_id).toBe("org_demo");
-    expect(demoIssued.certificate.certificate_number).toMatch(/^DEMOINSTITUT-MAIN-CERT-2026-000001$/);
+    expect(demoIssued.certificate.certificate_number).toBe("DEMO-INSTITUTE-ORG-DEMO-MAIN-CERT-2026-000001");
     expect(demoIssued.certificate.verification_code).toMatch(/^CERT-/);
-    expect(demoIssued.certificate.pdf_storage_key).toMatch(/^certificates\/org_demo\/branch_demo_main\/2026\/demoinstitut-main-cert-2026-000001\.pdf$/);
+    expect(demoIssued.certificate.pdf_storage_key).toMatch(/^certificates\/org_demo\/branch_demo_main\/2026\/demo-institute-org-demo-main-cert-2026-000001\.pdf$/);
     expect(row(db, "select code, name from certificate_templates where id = ?", demoIssued.certificate.template_id)).toMatchObject({
       code: "GENERIC_COMPLETION_V1",
       name: "Demo Institute Completion Certificate",
@@ -220,6 +220,71 @@ describe("certificate service synthetic issuance flow", () => {
     const demoList = await listCertificates(c, { organisationId: "org_demo", limit: 25, offset: 0 });
     expect(samyakList.items).toHaveLength(0);
     expect(demoList.items).toHaveLength(1);
+    db.close();
+  });
+
+  it("keeps non-Samyak certificate numbers globally unique when similar slugs share branch code and year", async () => {
+    const { c, db } = testContext();
+    seedCollisionCertificateOrganisation(db, {
+      organisationId: "org_collision_north",
+      slug: "abcdefghijkl-north",
+      name: "abcdefghijkl North Academy",
+      branchId: "branch_collision_north_main",
+      staffPersonId: "person_collision_north_staff",
+      loginAccountId: "login_collision_north_staff",
+      roleId: "role_collision_north_owner",
+      courseId: "course_collision_north_fullstack",
+      personId: "person_collision_north_completed",
+      studentId: "student_collision_north_completed",
+      enrolmentId: "enrolment_collision_north_completed",
+      mobile: "+919000000101",
+      studentNumber: "NORTH-MAIN-9001",
+      sequenceNumber: 9201,
+    });
+    seedCollisionCertificateOrganisation(db, {
+      organisationId: "org_collision_south",
+      slug: "abcdefghijkl-south",
+      name: "abcdefghijkl South Academy",
+      branchId: "branch_collision_south_main",
+      staffPersonId: "person_collision_south_staff",
+      loginAccountId: "login_collision_south_staff",
+      roleId: "role_collision_south_owner",
+      courseId: "course_collision_south_fullstack",
+      personId: "person_collision_south_completed",
+      studentId: "student_collision_south_completed",
+      enrolmentId: "enrolment_collision_south_completed",
+      mobile: "+919000000102",
+      studentNumber: "SOUTH-MAIN-9001",
+      sequenceNumber: 9202,
+    });
+    const storage = createMemoryCertificatePdfStorage(new Map<string, Uint8Array>());
+
+    const northIssued = await issueCertificate(c, {
+      loginAccountId: "login_collision_north_staff",
+      activePersonId: "person_collision_north_staff",
+      organisationId: "org_collision_north",
+      roles: ["owner"],
+    }, "enrolment_collision_north_completed", "2026-08-17", { storage });
+    const southIssued = await issueCertificate(c, {
+      loginAccountId: "login_collision_south_staff",
+      activePersonId: "person_collision_south_staff",
+      organisationId: "org_collision_south",
+      roles: ["owner"],
+    }, "enrolment_collision_south_completed", "2026-08-17", { storage });
+
+    expect(northIssued.ok).toBe(true);
+    expect(southIssued.ok).toBe(true);
+    if (!northIssued.ok || !southIssued.ok) throw new Error("expected collision fixtures to issue");
+    expect(northIssued.certificate.certificate_number).toBe("ABCDEFGHIJKL-NORTH-ORG-COLLISION-NORTH-MAIN-CERT-2026-000001");
+    expect(southIssued.certificate.certificate_number).toBe("ABCDEFGHIJKL-SOUTH-ORG-COLLISION-SOUTH-MAIN-CERT-2026-000001");
+    expect(northIssued.certificate.certificate_number).not.toBe(southIssued.certificate.certificate_number);
+    expect(northIssued.certificate.certificate_number).not.toBe("ABCDEFGHIJKL-MAIN-CERT-2026-000001");
+    expect(southIssued.certificate.certificate_number).not.toBe("ABCDEFGHIJKL-MAIN-CERT-2026-000001");
+    expect(northIssued.certificate.verification_code).toMatch(/^CERT-/);
+    expect(southIssued.certificate.verification_code).toMatch(/^CERT-/);
+    expect(row(db, "select next_sequence from number_sequences where organisation_id = 'org_collision_north' and branch_id = 'branch_collision_north_main' and sequence_key = 'certificate:2026'")).toMatchObject({ next_sequence: 2 });
+    expect(row(db, "select next_sequence from number_sequences where organisation_id = 'org_collision_south' and branch_id = 'branch_collision_south_main' and sequence_key = 'certificate:2026'")).toMatchObject({ next_sequence: 2 });
+    expect(count(db, "number_sequences where sequence_key = 'certificate:2026' and organisation_id like 'org_collision_%'")).toBe(2);
     db.close();
   });
 
@@ -489,6 +554,55 @@ function seedDemoOrganisation(db: DatabaseSync) {
      values ('enrolment_demo_completed', 'student_demo_completed', 'branch_demo_main', 'course_demo_fullstack', null, 'DEMO-ENR-001', 'classroom', null, null,
        '2026-01-05', '2026-01-10', '2026-08-10', '2026-08-10', 'completed', 'decide_later', null, ?, ?)`)
     .run(now(), now());
+}
+
+function seedCollisionCertificateOrganisation(db: DatabaseSync, input: {
+  organisationId: string;
+  slug: string;
+  name: string;
+  branchId: string;
+  staffPersonId: string;
+  loginAccountId: string;
+  roleId: string;
+  courseId: string;
+  personId: string;
+  studentId: string;
+  enrolmentId: string;
+  mobile: string;
+  studentNumber: string;
+  sequenceNumber: number;
+}) {
+  db.prepare(`insert into organisations
+    (id, name, slug, status, organisation_kind, legal_name, address_line1, city, state_region, country, postcode, website, created_at, updated_at)
+    values (?, ?, ?, 'active', 'normal', ?, '42 Collision Road', 'Mumbai', 'Maharashtra', 'IN', '400001', 'https://collision.example', ?, ?)`)
+    .run(input.organisationId, input.name, input.slug, `${input.name} LLP`, now(), now());
+  db.prepare(`insert into branches
+    (id, organisation_id, name, code, timezone, status, address_line1, city, state_region, country, postcode, email, centre_status, created_at, updated_at)
+    values (?, ?, 'Main Centre', 'MAIN', 'Asia/Kolkata', 'active', '42 Collision Road', 'Mumbai', 'Maharashtra', 'IN', '400001', 'hello@collision.example', 'active', ?, ?)`)
+    .run(input.branchId, input.organisationId, now(), now());
+  db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values (?, ?, ?, ?, ?, 'active', ?, ?)")
+    .run(input.staffPersonId, input.organisationId, input.branchId, `${input.name} Staff`, `${input.name} Staff`, now(), now());
+  db.prepare("insert into login_accounts (id, organisation_id, mobile_normalized, mobile_last_four, login_enabled, status, created_at, updated_at) values (?, ?, ?, ?, 1, 'active', ?, ?)")
+    .run(input.loginAccountId, input.organisationId, input.mobile, input.mobile.slice(-4), now(), now());
+  db.prepare("insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at) values (?, ?, 'staff', 1, 1, ?)")
+    .run(input.loginAccountId, input.staffPersonId, now());
+  db.prepare("insert into roles (id, organisation_id, code, name, created_at) values (?, ?, 'owner', 'Owner', ?)")
+    .run(input.roleId, input.organisationId, now());
+  db.prepare("insert into login_account_roles (login_account_id, role_id, branch_id, created_at) values (?, ?, null, ?)")
+    .run(input.loginAccountId, input.roleId, now());
+  db.prepare("insert into courses (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at) values (?, ?, 'FSD', 'Full Stack Collision', '6 months', 6, 5000000, 4500000, 1, 0, 'active', ?, ?)")
+    .run(input.courseId, input.organisationId, now(), now());
+  db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values (?, ?, ?, ?, ?, 'active', ?, ?)")
+    .run(input.personId, input.organisationId, input.branchId, `${input.name} Completed Student`, `${input.name} Student`, now(), now());
+  db.prepare("insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, '2026-01-01', 'completed', 'active', ?, ?)")
+    .run(input.studentId, input.organisationId, input.personId, input.branchId, input.studentNumber, input.sequenceNumber, now(), now());
+  db.prepare(`insert into enrolments
+      (id, student_id, branch_id, course_id, enquiry_id, enrolment_number, training_mode, batch_preference, batch_id,
+       admission_date, joining_date, expected_completion_date, actual_completion_date, status, nsdc_preference,
+       referrer_profile_id, created_at, updated_at)
+     values (?, ?, ?, ?, null, ?, 'classroom', null, null,
+       '2026-01-05', '2026-01-10', '2026-08-10', '2026-08-10', 'completed', 'decide_later', null, ?, ?)`)
+    .run(input.enrolmentId, input.studentId, input.branchId, input.courseId, `ENR-${input.studentNumber}`, now(), now());
 }
 
 function seedMalformedDemoCertificateEnrolments(db: DatabaseSync) {
