@@ -7,7 +7,7 @@ describe("certificate PDF generation", () => {
     const certificate = sampleCertificate({ completion_date_snapshot: null });
     const result = await generateCertificatePdf({
       certificate,
-      verificationUrl: "https://go.samyaksion.com/verify/SYK-ABC1234567890XYZ",
+      verificationUrl: "https://edu.rememo.in/verify/SYK-ABC1234567890XYZ",
     });
     const text = new TextDecoder().decode(result.bytes);
 
@@ -41,7 +41,7 @@ describe("certificate PDF generation", () => {
   it("includes completion date only when the snapshot has one", async () => {
     const result = await generateCertificatePdf({
       certificate: sampleCertificate({ completion_date_snapshot: "2026-08-10" }),
-      verificationUrl: "https://go.samyaksion.com/verify/SYK-ABC1234567890XYZ",
+      verificationUrl: "https://edu.rememo.in/verify/SYK-ABC1234567890XYZ",
     });
 
     expect(new TextDecoder().decode(result.bytes)).toContain("Completion Date: 10-08-2026");
@@ -54,7 +54,7 @@ describe("certificate PDF generation", () => {
         course_name_snapshot: "Professional Full Stack Web Development, Cloud Automation, Analytics and AI Productivity Masterclass",
         completion_date_snapshot: "2026-07-31",
       }),
-      verificationUrl: "https://go.samyaksion.com/verify/SYK-STRESS123456789",
+      verificationUrl: "https://edu.rememo.in/verify/SYK-STRESS123456789",
     });
     const text = new TextDecoder().decode(result.bytes);
 

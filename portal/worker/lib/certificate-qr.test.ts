@@ -3,7 +3,7 @@ import { generateCertificateQrSvg } from "./certificate-qr";
 
 describe("certificate QR", () => {
   it("round-trips the canonical verification URL without private identifiers", async () => {
-    const url = "https://go.samyaksion.com/verify/SYK-7Q4M9PVK3X82AAAA";
+    const url = "https://edu.rememo.in/verify/SYK-7Q4M9PVK3X82AAAA";
     const svg = await generateCertificateQrSvg(url);
 
     expect(svg).toContain("<svg");

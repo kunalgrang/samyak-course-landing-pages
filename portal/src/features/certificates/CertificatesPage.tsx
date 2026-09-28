@@ -482,7 +482,7 @@ function StudentApplicationCard({ item, onSubmitted }: { item: StudentCertificat
       {certificate ? (
         <div className="certificate-actions">
           <a className="button-link button-link--primary" href={`/api/student/certificates/${encodeURIComponent(certificate.id)}/pdf`}>View Certificate</a>
-          {certificate.verification_code ? <a className="button-link" href={`/verify/${encodeURIComponent(certificate.verification_code)}`}>Verify</a> : null}
+          {certificate.verification_url ? <a className="button-link" href={certificate.verification_url}>Verify</a> : null}
         </div>
       ) : null}
       {!certificate && application ? <p className="form-message">{studentApplicationMessage(application.status || "submitted")}</p> : null}
@@ -582,7 +582,7 @@ function CertificateList({ certificates, canRevoke, downloadScope, onRevoke }: {
             <small>{certificate.course_name_snapshot} · Issued {formatDate(certificate.issue_date)}{certificate.completion_date_snapshot ? ` · Completed ${formatDate(certificate.completion_date_snapshot)}` : ""}</small>
             <div className="certificate-actions">
               <a className="button-link" href={`/${downloadScope === "staff" ? "api/staff" : "api/student"}/certificates/${encodeURIComponent(certificate.id)}/pdf`}>Download</a>
-              <a className="button-link" href={`/verify/${encodeURIComponent(certificate.verification_code)}`}>Verify</a>
+              <a className="button-link" href={certificate.verification_url}>Verify</a>
               {canRevoke ? <button type="button" className="danger-button" onClick={() => onRevoke?.(certificate)}>Revoke</button> : null}
             </div>
           </article>

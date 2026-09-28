@@ -53,8 +53,8 @@ Staff and student downloads are Worker-mediated through authenticated routes. Th
 Configured Cloudflare resources in `wrangler.jsonc`:
 
 - R2 bucket binding `CERTIFICATE_PDFS` -> `samyak-certificates`.
-- `CERTIFICATE_VERIFICATION_ORIGIN=https://go.samyaksion.com`.
-- Narrow route coverage for `/verify/*` and `/api/public/certificates/verify/*` on `go.samyaksion.com`.
+- `CERTIFICATE_VERIFICATION_ORIGIN=https://edu.rememo.in`.
+- Narrow legacy route coverage for `/verify/*` and `/api/public/certificates/verify/*` on `go.samyaksion.com`.
 
 ## Public Privacy
 

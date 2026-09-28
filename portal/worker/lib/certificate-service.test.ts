@@ -57,9 +57,10 @@ describe("certificate service synthetic issuance flow", () => {
   it("builds public verification URLs from configured platform origin", () => {
     const { c } = testContext();
 
-    expect(buildVerificationUrl(c, "SYK-ABC1234567890XYZ")).toBe("https://go.samyaksion.com/verify/SYK-ABC1234567890XYZ");
+    expect(buildVerificationUrl(c, "org_samyak", "SYK-ABC1234567890XYZ")).toBe("https://edu.rememo.in/verify/SYK-ABC1234567890XYZ");
+    expect(buildVerificationUrl(c, "org_demo", "CERT-ABC1234567890XYZ")).toBe("https://edu.rememo.in/verify/CERT-ABC1234567890XYZ");
     const misconfiguredContext = { ...c, env: { ...c.env, CERTIFICATE_VERIFICATION_ORIGIN: "" } } as unknown as AppContext;
-    expect(() => buildVerificationUrl(misconfiguredContext, "SYK-ABC1234567890XYZ")).toThrow();
+    expect(() => buildVerificationUrl(misconfiguredContext, "org_samyak", "SYK-ABC1234567890XYZ")).toThrow();
   });
 
   it("issues, stores, verifies, downloads, deduplicates, and revokes a completed enrolment", async () => {
@@ -81,6 +82,7 @@ describe("certificate service synthetic issuance flow", () => {
     expect(issued.certificate.course_name_snapshot).toBe("FULL STACK COURSE - 6 MONTHS");
     expect(issued.certificate.pdf_storage_key).toMatch(/^certificates\/org_samyak\/branch_sion\/2026\/syk-sion-cert-2026-000001\.pdf$/);
     expect(objects.size).toBe(1);
+    expect(buildVerificationUrl(c, issued.certificate.organisation_id, issued.certificate.verification_code)).toBe(`https://edu.rememo.in/verify/${issued.certificate.verification_code}`);
 
     db.prepare("update people set full_name = 'Changed After Issue', updated_at = ? where id = 'person_completed'").run(now(),);
     db.prepare("update courses set name = 'Changed Course Name', updated_at = ? where id = 'course_syk_wdd_001'").run(now());
@@ -105,6 +107,10 @@ describe("certificate service synthetic issuance flow", () => {
     expect(Object.keys(verification.certificate || {})).not.toEqual(
       expect.arrayContaining(["verification_code", "pdf_storage_key", "revocation_reason", "person_id", "student_id"]),
     );
+    const studentApplications = await listStudentCertificateApplications(c, { organisationId: "org_samyak", personId: "person_completed" });
+    expect(studentApplications.items[0]).toMatchObject({
+      certificate: { verification_url: `https://edu.rememo.in/verify/${issued.certificate.verification_code}` },
+    });
 
     const staffPdf = await getCertificatePdf(c, { organisationId: "org_samyak", certificateId: issued.certificate.id }, { storage });
     const studentPdf = await getCertificatePdf(c, { organisationId: "org_samyak", certificateId: issued.certificate.id, personId: "person_completed" }, { storage });
@@ -191,6 +197,7 @@ describe("certificate service synthetic issuance flow", () => {
     expect(demoIssued.certificate.organisation_id).toBe("org_demo");
     expect(demoIssued.certificate.certificate_number).toBe("DEMO-INSTITUTE-ORG-DEMO-MAIN-CERT-2026-000001");
     expect(demoIssued.certificate.verification_code).toMatch(/^CERT-/);
+    expect(buildVerificationUrl(c, demoIssued.certificate.organisation_id, demoIssued.certificate.verification_code)).toBe(`https://edu.rememo.in/verify/${demoIssued.certificate.verification_code}`);
     expect(demoIssued.certificate.pdf_storage_key).toMatch(/^certificates\/org_demo\/branch_demo_main\/2026\/demo-institute-org-demo-main-cert-2026-000001\.pdf$/);
     expect(row(db, "select code, name from certificate_templates where id = ?", demoIssued.certificate.template_id)).toMatchObject({
       code: "GENERIC_COMPLETION_V1",
@@ -220,6 +227,7 @@ describe("certificate service synthetic issuance flow", () => {
     const demoList = await listCertificates(c, { organisationId: "org_demo", limit: 25, offset: 0 });
     expect(samyakList.items).toHaveLength(0);
     expect(demoList.items).toHaveLength(1);
+    expect(demoList.items[0]).toMatchObject({ verification_url: `https://edu.rememo.in/verify/${demoIssued.certificate.verification_code}` });
     db.close();
   });
 
@@ -515,7 +523,7 @@ function testContext() {
       env: {
         DB: new SqliteD1(db),
         ENVIRONMENT: "production",
-        CERTIFICATE_VERIFICATION_ORIGIN: "https://go.samyaksion.com",
+        CERTIFICATE_VERIFICATION_ORIGIN: "https://edu.rememo.in",
       },
     } as unknown as AppContext,
     staff: { loginAccountId: "login_staff", activePersonId: "person_staff", roles: ["owner"] } satisfies StaffContext,

@@ -1,5 +1,6 @@
 import type { AppContext } from "./http";
 import { createOpaqueId } from "./crypto";
+import { certificateVerificationUrl } from "./platform-config";
 import { staffOrganisationId, type StaffContext } from "./staff-auth";
 
 export const CERTIFICATE_APPLICATION_STATUSES = ["submitted", "approved", "needs_attention", "certificate_issued", "cancelled"] as const;
@@ -145,6 +146,7 @@ export async function listStudentCertificateApplications(c: AppContext, input: {
             id: row.certificate_id,
             certificate_number: row.certificate_number,
             verification_code: row.verification_code,
+            verification_url: row.verification_code ? certificateVerificationUrl(c.env, { organisationId: input.organisationId, code: row.verification_code }) : null,
           }
         : null,
       application: row.application_id

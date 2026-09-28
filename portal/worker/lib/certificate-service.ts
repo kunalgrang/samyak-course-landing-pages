@@ -1,6 +1,6 @@
 import type { AppContext } from "./http";
 import { createOpaqueId, randomBase64Url } from "./crypto";
-import { certificateVerificationOrigin } from "./platform-config";
+import { certificateVerificationUrl } from "./platform-config";
 import { staffOrganisationId, type StaffContext } from "./staff-auth";
 import { generateCertificatePdf } from "./certificate-pdf";
 import {
@@ -76,6 +76,27 @@ export type CertificateIssuerProfile = {
   branch_country: string | null;
   branch_email: string | null;
   branch_mobile_last_four: string | null;
+};
+
+type CertificateListRow = Pick<
+  CertificateRecord,
+  | "id"
+  | "certificate_number"
+  | "verification_code"
+  | "person_id"
+  | "student_id_snapshot"
+  | "student_name_snapshot"
+  | "course_id"
+  | "course_name_snapshot"
+  | "course_code_snapshot"
+  | "issue_date"
+  | "completion_date_snapshot"
+  | "status"
+  | "template_version_snapshot"
+>;
+
+export type CertificateListRecord = CertificateListRow & {
+  verification_url: string;
 };
 
 export type PublicCertificateIssuer = {
@@ -228,7 +249,7 @@ export async function listCertificates(c: AppContext, input: CertificateQuery) {
   )
     .bind(...params)
     .all();
-  const results = rows.results || [];
+  const results = (rows.results || []).map((row) => publicCertificateListRecord(c, input.organisationId, row as CertificateListRow));
   return { items: results.slice(0, input.limit), pagination: { limit: input.limit, offset: input.offset, hasMore: results.length > input.limit } };
 }
 
@@ -254,7 +275,7 @@ export async function issueCertificate(c: AppContext, staff: StaffContext, enrol
   const certificateId = createOpaqueId("cert");
   const certificateNumber = await allocateCertificateNumber(c, issuer, row.branch_id, row.branch_code, issueDate);
   const verificationCode = await uniqueVerificationCode(c, organisationId);
-  const verificationUrl = buildVerificationUrl(c, verificationCode);
+  const verificationUrl = buildVerificationUrl(c, organisationId, verificationCode);
   const certificate: CertificateRecord = {
     id: certificateId,
     organisation_id: organisationId,
@@ -469,7 +490,7 @@ export async function getCertificatePdf(
     return { ok: false, status: 503, code: "certificate_storage_unavailable", message: "Certificate PDF storage is not configured." };
   }
   const issuer = await loadIssuerProfile(c, certificate.organisation_id, certificate.branch_id);
-  const pdf = await generateCertificatePdf({ certificate, verificationUrl: buildVerificationUrl(c, certificate.verification_code), issuer });
+  const pdf = await generateCertificatePdf({ certificate, verificationUrl: buildVerificationUrl(c, certificate.organisation_id, certificate.verification_code), issuer });
   return { ok: true, bytes: pdf.bytes, filename: certificatePdfFilename(certificate), sha256: pdf.sha256, storageKey: certificate.pdf_storage_key };
 }
 
@@ -479,8 +500,15 @@ export async function getCertificateById(c: AppContext, organisationId: string, 
     .first<CertificateRecord>();
 }
 
-export function buildVerificationUrl(c: AppContext, code: string) {
-  return `${certificateVerificationOrigin(c.env)}/verify/${encodeURIComponent(code)}`;
+export function buildVerificationUrl(c: AppContext, organisationId: string, code: string) {
+  return certificateVerificationUrl(c.env, { organisationId, code });
+}
+
+function publicCertificateListRecord(c: AppContext, organisationId: string, certificate: CertificateListRow) {
+  return {
+    ...certificate,
+    verification_url: buildVerificationUrl(c, organisationId, certificate.verification_code),
+  };
 }
 
 async function loadEligibilityRow(c: AppContext, organisationId: string, enrolmentId: string) {

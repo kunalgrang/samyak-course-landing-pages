@@ -230,7 +230,7 @@ async function authenticatedStudentProfile(c: Parameters<typeof getSessionFromRe
 function publicStaffCertificate(c: Parameters<typeof buildVerificationUrl>[0], certificate: Record<string, unknown>) {
   return {
     ...certificate,
-    verification_url: buildVerificationUrl(c, String(certificate.verification_code)),
+    verification_url: buildVerificationUrl(c, String(certificate.organisation_id), String(certificate.verification_code)),
     pdf_storage_key: undefined,
     revocation_reason: undefined,
   };

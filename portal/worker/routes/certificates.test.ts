@@ -29,7 +29,7 @@ vi.mock("../lib/auth-store", () => ({
 }));
 
 vi.mock("../lib/certificate-service", () => ({
-  buildVerificationUrl: vi.fn((_c, code: string) => `https://go.samyaksion.com/verify/${code}`),
+  buildVerificationUrl: vi.fn((_c, organisationId: string, code: string) => `https://certificates.example.test/${organisationId}/verify/${code}`),
   getCertificateById: vi.fn(),
   getCertificatePdf: vi.fn(),
   issueCertificate: mocks.issueCertificate,
@@ -86,6 +86,7 @@ describe("certificate routes", () => {
       idempotent: false,
       certificate: {
         id: "cert_1",
+        organisation_id: "org_samyak",
         certificate_number: "SYK-SION-CERT-2026-000001",
         verification_code: "SYK-CODE",
         pdf_storage_key: "certificates/org_samyak/branch_sion/2026/cert.pdf",
@@ -108,7 +109,11 @@ describe("certificate routes", () => {
 
     expect(list.status).toBe(200);
     expect(issue.status).toBe(201);
-    await expect(issue.json()).resolves.not.toMatchObject({ certificate: { pdf_storage_key: expect.any(String), revocation_reason: expect.any(String) } });
+    const issueBody = await issue.json();
+    expect(issueBody).toMatchObject({
+      certificate: { verification_url: "https://certificates.example.test/org_samyak/verify/SYK-CODE" },
+    });
+    expect(issueBody).not.toMatchObject({ certificate: { pdf_storage_key: expect.any(String), revocation_reason: expect.any(String) } });
     expect(mocks.issueCertificate).toHaveBeenCalledTimes(1);
   });
 

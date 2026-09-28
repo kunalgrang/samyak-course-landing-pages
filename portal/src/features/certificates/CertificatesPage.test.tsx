@@ -59,13 +59,14 @@ describe("student certificate UX", () => {
     vi.clearAllMocks();
   });
 
-  it("renders institute-neutral copy and relative verification links", async () => {
+  it("renders institute-neutral copy and API-provided verification links", async () => {
     const page = {
       certificates: {
         items: [{
           id: "cert_1",
           certificate_number: "CERT-MAIN-2026-000001",
           verification_code: "CERT-ABCDEFG123456789",
+          verification_url: "https://certificates.example.test/verify/CERT-ABCDEFG123456789",
           student_id_snapshot: "DEMO-MAIN-001",
           student_name_snapshot: "Asha Student",
           course_name_snapshot: "Full Stack",
@@ -132,9 +133,10 @@ describe("student certificate UX", () => {
 
     expect(container.textContent).toContain("Finished your training? Confirm completion and submit a certificate request. Your institute will review and confirm the official completion date before your certificate can be issued.");
     const verifyLinks = Array.from(container.querySelectorAll<HTMLAnchorElement>("a")).filter((link) => link.textContent === "Verify");
-    expect(verifyLinks.map((link) => link.getAttribute("href"))).toContain("/verify/CERT-ABCDEFG123456789");
+    expect(verifyLinks.map((link) => link.getAttribute("href"))).toContain("https://certificates.example.test/verify/CERT-ABCDEFG123456789");
     expect(container.textContent).not.toContain("Samyak");
     expect(container.innerHTML).not.toContain("go.samyaksion.com");
+    expect(container.innerHTML).not.toContain("edu.rememo.in");
     expect(container.textContent).toContain("Certificate requests are available for eligible current course enrolments. Please contact your institute if you have finished training and this option is not available.");
     expect(container.textContent).not.toContain("Certificate requests are available only for active course enrolments.");
 

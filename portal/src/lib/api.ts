@@ -1507,6 +1507,7 @@ const certificateListItemSchema = z.object({
   id: z.string(),
   certificate_number: z.string(),
   verification_code: z.string(),
+  verification_url: z.string(),
   person_id: z.string().optional(),
   student_id_snapshot: z.string(),
   student_name_snapshot: z.string(),
@@ -1551,9 +1552,7 @@ const eligibleCertificateListSchema = z.object({
 const issueCertificateSchema = z.object({
   success: z.literal(true),
   idempotent: z.boolean(),
-  certificate: certificateListItemSchema.extend({
-    verification_url: z.string(),
-  }).passthrough(),
+  certificate: certificateListItemSchema.passthrough(),
 });
 
 const certificateApplicationStatusSchema = z.union([
@@ -1586,6 +1585,7 @@ const studentCertificateApplicationItemSchema = z.object({
     id: z.string(),
     certificate_number: z.string().nullable(),
     verification_code: z.string().nullable(),
+    verification_url: z.string().nullable(),
   }).nullable(),
   application: z.object({
     id: z.string(),

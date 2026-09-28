@@ -27,6 +27,20 @@ export function certificateVerificationOrigin(env: Pick<WorkerBindings, "CERTIFI
   return requiredOrigin(env.CERTIFICATE_VERIFICATION_ORIGIN, "CERTIFICATE_VERIFICATION_ORIGIN");
 }
 
+export function certificateVerificationOriginForOrganisation(
+  env: Pick<WorkerBindings, "CERTIFICATE_VERIFICATION_ORIGIN">,
+  _input: { organisationId: string },
+) {
+  return certificateVerificationOrigin(env);
+}
+
+export function certificateVerificationUrl(
+  env: Pick<WorkerBindings, "CERTIFICATE_VERIFICATION_ORIGIN">,
+  input: { organisationId: string; code: string },
+) {
+  return `${certificateVerificationOriginForOrganisation(env, { organisationId: input.organisationId })}/verify/${encodeURIComponent(input.code)}`;
+}
+
 function requiredOrigin(value: string | undefined, bindingName: string) {
   const text = String(value || "").trim().replace(/\/+$/, "");
   if (!text) throw new PlatformConfigurationError(`${bindingName} is not configured.`);
