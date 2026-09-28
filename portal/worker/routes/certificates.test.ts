@@ -215,7 +215,18 @@ describe("certificate routes", () => {
     const app = routeApp();
     mocks.verifyCertificate.mockResolvedValue({
       status: "valid",
-      issuer: { organisation_name: "Demo Institute", branch_name: "Main Centre" },
+      issuer: {
+        organisation_name: "Demo Institute",
+        organisation_legal_name: "Demo Institute LLP",
+        branch_name: "Main Centre",
+        address_line1: "42 Demo Road",
+        city: "Mumbai",
+        state_region: "Maharashtra",
+        postcode: "400001",
+        country: "IN",
+        website: "https://demo.example",
+        email: "hello@demo.example",
+      },
       certificate: {
         certificate_number: "SYK-SION-CERT-2026-000001",
         student_name_snapshot: "Asha Shah",
@@ -226,13 +237,30 @@ describe("certificate routes", () => {
     });
 
     const response = await app.request("/api/public/certificates/verify/SYK-7Q4M9PVK3X82AAAA");
-    const body = await response.json();
+    const body = await response.json() as { verification: { issuer: unknown } };
 
     expect(response.status).toBe(200);
+    expect(body.verification.issuer).toEqual({
+      organisation_name: "Demo Institute",
+      organisation_legal_name: "Demo Institute LLP",
+      branch_name: "Main Centre",
+      address_line1: "42 Demo Road",
+      city: "Mumbai",
+      state_region: "Maharashtra",
+      postcode: "400001",
+      country: "IN",
+      website: "https://demo.example",
+      email: "hello@demo.example",
+    });
     expect(JSON.stringify(body)).not.toContain("mobile");
     expect(JSON.stringify(body)).not.toContain("aadhaar");
     expect(JSON.stringify(body)).not.toContain("verification_code");
     expect(JSON.stringify(body)).not.toContain("revocation_reason");
+    expect(JSON.stringify(body)).not.toContain("organisation_id");
+    expect(JSON.stringify(body)).not.toContain("organisation_slug");
+    expect(JSON.stringify(body)).not.toContain("branch_id");
+    expect(JSON.stringify(body)).not.toContain("branch_code");
+    expect(JSON.stringify(body)).not.toContain("branch_mobile_last_four");
   });
 
   it("returns a self-contained valid public verification HTML page", async () => {

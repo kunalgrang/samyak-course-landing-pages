@@ -441,11 +441,11 @@ function issuerBranchLine(issuer: Awaited<ReturnType<typeof verifyCertificate>>[
 function issuerAddressLines(issuer: Awaited<ReturnType<typeof verifyCertificate>>["issuer"]) {
   if (!issuer) return [];
   return [
-    issuer.branch_address_line1 || issuer.organisation_address_line1,
-    [issuer.branch_city || issuer.organisation_city, issuer.branch_state_region || issuer.organisation_state_region, issuer.branch_postcode || issuer.organisation_postcode].filter(Boolean).join(", "),
-    issuer.branch_country || issuer.organisation_country,
-    issuer.branch_email,
-    issuer.organisation_website,
+    issuer.address_line1,
+    [issuer.city, issuer.state_region, issuer.postcode].filter(Boolean).join(", "),
+    issuer.country,
+    issuer.email,
+    issuer.website,
   ].map((line) => String(line || "").trim()).filter(Boolean);
 }
 

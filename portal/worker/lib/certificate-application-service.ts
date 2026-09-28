@@ -110,14 +110,20 @@ export async function listStudentCertificateApplications(c: AppContext, input: {
        certificates.verification_code
      from enrolments
      join students on students.id = enrolments.student_id
+       and students.organisation_id = ?
      join people on people.id = students.person_id
+       and people.organisation_id = students.organisation_id
      left join person_identity_details on person_identity_details.person_id = people.id
      join courses on courses.id = enrolments.course_id
-     left join branches on branches.id = enrolments.branch_id
+       and courses.organisation_id = students.organisation_id
+     join branches on branches.id = enrolments.branch_id
+       and branches.organisation_id = students.organisation_id
      left join batch_memberships on batch_memberships.enrolment_id = enrolments.id
+       and batch_memberships.organisation_id = students.organisation_id
        and batch_memberships.status = 'active'
        and batch_memberships.left_at is null
      left join batches active_batch on active_batch.id = batch_memberships.batch_id
+       and active_batch.organisation_id = students.organisation_id
      left join certificate_applications on certificate_applications.organisation_id = students.organisation_id
        and certificate_applications.enrolment_id = enrolments.id
        and certificate_applications.status in ('submitted', 'approved', 'needs_attention', 'certificate_issued')
@@ -128,7 +134,7 @@ export async function listStudentCertificateApplications(c: AppContext, input: {
        and people.id = ?
      order by enrolments.joining_date desc, enrolments.id desc`,
   )
-    .bind(input.organisationId, input.personId)
+    .bind(input.organisationId, input.organisationId, input.personId)
     .all<ApplicationEligibilityRow>();
 
   return {
@@ -621,10 +627,14 @@ async function loadStudentEnrolmentRow(c: AppContext, organisationId: string, pe
        certificates.verification_code
      from enrolments
      join students on students.id = enrolments.student_id
+       and students.organisation_id = ?
      join people on people.id = students.person_id
+       and people.organisation_id = students.organisation_id
      left join person_identity_details on person_identity_details.person_id = people.id
      join courses on courses.id = enrolments.course_id
-     left join branches on branches.id = enrolments.branch_id
+       and courses.organisation_id = students.organisation_id
+     join branches on branches.id = enrolments.branch_id
+       and branches.organisation_id = students.organisation_id
      left join certificate_applications on certificate_applications.organisation_id = students.organisation_id
        and certificate_applications.enrolment_id = enrolments.id
        and certificate_applications.status in ('submitted', 'approved', 'needs_attention', 'certificate_issued')
@@ -636,7 +646,7 @@ async function loadStudentEnrolmentRow(c: AppContext, organisationId: string, pe
        and enrolments.id = ?
      limit 1`,
   )
-    .bind(organisationId, personId, enrolmentId)
+    .bind(organisationId, organisationId, personId, enrolmentId)
     .first<ApplicationEligibilityRow>();
 }
 

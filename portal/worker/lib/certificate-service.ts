@@ -78,6 +78,19 @@ export type CertificateIssuerProfile = {
   branch_mobile_last_four: string | null;
 };
 
+export type PublicCertificateIssuer = {
+  organisation_name: string;
+  organisation_legal_name: string | null;
+  branch_name: string | null;
+  address_line1: string | null;
+  city: string | null;
+  state_region: string | null;
+  postcode: string | null;
+  country: string | null;
+  website: string | null;
+  email: string | null;
+};
+
 type CertificateQuery = {
   organisationId: string;
   q?: string;
@@ -407,7 +420,7 @@ export async function verifyCertificate(c: AppContext, code: string) {
   return {
     status,
     certificate: publicCertificate,
-    issuer: {
+    issuer: publicIssuer({
       organisation_id,
       organisation_name,
       organisation_legal_name,
@@ -428,7 +441,7 @@ export async function verifyCertificate(c: AppContext, code: string) {
       branch_country,
       branch_email,
       branch_mobile_last_four,
-    },
+    }),
   };
 }
 
@@ -494,16 +507,19 @@ async function loadEligibilityRow(c: AppContext, organisationId: string, enrolme
        enrolments.joining_date,
        enrolments.actual_completion_date
      from enrolments
-     left join students on students.id = enrolments.student_id
-     left join people on people.id = students.person_id
-     left join person_identity_details on person_identity_details.person_id = people.id
-     left join courses on courses.id = enrolments.course_id
-     left join branches on branches.id = enrolments.branch_id
-     where enrolments.id = ?
+     join students on students.id = enrolments.student_id
        and students.organisation_id = ?
+     join people on people.id = students.person_id
+       and people.organisation_id = students.organisation_id
+     left join person_identity_details on person_identity_details.person_id = people.id
+     join courses on courses.id = enrolments.course_id
+       and courses.organisation_id = students.organisation_id
+     join branches on branches.id = enrolments.branch_id
+       and branches.organisation_id = students.organisation_id
+     where enrolments.id = ?
      limit 1`,
   )
-    .bind(enrolmentId, organisationId)
+    .bind(organisationId, enrolmentId)
     .first<EligibilityRow>();
 }
 
@@ -622,6 +638,21 @@ function safeIdentifier(value: string) {
 function uppercaseToken(value: string) {
   const token = value.toUpperCase().replace(/[^A-Z0-9]+/g, "").slice(0, 12);
   return token || "ORG";
+}
+
+function publicIssuer(issuer: CertificateIssuerProfile): PublicCertificateIssuer {
+  return {
+    organisation_name: issuer.organisation_name,
+    organisation_legal_name: issuer.organisation_legal_name,
+    branch_name: issuer.branch_name,
+    address_line1: issuer.branch_address_line1 || issuer.organisation_address_line1,
+    city: issuer.branch_city || issuer.organisation_city,
+    state_region: issuer.branch_state_region || issuer.organisation_state_region,
+    postcode: issuer.branch_postcode || issuer.organisation_postcode,
+    country: issuer.branch_country || issuer.organisation_country,
+    website: issuer.organisation_website,
+    email: issuer.branch_email,
+  };
 }
 
 function statusEvent(

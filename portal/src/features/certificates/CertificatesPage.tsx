@@ -413,7 +413,7 @@ function StudentCertificates() {
     <div className="content-stack">
       <header className="page-header">
         <h1>My Certificates</h1>
-        <p>Apply after completing a course, then download issued certificates here.</p>
+        <p>Finished your training? Confirm completion and submit a certificate request. Your institute will review and confirm the official completion date before your certificate can be issued.</p>
       </header>
       {error ? <ErrorState title="Could not load certificates" message={error} /> : null}
       {successApplicationId ? <ApplicationSuccess applicationId={successApplicationId} items={items} googleReviewUrl={googleReviewUrl} onSkip={() => setSuccessApplicationId(null)} /> : null}
@@ -488,7 +488,7 @@ function StudentApplicationCard({ item, onSubmitted }: { item: StudentCertificat
       {!certificate && application ? <p className="form-message">{studentApplicationMessage(application.status || "submitted")}</p> : null}
       {canApply ? (
         <>
-          {!isOpen ? <button type="button" onClick={() => setIsOpen(true)}>Apply for Certificate</button> : null}
+          {!isOpen ? <button type="button" onClick={() => setIsOpen(true)}>Confirm completion & request certificate</button> : null}
           {isOpen ? (
             <form className="certificate-application-form" onSubmit={submit}>
               <div className="confirmation-box">
@@ -502,6 +502,10 @@ function StudentApplicationCard({ item, onSubmitted }: { item: StudentCertificat
               <div className="warning-box">
                 <strong>Please check your name and course details carefully before applying.</strong>
                 <p>Please contact your institute before submitting your certificate application if anything is wrong.</p>
+              </div>
+              <div className="confirmation-box">
+                <strong>This is your certificate request.</strong>
+                <p>Your confirmation tells the institute that you have finished training and want a certificate. It does not mark your enrolment officially completed; staff must review and confirm the official completion date before a certificate can be issued.</p>
               </div>
               <label className="check-row">
                 <input type="checkbox" checked={completionConfirmed} onChange={(event) => setCompletionConfirmed(event.target.checked)} />
@@ -534,7 +538,7 @@ function StudentApplicationCard({ item, onSubmitted }: { item: StudentCertificat
               </label>
               {error ? <div className="notice notice--error"><strong>{error}</strong></div> : null}
               <div className="certificate-actions">
-                <button type="submit" disabled={!ready || isSubmitting}>{isSubmitting ? "Submitting..." : "Apply for Certificate"}</button>
+                <button type="submit" disabled={!ready || isSubmitting}>{isSubmitting ? "Submitting..." : "Confirm completion & request certificate"}</button>
                 <button type="button" className="secondary-button" onClick={() => setIsOpen(false)} disabled={isSubmitting}>Cancel</button>
               </div>
             </form>
@@ -551,6 +555,7 @@ function ApplicationSuccess({ applicationId, items, googleReviewUrl, onSkip }: {
   return (
     <section className="staff-card certificate-success-card">
       <div className="section-heading"><h2>Application received</h2><span>{item?.application?.status ? applicationStatusLabel(item.application.status) : "Submitted"}</span></div>
+      <p>Your certificate request was submitted. Your institute will now review and confirm the official completion date before certificate issuance.</p>
       <p>Thank you for your feedback.</p>
       {item ? <p>{item.enrolment.course_name} · Applied {formatDate(item.application?.applied_at || new Date().toISOString())}</p> : null}
       {googleReviewUrl ? (
@@ -647,7 +652,7 @@ function stateKind(item: StudentCertificateApplicationItem) {
 function ineligibleMessage(reasons: string[]) {
   if (reasons.includes("certificate_already_issued")) return "Certificate already issued.";
   if (reasons.some((reason) => reason.startsWith("enrolment_completed"))) return "Course completion is already approved. Certificate is being processed.";
-  if (reasons.some((reason) => reason.startsWith("enrolment_"))) return "Certificate application is available once your course is active and completed from your side.";
+  if (reasons.some((reason) => reason.startsWith("enrolment_"))) return "Certificate requests are available only for active course enrolments. Please contact your institute if you have finished training and this option is not available.";
   if (reasons.includes("course_inactive")) return "Please contact your institute about this course record.";
   return "Please contact your institute before applying for this certificate.";
 }

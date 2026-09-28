@@ -60,7 +60,7 @@ describe("student certificate UX", () => {
   });
 
   it("renders institute-neutral copy and relative verification links", async () => {
-    apiMocks.getStudentCertificates.mockResolvedValue({
+    const page = {
       certificates: {
         items: [{
           id: "cert_1",
@@ -99,20 +99,39 @@ describe("student certificate UX", () => {
           applicationEligibility: { eligible: true, reasons: [] },
         }],
       },
+    };
+    apiMocks.getStudentCertificates.mockResolvedValue(page);
+    apiMocks.submitStudentCertificateApplication.mockResolvedValue({
+      success: true,
+      idempotent: false,
+      application: { id: "certapp_1", status: "submitted", applied_at: "2026-08-21T00:00:00.000Z", low_feedback_flag: false },
     });
 
     await render(<CertificatesPage />);
 
+    expect(container.textContent).toContain("Finished your training? Confirm completion and submit a certificate request. Your institute will review and confirm the official completion date before your certificate can be issued.");
     const verifyLinks = Array.from(container.querySelectorAll<HTMLAnchorElement>("a")).filter((link) => link.textContent === "Verify");
     expect(verifyLinks.map((link) => link.getAttribute("href"))).toContain("/verify/CERT-ABCDEFG123456789");
     expect(container.textContent).not.toContain("Samyak");
     expect(container.innerHTML).not.toContain("go.samyaksion.com");
 
-    click(button("Apply for Certificate"));
+    click(button("Confirm completion & request certificate"));
     expect(container.textContent).toContain("To be confirmed by the institute");
     expect(container.textContent).toContain("Please contact your institute before submitting your certificate application if anything is wrong.");
+    expect(container.textContent).toContain("Your confirmation tells the institute that you have finished training and want a certificate. It does not mark your enrolment officially completed; staff must review and confirm the official completion date before a certificate can be issued.");
     expect(container.textContent).toContain("Your feedback is shared privately with your institute and helps improve the courses.");
+    expect(button("Confirm completion & request certificate").disabled).toBe(true);
     expect(container.textContent).not.toContain("info@samyaksion.com");
+
+    for (const checkbox of Array.from(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))) check(checkbox);
+    for (const name of new Set(Array.from(container.querySelectorAll<HTMLInputElement>('input[type="radio"]')).map((input) => input.name))) {
+      const choice = container.querySelector<HTMLInputElement>(`input[name="${name}"][value="5"]`);
+      if (choice) check(choice);
+    }
+    await submit(button("Confirm completion & request certificate"));
+
+    expect(apiMocks.submitStudentCertificateApplication).toHaveBeenCalledWith(expect.objectContaining({ enrolmentId: "enrol_1" }));
+    expect(container.textContent).toContain("Your certificate request was submitted. Your institute will now review and confirm the official completion date before certificate issuance.");
   });
 
   it("shows a certificate request CTA from active learning records", async () => {
@@ -156,6 +175,20 @@ describe("student certificate UX", () => {
   function click(element: HTMLElement) {
     act(() => {
       element.dispatchEvent(new window.MouseEvent("click", { bubbles: true }) as unknown as Event);
+    });
+  }
+
+  function check(input: HTMLInputElement) {
+    act(() => {
+      input.dispatchEvent(new window.MouseEvent("click", { bubbles: true }) as unknown as Event);
+    });
+  }
+
+  async function submit(element: HTMLElement) {
+    await act(async () => {
+      element.dispatchEvent(new window.MouseEvent("click", { bubbles: true }) as unknown as Event);
+      await Promise.resolve();
+      await Promise.resolve();
     });
   }
 });

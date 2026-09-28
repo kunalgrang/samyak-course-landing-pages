@@ -92,7 +92,10 @@ describe("certificate service synthetic issuance flow", () => {
 
     const verification = await verifyCertificate(c, issued.certificate.verification_code);
     expect(verification.status).toBe("valid");
-    expect(verification.issuer).toMatchObject({ organisation_id: "org_samyak", organisation_name: expect.any(String), branch_name: "Sion" });
+    expect(verification.issuer).toMatchObject({ organisation_name: expect.any(String), branch_name: "Sion" });
+    expect(verification.issuer).not.toHaveProperty("organisation_id");
+    expect(verification.issuer).not.toHaveProperty("branch_id");
+    expect(verification.issuer).not.toHaveProperty("branch_mobile_last_four");
     expect(verification.certificate).toMatchObject({
       certificate_number: "SYK-SION-CERT-2026-000001",
       student_name_snapshot: "Synthetic Completed Student",
@@ -197,9 +200,12 @@ describe("certificate service synthetic issuance flow", () => {
     const verification = await verifyCertificate(c, demoIssued.certificate.verification_code);
     expect(verification).toMatchObject({
       status: "valid",
-      issuer: { organisation_id: "org_demo", organisation_name: "Demo Institute", branch_name: "Main Centre" },
+      issuer: { organisation_name: "Demo Institute", organisation_legal_name: "Demo Institute LLP", branch_name: "Main Centre", email: "hello@demo.example" },
       certificate: { certificate_number: demoIssued.certificate.certificate_number },
     });
+    expect(verification.issuer).not.toHaveProperty("organisation_id");
+    expect(verification.issuer).not.toHaveProperty("branch_id");
+    expect(verification.issuer).not.toHaveProperty("branch_mobile_last_four");
 
     const generated = await getCertificatePdf(c, { organisationId: "org_demo", certificateId: demoIssued.certificate.id }, { storage });
     expect(generated.ok).toBe(true);
@@ -214,6 +220,38 @@ describe("certificate service synthetic issuance flow", () => {
     const demoList = await listCertificates(c, { organisationId: "org_demo", limit: 25, offset: 0 });
     expect(samyakList.items).toHaveLength(0);
     expect(demoList.items).toHaveLength(1);
+    db.close();
+  });
+
+  it("rejects malformed Demo enrolments that point at Samyak person, course, or branch rows", async () => {
+    const { c, db } = testContext();
+    seedDemoOrganisation(db);
+    seedMalformedDemoCertificateEnrolments(db);
+    const demoStaff = { loginAccountId: "login_demo_staff", activePersonId: "person_demo_staff", organisationId: "org_demo", roles: ["owner"] } satisfies StaffContext;
+    const storage = createMemoryCertificatePdfStorage(new Map<string, Uint8Array>());
+
+    await expect(listStudentCertificateApplications(c, { organisationId: "org_demo", personId: "person_active" }))
+      .resolves.toMatchObject({ items: [] });
+    await expect(listStudentCertificateApplications(c, { organisationId: "org_demo", personId: "person_demo_bad_course" }))
+      .resolves.toMatchObject({ items: [] });
+    await expect(listStudentCertificateApplications(c, { organisationId: "org_demo", personId: "person_demo_bad_branch" }))
+      .resolves.toMatchObject({ items: [] });
+
+    for (const [personId, enrolmentId] of [
+      ["person_active", "enrolment_demo_bad_person"],
+      ["person_demo_bad_course", "enrolment_demo_bad_course"],
+      ["person_demo_bad_branch", "enrolment_demo_bad_branch"],
+    ] as const) {
+      await expect(submitCertificateApplication(c, { organisationId: "org_demo", personId }, { ...applicationInput(), enrolmentId }))
+        .resolves.toMatchObject({ ok: false, status: 404, code: "enrolment_not_found" });
+      await expect(certificateEligibility(c, { organisationId: "org_demo", enrolmentId }))
+        .resolves.toMatchObject({ eligible: false, reasons: ["enrolment_not_found"] });
+      await expect(issueCertificate(c, demoStaff, enrolmentId, "2026-08-17", { storage }))
+        .resolves.toMatchObject({ ok: false, status: 409, code: "not_eligible", reasons: ["enrolment_not_found"] });
+    }
+
+    expect(count(db, "certificates where organisation_id = 'org_demo'")).toBe(0);
+    expect(count(db, "certificate_applications where organisation_id = 'org_demo'")).toBe(0);
     db.close();
   });
 });
@@ -449,6 +487,42 @@ function seedDemoOrganisation(db: DatabaseSync) {
        admission_date, joining_date, expected_completion_date, actual_completion_date, status, nsdc_preference,
        referrer_profile_id, created_at, updated_at)
      values ('enrolment_demo_completed', 'student_demo_completed', 'branch_demo_main', 'course_demo_fullstack', null, 'DEMO-ENR-001', 'classroom', null, null,
+       '2026-01-05', '2026-01-10', '2026-08-10', '2026-08-10', 'completed', 'decide_later', null, ?, ?)`)
+    .run(now(), now());
+}
+
+function seedMalformedDemoCertificateEnrolments(db: DatabaseSync) {
+  db.prepare("insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at) values ('student_demo_bad_person', 'org_demo', 'person_active', 'branch_demo_main', 'DEMO-MAIN-9101', 9101, '2026-01-01', 'completed', 'active', ?, ?)")
+    .run(now(), now());
+  db.prepare(`insert into enrolments
+      (id, student_id, branch_id, course_id, enquiry_id, enrolment_number, training_mode, batch_preference, batch_id,
+       admission_date, joining_date, expected_completion_date, actual_completion_date, status, nsdc_preference,
+       referrer_profile_id, created_at, updated_at)
+     values ('enrolment_demo_bad_person', 'student_demo_bad_person', 'branch_demo_main', 'course_demo_fullstack', null, 'DEMO-ENR-BAD-PERSON', 'classroom', null, null,
+       '2026-01-05', '2026-01-10', '2026-08-10', '2026-08-10', 'completed', 'decide_later', null, ?, ?)`)
+    .run(now(), now());
+
+  db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values ('person_demo_bad_course', 'org_demo', 'branch_demo_main', 'Demo Bad Course Student', 'Demo Bad Course', 'active', ?, ?)")
+    .run(now(), now());
+  db.prepare("insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at) values ('student_demo_bad_course', 'org_demo', 'person_demo_bad_course', 'branch_demo_main', 'DEMO-MAIN-9102', 9102, '2026-01-01', 'completed', 'active', ?, ?)")
+    .run(now(), now());
+  db.prepare(`insert into enrolments
+      (id, student_id, branch_id, course_id, enquiry_id, enrolment_number, training_mode, batch_preference, batch_id,
+       admission_date, joining_date, expected_completion_date, actual_completion_date, status, nsdc_preference,
+       referrer_profile_id, created_at, updated_at)
+     values ('enrolment_demo_bad_course', 'student_demo_bad_course', 'branch_demo_main', 'course_syk_wdd_001', null, 'DEMO-ENR-BAD-COURSE', 'classroom', null, null,
+       '2026-01-05', '2026-01-10', '2026-08-10', '2026-08-10', 'completed', 'decide_later', null, ?, ?)`)
+    .run(now(), now());
+
+  db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values ('person_demo_bad_branch', 'org_demo', 'branch_demo_main', 'Demo Bad Branch Student', 'Demo Bad Branch', 'active', ?, ?)")
+    .run(now(), now());
+  db.prepare("insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at) values ('student_demo_bad_branch', 'org_demo', 'person_demo_bad_branch', 'branch_demo_main', 'DEMO-MAIN-9103', 9103, '2026-01-01', 'completed', 'active', ?, ?)")
+    .run(now(), now());
+  db.prepare(`insert into enrolments
+      (id, student_id, branch_id, course_id, enquiry_id, enrolment_number, training_mode, batch_preference, batch_id,
+       admission_date, joining_date, expected_completion_date, actual_completion_date, status, nsdc_preference,
+       referrer_profile_id, created_at, updated_at)
+     values ('enrolment_demo_bad_branch', 'student_demo_bad_branch', 'branch_sion', 'course_demo_fullstack', null, 'DEMO-ENR-BAD-BRANCH', 'classroom', null, null,
        '2026-01-05', '2026-01-10', '2026-08-10', '2026-08-10', 'completed', 'decide_later', null, ?, ?)`)
     .run(now(), now());
 }
