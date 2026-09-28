@@ -1,5 +1,4 @@
 import type { AppContext } from "./http";
-import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, randomBase64Url } from "./crypto";
 import { certificateVerificationOrigin } from "./platform-config";
 import { staffOrganisationId, type StaffContext } from "./staff-auth";
@@ -12,7 +11,10 @@ import {
 } from "./certificate-storage";
 import { certificateIssuedApplicationStatements, markApplicationCertificateIssued } from "./certificate-application-service";
 
+export const SAMYAK_ORGANISATION_ID = "org_samyak";
 export const CERTIFICATE_TEMPLATE_CODE = "SAMYAK_COMPLETION_V1";
+const GENERIC_CERTIFICATE_TEMPLATE_CODE = "GENERIC_COMPLETION_V1";
+const SAMYAK_TEMPLATE_ID = "ctpl_samyak_completion_v1";
 
 export type CertificateRecord = {
   id: string;
@@ -53,6 +55,39 @@ export type CertificatePdfResult =
   | { ok: true; bytes: Uint8Array; filename: string; sha256: string | null; storageKey: string | null }
   | { ok: false; status: number; code: string; message: string };
 
+export type CertificateIssuerProfile = {
+  organisation_id: string;
+  organisation_name: string;
+  organisation_legal_name: string | null;
+  organisation_slug: string | null;
+  organisation_address_line1: string | null;
+  organisation_city: string | null;
+  organisation_state_region: string | null;
+  organisation_postcode: string | null;
+  organisation_country: string | null;
+  organisation_website: string | null;
+  branch_id: string | null;
+  branch_name: string | null;
+  branch_code: string | null;
+  branch_address_line1: string | null;
+  branch_city: string | null;
+  branch_state_region: string | null;
+  branch_postcode: string | null;
+  branch_country: string | null;
+  branch_email: string | null;
+  branch_mobile_last_four: string | null;
+};
+
+type CertificateQuery = {
+  organisationId: string;
+  q?: string;
+  courseId?: string;
+  status?: string;
+  personId?: string;
+  limit: number;
+  offset: number;
+};
+
 type EligibilityRow = {
   enrolment_id: string;
   enrolment_status: string;
@@ -76,11 +111,11 @@ type EligibilityRow = {
   actual_completion_date: string | null;
 };
 
-export async function certificateEligibility(c: AppContext, enrolmentId: string) {
-  const row = await loadEligibilityRow(c, enrolmentId);
+export async function certificateEligibility(c: AppContext, input: { organisationId: string; enrolmentId: string }) {
+  const row = await loadEligibilityRow(c, input.organisationId, input.enrolmentId);
   const reasons: string[] = [];
   if (!row) reasons.push("enrolment_not_found");
-  if (row && row.organisation_id !== ORG_ID) reasons.push("wrong_organisation");
+  if (row && row.organisation_id !== input.organisationId) reasons.push("wrong_organisation");
   if (row && !row.person_id) reasons.push("person_missing");
   if (row && row.person_status && row.person_status !== "active") reasons.push("person_inactive");
   if (row && !row.student_id) reasons.push("student_missing");
@@ -88,15 +123,19 @@ export async function certificateEligibility(c: AppContext, enrolmentId: string)
   if (row && !row.course_id) reasons.push("course_missing");
   if (row && row.course_status !== "active") reasons.push("course_inactive");
   if (row && row.enrolment_status !== "completed") reasons.push(`enrolment_${row.enrolment_status}`);
-  const existingCertificate = row ? await activeCertificateForEnrolment(c, row.enrolment_id) : null;
+  const existingCertificate = row ? await activeCertificateForEnrolment(c, input.organisationId, row.enrolment_id) : null;
   if (existingCertificate) reasons.push("certificate_already_issued");
   return { eligible: reasons.length === 0, reasons, existingCertificate, enrolment: row };
 }
 
-export async function listEligibleCertificates(c: AppContext, input: { q?: string; courseId?: string; limit: number; offset: number }) {
-  const params: unknown[] = [ORG_ID];
+export async function listEligibleCertificates(c: AppContext, input: Omit<CertificateQuery, "status" | "personId">) {
+  const params: unknown[] = [input.organisationId];
   const filters = [
     "students.organisation_id = ?",
+    "people.organisation_id = students.organisation_id",
+    "courses.organisation_id = students.organisation_id",
+    "branches.organisation_id = students.organisation_id",
+    "enrolments.branch_id = branches.id",
     "enrolments.status = 'completed'",
     "people.status = 'active'",
     "courses.status = 'active'",
@@ -129,6 +168,7 @@ export async function listEligibleCertificates(c: AppContext, input: { q?: strin
      join people on people.id = students.person_id
      left join person_identity_details on person_identity_details.person_id = people.id
      join courses on courses.id = enrolments.course_id
+     join branches on branches.id = enrolments.branch_id
      left join certificates on certificates.organisation_id = students.organisation_id
        and certificates.enrolment_id = enrolments.id
        and certificates.status = 'issued'
@@ -142,8 +182,8 @@ export async function listEligibleCertificates(c: AppContext, input: { q?: strin
   return { items: results.slice(0, input.limit), pagination: { limit: input.limit, offset: input.offset, hasMore: results.length > input.limit } };
 }
 
-export async function listCertificates(c: AppContext, input: { q?: string; courseId?: string; status?: string; personId?: string; limit: number; offset: number }) {
-  const params: unknown[] = [ORG_ID];
+export async function listCertificates(c: AppContext, input: CertificateQuery) {
+  const params: unknown[] = [input.organisationId];
   const filters = ["certificates.organisation_id = ?"];
   if (input.status) {
     filters.push("certificates.status = ?");
@@ -180,8 +220,8 @@ export async function listCertificates(c: AppContext, input: { q?: string; cours
 }
 
 export async function issueCertificate(c: AppContext, staff: StaffContext, enrolmentId: string, issueDate: string, options: { storage?: CertificatePdfStorage | null } = {}) {
-  const ORG_ID = staffOrganisationId(staff);
-  const eligibility = await certificateEligibility(c, enrolmentId);
+  const organisationId = staffOrganisationId(staff);
+  const eligibility = await certificateEligibility(c, { organisationId, enrolmentId });
   if (eligibility.existingCertificate) {
     await markApplicationCertificateIssued(c, staff, eligibility.existingCertificate);
     return { ok: true as const, certificate: eligibility.existingCertificate, idempotent: true };
@@ -191,19 +231,20 @@ export async function issueCertificate(c: AppContext, staff: StaffContext, enrol
   }
   const row = eligibility.enrolment;
   const now = new Date().toISOString();
-  const template = await activeTemplate(c);
+  const issuer = await loadIssuerProfile(c, organisationId, row.branch_id);
+  const template = await activeTemplate(c, issuer);
   if (!template) return { ok: false as const, status: 500, code: "template_missing", message: "Certificate template is not configured.", reasons: ["template_missing"] };
   const storage = options.storage ?? certificatePdfStorageFromEnv(c.env);
   if (!storage && c.env.ENVIRONMENT === "production") {
     return { ok: false as const, status: 500, code: "certificate_storage_unavailable", message: "Certificate PDF storage is not configured.", reasons: ["certificate_storage_unavailable"] };
   }
   const certificateId = createOpaqueId("cert");
-  const certificateNumber = await allocateCertificateNumber(c, row.branch_id, row.branch_code, issueDate);
-  const verificationCode = await uniqueVerificationCode(c);
+  const certificateNumber = await allocateCertificateNumber(c, issuer, row.branch_id, row.branch_code, issueDate);
+  const verificationCode = await uniqueVerificationCode(c, organisationId);
   const verificationUrl = buildVerificationUrl(c, verificationCode);
   const certificate: CertificateRecord = {
     id: certificateId,
-    organisation_id: ORG_ID,
+    organisation_id: organisationId,
     branch_id: row.branch_id,
     certificate_number: certificateNumber,
     verification_code: verificationCode,
@@ -235,7 +276,7 @@ export async function issueCertificate(c: AppContext, staff: StaffContext, enrol
     created_at: now,
     updated_at: now,
   };
-  const pdf = await generateCertificatePdf({ certificate, verificationUrl });
+  const pdf = await generateCertificatePdf({ certificate, verificationUrl, issuer });
   certificate.pdf_sha256 = pdf.sha256;
   certificate.pdf_storage_key = buildCertificatePdfKey(certificate);
   if (storage) {
@@ -274,7 +315,7 @@ export async function issueCertificate(c: AppContext, staff: StaffContext, enrol
       ...applicationStatements,
     ]);
   } catch (error) {
-    const existing = await activeCertificateForEnrolment(c, row.enrolment_id);
+    const existing = await activeCertificateForEnrolment(c, organisationId, row.enrolment_id);
     if (existing) {
       if (storage && certificate.pdf_storage_key && certificate.pdf_storage_key !== existing.pdf_storage_key) {
         await storage.delete(certificate.pdf_storage_key).catch(() => undefined);
@@ -288,7 +329,8 @@ export async function issueCertificate(c: AppContext, staff: StaffContext, enrol
 }
 
 export async function revokeCertificate(c: AppContext, staff: StaffContext, certificateId: string, reason: string) {
-  const current = await getCertificateById(c, certificateId);
+  const organisationId = staffOrganisationId(staff);
+  const current = await getCertificateById(c, organisationId, certificateId);
   if (!current) return { ok: false as const, status: 404, code: "certificate_not_found", message: "Certificate was not found." };
   if (current.status !== "issued") return { ok: false as const, status: 409, code: "not_issued", message: "Only issued certificates can be revoked." };
   const now = new Date().toISOString();
@@ -296,34 +338,108 @@ export async function revokeCertificate(c: AppContext, staff: StaffContext, cert
     c.env.DB.prepare(
       `update certificates
        set status = 'revoked', revoked_at = ?, revoked_by_actor_id = ?, revocation_reason = ?, updated_at = ?
-       where id = ? and status = 'issued'`,
-    ).bind(now, staff.loginAccountId, reason, now, certificateId),
+       where organisation_id = ? and id = ? and status = 'issued'`,
+    ).bind(now, staff.loginAccountId, reason, now, organisationId, certificateId),
     statusEvent(c, current, staff, "revoked", "issued", "revoked", reason, now),
   ]);
   return { ok: true as const };
 }
 
 export async function verifyCertificate(c: AppContext, code: string) {
-  if (!/^SYK-[A-Z0-9_-]{16,64}$/.test(code)) return { status: "not_found" as const, certificate: null };
+  if (!/^(SYK|CERT)-[A-Z0-9_-]{16,80}$/.test(code)) return { status: "not_found" as const, certificate: null, issuer: null };
   const certificate = await c.env.DB.prepare(
     `select certificate_number, student_name_snapshot, student_id_snapshot,
-            course_name_snapshot, issue_date, completion_date_snapshot, status
+            course_name_snapshot, issue_date, completion_date_snapshot, certificates.status,
+            certificates.organisation_id,
+            organisations.name as organisation_name,
+            organisations.legal_name as organisation_legal_name,
+            organisations.slug as organisation_slug,
+            organisations.address_line1 as organisation_address_line1,
+            organisations.city as organisation_city,
+            organisations.state_region as organisation_state_region,
+            organisations.postcode as organisation_postcode,
+            organisations.country as organisation_country,
+            organisations.website as organisation_website,
+            branches.id as branch_id,
+            branches.name as branch_name,
+            branches.code as branch_code,
+            branches.address_line1 as branch_address_line1,
+            branches.city as branch_city,
+            branches.state_region as branch_state_region,
+            branches.postcode as branch_postcode,
+            branches.country as branch_country,
+            branches.email as branch_email,
+            branches.mobile_last_four as branch_mobile_last_four
      from certificates
-     where organisation_id = ? and verification_code = ?
+     join organisations on organisations.id = certificates.organisation_id
+     left join branches on branches.id = certificates.branch_id and branches.organisation_id = certificates.organisation_id
+     where verification_code = ?
      limit 1`,
   )
-    .bind(ORG_ID, code)
-    .first<{ status: string } & Record<string, unknown>>();
-  if (!certificate) return { status: "not_found" as const, certificate: null };
+    .bind(code)
+    .first<{ status: string } & CertificateIssuerProfile & Record<string, unknown>>();
+  if (!certificate) return { status: "not_found" as const, certificate: null, issuer: null };
   const status = certificate.status === "issued" ? "valid" : certificate.status === "revoked" ? "revoked" : "superseded";
-  const { status: _certificateStatus, ...publicCertificate } = certificate;
-  return { status, certificate: publicCertificate };
+  const {
+    status: _certificateStatus,
+    organisation_id,
+    organisation_name,
+    organisation_legal_name,
+    organisation_slug,
+    organisation_address_line1,
+    organisation_city,
+    organisation_state_region,
+    organisation_postcode,
+    organisation_country,
+    organisation_website,
+    branch_id,
+    branch_name,
+    branch_code,
+    branch_address_line1,
+    branch_city,
+    branch_state_region,
+    branch_postcode,
+    branch_country,
+    branch_email,
+    branch_mobile_last_four,
+    ...publicCertificate
+  } = certificate;
+  return {
+    status,
+    certificate: publicCertificate,
+    issuer: {
+      organisation_id,
+      organisation_name,
+      organisation_legal_name,
+      organisation_slug,
+      organisation_address_line1,
+      organisation_city,
+      organisation_state_region,
+      organisation_postcode,
+      organisation_country,
+      organisation_website,
+      branch_id,
+      branch_name,
+      branch_code,
+      branch_address_line1,
+      branch_city,
+      branch_state_region,
+      branch_postcode,
+      branch_country,
+      branch_email,
+      branch_mobile_last_four,
+    },
+  };
 }
 
-export async function getCertificatePdf(c: AppContext, certificateId: string, personId?: string, options: { storage?: CertificatePdfStorage | null } = {}): Promise<CertificatePdfResult> {
-  const certificate = await getCertificateById(c, certificateId);
+export async function getCertificatePdf(
+  c: AppContext,
+  input: { organisationId: string; certificateId: string; personId?: string },
+  options: { storage?: CertificatePdfStorage | null } = {},
+): Promise<CertificatePdfResult> {
+  const certificate = await getCertificateById(c, input.organisationId, input.certificateId);
   if (!certificate) return { ok: false, status: 404, code: "certificate_not_found", message: "Certificate was not found." };
-  if (personId && certificate.person_id !== personId) return { ok: false, status: 404, code: "certificate_not_found", message: "Certificate was not found." };
+  if (input.personId && certificate.person_id !== input.personId) return { ok: false, status: 404, code: "certificate_not_found", message: "Certificate was not found." };
   const storage = options.storage ?? certificatePdfStorageFromEnv(c.env);
   if (storage && certificate.pdf_storage_key) {
     const object = await storage.get(certificate.pdf_storage_key);
@@ -339,13 +455,14 @@ export async function getCertificatePdf(c: AppContext, certificateId: string, pe
   if (c.env.ENVIRONMENT === "production") {
     return { ok: false, status: 503, code: "certificate_storage_unavailable", message: "Certificate PDF storage is not configured." };
   }
-  const pdf = await generateCertificatePdf({ certificate, verificationUrl: buildVerificationUrl(c, certificate.verification_code) });
+  const issuer = await loadIssuerProfile(c, certificate.organisation_id, certificate.branch_id);
+  const pdf = await generateCertificatePdf({ certificate, verificationUrl: buildVerificationUrl(c, certificate.verification_code), issuer });
   return { ok: true, bytes: pdf.bytes, filename: certificatePdfFilename(certificate), sha256: pdf.sha256, storageKey: certificate.pdf_storage_key };
 }
 
-export async function getCertificateById(c: AppContext, certificateId: string) {
+export async function getCertificateById(c: AppContext, organisationId: string, certificateId: string) {
   return c.env.DB.prepare("select * from certificates where organisation_id = ? and id = ?")
-    .bind(ORG_ID, certificateId)
+    .bind(organisationId, certificateId)
     .first<CertificateRecord>();
 }
 
@@ -353,7 +470,7 @@ export function buildVerificationUrl(c: AppContext, code: string) {
   return `${certificateVerificationOrigin(c.env)}/verify/${encodeURIComponent(code)}`;
 }
 
-async function loadEligibilityRow(c: AppContext, enrolmentId: string) {
+async function loadEligibilityRow(c: AppContext, organisationId: string, enrolmentId: string) {
   return c.env.DB.prepare(
     `select
        enrolments.id as enrolment_id,
@@ -383,48 +500,54 @@ async function loadEligibilityRow(c: AppContext, enrolmentId: string) {
      left join courses on courses.id = enrolments.course_id
      left join branches on branches.id = enrolments.branch_id
      where enrolments.id = ?
+       and students.organisation_id = ?
      limit 1`,
   )
-    .bind(enrolmentId)
+    .bind(enrolmentId, organisationId)
     .first<EligibilityRow>();
 }
 
-async function activeCertificateForEnrolment(c: AppContext, enrolmentId: string) {
+async function activeCertificateForEnrolment(c: AppContext, organisationId: string, enrolmentId: string) {
   return c.env.DB.prepare("select * from certificates where organisation_id = ? and enrolment_id = ? and status = 'issued' limit 1")
-    .bind(ORG_ID, enrolmentId)
+    .bind(organisationId, enrolmentId)
     .first<CertificateRecord>();
 }
 
-async function activeTemplate(c: AppContext) {
+async function activeTemplate(c: AppContext, issuer: CertificateIssuerProfile) {
+  const organisationId = issuer.organisation_id;
+  const templateCode = organisationId === SAMYAK_ORGANISATION_ID ? CERTIFICATE_TEMPLATE_CODE : GENERIC_CERTIFICATE_TEMPLATE_CODE;
   const existing = await c.env.DB.prepare(
     "select id, version from certificate_templates where organisation_id = ? and code = ? and status = 'active' and is_active = 1 order by version desc limit 1",
   )
-    .bind(ORG_ID, CERTIFICATE_TEMPLATE_CODE)
+    .bind(organisationId, templateCode)
     .first<{ id: string; version: number }>();
   if (existing) return existing;
   const now = new Date().toISOString();
+  const templateId = organisationId === SAMYAK_ORGANISATION_ID ? SAMYAK_TEMPLATE_ID : `ctpl_${safeIdentifier(organisationId)}_completion_v1`;
+  const templateName = organisationId === SAMYAK_ORGANISATION_ID ? "Samyak Completion Certificate" : `${issuer.organisation_name} Completion Certificate`;
   await c.env.DB.prepare(
     `insert into certificate_templates
        (id, organisation_id, code, name, version, status, is_active, created_at, updated_at)
-     values ('ctpl_samyak_completion_v1', ?, ?, 'Samyak Completion Certificate', 1, 'active', 1, ?, ?)
+     values (?, ?, ?, ?, 1, 'active', 1, ?, ?)
      on conflict(organisation_id, code, version) do update set
        status = 'active',
        is_active = 1,
        updated_at = excluded.updated_at`,
   )
-    .bind(ORG_ID, CERTIFICATE_TEMPLATE_CODE, now, now)
+    .bind(templateId, organisationId, templateCode, templateName, now, now)
     .run();
   return c.env.DB.prepare(
     "select id, version from certificate_templates where organisation_id = ? and code = ? and status = 'active' and is_active = 1 order by version desc limit 1",
   )
-    .bind(ORG_ID, CERTIFICATE_TEMPLATE_CODE)
+    .bind(organisationId, templateCode)
     .first<{ id: string; version: number }>();
 }
 
-async function allocateCertificateNumber(c: AppContext, branchId: string, branchCode: string, issueDate: string) {
+async function allocateCertificateNumber(c: AppContext, issuer: CertificateIssuerProfile, branchId: string, branchCode: string, issueDate: string) {
   const year = issueDate.slice(0, 4);
-  const sequence = await allocateSequence(c, ORG_ID, branchId, `certificate:${year}`);
-  return `SYK-${branchCode.toUpperCase()}-CERT-${year}-${String(sequence).padStart(6, "0")}`;
+  const sequence = await allocateSequence(c, issuer.organisation_id, branchId, `certificate:${year}`);
+  const orgPrefix = issuer.organisation_id === SAMYAK_ORGANISATION_ID ? "SYK" : uppercaseToken(issuer.organisation_slug || issuer.organisation_name || issuer.organisation_id);
+  return `${orgPrefix}-${uppercaseToken(branchCode)}-CERT-${year}-${String(sequence).padStart(6, "0")}`;
 }
 
 async function allocateSequence(c: AppContext, organisationId: string, branchId: string, sequenceKey: string) {
@@ -448,13 +571,57 @@ async function allocateSequence(c: AppContext, organisationId: string, branchId:
   return Number(row.sequence);
 }
 
-async function uniqueVerificationCode(c: AppContext) {
+async function uniqueVerificationCode(c: AppContext, organisationId: string) {
+  const prefix = organisationId === SAMYAK_ORGANISATION_ID ? "SYK" : "CERT";
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const code = `SYK-${randomBase64Url(18).replace(/[^A-Za-z0-9]/g, "").toUpperCase()}`;
+    const code = `${prefix}-${randomBase64Url(18).replace(/[^A-Za-z0-9]/g, "").toUpperCase()}`;
     const existing = await c.env.DB.prepare("select 1 from certificates where verification_code = ? limit 1").bind(code).first();
     if (!existing) return code;
   }
   throw new Error("Could not allocate verification code");
+}
+
+async function loadIssuerProfile(c: AppContext, organisationId: string, branchId: string): Promise<CertificateIssuerProfile> {
+  const row = await c.env.DB.prepare(
+    `select
+       organisations.id as organisation_id,
+       organisations.name as organisation_name,
+       organisations.legal_name as organisation_legal_name,
+       organisations.slug as organisation_slug,
+       organisations.address_line1 as organisation_address_line1,
+       organisations.city as organisation_city,
+       organisations.state_region as organisation_state_region,
+       organisations.postcode as organisation_postcode,
+       organisations.country as organisation_country,
+       organisations.website as organisation_website,
+       branches.id as branch_id,
+       branches.name as branch_name,
+       branches.code as branch_code,
+       branches.address_line1 as branch_address_line1,
+       branches.city as branch_city,
+       branches.state_region as branch_state_region,
+       branches.postcode as branch_postcode,
+       branches.country as branch_country,
+       branches.email as branch_email,
+       branches.mobile_last_four as branch_mobile_last_four
+     from organisations
+     left join branches on branches.organisation_id = organisations.id and branches.id = ?
+     where organisations.id = ?
+     limit 1`,
+  )
+    .bind(branchId, organisationId)
+    .first<CertificateIssuerProfile>();
+  if (!row) throw new Error("Certificate issuer was not found");
+  return row;
+}
+
+function safeIdentifier(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "organisation";
+}
+
+function uppercaseToken(value: string) {
+  const token = value.toUpperCase().replace(/[^A-Z0-9]+/g, "").slice(0, 12);
+  return token || "ORG";
 }
 
 function statusEvent(

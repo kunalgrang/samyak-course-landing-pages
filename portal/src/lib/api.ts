@@ -1673,7 +1673,7 @@ const verifyCertificateSchema = z.object({
   success: z.literal(true),
   verification: z.object({
     status: z.string(),
-    issuer: z.string(),
+    issuer: z.record(z.string(), z.unknown()).nullable(),
     certificate: z.record(z.string(), z.unknown()).nullable(),
   }),
 });

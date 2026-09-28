@@ -4,6 +4,7 @@ import { registerCertificateRoutes } from "./certificates";
 
 const mocks = vi.hoisted(() => ({
   getSessionFromRequest: vi.fn(),
+  requireAuthenticatedProfile: vi.fn(),
   getAccountRoles: vi.fn(),
   listEligibleCertificates: vi.fn(),
   listCertificates: vi.fn(),
@@ -21,12 +22,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/auth-store", () => ({
   ORG_ID: "org_samyak",
   getSessionFromRequest: mocks.getSessionFromRequest,
+  requireAuthenticatedProfile: mocks.requireAuthenticatedProfile,
   getAccountRoles: mocks.getAccountRoles,
   hasSessionCookie: vi.fn(() => false),
   clearSessionCookie: vi.fn(() => ""),
-  sessionView: vi.fn(() => ({
-    activeProfile: { personId: "person_1", effectiveRoles: ["student"] },
-  })),
 }));
 
 vi.mock("../lib/certificate-service", () => ({
@@ -57,7 +56,11 @@ function routeApp() {
 
 function authenticateAs(roles: string[]) {
   mocks.getSessionFromRequest.mockResolvedValue({
-    record: { login_account_id: "acct_test", active_person_id: "person_test" },
+    record: { login_account_id: "acct_test", active_person_id: "person_test", organisation_id: "org_samyak" },
+  });
+  mocks.requireAuthenticatedProfile.mockResolvedValue({
+    organisationId: "org_samyak",
+    activeProfile: { personId: "person_1", effectiveRoles: ["student"] },
   });
   mocks.getAccountRoles.mockResolvedValue(roles);
 }
@@ -145,7 +148,8 @@ describe("certificate routes", () => {
       certificates: { items: [{ id: "cert_1" }] },
       applications: { items: [{ enrolment: { enrolment_id: "enrol_1" } }] },
     });
-    expect(mocks.listCertificates).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ personId: "person_1" }));
+    expect(mocks.listCertificates).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ organisationId: "org_samyak", personId: "person_1" }));
+    expect(mocks.listStudentCertificateApplications).toHaveBeenCalledWith(expect.anything(), { organisationId: "org_samyak", personId: "person_1" });
   });
 
   it("lets students submit certificate applications without changing enrolments in the route", async () => {
@@ -167,7 +171,7 @@ describe("certificate routes", () => {
     });
 
     expect(response.status).toBe(201);
-    expect(mocks.submitCertificateApplication).toHaveBeenCalledWith(expect.anything(), "person_1", expect.objectContaining({ enrolmentId: "enrol_1" }));
+    expect(mocks.submitCertificateApplication).toHaveBeenCalledWith(expect.anything(), { organisationId: "org_samyak", personId: "person_1" }, expect.objectContaining({ enrolmentId: "enrol_1" }));
   });
 
   it("requires course completion approval roles for application queue and approval", async () => {
@@ -211,6 +215,7 @@ describe("certificate routes", () => {
     const app = routeApp();
     mocks.verifyCertificate.mockResolvedValue({
       status: "valid",
+      issuer: { organisation_name: "Demo Institute", branch_name: "Main Centre" },
       certificate: {
         certificate_number: "SYK-SION-CERT-2026-000001",
         student_name_snapshot: "Asha Shah",
@@ -234,6 +239,7 @@ describe("certificate routes", () => {
     const app = routeApp();
     mocks.verifyCertificate.mockResolvedValue({
       status: "valid",
+      issuer: { organisation_name: "Demo Institute", branch_name: "Main Centre" },
       certificate: {
         certificate_number: "SYK-SION-CERT-2026-000001",
         student_name_snapshot: "Shahid Khan",
@@ -250,6 +256,8 @@ describe("certificate routes", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Type")).toContain("text/html; charset=UTF-8");
     expect(html).toContain("Certificate Verified");
+    expect(html).toContain("Demo Institute");
+    expect(html).toContain("Main Centre");
     expect(html).toContain("VALID");
     expect(html).toContain("Shahid Khan");
     expect(html).toContain("SYK-SION-000002");
@@ -268,6 +276,7 @@ describe("certificate routes", () => {
     const app = routeApp();
     mocks.verifyCertificate.mockResolvedValue({
       status,
+      issuer: { organisation_name: "Demo Institute", branch_name: "Main Centre" },
       certificate: {
         certificate_number: "SYK-SION-CERT-2026-000001",
         student_name_snapshot: "Asha Shah",
@@ -288,7 +297,7 @@ describe("certificate routes", () => {
 
   it.each(["SYK-UNKNOWNUNKNOWN1", "bad-code"])("renders generic not-found HTML for %s", async (code) => {
     const app = routeApp();
-    mocks.verifyCertificate.mockResolvedValue({ status: "not_found", certificate: null });
+    mocks.verifyCertificate.mockResolvedValue({ status: "not_found", certificate: null, issuer: null });
 
     const response = await app.request(`/verify/${code}`);
     const html = await response.text();
@@ -304,6 +313,7 @@ describe("certificate routes", () => {
     const app = routeApp();
     mocks.verifyCertificate.mockResolvedValue({
       status: "valid",
+      issuer: { organisation_name: "Demo Institute", branch_name: "Main Centre" },
       certificate: {
         certificate_number: "SYK-SION-CERT-2026-000001",
         student_name_snapshot: "Asha <script>alert(1)</script> & Shah",
@@ -346,7 +356,7 @@ describe("certificate routes", () => {
 
   it("sets noindex and self-contained security headers on the public verification page", async () => {
     const app = routeApp();
-    mocks.verifyCertificate.mockResolvedValue({ status: "not_found", certificate: null });
+    mocks.verifyCertificate.mockResolvedValue({ status: "not_found", certificate: null, issuer: null });
 
     const response = await app.request("/verify/SYK-7Q4M9PVK3X82AAAA");
     const html = await response.text();

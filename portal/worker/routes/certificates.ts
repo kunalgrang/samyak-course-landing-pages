@@ -1,12 +1,11 @@
 import { z } from "zod";
 import type { Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
-import { ORG_ID } from "../lib/tenant-context";
 import { createOpaqueId, hmacHex } from "../lib/crypto";
 import { getClientIp, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
-import { getSessionFromRequest, hasSessionCookie, clearSessionCookie, sessionView } from "../lib/auth-store";
-import { requireStaffRoles, type StaffContext } from "../lib/staff-auth";
+import { getSessionFromRequest, hasSessionCookie, clearSessionCookie, requireAuthenticatedProfile } from "../lib/auth-store";
+import { requireStaffRoles, staffOrganisationId, type StaffContext } from "../lib/staff-auth";
 import {
   approveCourseCompletionFromApplication,
   getStaffCertificateApplication,
@@ -67,13 +66,13 @@ export function registerCertificateRoutes(app: PortalHono) {
   app.get("/api/staff/certificates/eligible", async (c) => {
     const staff = await requireCertificateStaff(c);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Staff access is required." });
-    return jsonPlain(c, await listEligibleCertificates(c, listQuery(c)));
+    return jsonPlain(c, await listEligibleCertificates(c, { ...listQuery(c), organisationId: staffOrganisationId(staff) }));
   });
 
   app.get("/api/staff/certificates", async (c) => {
     const staff = await requireCertificateStaff(c);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Staff access is required." });
-    return jsonPlain(c, await listCertificates(c, { ...listQuery(c), status: statusQuery(c) }));
+    return jsonPlain(c, await listCertificates(c, { ...listQuery(c), organisationId: staffOrganisationId(staff), status: statusQuery(c) }));
   });
 
   app.get("/api/staff/certificate-applications", async (c) => {
@@ -141,7 +140,7 @@ export function registerCertificateRoutes(app: PortalHono) {
   app.get("/api/staff/certificates/:certificateId/pdf", async (c) => {
     const staff = await requireCertificateStaff(c);
     if (!staff) return jsonError(c, { status: 403, code: "forbidden", message: "Staff access is required." });
-    const pdf = await getCertificatePdf(c, c.req.param("certificateId"));
+    const pdf = await getCertificatePdf(c, { organisationId: staffOrganisationId(staff), certificateId: c.req.param("certificateId") });
     if (!pdf.ok) return jsonError(c, { status: httpStatus(pdf.status), code: pdf.code, message: pdf.message });
     return pdfResponse(pdf.bytes, pdf.filename);
   });
@@ -150,8 +149,8 @@ export function registerCertificateRoutes(app: PortalHono) {
     const profile = await authenticatedStudentProfile(c);
     if (profile instanceof Response) return profile;
     const [certificates, applications] = await Promise.all([
-      listCertificates(c, { personId: profile.personId, limit: clamp(c.req.query("limit"), 25, 1, 50), offset: clamp(c.req.query("offset"), 0, 0, 5000) }),
-      listStudentCertificateApplications(c, profile.personId),
+      listCertificates(c, { organisationId: profile.organisationId, personId: profile.personId, limit: clamp(c.req.query("limit"), 25, 1, 50), offset: clamp(c.req.query("offset"), 0, 0, 5000) }),
+      listStudentCertificateApplications(c, { organisationId: profile.organisationId, personId: profile.personId }),
     ]);
     return jsonPlain(c, {
       certificates,
@@ -166,7 +165,7 @@ export function registerCertificateRoutes(app: PortalHono) {
     if (profile instanceof Response) return profile;
     const parsed = applicationSubmitSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return jsonError(c, { status: 400, code: "invalid_request", message: "Please complete the certificate application." });
-    const result = await submitCertificateApplication(c, profile.personId, parsed.data);
+    const result = await submitCertificateApplication(c, profile, parsed.data);
     if (!result.ok) {
       return jsonError(c, {
         status: httpStatus(result.status),
@@ -181,7 +180,7 @@ export function registerCertificateRoutes(app: PortalHono) {
   app.get("/api/student/certificates/:certificateId/pdf", async (c) => {
     const profile = await authenticatedStudentProfile(c);
     if (profile instanceof Response) return profile;
-    const pdf = await getCertificatePdf(c, c.req.param("certificateId"), profile.personId);
+    const pdf = await getCertificatePdf(c, { organisationId: profile.organisationId, certificateId: c.req.param("certificateId"), personId: profile.personId });
     if (!pdf.ok) return jsonError(c, { status: httpStatus(pdf.status), code: pdf.code, message: pdf.message });
     return pdfResponse(pdf.bytes, pdf.filename);
   });
@@ -194,7 +193,7 @@ export function registerCertificateRoutes(app: PortalHono) {
       success: true,
       verification: {
         status: result.status,
-        issuer: "Samyak Computer Classes, Sion",
+        issuer: result.issuer,
         certificate: result.certificate,
       },
     });
@@ -216,18 +215,16 @@ async function requireCertificateApplicationReviewer(c: Parameters<typeof requir
 }
 
 async function authenticatedStudentProfile(c: Parameters<typeof getSessionFromRequest>[0]) {
-  const session = await getSessionFromRequest(c);
-  if (!session) {
+  const profile = await requireAuthenticatedProfile(c);
+  if (!profile) {
     const response = jsonError(c, { status: 401, code: "unauthenticated", message: "Please sign in again." });
     if (hasSessionCookie(c)) response.headers.append("Set-Cookie", clearSessionCookie(c));
     return response;
   }
-  const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id);
-  if (!view.activeProfile) return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
-  if (!view.activeProfile.effectiveRoles?.some((role) => role === "student" || role === "alumni")) {
+  if (!profile.activeProfile.effectiveRoles?.some((role) => role === "student" || role === "alumni")) {
     return jsonError(c, { status: 403, code: "student_profile_required", message: "This profile is not available." });
   }
-  return { personId: view.activeProfile.personId };
+  return { organisationId: profile.organisationId, personId: profile.activeProfile.personId };
 }
 
 function publicStaffCertificate(c: Parameters<typeof buildVerificationUrl>[0], certificate: Record<string, unknown>) {
@@ -277,7 +274,11 @@ function pdfResponse(bytes: Uint8Array, filename: string) {
 function certificateVerifyHtmlResponse(result: Awaited<ReturnType<typeof verifyCertificate>>) {
   const status = result.status;
   const certificate = result.certificate || {};
+  const issuer = result.issuer;
   const isFound = status !== "not_found" && result.certificate;
+  const issuerName = issuerDisplayName(issuer);
+  const issuerSubtitle = issuerBranchLine(issuer);
+  const issuerAddress = issuerAddressLines(issuer);
   const title = isFound ? "Certificate Verification" : "Certificate Not Found";
   const statusLabel = statusTitle(status);
   const statusClass = status === "valid" ? "valid" : status === "revoked" ? "revoked" : status === "superseded" ? "superseded" : "not-found";
@@ -297,7 +298,7 @@ function certificateVerifyHtmlResponse(result: Awaited<ReturnType<typeof verifyC
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
-  <title>${escapeHtml(title)} | Samyak Computer Classes</title>
+  <title>${escapeHtml(title)}${issuerName ? ` | ${escapeHtml(issuerName)}` : ""}</title>
   <style>
     :root { color-scheme: light; --ink: #15212f; --muted: #5d6875; --line: #d7dee8; --gold: #b78b2a; --green: #147a43; --red: #a83232; --amber: #946200; --bg: #f6f8fb; }
     * { box-sizing: border-box; }
@@ -332,19 +333,14 @@ function certificateVerifyHtmlResponse(result: Awaited<ReturnType<typeof verifyC
   <main>
     <section class="panel" aria-labelledby="verify-title">
       <div class="brand">
-        <strong>SAMYAK COMPUTER CLASSES</strong>
+        <strong>${escapeHtml(issuerName || "Certificate Verification")}</strong>
         <span>Certificate Verification</span>
+        ${issuerSubtitle ? `<span>${escapeHtml(issuerSubtitle)}</span>` : ""}
       </div>
       <h1 id="verify-title">${isFound ? "Certificate Verified" : "Certificate Not Found"}</h1>
       <p class="status ${statusClass}">${escapeHtml(statusLabel)}</p>
-      ${isFound ? `<dl>${rows.map(([label, value]) => `<div class="row"><dt>${escapeHtml(String(label))}</dt><dd>${escapeHtml(String(value || ""))}</dd></div>`).join("")}</dl>` : `<p class="message">We could not verify this certificate. Please check the QR code or contact Samyak Computer Classes for support.</p>`}
-      <footer>
-        <strong>Samyak Computer Classes</strong><br>
-        Sion West, Mumbai<br>
-        A Unit of Shree Services<br>
-        info@samyaksion.com<br>
-        +91 8422969307
-      </footer>
+      ${isFound ? `<dl>${rows.map(([label, value]) => `<div class="row"><dt>${escapeHtml(String(label))}</dt><dd>${escapeHtml(String(value || ""))}</dd></div>`).join("")}</dl>` : `<p class="message">We could not verify this certificate. Please check the QR code or contact the issuing institute for support.</p>`}
+      ${isFound ? `<footer>${issuerFooter(issuerName, issuerAddress)}</footer>` : ""}
     </section>
   </main>
 </body>
@@ -406,13 +402,13 @@ async function enforcePublicVerifyLimit(c: Parameters<typeof getSessionFromReque
   const count = await c.env.DB.prepare(
     `select count(*) as count
      from auth_events
-     where organisation_id = ?
+     where organisation_id is ?
        and event_type = ?
        and ip_hash = ?
        and result_code <> 'RATE_LIMITED'
        and created_at >= ?`,
   )
-    .bind(ORG_ID, eventType, keyHash, since)
+    .bind(null, eventType, keyHash, since)
     .first<{ count: number }>();
   if (Number(count?.count || 0) >= PUBLIC_VERIFY_LIMIT.count) {
     await recordPublicVerifyEvent(c, eventType, "RATE_LIMITED", keyHash);
@@ -428,6 +424,31 @@ async function recordPublicVerifyEvent(c: Parameters<typeof getSessionFromReques
       (id, organisation_id, login_account_id, event_type, result_code, mobile_hash, mobile_last_four, ip_hash, user_agent_hash, created_at)
      values (?, ?, null, ?, ?, null, null, ?, ?, ?)`,
   )
-    .bind(createOpaqueId("authevt"), ORG_ID, eventType, resultCode, keyHash, await hmacHex(c.env.SESSION_PEPPER, "public-certificate-ua", c.req.header("User-Agent") || ""), new Date().toISOString())
+    .bind(createOpaqueId("authevt"), null, eventType, resultCode, keyHash, await hmacHex(c.env.SESSION_PEPPER, "public-certificate-ua", c.req.header("User-Agent") || ""), new Date().toISOString())
     .run();
+}
+
+function issuerDisplayName(issuer: Awaited<ReturnType<typeof verifyCertificate>>["issuer"]) {
+  if (!issuer) return "";
+  return String(issuer.organisation_legal_name || issuer.organisation_name || "").trim();
+}
+
+function issuerBranchLine(issuer: Awaited<ReturnType<typeof verifyCertificate>>["issuer"]) {
+  if (!issuer?.branch_name) return "";
+  return String(issuer.branch_name);
+}
+
+function issuerAddressLines(issuer: Awaited<ReturnType<typeof verifyCertificate>>["issuer"]) {
+  if (!issuer) return [];
+  return [
+    issuer.branch_address_line1 || issuer.organisation_address_line1,
+    [issuer.branch_city || issuer.organisation_city, issuer.branch_state_region || issuer.organisation_state_region, issuer.branch_postcode || issuer.organisation_postcode].filter(Boolean).join(", "),
+    issuer.branch_country || issuer.organisation_country,
+    issuer.branch_email,
+    issuer.organisation_website,
+  ].map((line) => String(line || "").trim()).filter(Boolean);
+}
+
+function issuerFooter(name: string, lines: string[]) {
+  return [`<strong>${escapeHtml(name || "Issuing Institute")}</strong>`, ...lines.map((line) => escapeHtml(line))].join("<br>");
 }

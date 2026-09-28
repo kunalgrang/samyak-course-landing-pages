@@ -120,6 +120,9 @@ function CurrentBatchCard({ enrolment }: { enrolment: StudentLearningEnrolment |
       ) : (
         <p className="staff-empty">No batch assigned yet.</p>
       )}
+      {canRequestCertificate(enrolment.status) ? (
+        <a className="button-link button-link--primary" href="/student/certificates">Request Certificate</a>
+      ) : null}
     </section>
   );
 }
@@ -228,6 +231,10 @@ function formatDate(value: string) {
 
 function label(value: string) {
   return value.split("_").filter(Boolean).map((part) => part.slice(0, 1).toUpperCase() + part.slice(1)).join(" ");
+}
+
+function canRequestCertificate(status: string) {
+  return ["confirmed", "not_started", "active", "on_hold"].includes(status);
 }
 
 function materialTypeLabel(value: string) {

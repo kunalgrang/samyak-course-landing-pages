@@ -87,9 +87,7 @@ export function certificatePdfStorageFromEnv(env: { CERTIFICATE_PDFS?: R2Bucket 
 }
 
 function certificateBranchSegment(certificate: Pick<CertificateRecord, "branch_id" | "certificate_number">) {
-  const match = /^SYK-([A-Z0-9_-]+)-CERT-/i.exec(certificate.certificate_number);
-  const branchCode = match?.[1] || certificate.branch_id.replace(/^branch[_-]?/i, "");
-  return `branch_${safePathSegment(branchCode, "unknown_branch")}`;
+  return safePathSegment(certificate.branch_id, "unknown_branch");
 }
 
 function safePathSegment(value: string, fallback: string) {

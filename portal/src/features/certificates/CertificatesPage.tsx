@@ -31,7 +31,7 @@ const feedbackQuestions = [
   { key: "feedbackTrainerClarityScore", label: "How clearly did your trainer explain the concepts?" },
   { key: "feedbackPracticalLearningScore", label: "How useful were the practical exercises/examples?" },
   { key: "feedbackCourseExpectationScore", label: "How well did the course match what was explained to you at admission?" },
-  { key: "feedbackOverallScore", label: "Overall, how would you rate your learning experience at Samyak?" },
+  { key: "feedbackOverallScore", label: "Overall, how would you rate your learning experience?" },
 ] as const;
 
 type FeedbackKey = (typeof feedbackQuestions)[number]["key"];
@@ -482,7 +482,7 @@ function StudentApplicationCard({ item, onSubmitted }: { item: StudentCertificat
       {certificate ? (
         <div className="certificate-actions">
           <a className="button-link button-link--primary" href={`/api/student/certificates/${encodeURIComponent(certificate.id)}/pdf`}>View Certificate</a>
-          {certificate.verification_code ? <a className="button-link" href={`https://go.samyaksion.com/verify/${encodeURIComponent(certificate.verification_code)}`}>Verify</a> : null}
+          {certificate.verification_code ? <a className="button-link" href={`/verify/${encodeURIComponent(certificate.verification_code)}`}>Verify</a> : null}
         </div>
       ) : null}
       {!certificate && application ? <p className="form-message">{studentApplicationMessage(application.status || "submitted")}</p> : null}
@@ -497,12 +497,11 @@ function StudentApplicationCard({ item, onSubmitted }: { item: StudentCertificat
                 <DetailLine label="Student ID" value={item.enrolment.student_number} />
                 <DetailLine label="Course" value={item.enrolment.course_name} />
                 <DetailLine label="Joining Date" value={formatDate(item.enrolment.joining_date)} />
-                <DetailLine label="Completion Date" value="To be confirmed by Samyak" />
+                <DetailLine label="Completion Date" value="To be confirmed by the institute" />
               </div>
               <div className="warning-box">
                 <strong>Please check your name and course details carefully before applying.</strong>
-                <p>Please contact Samyak before submitting your certificate application if anything is wrong.</p>
-                <a className="button-link" href="mailto:info@samyaksion.com">Email Samyak</a>
+                <p>Please contact your institute before submitting your certificate application if anything is wrong.</p>
               </div>
               <label className="check-row">
                 <input type="checkbox" checked={completionConfirmed} onChange={(event) => setCompletionConfirmed(event.target.checked)} />
@@ -513,7 +512,7 @@ function StudentApplicationCard({ item, onSubmitted }: { item: StudentCertificat
                 <span>I have reviewed my name and course details shown above and confirm that they are correct.</span>
               </label>
               <div className="certificate-feedback">
-                <strong>Your feedback is shared privately with Samyak and helps us improve our courses.</strong>
+                <strong>Your feedback is shared privately with your institute and helps improve the courses.</strong>
                 {feedbackQuestions.map((question) => (
                   <fieldset key={question.key} className="feedback-question">
                     <legend>{question.label}</legend>
@@ -578,7 +577,7 @@ function CertificateList({ certificates, canRevoke, downloadScope, onRevoke }: {
             <small>{certificate.course_name_snapshot} · Issued {formatDate(certificate.issue_date)}{certificate.completion_date_snapshot ? ` · Completed ${formatDate(certificate.completion_date_snapshot)}` : ""}</small>
             <div className="certificate-actions">
               <a className="button-link" href={`/${downloadScope === "staff" ? "api/staff" : "api/student"}/certificates/${encodeURIComponent(certificate.id)}/pdf`}>Download</a>
-              <a className="button-link" href={`https://go.samyaksion.com/verify/${encodeURIComponent(certificate.verification_code)}`}>Verify</a>
+              <a className="button-link" href={`/verify/${encodeURIComponent(certificate.verification_code)}`}>Verify</a>
               {canRevoke ? <button type="button" className="danger-button" onClick={() => onRevoke?.(certificate)}>Revoke</button> : null}
             </div>
           </article>
@@ -625,13 +624,13 @@ function applicationStatusLabel(status: string) {
 function studentStateLabel(item: StudentCertificateApplicationItem) {
   if (item.certificate) return "Certificate issued";
   if (item.application?.status === "approved") return "Certificate being processed";
-  if (item.application?.status === "needs_attention") return "Contact Samyak";
+  if (item.application?.status === "needs_attention") return "Contact institute";
   if (item.application?.status === "submitted") return "Application received";
   return item.applicationEligibility.eligible ? "Not applied" : item.enrolment.status.replace(/_/g, " ");
 }
 
 function studentApplicationMessage(status: string) {
-  if (status === "needs_attention") return "Action required - please contact Samyak.";
+  if (status === "needs_attention") return "Action required - please contact your institute.";
   if (status === "approved") return "Course completion approved - certificate is being processed.";
   if (status === "certificate_issued") return "Certificate issued.";
   return "Application received.";
@@ -649,8 +648,8 @@ function ineligibleMessage(reasons: string[]) {
   if (reasons.includes("certificate_already_issued")) return "Certificate already issued.";
   if (reasons.some((reason) => reason.startsWith("enrolment_completed"))) return "Course completion is already approved. Certificate is being processed.";
   if (reasons.some((reason) => reason.startsWith("enrolment_"))) return "Certificate application is available once your course is active and completed from your side.";
-  if (reasons.includes("course_inactive")) return "Please contact Samyak about this course record.";
-  return "Please contact Samyak before applying for this certificate.";
+  if (reasons.includes("course_inactive")) return "Please contact your institute about this course record.";
+  return "Please contact your institute before applying for this certificate.";
 }
 
 function truthy(value: unknown) {

@@ -1,5 +1,4 @@
 import type { AppContext } from "./http";
-import { ORG_ID } from "./tenant-context";
 import { createOpaqueId } from "./crypto";
 import { staffOrganisationId, type StaffContext } from "./staff-auth";
 
@@ -77,7 +76,7 @@ export type CertificateApplicationRecord = {
   updated_at: string;
 };
 
-export async function listStudentCertificateApplications(c: AppContext, personId: string) {
+export async function listStudentCertificateApplications(c: AppContext, input: { organisationId: string; personId: string }) {
   const rows = await c.env.DB.prepare(
     `select
        enrolments.id as enrolment_id,
@@ -129,7 +128,7 @@ export async function listStudentCertificateApplications(c: AppContext, personId
        and people.id = ?
      order by enrolments.joining_date desc, enrolments.id desc`,
   )
-    .bind(ORG_ID, personId)
+    .bind(input.organisationId, input.personId)
     .all<ApplicationEligibilityRow>();
 
   return {
@@ -150,16 +149,16 @@ export async function listStudentCertificateApplications(c: AppContext, personId
             low_feedback_flag: Boolean(row.application_low_feedback_flag),
           }
         : null,
-      applicationEligibility: applicationEligibilityForRow(row),
+      applicationEligibility: applicationEligibilityForRow(row, input.organisationId),
     })),
   };
 }
 
-export async function submitCertificateApplication(c: AppContext, personId: string, input: CertificateApplicationInput) {
-  const row = await loadStudentEnrolmentRow(c, personId, input.enrolmentId);
+export async function submitCertificateApplication(c: AppContext, profile: { organisationId: string; personId: string }, input: CertificateApplicationInput) {
+  const row = await loadStudentEnrolmentRow(c, profile.organisationId, profile.personId, input.enrolmentId);
   if (!row) return { ok: false as const, status: 404, code: "enrolment_not_found", message: "This enrolment was not found." };
 
-  const eligibility = applicationEligibilityForRow(row);
+  const eligibility = applicationEligibilityForRow(row, profile.organisationId);
   if (row.application_id && row.application_status) {
     return {
       ok: true as const,
@@ -201,7 +200,7 @@ export async function submitCertificateApplication(c: AppContext, personId: stri
          values (?, ?, ?, ?, ?, ?, ?, 'submitted', 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
         applicationId,
-        ORG_ID,
+        profile.organisationId,
         row.branch_id,
         row.person_id,
         row.student_id,
@@ -218,6 +217,7 @@ export async function submitCertificateApplication(c: AppContext, personId: stri
         now,
       ),
       applicationEvent(c, {
+        organisationId: profile.organisationId,
         applicationId,
         branchId: row.branch_id,
         actorLoginAccountId: null,
@@ -231,7 +231,7 @@ export async function submitCertificateApplication(c: AppContext, personId: stri
       }),
     ]);
   } catch (error) {
-    const existing = await activeApplicationForEnrolment(c, row.enrolment_id);
+    const existing = await activeApplicationForEnrolment(c, profile.organisationId, row.enrolment_id);
     if (existing) {
       return {
         ok: true as const,
@@ -252,8 +252,8 @@ export async function submitCertificateApplication(c: AppContext, personId: stri
 }
 
 export async function listStaffCertificateApplications(c: AppContext, staff: StaffContext, input: { q?: string; status?: string; limit: number; offset: number }) {
-  const ORG_ID = staffOrganisationId(staff);
-  const params: unknown[] = [ORG_ID, staff.loginAccountId, ORG_ID];
+  const organisationId = staffOrganisationId(staff);
+  const params: unknown[] = [organisationId, staff.loginAccountId, organisationId];
   const filters = [
     "certificate_applications.organisation_id = ?",
     `exists (
@@ -296,10 +296,17 @@ export async function listStaffCertificateApplications(c: AppContext, staff: Sta
        enrolments.actual_completion_date
      from certificate_applications
      join people on people.id = certificate_applications.person_id
+       and people.organisation_id = certificate_applications.organisation_id
      left join person_identity_details on person_identity_details.person_id = people.id
      join students on students.id = certificate_applications.student_id
+       and students.organisation_id = certificate_applications.organisation_id
+       and students.person_id = certificate_applications.person_id
      join courses on courses.id = certificate_applications.course_id
+       and courses.organisation_id = certificate_applications.organisation_id
      join enrolments on enrolments.id = certificate_applications.enrolment_id
+       and enrolments.student_id = certificate_applications.student_id
+       and enrolments.course_id = certificate_applications.course_id
+       and enrolments.branch_id = certificate_applications.branch_id
      where ${filters.join(" and ")}
      order by certificate_applications.applied_at desc, certificate_applications.id desc
      limit ? offset ?`,
@@ -311,7 +318,7 @@ export async function listStaffCertificateApplications(c: AppContext, staff: Sta
 }
 
 export async function getStaffCertificateApplication(c: AppContext, staff: StaffContext, applicationId: string) {
-  const ORG_ID = staffOrganisationId(staff);
+  const organisationId = staffOrganisationId(staff);
   const row = await c.env.DB.prepare(
     `select
        certificate_applications.*,
@@ -326,10 +333,17 @@ export async function getStaffCertificateApplication(c: AppContext, staff: Staff
        batches.name as batch_name
      from certificate_applications
      join people on people.id = certificate_applications.person_id
+       and people.organisation_id = certificate_applications.organisation_id
      left join person_identity_details on person_identity_details.person_id = people.id
      join students on students.id = certificate_applications.student_id
+       and students.organisation_id = certificate_applications.organisation_id
+       and students.person_id = certificate_applications.person_id
      join courses on courses.id = certificate_applications.course_id
+       and courses.organisation_id = certificate_applications.organisation_id
      join enrolments on enrolments.id = certificate_applications.enrolment_id
+       and enrolments.student_id = certificate_applications.student_id
+       and enrolments.course_id = certificate_applications.course_id
+       and enrolments.branch_id = certificate_applications.branch_id
      left join batch_memberships on batch_memberships.enrolment_id = enrolments.id
        and batch_memberships.status = 'active'
        and batch_memberships.left_at is null
@@ -347,13 +361,13 @@ export async function getStaffCertificateApplication(c: AppContext, staff: Staff
        )
      limit 1`,
   )
-    .bind(ORG_ID, applicationId, staff.loginAccountId, ORG_ID)
+    .bind(organisationId, applicationId, staff.loginAccountId, organisationId)
     .first<Record<string, unknown>>();
   return row || null;
 }
 
 export async function markCertificateApplicationNeedsAttention(c: AppContext, staff: StaffContext, applicationId: string, note: string | null) {
-  const ORG_ID = staffOrganisationId(staff);
+  const organisationId = staffOrganisationId(staff);
   const current = await getStaffCertificateApplication(c, staff, applicationId);
   if (!current) return { ok: false as const, status: 404, code: "application_not_found", message: "Certificate application was not found." };
   const currentStatus = String(current.status);
@@ -364,8 +378,9 @@ export async function markCertificateApplicationNeedsAttention(c: AppContext, st
       `update certificate_applications
        set status = 'needs_attention', decision_note = ?, reviewed_at = ?, reviewed_by_actor_id = ?, updated_at = ?
        where id = ? and organisation_id = ? and status in ('submitted', 'approved', 'needs_attention')`,
-    ).bind(note, now, staff.loginAccountId, now, applicationId, ORG_ID),
+    ).bind(note, now, staff.loginAccountId, now, applicationId, organisationId),
     applicationEvent(c, {
+      organisationId,
       applicationId,
       branchId: String(current.branch_id),
       actorLoginAccountId: staff.loginAccountId,
@@ -382,7 +397,7 @@ export async function markCertificateApplicationNeedsAttention(c: AppContext, st
 }
 
 export async function approveCourseCompletionFromApplication(c: AppContext, staff: StaffContext, applicationId: string, completionDate: string) {
-  const ORG_ID = staffOrganisationId(staff);
+  const organisationId = staffOrganisationId(staff);
   const current = await getStaffCertificateApplication(c, staff, applicationId);
   if (!current) return { ok: false as const, status: 404, code: "application_not_found", message: "Certificate application was not found." };
   if (current.status === "certificate_issued") return { ok: false as const, status: 409, code: "already_issued", message: "This application already has an issued certificate." };
@@ -402,19 +417,35 @@ export async function approveCourseCompletionFromApplication(c: AppContext, staf
     c.env.DB.prepare(
       `update enrolments
        set status = 'completed', actual_completion_date = ?, updated_at = ?
-       where id = ? and status in ('active', 'on_hold', 'completed')`,
-    ).bind(completionDate, now, current.enrolment_id),
+       where id = ? and branch_id = ? and status in ('active', 'on_hold', 'completed')`,
+    ).bind(completionDate, now, current.enrolment_id, current.branch_id),
     c.env.DB.prepare(
       `update students
-       set current_status = 'completed', updated_at = ?
-       where id = ? and current_status in ('active', 'on_hold', 'completed')`,
-    ).bind(now, current.student_id),
+       set current_status = case
+         when exists (
+           select 1 from enrolments
+           where enrolments.student_id = students.id
+             and enrolments.id <> ?
+             and enrolments.status in ('confirmed', 'not_started', 'active')
+         ) then 'active'
+         when exists (
+           select 1 from enrolments
+           where enrolments.student_id = students.id
+             and enrolments.id <> ?
+             and enrolments.status = 'on_hold'
+         ) then 'on_hold'
+         else 'completed'
+       end,
+       updated_at = ?
+       where id = ? and organisation_id = ? and current_status in ('active', 'on_hold', 'completed')`,
+    ).bind(current.enrolment_id, current.enrolment_id, now, current.student_id, organisationId),
     c.env.DB.prepare(
       `update certificate_applications
        set status = 'approved', completion_date = ?, reviewed_at = ?, reviewed_by_actor_id = ?, updated_at = ?
        where id = ? and organisation_id = ? and status in ('submitted', 'needs_attention', 'approved')`,
-    ).bind(completionDate, now, staff.loginAccountId, now, applicationId, ORG_ID),
+    ).bind(completionDate, now, staff.loginAccountId, now, applicationId, organisationId),
     applicationEvent(c, {
+      organisationId,
       applicationId,
       branchId: String(current.branch_id),
       actorLoginAccountId: staff.loginAccountId,
@@ -437,16 +468,17 @@ export async function markApplicationCertificateIssued(c: AppContext, staff: Sta
 }
 
 export async function certificateIssuedApplicationStatements(c: AppContext, staff: StaffContext, certificate: { enrolment_id: string; branch_id: string }, now: string) {
-  const ORG_ID = staffOrganisationId(staff);
-  const application = await activeApplicationForEnrolment(c, certificate.enrolment_id);
+  const organisationId = staffOrganisationId(staff);
+  const application = await activeApplicationForEnrolment(c, organisationId, certificate.enrolment_id);
   if (!application || application.status !== "approved") return [];
   return [
     c.env.DB.prepare(
       `update certificate_applications
        set status = 'certificate_issued', updated_at = ?
        where id = ? and organisation_id = ? and status = 'approved'`,
-    ).bind(now, application.id, ORG_ID),
+    ).bind(now, application.id, organisationId),
     applicationEvent(c, {
+      organisationId,
       applicationId: application.id,
       branchId: certificate.branch_id,
       actorLoginAccountId: staff.loginAccountId,
@@ -481,9 +513,9 @@ function publicStudentEnrolment(row: ApplicationEligibilityRow) {
   };
 }
 
-function applicationEligibilityForRow(row: ApplicationEligibilityRow) {
+function applicationEligibilityForRow(row: ApplicationEligibilityRow, organisationId: string) {
   const reasons: string[] = [];
-  if (row.organisation_id !== ORG_ID) reasons.push("wrong_organisation");
+  if (row.organisation_id !== organisationId) reasons.push("wrong_organisation");
   if (row.person_status !== "active") reasons.push("person_inactive");
   if (row.student_status === "archived") reasons.push("student_archived");
   if (!["active", "on_hold"].includes(row.student_status)) reasons.push(`student_${row.student_status}`);
@@ -555,7 +587,7 @@ function normalizeComment(value: string | null | undefined) {
   return text ? text : null;
 }
 
-async function loadStudentEnrolmentRow(c: AppContext, personId: string, enrolmentId: string) {
+async function loadStudentEnrolmentRow(c: AppContext, organisationId: string, personId: string, enrolmentId: string) {
   return c.env.DB.prepare(
     `select
        enrolments.id as enrolment_id,
@@ -604,11 +636,11 @@ async function loadStudentEnrolmentRow(c: AppContext, personId: string, enrolmen
        and enrolments.id = ?
      limit 1`,
   )
-    .bind(ORG_ID, personId, enrolmentId)
+    .bind(organisationId, personId, enrolmentId)
     .first<ApplicationEligibilityRow>();
 }
 
-async function activeApplicationForEnrolment(c: AppContext, enrolmentId: string) {
+async function activeApplicationForEnrolment(c: AppContext, organisationId: string, enrolmentId: string) {
   return c.env.DB.prepare(
     `select *
      from certificate_applications
@@ -617,13 +649,14 @@ async function activeApplicationForEnrolment(c: AppContext, enrolmentId: string)
        and status in ('submitted', 'approved', 'needs_attention')
      limit 1`,
   )
-    .bind(ORG_ID, enrolmentId)
+    .bind(organisationId, enrolmentId)
     .first<CertificateApplicationRecord>();
 }
 
 function applicationEvent(
   c: AppContext,
   input: {
+    organisationId: string;
     applicationId: string;
     branchId: string;
     actorLoginAccountId: string | null;
@@ -643,7 +676,7 @@ function applicationEvent(
      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     createOpaqueId("certappevt"),
-    ORG_ID,
+    input.organisationId,
     input.branchId,
     input.applicationId,
     input.actorLoginAccountId,
