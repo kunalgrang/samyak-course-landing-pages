@@ -2,11 +2,14 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type OrganisationSettings } from "../../lib/api";
+import { ApiError, type OrganisationSettings, type StaffCentre } from "../../lib/api";
 
 const apiMocks = vi.hoisted(() => ({
   getOrganisationSettings: vi.fn(),
   updateOrganisationSettings: vi.fn(),
+  getCentres: vi.fn(),
+  createCentre: vi.fn(),
+  updateCentre: vi.fn(),
   refreshSession: vi.fn(),
 }));
 
@@ -16,6 +19,9 @@ vi.mock("../../lib/api", async (importOriginal) => {
     ...actual,
     getOrganisationSettings: apiMocks.getOrganisationSettings,
     updateOrganisationSettings: apiMocks.updateOrganisationSettings,
+    getCentres: apiMocks.getCentres,
+    createCentre: apiMocks.createCentre,
+    updateCentre: apiMocks.updateCentre,
   };
 });
 
@@ -38,12 +44,16 @@ describe("OrganisationSettingsPage", () => {
     vi.stubGlobal("HTMLInputElement", windowRef.HTMLInputElement);
     vi.stubGlobal("HTMLSelectElement", windowRef.HTMLSelectElement);
     vi.stubGlobal("Event", windowRef.Event);
+    vi.stubGlobal("MouseEvent", windowRef.MouseEvent);
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
     apiMocks.getOrganisationSettings.mockResolvedValue({ success: true, organisation: settings() });
     apiMocks.updateOrganisationSettings.mockResolvedValue({ success: true, organisation: settings({ name: "Samyak Education" }), changedFields: ["name"] });
+    apiMocks.getCentres.mockResolvedValue({ success: true, centres: [activeCentre(), pendingCentre()] });
+    apiMocks.createCentre.mockResolvedValue({ success: true, centre: pendingCentre({ id: "branch_new", name: "Andheri Centre", code: "CTR-003" }) });
+    apiMocks.updateCentre.mockResolvedValue({ success: true, centre: pendingCentre({ name: "Samyak Pending Updated" }), changedFields: ["name"] });
     apiMocks.refreshSession.mockResolvedValue({ status: "authenticated", session: {} });
   });
 
@@ -108,6 +118,95 @@ describe("OrganisationSettingsPage", () => {
     expect(container.textContent).toContain("Owner access is required.");
   });
 
+  it("loads and displays active and pending centres in the Centres tab", async () => {
+    await renderPage();
+
+    await clickButton("Centres");
+
+    expect(apiMocks.getCentres).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Samyak Main");
+    expect(container.textContent).toContain("Samyak Pending");
+    expect(container.textContent).toContain("Active");
+    expect(container.textContent).toContain("Pending Subscription");
+    expect(container.textContent).toContain("Centre code");
+    expect(container.textContent).toContain("CTR-001");
+  });
+
+  it("creates a centre without client-controlled code or lifecycle fields", async () => {
+    await renderPage();
+    await clickButton("Centres");
+    await clickButton("New Centre");
+    await setInput("centreName", "Andheri Centre");
+    await setInput("mobile", "9876543210");
+    await setInput("centreEmail", "andheri@samyak.test");
+    await setInput("centreAddressLine1", "3 Station Road");
+    await setInput("centreCity", "Mumbai");
+    await setInput("centreStateRegion", "Maharashtra");
+    await setInput("centrePostcode", "400050");
+    await setInput("centrePan", "abcde1234f");
+
+    await submit();
+
+    expect(apiMocks.createCentre).toHaveBeenCalledWith({
+      name: "Andheri Centre",
+      mobile: "9876543210",
+      email: "andheri@samyak.test",
+      addressLine1: "3 Station Road",
+      city: "Mumbai",
+      stateRegion: "Maharashtra",
+      postcode: "400050",
+      country: "India",
+      operatingModel: "company_owned",
+      currency: "INR",
+      timezone: "Asia/Kolkata",
+      pan: "ABCDE1234F",
+      gstin: "",
+    });
+    expect(apiMocks.createCentre.mock.calls[0][0]).not.toHaveProperty("code");
+    expect(apiMocks.createCentre.mock.calls[0][0]).not.toHaveProperty("status");
+    expect(apiMocks.createCentre.mock.calls[0][0]).not.toHaveProperty("centreStatus");
+    expect(container.textContent).toContain("Centre created. It will become active after its subscription is paid.");
+  });
+
+  it("edits centre details with code and status shown read-only", async () => {
+    await renderPage();
+    await clickButton("Centres");
+    await clickButton("Samyak PendingCTR-002Pending Subscription");
+    await setInput("centreName", "Samyak Pending Updated");
+    await setInput("newMobile", "9999988888");
+
+    await submit();
+
+    expect(container.textContent).toContain("Centre code");
+    expect(container.textContent).toContain("CTR-002");
+    expect(container.querySelector<HTMLInputElement>('input[name="code"]')).toBeNull();
+    expect(apiMocks.updateCentre).toHaveBeenCalledWith("branch_pending", expect.objectContaining({
+      name: "Samyak Pending Updated",
+      newMobile: "9999988888",
+      email: "pending@samyak.test",
+      addressLine1: "2 Trial Road",
+      operatingModel: "franchise_operated",
+    }));
+    expect(apiMocks.updateCentre.mock.calls[0][1]).not.toHaveProperty("code");
+    expect(apiMocks.updateCentre.mock.calls[0][1]).not.toHaveProperty("status");
+    expect(container.textContent).toContain("Centre details saved.");
+  });
+
+  it("shows centre API field errors while preserving edits", async () => {
+    apiMocks.createCentre.mockRejectedValue(new ApiError("Please check the submitted details.", { mobile: ["Enter a valid Indian mobile number."] }, "invalid_mobile"));
+    await renderPage();
+    await clickButton("Centres");
+    await clickButton("New Centre");
+    await setInput("centreName", "Andheri Centre");
+    await setInput("mobile", "12345");
+
+    await submit();
+
+    expect((input("centreName") as HTMLInputElement).value).toBe("Andheri Centre");
+    expect(container.textContent).toContain("Please check the submitted details.");
+    expect(container.textContent).toContain("Enter a valid Indian mobile number.");
+  });
+
   async function renderPage() {
     await act(async () => {
       root.render(<OrganisationSettingsPage />);
@@ -137,6 +236,16 @@ describe("OrganisationSettingsPage", () => {
     await act(async () => {
       form.dispatchEvent(new windowRef.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event);
     });
+    await act(async () => {});
+  }
+
+  async function clickButton(text: string) {
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === text);
+    if (!button) throw new Error(`Missing button ${text}. Saw: ${Array.from(container.querySelectorAll("button")).map((candidate) => candidate.textContent).join(", ")}`);
+    await act(async () => {
+      button.dispatchEvent(new windowRef.MouseEvent("click", { bubbles: true }) as unknown as MouseEvent);
+    });
+    await act(async () => {});
   }
 });
 
@@ -158,6 +267,53 @@ function settings(overrides: Partial<OrganisationSettings> = {}): OrganisationSe
     pan: "ABCDE1234F",
     gstin: "",
     updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function activeCentre(overrides: Partial<StaffCentre> = {}): StaffCentre {
+  return {
+    id: "branch_main",
+    name: "Samyak Main",
+    code: "CTR-001",
+    addressLine1: "1 Main Road",
+    city: "Mumbai",
+    stateRegion: "Maharashtra",
+    postcode: "400022",
+    country: "India",
+    maskedMobile: "******3210",
+    email: "main@samyak.test",
+    operatingModel: "company_owned",
+    currency: "INR",
+    timezone: "Asia/Kolkata",
+    pan: "ABCDE1234F",
+    gstin: "",
+    status: "active",
+    centreStatus: "active",
+    canOperate: true,
+    subscriptionStatusLabel: "Active",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function pendingCentre(overrides: Partial<StaffCentre> = {}): StaffCentre {
+  return {
+    ...activeCentre({
+      id: "branch_pending",
+      name: "Samyak Pending",
+      code: "CTR-002",
+      addressLine1: "2 Trial Road",
+      maskedMobile: "******6789",
+      email: "pending@samyak.test",
+      operatingModel: "franchise_operated",
+      status: "inactive",
+      centreStatus: "pending_subscription",
+      canOperate: false,
+      subscriptionStatusLabel: "Pending Subscription",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    }),
     ...overrides,
   };
 }

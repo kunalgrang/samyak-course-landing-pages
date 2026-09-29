@@ -200,6 +200,41 @@ const organisationSettingsResponseSchema = z.object({
   changedFields: z.array(z.string()).optional(),
 });
 
+const centreSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  code: z.string(),
+  addressLine1: z.string(),
+  city: z.string(),
+  stateRegion: z.string(),
+  postcode: z.string(),
+  country: z.string(),
+  maskedMobile: z.string(),
+  email: z.string(),
+  operatingModel: z.string(),
+  currency: z.string(),
+  timezone: z.string(),
+  pan: z.string(),
+  gstin: z.string(),
+  status: z.union([z.literal("active"), z.literal("inactive")]),
+  centreStatus: z.string(),
+  canOperate: z.boolean(),
+  subscriptionStatusLabel: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const centreListResponseSchema = z.object({
+  success: z.literal(true),
+  centres: z.array(centreSchema),
+});
+
+const centreResponseSchema = z.object({
+  success: z.literal(true),
+  centre: centreSchema,
+  changedFields: z.array(z.string()).optional(),
+});
+
 const partnerProfileSchema = z.object({
   educationPartnerId: z.string(),
   businessName: z.string(),
@@ -1764,6 +1799,27 @@ export type SessionMaterial = z.infer<typeof sessionMaterialSchema>;
 export type StudentLearningEnrolment = z.infer<typeof studentLearningEnrolmentSchema>;
 export type StudentLearningDetail = z.infer<typeof studentLearningDetailSchema>;
 export type OrganisationSettings = z.infer<typeof organisationSettingsSchema>;
+export type StaffCentre = z.infer<typeof centreSchema>;
+
+export type CreateCentreInput = {
+  name: string;
+  mobile: string;
+  email: string;
+  addressLine1: string;
+  city: string;
+  stateRegion: string;
+  postcode: string;
+  country: string;
+  operatingModel: string;
+  currency: string;
+  timezone: string;
+  pan: string;
+  gstin: string;
+};
+
+export type UpdateCentreInput = Omit<CreateCentreInput, "mobile"> & {
+  newMobile: string;
+};
 
 export class ApiError extends Error {
   code?: string;
@@ -1846,6 +1902,22 @@ export async function getOrganisationSettings() {
 
 export async function updateOrganisationSettings(input: Record<string, unknown>) {
   return patchJson("/api/staff/organisation-settings", input, organisationSettingsResponseSchema);
+}
+
+export async function getCentres() {
+  return getJson("/api/staff/centres", centreListResponseSchema);
+}
+
+export async function getCentre(centreId: string) {
+  return getJson(`/api/staff/centres/${encodeURIComponent(centreId)}`, centreResponseSchema);
+}
+
+export async function createCentre(input: CreateCentreInput) {
+  return postJson("/api/staff/centres", input, centreResponseSchema);
+}
+
+export async function updateCentre(centreId: string, input: UpdateCentreInput) {
+  return patchJson(`/api/staff/centres/${encodeURIComponent(centreId)}`, input, centreResponseSchema);
 }
 
 export async function selectProfile(personId: string) {
