@@ -1,7 +1,6 @@
 import { z } from "zod";
 import type { Context, Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
-import { ORG_ID } from "../lib/tenant-context";
 import { createOpaqueId, encryptText, hmacHex } from "../lib/crypto";
 import { requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
@@ -36,14 +35,14 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
   app.get("/api/staff/education-partners", async (c) => {
     const staff = await requireStaffRoles(c, ["owner", "system_admin", "admin", "counsellor", "admission_admin"]);
     if (!staff) return forbidden(c);
-    const ORG_ID = staffOrganisationId(staff);
+    const organisationId = staffOrganisationId(staff);
     const url = new URL(c.req.url);
     const q = clean(url.searchParams.get("q"));
     const status = enumParam(url.searchParams.get("status"), ["active", "inactive"] as const);
     const limit = clampInteger(url.searchParams.get("limit"), 20, 1, 50);
     const offset = clampInteger(url.searchParams.get("offset"), 0, 0, 5000);
     const clauses = ["education_partners.organisation_id = ?"];
-    const params: Array<string | number> = [ORG_ID];
+    const params: Array<string | number> = [organisationId];
     if (status) push(clauses, params, "education_partners.status = ?", status);
     if (q) {
       clauses.push("(education_partners.business_name like ? or education_partners.contact_person_name like ? or education_partners.mobile_last_four = ?)");
@@ -68,25 +67,25 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
   app.get("/api/staff/education-partners/:partnerId", async (c) => {
     const staff = await requireStaffRoles(c, ["owner", "system_admin", "admin", "counsellor", "admission_admin"]);
     if (!staff) return forbidden(c);
-    const ORG_ID = staffOrganisationId(staff);
-    const partner = await findPartner(c, c.req.param("partnerId"));
+    const organisationId = staffOrganisationId(staff);
+    const partner = await findPartner(c, organisationId, c.req.param("partnerId"));
     if (!partner) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
     const canShareFullLink = staff.roles.includes("owner");
     return jsonPlain(c, {
       success: true,
-      partner: partnerPayload(partner, canShareFullLink ? await recoverPartnerLink(c, partner) : null),
+      partner: partnerPayload(partner, canShareFullLink ? await recoverPartnerLink(c, organisationId, partner) : null),
       commercialTerms: {
         currentGstBasisPoints: getCourseFeeGstBasisPoints(),
       },
-      metrics: await partnerMetrics(c, partner.id),
+      metrics: await partnerMetrics(c, organisationId, partner.id),
     });
   });
 
   app.get("/api/staff/education-partners/:partnerId/portal-preview", async (c) => {
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return forbiddenOwner(c);
-    const ORG_ID = staffOrganisationId(staff);
-    const view = await buildPartnerPortalView(c, c.req.param("partnerId"), paginationFromUrl(c.req.url));
+    const organisationId = staffOrganisationId(staff);
+    const view = await buildPartnerPortalView(c, c.req.param("partnerId"), paginationFromUrl(c.req.url), organisationId);
     if (!view) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
     return jsonPlain(c, { ...view, preview: true });
   });
@@ -96,10 +95,13 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return forbiddenOwner(c);
-    const ORG_ID = staffOrganisationId(staff);
+    const organisationId = staffOrganisationId(staff);
     const parsed = await parsePartnerBody(c);
     if (!parsed.ok) return parsed.response;
-    const duplicateWarnings = await duplicateWarningsFor(c, parsed.data);
+    if (!(await branchBelongsToOrganisation(c, organisationId, parsed.data.homeBranchId))) {
+      return jsonError(c, { status: 400, code: "invalid_branch", message: "Select an active branch for this organisation.", fieldErrors: { homeBranchId: ["Select an active branch for this organisation."] } });
+    }
+    const duplicateWarnings = await duplicateWarningsFor(c, organisationId, parsed.data);
     const now = new Date().toISOString();
     const partnerId = createOpaqueId("epart");
     const referrerProfileId = createOpaqueId("refprof");
@@ -111,12 +113,12 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
            mobile_hash, mobile_last_four, mobile_ciphertext, email_hash, email_ciphertext, status,
            current_commission_basis_points, internal_notes, created_by_login_account_id, created_at, updated_at)
          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(partnerId, ORG_ID, parsed.data.homeBranchId, parsed.data.partnerType, parsed.data.businessName, parsed.data.contactPersonName, contact.mobileHash, contact.mobileLastFour, contact.mobileCiphertext, contact.emailHash, contact.emailCiphertext, parsed.data.status, parsed.data.commissionBps, parsed.data.internalNotes || null, staff.loginAccountId, now, now),
+      ).bind(partnerId, organisationId, parsed.data.homeBranchId, parsed.data.partnerType, parsed.data.businessName, parsed.data.contactPersonName, contact.mobileHash, contact.mobileLastFour, contact.mobileCiphertext, contact.emailHash, contact.emailCiphertext, parsed.data.status, parsed.data.commissionBps, parsed.data.internalNotes || null, staff.loginAccountId, now, now),
       c.env.DB.prepare(
         `insert into referrer_profiles
           (id, organisation_id, person_id, external_referrer_id, referral_token, personal_link, active, created_at, updated_at)
          values (?, ?, null, ?, ?, '', ?, ?, ?)`,
-      ).bind(referrerProfileId, ORG_ID, partnerId, `education_partner:${partnerId}`, parsed.data.status === "active" ? 1 : 0, now, now),
+      ).bind(referrerProfileId, organisationId, partnerId, `education_partner:${partnerId}`, parsed.data.status === "active" ? 1 : 0, now, now),
       c.env.DB.prepare("insert into education_partner_referrer_profiles (education_partner_id, referrer_profile_id, created_at) values (?, ?, ?)")
         .bind(partnerId, referrerProfileId, now),
       auditStatement(c, staff, parsed.data.homeBranchId, "education_partner_created", "education_partner", partnerId, {
@@ -134,11 +136,14 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return forbiddenOwner(c);
-    const ORG_ID = staffOrganisationId(staff);
-    const existing = await findPartner(c, c.req.param("partnerId"));
+    const organisationId = staffOrganisationId(staff);
+    const existing = await findPartner(c, organisationId, c.req.param("partnerId"));
     if (!existing) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
     const parsed = await parsePartnerBody(c);
     if (!parsed.ok) return parsed.response;
+    if (!(await branchBelongsToOrganisation(c, organisationId, parsed.data.homeBranchId))) {
+      return jsonError(c, { status: 400, code: "invalid_branch", message: "Select an active branch for this organisation.", fieldErrors: { homeBranchId: ["Select an active branch for this organisation."] } });
+    }
     const contact = await secureContact(c, existing.id, parsed.data.mobile || "", parsed.data.email || "");
     const mobileChanged = (existing.mobile_hash || null) !== (contact.mobileHash || null);
     const now = new Date().toISOString();
@@ -149,13 +154,13 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
              mobile_hash = ?, mobile_last_four = ?, mobile_ciphertext = ?, email_hash = ?, email_ciphertext = ?,
              status = ?, current_commission_basis_points = ?, internal_notes = ?, updated_at = ?
          where id = ? and organisation_id = ?`,
-      ).bind(parsed.data.homeBranchId, parsed.data.partnerType, parsed.data.businessName, parsed.data.contactPersonName, contact.mobileHash, contact.mobileLastFour, contact.mobileCiphertext, contact.emailHash, contact.emailCiphertext, parsed.data.status, parsed.data.commissionBps, parsed.data.internalNotes || null, now, existing.id, ORG_ID),
+      ).bind(parsed.data.homeBranchId, parsed.data.partnerType, parsed.data.businessName, parsed.data.contactPersonName, contact.mobileHash, contact.mobileLastFour, contact.mobileCiphertext, contact.emailHash, contact.emailCiphertext, parsed.data.status, parsed.data.commissionBps, parsed.data.internalNotes || null, now, existing.id, organisationId),
       c.env.DB.prepare("update referrer_profiles set active = ?, updated_at = ? where id = ? and organisation_id = ?")
-        .bind(parsed.data.status === "active" ? 1 : 0, now, existing.referrer_profile_id, ORG_ID),
+        .bind(parsed.data.status === "active" ? 1 : 0, now, existing.referrer_profile_id, organisationId),
       ...(parsed.data.status === "inactive" ? [c.env.DB.prepare(
         `update referral_links set status = 'revoked', revoked_at = coalesce(revoked_at, ?), updated_at = ?
          where organisation_id = ? and referrer_profile_id = ? and status = 'active'`,
-      ).bind(now, now, ORG_ID, existing.referrer_profile_id)] : []),
+      ).bind(now, now, organisationId, existing.referrer_profile_id)] : []),
       ...(mobileChanged || parsed.data.status === "inactive" ? [
         c.env.DB.prepare("delete from login_account_education_partners where education_partner_id = ?").bind(existing.id),
         c.env.DB.prepare("update user_sessions set active_education_partner_id = null where active_education_partner_id = ?").bind(existing.id),
@@ -166,7 +171,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
         status: parsed.data.status,
       }, now),
     ]);
-    return jsonPlain(c, { success: true, partnerId: existing.id, duplicateWarnings: await duplicateWarningsFor(c, parsed.data, existing.id) });
+    return jsonPlain(c, { success: true, partnerId: existing.id, duplicateWarnings: await duplicateWarningsFor(c, organisationId, parsed.data, existing.id) });
   });
 
   app.post("/api/staff/education-partners/:partnerId/referral-link", async (c) => {
@@ -174,18 +179,18 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return forbiddenOwner(c);
-    const ORG_ID = staffOrganisationId(staff);
-    const partner = await findPartner(c, c.req.param("partnerId"));
+    const organisationId = staffOrganisationId(staff);
+    const partner = await findPartner(c, organisationId, c.req.param("partnerId"));
     if (!partner) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
     if (partner.status !== "active") return jsonError(c, { status: 409, code: "partner_inactive", message: "Activate the partner before issuing a referral link." });
     const issued = await issueReferralLink(referralEnv(c), {
-      organisationId: ORG_ID,
+      organisationId,
       referralProgrammeId: PARTNER_PROGRAMME_ID,
       referrerProfileId: partner.referrer_profile_id,
       loginAccountId: staff.loginAccountId,
       now: new Date().toISOString(),
     });
-    const recovered = issued.rawToken ? { recoverable: true as const, publicUrl: buildPublicReferralUrl(c, issued.rawToken) } : await recoverPartnerLink(c, partner);
+    const recovered = issued.rawToken ? { recoverable: true as const, publicUrl: buildPublicReferralUrl(c, issued.rawToken) } : await recoverPartnerLink(c, organisationId, partner);
     const publicLink = recovered?.recoverable ? recovered.publicUrl : null;
     return jsonPlain(c, { success: true, created: issued.issued, link: publicLink, shownOnce: Boolean(publicLink), lastFour: issued.link.tokenLastFour, activatedAt: issued.link.activatedAt });
   });
@@ -195,12 +200,12 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ["owner"]);
     if (!staff) return forbiddenOwner(c);
-    const ORG_ID = staffOrganisationId(staff);
-    const partner = await findPartner(c, c.req.param("partnerId"));
+    const organisationId = staffOrganisationId(staff);
+    const partner = await findPartner(c, organisationId, c.req.param("partnerId"));
     if (!partner) return jsonError(c, { status: 404, code: "partner_not_found", message: "Education partner was not found." });
     if (partner.status !== "active") return jsonError(c, { status: 409, code: "partner_inactive", message: "Activate the partner before replacing a referral link." });
     const rotated = await rotateReferralLink(referralEnv(c), {
-      organisationId: ORG_ID,
+      organisationId,
       referralProgrammeId: PARTNER_PROGRAMME_ID,
       referrerProfileId: partner.referrer_profile_id,
       loginAccountId: staff.loginAccountId,
@@ -250,23 +255,25 @@ function partnerSelectSql() {
        active_links.token_hash as active_link_token_hash,
        active_links.token_last_four as active_link_last_four,
        active_links.activated_at as active_link_activated_at,
-       (select count(*) from referrals where referrals.education_partner_id = education_partners.id) as referral_count,
-       (select count(*) from enrolments join referrals on referrals.id = enrolments.referral_id where referrals.education_partner_id = education_partners.id) as admission_count
+       (select count(*) from referrals where referrals.organisation_id = education_partners.organisation_id and referrals.education_partner_id = education_partners.id) as referral_count,
+       (select count(*) from enrolments join referrals on referrals.id = enrolments.referral_id where referrals.organisation_id = education_partners.organisation_id and referrals.education_partner_id = education_partners.id) as admission_count
      from education_partners
      join education_partner_referrer_profiles on education_partner_referrer_profiles.education_partner_id = education_partners.id
      left join branches on branches.id = education_partners.home_branch_id
+       and branches.organisation_id = education_partners.organisation_id
      left join referral_links active_links on active_links.referrer_profile_id = education_partner_referrer_profiles.referrer_profile_id
+       and active_links.organisation_id = education_partners.organisation_id
        and active_links.status = 'active'
        and active_links.revoked_at is null`;
 }
 
-async function findPartner(c: PortalContext, partnerId: string) {
+async function findPartner(c: PortalContext, organisationId: string, partnerId: string) {
   return c.env.DB.prepare(`${partnerSelectSql()} where education_partners.organisation_id = ? and education_partners.id = ? limit 1`)
-    .bind(ORG_ID, partnerId)
+    .bind(organisationId, partnerId)
     .first<PartnerRow>();
 }
 
-async function partnerMetrics(c: PortalContext, partnerId: string) {
+async function partnerMetrics(c: PortalContext, organisationId: string, partnerId: string) {
   const row = await c.env.DB.prepare(
     `select
        count(referrals.id) as total_referrals,
@@ -280,7 +287,7 @@ async function partnerMetrics(c: PortalContext, partnerId: string) {
      left join referral_reward_snapshots on referral_reward_snapshots.referral_id = referrals.id
      left join referral_reward_payouts on referral_reward_payouts.reward_snapshot_id = referral_reward_snapshots.id
      where referrals.organisation_id = ? and referrals.education_partner_id = ?`,
-  ).bind(ORG_ID, partnerId).first<Record<string, number>>();
+  ).bind(organisationId, partnerId).first<Record<string, number>>();
   return {
     totalReferrals: Number(row?.total_referrals || 0),
     admissions: Number(row?.admissions || 0),
@@ -319,10 +326,10 @@ function partnerPayload(row: PartnerRow, recoveredLink?: RecoverablePartnerLink)
   };
 }
 
-async function recoverPartnerLink(c: PortalContext, partner: PartnerRow): Promise<RecoverablePartnerLink> {
+async function recoverPartnerLink(c: PortalContext, organisationId: string, partner: PartnerRow): Promise<RecoverablePartnerLink> {
   if (!partner.active_link_id || !partner.active_link_token_hash) return null;
   return getRecoverableReferralLink(referralEnv(c), {
-    link: { id: partner.active_link_id, organisation_id: ORG_ID, token_hash: partner.active_link_token_hash },
+    link: { id: partner.active_link_id, organisation_id: organisationId, token_hash: partner.active_link_token_hash },
     publicOrigin: referralPublicOrigin(c.env),
   });
 }
@@ -374,10 +381,10 @@ async function secureContact(c: PortalContext, partnerId: string, mobileInput: s
   };
 }
 
-async function duplicateWarningsFor(c: PortalContext, input: z.infer<typeof partnerSchema> & { commissionBps: number }, excludingPartnerId?: string) {
+async function duplicateWarningsFor(c: PortalContext, organisationId: string, input: z.infer<typeof partnerSchema> & { commissionBps: number }, excludingPartnerId?: string) {
   const contact = await secureContact(c, "duplicate-check", input.mobile || "", input.email || "");
   const clauses = ["organisation_id = ?", "id != ?"];
-  const params: Array<string | null> = [ORG_ID, excludingPartnerId || ""];
+  const params: Array<string | null> = [organisationId, excludingPartnerId || ""];
   const checks: string[] = [];
   if (contact.mobileHash) {
     checks.push("mobile_hash = ?");
@@ -394,13 +401,20 @@ async function duplicateWarningsFor(c: PortalContext, input: z.infer<typeof part
   return (rows.results || []).map((row) => ({ partnerId: row.id, businessName: row.business_name }));
 }
 
+async function branchBelongsToOrganisation(c: PortalContext, organisationId: string, branchId: string) {
+  const branch = await c.env.DB.prepare("select id from branches where id = ? and organisation_id = ? and status = 'active'")
+    .bind(branchId, organisationId)
+    .first<{ id: string }>();
+  return Boolean(branch);
+}
+
 function auditStatement(c: PortalContext, staff: StaffContext, branchId: string | null, action: string, entityType: string, entityId: string, metadata: Record<string, unknown>, now: string) {
-  const ORG_ID = staffOrganisationId(staff);
+  const organisationId = staffOrganisationId(staff);
   return c.env.DB.prepare(
     `insert into audit_logs
-      (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
+       (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(createOpaqueId("audit"), ORG_ID, branchId, staff.loginAccountId, staff.activePersonId, action, entityType, entityId, JSON.stringify(metadata), now);
+  ).bind(createOpaqueId("audit"), organisationId, branchId, staff.loginAccountId, staff.activePersonId, action, entityType, entityId, JSON.stringify(metadata), now);
 }
 
 function push(clauses: string[], params: Array<string | number>, clause: string, value: string | number) {

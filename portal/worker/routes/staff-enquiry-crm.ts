@@ -2,7 +2,6 @@ import { z } from "zod";
 import type { Context, Hono } from "hono";
 import type { WorkerBindings, WorkerVariables } from "../bindings";
 import { mobileHash } from "../lib/auth-store";
-import { ORG_ID } from "../lib/tenant-context";
 import { isResponse, readJsonBody, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
@@ -46,14 +45,14 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
   app.get("/api/staff/enquiries/crm", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
-    const ORG_ID = staffOrganisationId(staff);
+    const organisationId = staffOrganisationId(staff);
     const scope = await branchScope(c, staff);
     if (!scope.canAccessAnyBranch) return jsonPlain(c, crmListPayload([], 0, listPagination(c), {}));
 
     const filters = await listFilters(c, staff.loginAccountId);
     const pagination = listPagination(c);
-    const rows = await crmRows(c, scope, filters);
-    const eventsByEnquiry = await fetchEventsForEnquiries(c, rows.map((row) => row.id));
+    const rows = await crmRows(c, organisationId, scope, filters);
+    const eventsByEnquiry = await fetchEventsForEnquiries(c, organisationId, rows.map((row) => row.id));
     const now = new Date().toISOString();
     const enriched = [];
     for (const row of rows) {
@@ -77,7 +76,6 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
-    const ORG_ID = staffOrganisationId(staff);
     const body = await readJsonBody(c, followUpInputSchema);
     if (isResponse(body)) return body;
     const result = await recordFollowUp(c, staff, c.req.param("enquiryId"), body);
@@ -90,7 +88,6 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
     if (sameOriginError) return sameOriginError;
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
-    const ORG_ID = staffOrganisationId(staff);
     const body = await readJsonBody(c, assignmentInputSchema);
     if (isResponse(body)) return body;
     const result = await assignEnquiry(c, staff, c.req.param("enquiryId"), body.counsellorLoginAccountId);
@@ -101,10 +98,10 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
   app.get("/api/staff/enquiries/:enquiryId/crm", async (c) => {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
-    const ORG_ID = staffOrganisationId(staff);
+    const organisationId = staffOrganisationId(staff);
     const enquiry = await scopedEnquiry(c, staff, c.req.param("enquiryId"));
     if (!enquiry) return jsonError(c, { status: 404, code: "enquiry_not_found", message: "Enquiry was not found." });
-    const events = (await fetchEventsForEnquiries(c, [enquiry.id], 200)).get(enquiry.id) || [];
+    const events = (await fetchEventsForEnquiries(c, organisationId, [enquiry.id], 200)).get(enquiry.id) || [];
     const temperature = calculateLeadTemperature(enquiry, events);
     return jsonPlain(c, {
       success: true,
@@ -119,16 +116,16 @@ export function registerStaffEnquiryCrmRoutes(app: PortalHono) {
         pipelineStageSnapshot: event.pipeline_stage_snapshot,
         actorLoginAccountId: event.actor_login_account_id,
       })),
-      assignees: await staffForBranch(c, enquiry.branch_id),
+      assignees: await staffForBranch(c, organisationId, enquiry.branch_id),
     });
   });
 }
 
 type ListFilters = Awaited<ReturnType<typeof listFilters>>;
 
-async function crmRows(c: Parameters<typeof branchScope>[0], scope: Awaited<ReturnType<typeof branchScope>>, filters: ListFilters) {
+async function crmRows(c: Parameters<typeof branchScope>[0], organisationId: string, scope: Awaited<ReturnType<typeof branchScope>>, filters: ListFilters) {
   const clauses = ["enquiries.organisation_id = ?"];
-  const params: Array<string | number | null> = [ORG_ID];
+  const params: Array<string | number | null> = [organisationId];
   if (filters.stage) push(clauses, params, "enquiries.pipeline_stage = ?", filters.stage);
   if (filters.source) push(clauses, params, "enquiries.source = ?", filters.source);
   if (filters.courseId) push(clauses, params, "enquiries.course_interest_id = ?", filters.courseId);

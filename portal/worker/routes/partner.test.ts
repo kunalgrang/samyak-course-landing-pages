@@ -369,6 +369,88 @@ describe("Education Partner portal security", () => {
       fixture.close();
     }
   });
+
+  it("scopes staff Education Partner list, detail, and link recovery to the authenticated organisation", async () => {
+    const fixture = await createFixture();
+    try {
+      seedTenant(fixture.sqlite, { organisationId: "org_rememo", slug: "rememo", name: "Rememo", branchId: "branch_rememo", branchCode: "REM" });
+      await seedEducationPartner(fixture.sqlite, "epartner_samyak", PARTNER_MOBILE, { businessName: "Samyak Partner", referrerProfileId: "refprof_samyak_partner" });
+      await seedEducationPartner(fixture.sqlite, "epartner_rememo", "9876543213", { businessName: "Rememo Partner", referrerProfileId: "refprof_rememo_partner", organisationId: "org_rememo", branchId: "branch_rememo" });
+      const rememoCookie = await seedTenantOwner(fixture.sqlite, { organisationId: "org_rememo", slug: "rememo", branchId: "branch_rememo", token: "rememo-owner-token" });
+
+      const list = await app.request("http://localhost/api/staff/education-partners", { headers: { Cookie: rememoCookie } }, fixture.env);
+      const listBody = (await list.json()) as Row;
+      const detail = await app.request("http://localhost/api/staff/education-partners/epartner_samyak", { headers: { Cookie: rememoCookie } }, fixture.env);
+      const link = await app.request("http://localhost/api/staff/education-partners/epartner_samyak/referral-link", { method: "POST", headers: { Origin: "http://localhost", Cookie: rememoCookie } }, fixture.env);
+      const ownDetail = await app.request("http://localhost/api/staff/education-partners/epartner_rememo", { headers: { Cookie: rememoCookie } }, fixture.env);
+
+      expect(list.status).toBe(200);
+      expect(listBody.partners.map((partner: Row) => partner.id)).toEqual(["epartner_rememo"]);
+      expect(detail.status).toBe(404);
+      expect(link.status).toBe(404);
+      expect(ownDetail.status).toBe(200);
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("keeps Education Partner duplicate warnings organisation scoped", async () => {
+    const fixture = await createFixture();
+    try {
+      seedTenant(fixture.sqlite, { organisationId: "org_rememo", slug: "rememo", name: "Rememo", branchId: "branch_rememo", branchCode: "REM" });
+      await seedEducationPartner(fixture.sqlite, "epartner_samyak_dup", PARTNER_MOBILE, { businessName: "Shared Partner", referrerProfileId: "refprof_samyak_dup" });
+      const rememoCookie = await seedTenantOwner(fixture.sqlite, { organisationId: "org_rememo", slug: "rememo", branchId: "branch_rememo", token: "rememo-owner-token" });
+
+      const crossOrgOnly = await createPartner(fixture.env, rememoCookie, { businessName: "Shared Partner", mobile: PARTNER_MOBILE, homeBranchId: "branch_rememo" });
+      const crossOrgOnlyBody = (await crossOrgOnly.json()) as Row;
+      await seedEducationPartner(fixture.sqlite, "epartner_rememo_dup", PARTNER_MOBILE, { businessName: "Shared Partner", referrerProfileId: "refprof_rememo_dup", organisationId: "org_rememo", branchId: "branch_rememo" });
+      const sameOrg = await createPartner(fixture.env, rememoCookie, { businessName: "Shared Partner", mobile: PARTNER_MOBILE, homeBranchId: "branch_rememo" });
+      const sameOrgBody = (await sameOrg.json()) as Row;
+
+      expect(crossOrgOnly.status).toBe(201);
+      expect(crossOrgOnlyBody.duplicateWarnings).toEqual([]);
+      expect(sameOrg.status).toBe(201);
+      expect(sameOrgBody.duplicateWarnings.map((warning: Row) => warning.partnerId)).toContain("epartner_rememo_dup");
+      expect(sameOrgBody.duplicateWarnings.map((warning: Row) => warning.partnerId)).not.toContain("epartner_samyak_dup");
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("rejects Education Partner mutations that point to another organisation branch", async () => {
+    const fixture = await createFixture();
+    try {
+      seedTenant(fixture.sqlite, { organisationId: "org_rememo", slug: "rememo", name: "Rememo", branchId: "branch_rememo", branchCode: "REM" });
+      await seedEducationPartner(fixture.sqlite, "epartner_rememo", "9876543213", { businessName: "Rememo Partner", referrerProfileId: "refprof_rememo_partner", organisationId: "org_rememo", branchId: "branch_rememo" });
+      const rememoCookie = await seedTenantOwner(fixture.sqlite, { organisationId: "org_rememo", slug: "rememo", branchId: "branch_rememo", token: "rememo-owner-token" });
+
+      const update = await patchPartner(fixture.env, rememoCookie, "epartner_rememo", { mobile: "9876543213", homeBranchId: "branch_sion" });
+      const updateBody = (await update.json()) as Row;
+
+      expect(update.status).toBe(400);
+      expect(updateBody.error.code).toBe("invalid_branch");
+      expect(row(fixture.sqlite, "select home_branch_id from education_partners where id = 'epartner_rememo'")).toMatchObject({ home_branch_id: "branch_rememo" });
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("preserves Samyak owner access to Samyak Education Partners", async () => {
+    const fixture = await createFixture();
+    try {
+      await seedEducationPartner(fixture.sqlite, "epartner_samyak", PARTNER_MOBILE, { businessName: "Samyak Partner", referrerProfileId: "refprof_samyak_partner" });
+      seedOwner(fixture.sqlite, "acct_owner");
+      const ownerCookie = await seedSession(fixture.sqlite, "acct_owner", "person_owner", null, "owner-token");
+
+      const response = await app.request("http://localhost/api/staff/education-partners/epartner_samyak", { headers: { Cookie: ownerCookie } }, fixture.env);
+      const body = (await response.json()) as Row;
+
+      expect(response.status).toBe(200);
+      expect(body.partner).toMatchObject({ id: "epartner_samyak", businessName: "Samyak Partner" });
+    } finally {
+      fixture.close();
+    }
+  });
 });
 
 async function createFixture() {
@@ -459,7 +541,7 @@ async function loginStudent(env: WorkerBindings, mobile: string) {
   return sessionCookie(verified);
 }
 
-async function patchPartner(env: WorkerBindings, cookie: string, partnerId: string, overrides: Partial<{ mobile: string; status: string }>) {
+async function patchPartner(env: WorkerBindings, cookie: string, partnerId: string, overrides: Partial<{ mobile: string; status: string; homeBranchId: string }>) {
   return app.request(`http://localhost/api/staff/education-partners/${partnerId}`, {
     method: "PATCH",
     headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie },
@@ -469,7 +551,25 @@ async function patchPartner(env: WorkerBindings, cookie: string, partnerId: stri
       contactPersonName: "Partner Contact",
       mobile: overrides.mobile ?? PARTNER_MOBILE,
       email: "",
-      homeBranchId: "branch_sion",
+      homeBranchId: overrides.homeBranchId ?? "branch_sion",
+      commissionPercent: "10",
+      status: overrides.status ?? "active",
+      internalNotes: "internal note",
+    }),
+  }, env);
+}
+
+async function createPartner(env: WorkerBindings, cookie: string, overrides: Partial<{ businessName: string; mobile: string; homeBranchId: string; status: string }> = {}) {
+  return app.request("http://localhost/api/staff/education-partners", {
+    method: "POST",
+    headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie },
+    body: JSON.stringify({
+      partnerType: "college",
+      businessName: overrides.businessName ?? "Created Partner",
+      contactPersonName: "Partner Contact",
+      mobile: overrides.mobile ?? PARTNER_MOBILE,
+      email: "",
+      homeBranchId: overrides.homeBranchId ?? "branch_sion",
       commissionPercent: "10",
       status: overrides.status ?? "active",
       internalNotes: "internal note",
@@ -561,15 +661,17 @@ async function seedPersonStudent(db: DatabaseSync, personId: string, studentId: 
     .run(`refprof_${personId}`, personId, `student:${personId}`, `token_${personId}`, NOW, NOW);
 }
 
-async function seedEducationPartner(db: DatabaseSync, partnerId: string, mobile: string, options: { businessName?: string; referrerProfileId: string; status?: string; commissionBps?: number }) {
+async function seedEducationPartner(db: DatabaseSync, partnerId: string, mobile: string, options: { businessName?: string; referrerProfileId: string; status?: string; commissionBps?: number; organisationId?: string; branchId?: string }) {
+  const organisationId = options.organisationId || "org_samyak";
+  const branchId = options.branchId || "branch_sion";
   const partnerMobileHash = await hmacHex(SESSION_PEPPER, "education-partner-mobile", mobile);
   db.prepare(
     `insert or replace into education_partners
       (id, organisation_id, home_branch_id, partner_type, business_name, contact_person_name, mobile_hash, mobile_last_four, status, current_commission_basis_points, created_at, updated_at)
-     values (?, 'org_samyak', 'branch_sion', 'college', ?, 'Partner Contact', ?, ?, ?, ?, ?, ?)`,
-  ).run(partnerId, options.businessName || (partnerId === "epartner_b" ? "Partner B" : "Partner A"), partnerMobileHash, mobile.slice(-4), options.status || "active", options.commissionBps || 1000, NOW, NOW);
-  db.prepare("insert or replace into referrer_profiles (id, organisation_id, person_id, external_referrer_id, referral_token, personal_link, active, created_at, updated_at) values (?, 'org_samyak', null, ?, ?, '', ?, ?, ?)")
-    .run(options.referrerProfileId, `education_partner:${partnerId}`, `token_${partnerId}`, options.status === "inactive" ? 0 : 1, NOW, NOW);
+     values (?, ?, ?, 'college', ?, 'Partner Contact', ?, ?, ?, ?, ?, ?)`,
+  ).run(partnerId, organisationId, branchId, options.businessName || (partnerId === "epartner_b" ? "Partner B" : "Partner A"), partnerMobileHash, mobile.slice(-4), options.status || "active", options.commissionBps || 1000, NOW, NOW);
+  db.prepare("insert or replace into referrer_profiles (id, organisation_id, person_id, external_referrer_id, referral_token, personal_link, active, created_at, updated_at) values (?, ?, null, ?, ?, '', ?, ?, ?)")
+    .run(options.referrerProfileId, organisationId, `education_partner:${partnerId}`, `token_${partnerId}`, options.status === "inactive" ? 0 : 1, NOW, NOW);
   db.prepare("insert or ignore into education_partner_referrer_profiles (education_partner_id, referrer_profile_id, created_at) values (?, ?, ?)")
     .run(partnerId, options.referrerProfileId, NOW);
 }
@@ -579,11 +681,43 @@ function seedOwner(db: DatabaseSync, accountId: string) {
   seedStaffRole(db, accountId, "owner");
 }
 
-function seedStaffRole(db: DatabaseSync, accountId: string, roleCode: string) {
-  db.prepare("insert or ignore into login_accounts (id, organisation_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, created_at, updated_at) values (?, 'org_samyak', ?, ?, '9999', 1, 'active', ?, ?)")
-    .run(accountId, accountId, accountId, NOW, NOW);
+function seedStaffRole(db: DatabaseSync, accountId: string, roleCode: string, options: { organisationId?: string; roleId?: string; branchId?: string | null } = {}) {
+  const organisationId = options.organisationId || "org_samyak";
+  const roleId = options.roleId || `role_${roleCode}`;
+  db.prepare("insert or ignore into login_accounts (id, organisation_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, created_at, updated_at) values (?, ?, ?, ?, '9999', 1, 'active', ?, ?)")
+    .run(accountId, organisationId, accountId, accountId, NOW, NOW);
   db.prepare("insert or ignore into login_account_roles (login_account_id, role_id, branch_id, created_at) values (?, ?, null, ?)")
-    .run(accountId, `role_${roleCode}`, NOW);
+    .run(accountId, roleId, NOW);
+  if (options.branchId) {
+    db.prepare("insert or ignore into login_account_roles (login_account_id, role_id, branch_id, created_at) values (?, ?, ?, ?)")
+      .run(accountId, roleId, options.branchId, NOW);
+  }
+}
+
+function seedTenant(db: DatabaseSync, input: { organisationId: string; slug: string; name: string; branchId: string; branchCode: string }) {
+  db.prepare("insert or ignore into organisations (id, name, slug, status, created_at, updated_at) values (?, ?, ?, 'active', ?, ?)")
+    .run(input.organisationId, input.name, input.slug, NOW, NOW);
+  db.prepare("insert or ignore into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at) values (?, ?, ?, ?, 'Asia/Kolkata', 'active', ?, ?)")
+    .run(input.branchId, input.organisationId, input.name, input.branchCode, NOW, NOW);
+  db.prepare("insert or ignore into roles (id, organisation_id, code, name, created_at) values (?, ?, 'owner', 'Owner', ?)")
+    .run(`role_owner_${input.slug}`, input.organisationId, NOW);
+}
+
+async function seedTenantOwner(db: DatabaseSync, input: { organisationId: string; slug: string; branchId: string; token: string }) {
+  const accountId = `acct_owner_${input.slug}`;
+  const membershipId = `omem_owner_${input.slug}`;
+  const globalIdentityId = `gident_owner_${input.slug}`;
+  seedStaffRole(db, accountId, "owner", { organisationId: input.organisationId, roleId: `role_owner_${input.slug}` });
+  db.prepare("insert or ignore into global_identities (id, mobile_normalized, mobile_hash, mobile_last_four, status, created_at, updated_at) values (?, ?, ?, '9999', 'active', ?, ?)")
+    .run(globalIdentityId, accountId, accountId, NOW, NOW);
+  db.prepare("insert or replace into organisation_memberships (id, global_identity_id, organisation_id, login_account_id, status, created_at, updated_at) values (?, ?, ?, ?, 'active', ?, ?)")
+    .run(membershipId, globalIdentityId, input.organisationId, accountId, NOW, NOW);
+  db.prepare("update login_accounts set global_identity_id = ?, organisation_membership_id = ?, updated_at = ? where id = ?")
+    .run(globalIdentityId, membershipId, NOW, accountId);
+  const cookie = await seedSession(db, accountId, null, null, input.token);
+  db.prepare("update user_sessions set organisation_membership_id = ? where id = ?")
+    .run(membershipId, `sess_${input.token.replace(/[^a-z0-9]/gi, "_")}`);
+  return cookie;
 }
 
 async function seedSession(db: DatabaseSync, accountId: string, personId: string | null, partnerId: string | null, token: string) {

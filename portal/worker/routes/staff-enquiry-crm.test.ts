@@ -31,9 +31,9 @@ function routeApp() {
   return app;
 }
 
-function authenticateAs(roles: string[]) {
+function authenticateAs(roles: string[], organisationId = "org_samyak", loginAccountId = "acct_owner") {
   mocks.getSessionFromRequest.mockResolvedValue({
-    record: { login_account_id: "acct_owner", active_person_id: "person_owner" },
+    record: { login_account_id: loginAccountId, active_person_id: "person_owner", organisation_id: organisationId },
   });
   mocks.getAccountRoles.mockResolvedValue(roles);
 }
@@ -316,6 +316,63 @@ describe("staff enquiry CRM route contact exposure", () => {
     expect(db.batchSql.some((sql) => sql.includes("update enquiries"))).toBe(true);
   });
 
+  it("uses the authenticated organisation for CRM lists and event enrichment", async () => {
+    authenticateAs(["owner"], "org_rememo", "acct_rememo");
+    const app = routeApp();
+    const db = crmDb([
+      enquiry({ id: "enq_samyak", organisation_id: "org_samyak" }),
+      enquiry({ id: "enq_rememo", organisation_id: "org_rememo", branch_id: "branch_rememo" }),
+    ]);
+
+    const response = await app.request("/api/staff/enquiries/crm?queue=all", {}, env(db));
+    const body = await response.json() as { items: Array<{ enquiry: { id: string } }> };
+
+    expect(response.status).toBe(200);
+    expect(body.items.map((item) => item.enquiry.id)).toEqual(["enq_rememo"]);
+    expect(db.binds.some((entry) => entry.sql.includes("from enquiry_follow_up_events") && entry.values.includes("org_rememo"))).toBe(true);
+    expect(db.binds.some((entry) => entry.sql.includes("from enquiry_follow_up_events") && entry.values.includes("org_samyak"))).toBe(false);
+  });
+
+  it("rejects cross-organisation CRM detail and follow-up access", async () => {
+    authenticateAs(["owner"], "org_rememo", "acct_rememo");
+    const app = routeApp();
+    const db = crmDb([
+      enquiry({ id: "enq_samyak", organisation_id: "org_samyak" }),
+      enquiry({ id: "enq_rememo", organisation_id: "org_rememo", branch_id: "branch_rememo" }),
+    ]);
+
+    const detail = await app.request("/api/staff/enquiries/enq_samyak/crm", {}, env(db));
+    const followUp = await app.request("http://localhost/api/staff/enquiries/enq_samyak/follow-ups", {
+      method: "POST",
+      headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        channel: "call",
+        outcome: "call_connected",
+        pipelineStage: "engaged",
+        nextFollowUpAt: "2026-09-04T09:30:00.000Z",
+        expectedJoiningDate: null,
+        note: "Cross org attempt",
+        closedReason: null,
+      }),
+    }, env(db));
+
+    expect(detail.status).toBe(404);
+    expect(followUp.status).toBe(404);
+  });
+
+  it("preserves Samyak CRM access for Samyak staff sessions", async () => {
+    authenticateAs(["owner"], "org_samyak", "acct_owner");
+    const app = routeApp();
+    const db = crmDb([
+      enquiry({ id: "enq_samyak", organisation_id: "org_samyak" }),
+      enquiry({ id: "enq_rememo", organisation_id: "org_rememo", branch_id: "branch_rememo" }),
+    ]);
+
+    const response = await app.request("/api/staff/enquiries/enq_samyak/crm", {}, env(db));
+
+    expect(response.status).toBe(200);
+  });
+
   it("executes the generated CRM SELECT against production-shaped admission tables", async () => {
     const app = routeApp();
     const db = productionShapeCrmDb();
@@ -479,26 +536,29 @@ function productionShapeCrmDb() {
 }
 
 function crmDb(rows: EnquiryCrmRow[]) {
-  return {
+  const db = {
     seenSql: [] as string[],
     batchSql: [] as string[],
+    binds: [] as Array<{ sql: string; values: unknown[] }>,
     prepare(sql: string) {
       this.seenSql.push(sql);
-      return statement(sql, rows);
+      return statement(sql, rows, this.binds);
     },
     async batch(statements: Array<{ sql?: string; run: () => Promise<unknown> }>) {
       this.batchSql.push(...statements.map((statement) => statement.sql || ""));
       return Promise.all(statements.map((statement) => statement.run()));
     },
   };
+  return db;
 }
 
-function statement(sql: string, rows: EnquiryCrmRow[]) {
+function statement(sql: string, rows: EnquiryCrmRow[], binds: Array<{ sql: string; values: unknown[] }>) {
   let values: unknown[] = [];
   return {
     sql,
     bind(...params: unknown[]) {
       values = params;
+      binds.push({ sql, values: params });
       return this;
     },
     async all() {
@@ -522,7 +582,7 @@ function statement(sql: string, rows: EnquiryCrmRow[]) {
         const personId = String(values[0] || "");
         return { id: `contact_${personId}`, value_ciphertext: `cipher_${personId}` };
       }
-      if (sql.includes("from enquiries")) return rows.find((row) => row.id === values[0]) || rows[0] || null;
+      if (sql.includes("from enquiries")) return filterRows(rows, sql, values)[0] || null;
       return null;
     },
     async run() {
@@ -533,6 +593,14 @@ function statement(sql: string, rows: EnquiryCrmRow[]) {
 
 function filterRows(rows: EnquiryCrmRow[], sql: string, values: unknown[]) {
   let filtered = rows;
+  if (sql.includes("enquiries.organisation_id = ?")) {
+    const organisationId = values.find((value) => typeof value === "string" && String(value).startsWith("org_"));
+    if (organisationId) filtered = filtered.filter((row) => row.organisation_id === organisationId);
+  }
+  if (sql.includes("enquiries.id = ?")) {
+    const enquiryId = values.find((value) => typeof value === "string" && String(value).startsWith("enq_"));
+    if (enquiryId) filtered = filtered.filter((row) => row.id === enquiryId);
+  }
   if (sql.includes("enquiries.branch_id in")) {
     const branchIds = values.filter((value) => typeof value === "string" && String(value).startsWith("branch_"));
     filtered = filtered.filter((row) => branchIds.includes(row.branch_id));

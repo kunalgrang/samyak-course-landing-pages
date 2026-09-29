@@ -1,6 +1,5 @@
 import { z } from "zod";
 import type { AppContext } from "./http";
-import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, decryptText } from "./crypto";
 import { staffOrganisationId, type StaffContext } from "./staff-auth";
 
@@ -165,15 +164,17 @@ export type TemperatureResult = {
 };
 
 export async function branchScope(c: AppContext, staff: StaffContext): Promise<BranchScope> {
+  const organisationId = staffOrganisationId(staff);
   if (staff.roles.some((role) => SYSTEM_ADMIN_ROLES.has(role))) return { canAccessAnyBranch: true, allBranches: true, branchIds: [] };
   const rows = await c.env.DB.prepare(
     `select distinct login_account_roles.branch_id
      from login_account_roles
      join roles on roles.id = login_account_roles.role_id
      where login_account_roles.login_account_id = ?
+       and roles.organisation_id = ?
        and roles.code in ('owner', 'system_admin', 'admin', 'counsellor', 'admission_admin')`,
   )
-    .bind(staff.loginAccountId)
+    .bind(staff.loginAccountId, organisationId)
     .all<{ branch_id: string | null }>();
   const hasGlobalStaffRole = (rows.results || []).some((row) => !row.branch_id);
   const branchIds = (rows.results || []).map((row) => row.branch_id).filter((value): value is string => Boolean(value));
@@ -354,7 +355,7 @@ function crmContactFromMobile(enquiry: EnquiryCrmRow, mobile: string | null) {
   };
 }
 
-export async function fetchEventsForEnquiries(c: AppContext, enquiryIds: string[], limitPerEnquiry = 80) {
+export async function fetchEventsForEnquiries(c: AppContext, organisationId: string, enquiryIds: string[], limitPerEnquiry = 80) {
   const uniqueIds = [...new Set(enquiryIds)].filter(Boolean);
   if (!uniqueIds.length) return new Map<string, FollowUpEventRecord[]>();
   const rows = await c.env.DB.prepare(
@@ -364,7 +365,7 @@ export async function fetchEventsForEnquiries(c: AppContext, enquiryIds: string[
        and enquiry_id in (${uniqueIds.map(() => "?").join(",")})
      order by enquiry_id, occurred_at desc`,
   )
-    .bind(ORG_ID, ...uniqueIds)
+    .bind(organisationId, ...uniqueIds)
     .all<FollowUpEventRecord>();
   const map = new Map<string, FollowUpEventRecord[]>();
   for (const row of rows.results || []) {
@@ -376,7 +377,7 @@ export async function fetchEventsForEnquiries(c: AppContext, enquiryIds: string[
 }
 
 export async function assignEnquiry(c: AppContext, staff: StaffContext, enquiryId: string, assigneeId: string | null) {
-  const ORG_ID = staffOrganisationId(staff);
+  const organisationId = staffOrganisationId(staff);
   const enquiry = await scopedEnquiry(c, staff, enquiryId);
   if (!enquiry) return { ok: false as const, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
   if (TERMINAL_STAGE_SET.has(enquiry.pipeline_stage)) return { ok: false as const, status: 409, code: "terminal_enquiry", message: "Terminal enquiries cannot be reassigned." };
@@ -396,21 +397,21 @@ export async function assignEnquiry(c: AppContext, staff: StaffContext, enquiryI
          and (login_account_roles.branch_id is null or login_account_roles.branch_id = ?)
        limit 1`,
     )
-      .bind(assigneeId, ORG_ID, enquiry.branch_id)
+      .bind(assigneeId, organisationId, enquiry.branch_id)
       .first<{ id: string }>();
     if (!target) return { ok: false as const, status: 400, code: "invalid_assignee", message: "Select an active staff member for this branch." };
   }
   const now = new Date().toISOString();
   if (selfClaim) {
     const result = await c.env.DB.prepare("update enquiries set counsellor_login_account_id = ?, assigned_at = ?, updated_at = ? where id = ? and organisation_id = ? and counsellor_login_account_id is null")
-      .bind(assigneeId, now, now, enquiry.id, ORG_ID)
+      .bind(assigneeId, now, now, enquiry.id, organisationId)
       .run();
     if (!changed(result)) return { ok: false as const, status: 409, code: "assignment_taken", message: "This enquiry has already been claimed." };
     await auditStatement(c, staff, enquiry.branch_id, "enquiry_assigned", "enquiry", enquiry.id, { from: null, to: assigneeId }).run();
   } else {
     await c.env.DB.batch([
       c.env.DB.prepare("update enquiries set counsellor_login_account_id = ?, assigned_at = ?, updated_at = ? where id = ? and organisation_id = ?")
-        .bind(assigneeId, assigneeId ? now : null, now, enquiry.id, ORG_ID),
+        .bind(assigneeId, assigneeId ? now : null, now, enquiry.id, organisationId),
       auditStatement(c, staff, enquiry.branch_id, "enquiry_assigned", "enquiry", enquiry.id, { from: enquiry.counsellor_login_account_id, to: assigneeId }),
     ]);
   }
@@ -418,7 +419,7 @@ export async function assignEnquiry(c: AppContext, staff: StaffContext, enquiryI
 }
 
 export async function recordFollowUp(c: AppContext, staff: StaffContext, enquiryId: string, input: z.infer<typeof followUpInputSchema>) {
-  const ORG_ID = staffOrganisationId(staff);
+  const organisationId = staffOrganisationId(staff);
   const enquiry = await scopedEnquiry(c, staff, enquiryId);
   if (!enquiry) return { ok: false as const, status: 404, code: "enquiry_not_found", message: "Enquiry was not found." };
   const preferredJoiningDate = input.expectedJoiningDate || enquiry.preferred_joining_date || null;
@@ -446,7 +447,7 @@ export async function recordFollowUp(c: AppContext, staff: StaffContext, enquiry
         (id, enquiry_id, organisation_id, branch_id, actor_login_account_id, channel, outcome, note, occurred_at,
          next_follow_up_at_snapshot, pipeline_stage_snapshot, created_at)
        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(eventId, enquiry.id, ORG_ID, enquiry.branch_id, staff.loginAccountId, input.channel, input.outcome, safeNote(input.note), now, nextFollowUpAt, input.pipelineStage, now),
+    ).bind(eventId, enquiry.id, organisationId, enquiry.branch_id, staff.loginAccountId, input.channel, input.outcome, safeNote(input.note), now, nextFollowUpAt, input.pipelineStage, now),
     c.env.DB.prepare(
       `update enquiries
        set pipeline_stage = ?,
@@ -458,15 +459,15 @@ export async function recordFollowUp(c: AppContext, staff: StaffContext, enquiry
            closed_reason = ?,
            updated_at = ?
        where id = ? and organisation_id = ?`,
-    ).bind(input.pipelineStage, status, nextFollowUpAt, lastContactedAt, preferredJoiningDate, lostReason, closedReason, now, enquiry.id, ORG_ID),
+    ).bind(input.pipelineStage, status, nextFollowUpAt, lastContactedAt, preferredJoiningDate, lostReason, closedReason, now, enquiry.id, organisationId),
     auditStatement(c, staff, enquiry.branch_id, "enquiry_follow_up_recorded", "enquiry", enquiry.id, {
       channel: input.channel,
       outcome: input.outcome,
       pipelineStage: input.pipelineStage,
     }),
   ]);
-  const refreshed = await getEnquiryById(c, enquiry.id);
-  const events = refreshed ? (await fetchEventsForEnquiries(c, [refreshed.id])).get(refreshed.id) || [] : [];
+  const refreshed = await getEnquiryById(c, organisationId, enquiry.id);
+  const events = refreshed ? (await fetchEventsForEnquiries(c, organisationId, [refreshed.id])).get(refreshed.id) || [] : [];
   return {
     ok: true as const,
     enquiryId: enquiry.id,
@@ -477,10 +478,10 @@ export async function recordFollowUp(c: AppContext, staff: StaffContext, enquiry
 }
 
 export async function scopedEnquiry(c: AppContext, staff: StaffContext, enquiryId: string) {
-  const ORG_ID = staffOrganisationId(staff);
+  const organisationId = staffOrganisationId(staff);
   const scope = await branchScope(c, staff);
   if (!scope.canAccessAnyBranch) return null;
-  const where = scopedWhere(scope, ["enquiries.id = ?", "enquiries.organisation_id = ?"], [enquiryId, ORG_ID]);
+  const where = scopedWhere(scope, ["enquiries.id = ?", "enquiries.organisation_id = ?"], [enquiryId, organisationId]);
   return c.env.DB.prepare(`${enquirySelectSql()} ${where.sql} limit 1`).bind(...where.params).first<EnquiryCrmRow>();
 }
 
@@ -525,13 +526,13 @@ export function enquirySelectSql() {
    left join people assigned_people on assigned_people.id = assigned_account_people.person_id`;
 }
 
-export async function getEnquiryById(c: AppContext, enquiryId: string) {
+export async function getEnquiryById(c: AppContext, organisationId: string, enquiryId: string) {
   return c.env.DB.prepare(`${enquirySelectSql()} where enquiries.id = ? and enquiries.organisation_id = ? limit 1`)
-    .bind(enquiryId, ORG_ID)
+    .bind(enquiryId, organisationId)
     .first<EnquiryCrmRow>();
 }
 
-export async function staffForBranch(c: AppContext, branchId: string) {
+export async function staffForBranch(c: AppContext, organisationId: string, branchId: string) {
   const rows = await c.env.DB.prepare(
     `select distinct login_accounts.id, coalesce(people.public_name, people.full_name, 'Unknown staff') as label
      from login_accounts
@@ -545,7 +546,7 @@ export async function staffForBranch(c: AppContext, branchId: string) {
        and (login_account_roles.branch_id is null or login_account_roles.branch_id = ?)
      order by label`,
   )
-    .bind(ORG_ID, branchId)
+    .bind(organisationId, branchId)
     .all<{ id: string; label: string }>();
   return rows.results || [];
 }
@@ -595,13 +596,13 @@ function emptyCrmContact() {
 }
 
 function auditStatement(c: AppContext, staff: StaffContext, branchId: string | null, action: string, entityType: string, entityId: string, metadata: Record<string, unknown>) {
-  const ORG_ID = staffOrganisationId(staff);
+  const organisationId = staffOrganisationId(staff);
   return c.env.DB.prepare(
     `insert into audit_logs
        (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(createOpaqueId("audit"), ORG_ID, branchId, staff.loginAccountId, staff.activePersonId, action, entityType, entityId, JSON.stringify(metadata), new Date().toISOString());
+    .bind(createOpaqueId("audit"), organisationId, branchId, staff.loginAccountId, staff.activePersonId, action, entityType, entityId, JSON.stringify(metadata), new Date().toISOString());
 }
 
 function isUrgentSource(source: string) {
