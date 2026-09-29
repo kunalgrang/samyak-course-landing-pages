@@ -222,6 +222,82 @@ describe("Batch Management V1 service", () => {
     await expect(validateAdmissionBatchSelection(c, staff, "branch_sion", "course_unrelated", "batch_one")).resolves.toHaveProperty("course.batchId");
   });
 
+  it("filters admission options by canonical Centre commercial eligibility", async () => {
+    const { c } = setup();
+    const owner: StaffContext = { loginAccountId: "acct_owner", activePersonId: "person_admin", roles: ["owner"] };
+    seedCentre(c, "branch_trial", "Trial Centre", "TRIAL", "active", "active", "trial");
+    seedCentre(c, "branch_pending", "Pending Centre", "PEND", "active", "active", "pending_payment");
+    seedCentre(c, "branch_suspended", "Suspended Centre", "SUSP", "active", "active", "suspended");
+    await seedBatch(c, "batch_trial", "branch_trial", "course_fsd");
+    await seedBatch(c, "batch_pending", "branch_pending", "course_fsd");
+    await seedBatch(c, "batch_suspended", "branch_suspended", "course_fsd");
+
+    const trialOptions = await listAdmissionEligibleBatches(c, owner, "branch_trial", "course_fsd");
+    const pendingOptions = await listAdmissionEligibleBatches(c, owner, "branch_pending", "course_fsd");
+    const suspendedOptions = await listAdmissionEligibleBatches(c, owner, "branch_suspended", "course_fsd");
+
+    expect(trialOptions.ok && trialOptions.batches.map((batch) => batch.id)).toEqual(["batch_trial"]);
+    expect(pendingOptions.ok && pendingOptions.batches).toEqual([]);
+    expect(suspendedOptions.ok && suspendedOptions.batches).toEqual([]);
+  });
+
+  it("rejects direct assignment into commercially non-operational Centre batches without writing membership", async () => {
+    const { c } = setup();
+    const owner: StaffContext = { loginAccountId: "acct_owner", activePersonId: "person_admin", roles: ["owner"] };
+    seedCentre(c, "branch_pending", "Pending Centre", "PEND", "active", "active", "pending_payment");
+    seedEnrolment(c, "enrol_pending", "student_pending", "person_pending", "branch_pending", "course_fsd");
+    await seedBatch(c, "batch_pending", "branch_pending", "course_fsd");
+
+    const result = await assignEnrolmentToBatch(c, owner, "batch_pending", "enrol_pending");
+
+    expect(result).toMatchObject({ ok: false, code: "centre_not_operational" });
+    expect(membershipCount(c, "enrol_pending")).toBe(0);
+  });
+
+  it("rejects transfer into a batch when the target Centre is no longer commercially operational", async () => {
+    const { c, staff } = setup();
+    await seedBatch(c, "batch_one", "branch_sion", "course_fsd");
+    await seedBatch(c, "batch_two", "branch_sion", "course_fsd");
+    const assigned = await assignEnrolmentToBatch(c, staff, "batch_one", "enrol_one");
+    expect(assigned).toMatchObject({ ok: true });
+    if (!assigned.ok) return;
+    setCentreCommercialState(c, "branch_sion", "suspended");
+
+    const transferred = await transferBatchMembership(c, staff, "batch_one", assigned.membershipId, "batch_two");
+
+    expect(transferred).toMatchObject({ ok: false, code: "centre_not_operational" });
+    expect(c.env.DB.database.prepare("select batch_id, status, left_at from batch_memberships where id = ?").get(assigned.membershipId)).toMatchObject({
+      batch_id: "batch_one",
+      status: "active",
+      left_at: null,
+    });
+    expect(membershipCount(c, "enrol_one")).toBe(1);
+  });
+
+  it("rejects admission-confirmation assignment into commercially non-operational Centre batches", async () => {
+    const { c, staff } = setup();
+    await seedBatch(c, "batch_one", "branch_sion", "course_fsd");
+    setCentreCommercialState(c, "branch_sion", "pending_payment");
+
+    expect(await validateAdmissionBatchSelection(c, staff, "branch_sion", "course_fsd", "batch_one")).toHaveProperty("course.batchId");
+    expect(await assignBatchOnAdmissionConfirmation(c, staff, { branchId: "branch_sion", courseId: "course_fsd", batchId: "batch_one" }, "enrol_one", NOW)).toMatchObject({ ok: false, code: "centre_not_operational" });
+    expect(membershipCount(c, "enrol_one")).toBe(0);
+  });
+
+  it("keeps historical roster reads and removal available after Centre commercial suspension", async () => {
+    const { c, staff } = setup();
+    await seedBatch(c, "batch_one", "branch_sion", "course_fsd");
+    const assigned = await assignEnrolmentToBatch(c, staff, "batch_one", "enrol_one");
+    expect(assigned).toMatchObject({ ok: true });
+    if (!assigned.ok) return;
+    setCentreCommercialState(c, "branch_sion", "suspended");
+
+    const detail = await getBatchDetail(c, staff, "batch_one");
+    expect(detail.ok && detail.roster.map((row) => row.enrolment_id)).toEqual(["enrol_one"]);
+    await expect(removeBatchMembership(c, staff, assigned.membershipId)).resolves.toMatchObject({ ok: true });
+    expect(membershipCount(c, "enrol_one")).toBe(0);
+  });
+
   it("requires at least one course, rejects cross-org courses, and locks course mappings with history", async () => {
     const { c, staff } = setup();
     await expect(createBatch(c, staff, {
@@ -446,10 +522,32 @@ function batchCourseIds(c: AppContext & { env: { DB: SqliteD1 } }, batchId: stri
   return rows.map((row) => row.course_id);
 }
 
+function membershipCount(c: AppContext & { env: { DB: SqliteD1 } }, enrolmentId: string) {
+  const row = c.env.DB.database.prepare("select count(*) as count from batch_memberships where enrolment_id = ? and status = 'active' and left_at is null").get(enrolmentId) as any;
+  return Number(row.count);
+}
+
+function setCentreCommercialState(c: AppContext & { env: { DB: SqliteD1 } }, branchId: string, state: string) {
+  c.env.DB.database.prepare("update centre_commercial_access set state = ? where branch_id = ?").run(state, branchId);
+}
+
+function seedCentre(c: AppContext & { env: { DB: SqliteD1 } }, branchId: string, name: string, code: string, status: string, centreStatus: string, commercialState: string) {
+  c.env.DB.database.prepare("insert into branches values (?, 'org_samyak', ?, ?, 'Asia/Kolkata', ?, ?, ?, ?)").run(branchId, name, code, status, centreStatus, NOW, NOW);
+  c.env.DB.database.prepare("insert into centre_commercial_access values (?, 'org_samyak', ?, ?, 'migration_backfill', null, null, null, ?, ?)").run(`cca_${branchId}`, branchId, commercialState, NOW, NOW);
+}
+
+function seedEnrolment(c: AppContext & { env: { DB: SqliteD1 } }, enrolmentId: string, studentId: string, personId: string, branchId: string, courseId: string) {
+  c.env.DB.database.prepare("insert into people values (?, 'org_samyak', ?, ?, ?, null, 'active', ?, ?)").run(personId, branchId, personId, personId, NOW, NOW);
+  c.env.DB.database.prepare("insert into person_identity_details values (?, ?, '2000-01-01', ?, ?)").run(personId, personId, NOW, NOW);
+  c.env.DB.database.prepare("insert into students values (?, 'org_samyak', ?, ?, ?, 10, '2026-08-28', 'active', 'not_invited', ?, ?)").run(studentId, personId, branchId, studentId, NOW, NOW);
+  c.env.DB.database.prepare("insert into enrolments values (?, ?, ?, ?, ?, ?, 'classroom', null, '2026-08-28', '2026-08-28', null, null, 'confirmed', 'no', ?, ?)").run(enrolmentId, studentId, branchId, courseId, `enq_${enrolmentId}`, `ENR-${enrolmentId}`, NOW, NOW);
+}
+
 function installSchema(db: DatabaseSync) {
   db.exec(`
     create table organisations (id text primary key, name text, slug text, status text, created_at text, updated_at text);
-    create table branches (id text primary key, organisation_id text, name text, code text, timezone text, status text, created_at text, updated_at text);
+    create table branches (id text primary key, organisation_id text, name text, code text, timezone text, status text, centre_status text default 'active', created_at text, updated_at text);
+    create table centre_commercial_access (id text primary key, organisation_id text, branch_id text, state text, source text, payment_evidence_source text, payment_evidence_reference text, activated_at text, created_at text, updated_at text);
     create table people (id text primary key, organisation_id text, home_branch_id text, full_name text, public_name text, date_of_birth text, status text, created_at text, updated_at text);
     create table person_identity_details (person_id text primary key, official_full_name text, date_of_birth text, created_at text, updated_at text);
     create table person_contacts (id text primary key, person_id text, contact_type text, normalized_value text, display_value text, last_four text, is_primary integer);
@@ -480,8 +578,10 @@ function installSchema(db: DatabaseSync) {
 
 function seedBase(db: DatabaseSync) {
   db.prepare("insert into organisations values ('org_samyak', 'Samyak', 'samyak', 'active', ?, ?)").run(NOW, NOW);
-  db.prepare("insert into branches values ('branch_sion', 'org_samyak', 'Sion', 'SION', 'Asia/Kolkata', 'active', ?, ?)").run(NOW, NOW);
-  db.prepare("insert into branches values ('branch_dadar', 'org_samyak', 'Dadar', 'DDR', 'Asia/Kolkata', 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into branches values ('branch_sion', 'org_samyak', 'Sion', 'SION', 'Asia/Kolkata', 'active', 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into branches values ('branch_dadar', 'org_samyak', 'Dadar', 'DDR', 'Asia/Kolkata', 'active', 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into centre_commercial_access values ('cca_branch_sion', 'org_samyak', 'branch_sion', 'legacy_existing', 'migration_backfill', null, null, null, ?, ?)").run(NOW, NOW);
+  db.prepare("insert into centre_commercial_access values ('cca_branch_dadar', 'org_samyak', 'branch_dadar', 'legacy_existing', 'migration_backfill', null, null, null, ?, ?)").run(NOW, NOW);
   db.prepare("insert into roles values ('role_admin', 'org_samyak', 'admin', 'Admin', ?), ('role_trainer', 'org_samyak', 'trainer', 'Trainer', ?)").run(NOW, NOW);
   db.prepare("insert into people values ('person_admin', 'org_samyak', 'branch_sion', 'Admin User', 'Admin', null, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into people values ('person_trainer', 'org_samyak', 'branch_sion', 'Trainer User', 'Trainer', null, 'active', ?, ?)").run(NOW, NOW);

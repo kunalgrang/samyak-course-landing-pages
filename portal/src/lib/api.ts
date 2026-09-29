@@ -218,6 +218,8 @@ const centreSchema = z.object({
   gstin: z.string(),
   status: z.union([z.literal("active"), z.literal("inactive")]),
   centreStatus: z.string(),
+  commercialState: z.string(),
+  commercialStatusLabel: z.string(),
   canOperate: z.boolean(),
   subscriptionStatusLabel: z.string(),
   createdAt: z.string(),

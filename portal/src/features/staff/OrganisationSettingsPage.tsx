@@ -223,7 +223,7 @@ export function OrganisationSettingsPage() {
       setCentres((current) => upsertCentre(current, result.centre));
       setSelectedCentreId(result.centre.id);
       setCentreForm(formFromCentre(result.centre));
-      setCentreSuccess(selectedCentre ? "Centre details saved." : "Centre created. It will become active after its subscription is paid.");
+      setCentreSuccess(selectedCentre ? "Centre details saved." : "Centre created. It will become active after its subscription payment is verified.");
     } catch (reason) {
       if (reason instanceof ApiError) setCentreFieldErrors(reason.fieldErrors || null);
       setCentreSaveError(errorMessage(reason));
@@ -401,7 +401,7 @@ function CentreAdmin({
               <button key={centre.id} type="button" className="staff-card" onClick={() => onSelect(centre)} aria-pressed={selectedCentre?.id === centre.id}>
                 <strong>{centre.name}</strong>
                 <span>{centre.code}</span>
-                <span className={`status-pill status-pill--${centre.canOperate ? "approved" : "warning"}`}>{centre.subscriptionStatusLabel}</span>
+                <span className={`status-pill status-pill--${centre.canOperate ? "approved" : "warning"}`}>{centre.commercialStatusLabel}</span>
               </button>
             ))}
           </div>
@@ -417,11 +417,11 @@ function CentreAdmin({
             <div className="detail-grid">
               <div><span>Centre code</span><strong>{selectedCentre.code}</strong></div>
               <div><span>Operational status</span><strong>{selectedCentre.status}</strong></div>
-              <div><span>Subscription status</span><strong>{selectedCentre.subscriptionStatusLabel}</strong></div>
+              <div><span>Subscription status</span><strong>{selectedCentre.commercialStatusLabel}</strong></div>
               <div><span>Registered mobile</span><strong>{selectedCentre.maskedMobile || "Not set"}</strong></div>
             </div>
           ) : (
-            <p className="form-message">New centres are created as pending subscription and become operational only after their subscription is paid.</p>
+            <p className="form-message">This Centre will become operational after its subscription payment is verified.</p>
           )}
           <div className="staff-form-grid">
             <Field label="Centre name" field="centreName" value={form.name} onChange={onChange("name")} error={fieldErrors?.name?.[0]} required />

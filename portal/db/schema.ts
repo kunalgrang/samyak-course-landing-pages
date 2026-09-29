@@ -476,6 +476,34 @@ export const organisationCommercialAccess = sqliteTable(
   ],
 );
 
+export const centreCommercialAccess = sqliteTable(
+  "centre_commercial_access",
+  {
+    id: text("id").primaryKey(),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branches.id),
+    state: text("state").notNull(),
+    source: text("source").notNull(),
+    paymentEvidenceSource: text("payment_evidence_source"),
+    paymentEvidenceReference: text("payment_evidence_reference"),
+    activatedAt: text("activated_at"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("centre_commercial_access_branch_unique").on(table.branchId),
+    index("centre_commercial_access_org_state_idx").on(table.organisationId, table.state),
+    index("centre_commercial_access_branch_idx").on(table.branchId),
+    check("centre_commercial_access_state_check", sql`${table.state} in ('pending_payment', 'trial', 'active', 'grace', 'past_due', 'suspended', 'cancelled', 'legacy_existing')`),
+    check("centre_commercial_access_source_check", sql`${table.source} in ('migration_backfill', 'organisation_signup_trial', 'centre_created', 'maintenance_activation', 'billing_provider')`),
+    check("centre_commercial_access_payment_evidence_source_check", sql`${table.paymentEvidenceSource} is null or ${table.paymentEvidenceSource} in ('external_manual_verification', 'payment_provider', 'invoice_settlement')`),
+    check("centre_commercial_access_payment_reference_required_check", sql`(${table.state} = 'active' and ${table.source} in ('maintenance_activation', 'billing_provider')) = (${table.paymentEvidenceSource} is not null and ${table.paymentEvidenceReference} is not null and ${table.activatedAt} is not null)`),
+  ],
+);
+
 export const organisationOnboardingProgress = sqliteTable(
   "organisation_onboarding_progress",
   {

@@ -5,6 +5,7 @@ import { createOpaqueId } from "./crypto";
 import { maskMobile, normalizeIndianMobile } from "./mobile";
 import { countryDefaults, CENTRE_OPERATING_MODELS } from "./organisation-signup";
 import { staffOrganisationId, type StaffContext } from "./staff-auth";
+import { centreCommercialStatusLabel, isCentreCommerciallyOperational } from "./centre-commercial-access";
 
 const panPattern = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const gstinPattern = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
@@ -69,6 +70,8 @@ export type CentrePayload = {
   gstin: string;
   status: "active" | "inactive";
   centreStatus: string;
+  commercialState: string;
+  commercialStatusLabel: string;
   canOperate: boolean;
   subscriptionStatusLabel: string;
   createdAt: string;
@@ -91,6 +94,7 @@ type CentreRow = {
   timezone: string | null;
   operating_model: string | null;
   centre_status: string | null;
+  commercial_state: string | null;
   tax_identifiers_json: string | null;
   created_at: string;
   updated_at: string;
@@ -102,7 +106,7 @@ type CentreResult =
 
 export async function listCentres(c: AppContext, staff: StaffContext) {
   const organisationId = staffOrganisationId(staff);
-  const rows = await c.env.DB.prepare(`${centreSelectSql()} where organisation_id = ? order by created_at, name`)
+  const rows = await c.env.DB.prepare(`${centreSelectSql()} where branches.organisation_id = ? order by branches.created_at, branches.name`)
     .bind(organisationId)
     .all<CentreRow>();
   return (rows.results || []).map(centrePayload);
@@ -125,6 +129,7 @@ export async function createCentre(c: AppContext, staff: StaffContext, input: Ce
   const mobileHashValue = await mobileHash(c, normalizedMobile);
   const now = new Date().toISOString();
   const centreId = createOpaqueId("branch");
+  const commercialAccessId = createOpaqueId("cca");
   const taxJson = mergeTaxIdentifiers(null, input.pan, input.gstin);
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -158,10 +163,17 @@ export async function createCentre(c: AppContext, staff: StaffContext, input: Ce
           now,
           now,
         ),
+        c.env.DB.prepare(
+          `insert into centre_commercial_access
+            (id, organisation_id, branch_id, state, source, payment_evidence_source,
+             payment_evidence_reference, activated_at, created_at, updated_at)
+           values (?, ?, ?, 'pending_payment', 'centre_created', null, null, null, ?, ?)`,
+        ).bind(commercialAccessId, organisationId, centreId, now, now),
         auditStatement(c, staff, organisationId, centreId, "centre_created", {
           centreCode,
           operatingModel: input.operatingModel,
           initialStatus: PENDING_SUBSCRIPTION,
+          commercialState: "pending_payment",
         }, now),
       ]);
       const row = await loadCentreRow(c, organisationId, centreId);
@@ -258,14 +270,20 @@ export async function updateCentre(c: AppContext, staff: StaffContext, centreId:
 }
 
 function centreSelectSql() {
-  return `select id, name, code, status, address_line1, city, state_region, postcode, country,
-                 mobile_last_four, email, currency, timezone, operating_model, centre_status,
-                 tax_identifiers_json, created_at, updated_at
-          from branches`;
+  return `select branches.id, branches.name, branches.code, branches.status,
+                 branches.address_line1, branches.city, branches.state_region, branches.postcode, branches.country,
+                 branches.mobile_last_four, branches.email, branches.currency, branches.timezone,
+                 branches.operating_model, branches.centre_status,
+                 centre_commercial_access.state as commercial_state,
+                 branches.tax_identifiers_json, branches.created_at, branches.updated_at
+          from branches
+          left join centre_commercial_access
+            on centre_commercial_access.branch_id = branches.id
+           and centre_commercial_access.organisation_id = branches.organisation_id`;
 }
 
 function loadCentreRow(c: AppContext, organisationId: string, centreId: string) {
-  return c.env.DB.prepare(`${centreSelectSql()} where id = ? and organisation_id = ?`)
+  return c.env.DB.prepare(`${centreSelectSql()} where branches.id = ? and branches.organisation_id = ?`)
     .bind(centreId, organisationId)
     .first<CentreRow>();
 }
@@ -291,6 +309,9 @@ function centrePayload(row: CentreRow): CentrePayload {
   const tax = parseTaxIdentifiers(row.tax_identifiers_json);
   const status = row.status === "active" ? "active" : "inactive";
   const centreStatus = row.centre_status || (status === "active" ? "active" : "inactive");
+  const commercialState = row.commercial_state || "unknown";
+  const commercialStatusLabel = centreCommercialStatusLabel(commercialState);
+  const canOperate = status === "active" && centreStatus === "active" && isCentreCommerciallyOperational(commercialState);
   return {
     id: row.id,
     name: row.name,
@@ -309,8 +330,10 @@ function centrePayload(row: CentreRow): CentrePayload {
     gstin: tax.gstin,
     status,
     centreStatus,
-    canOperate: status === "active" && centreStatus !== PENDING_SUBSCRIPTION,
-    subscriptionStatusLabel: labelForCentreStatus(centreStatus),
+    commercialState,
+    commercialStatusLabel,
+    canOperate,
+    subscriptionStatusLabel: commercialStatusLabel !== "Unknown" ? commercialStatusLabel : labelForCentreStatus(centreStatus),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

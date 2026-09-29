@@ -127,7 +127,9 @@ describe("staff centre routes", () => {
       status: "inactive",
       centreStatus: "pending_subscription",
       canOperate: false,
-      subscriptionStatusLabel: "Pending Subscription",
+      commercialState: "pending_payment",
+      commercialStatusLabel: "Pending subscription",
+      subscriptionStatusLabel: "Pending subscription",
       maskedMobile: "******3210",
       pan: "ABCDE1234F",
       gstin: "27ABCDE1234F1Z5",
@@ -145,6 +147,14 @@ describe("staff centre routes", () => {
       updated_at: TEST_NOW,
     });
     expect(row(db, "select state from organisation_commercial_access where organisation_id = ?", "org_samyak")?.state).toBe("active");
+    expect(row(db, "select branch_id, state, source, payment_evidence_source, payment_evidence_reference, activated_at from centre_commercial_access where branch_id = ?", "branch_1")).toMatchObject({
+      branch_id: "branch_1",
+      state: "pending_payment",
+      source: "centre_created",
+      payment_evidence_source: null,
+      payment_evidence_reference: null,
+      activated_at: null,
+    });
     expect(audit).toMatchObject({
       organisation_id: "org_samyak",
       branch_id: "branch_1",
@@ -153,7 +163,7 @@ describe("staff centre routes", () => {
       entity_type: "branch",
       created_at: TEST_NOW,
     });
-    expect(JSON.parse(String(audit.metadata_json))).toEqual({ centreCode: "CTR-003", operatingModel: "company_owned", initialStatus: "pending_subscription" });
+    expect(JSON.parse(String(audit.metadata_json))).toEqual({ centreCode: "CTR-003", operatingModel: "company_owned", initialStatus: "pending_subscription", commercialState: "pending_payment" });
     expect(String(audit.metadata_json)).not.toContain("ABCDE1234F");
     expect(String(audit.metadata_json)).not.toContain("9876543210");
   });
@@ -179,6 +189,7 @@ describe("staff centre routes", () => {
     const app = routeApp();
 
     await postCentre(app, db, createPayload({ name: "Pending East", mobile: "9876543210" }));
+    db.prepare("update branches set status = 'active', centre_status = 'active' where id = 'branch_pending'").run();
     const options = await app.request("/api/staff/enquiry-options", {}, env(db));
     const body = await options.json() as { branches: Array<{ id: string; name: string }> };
 
@@ -402,6 +413,19 @@ function seededDb() {
       created_at text not null,
       updated_at text not null
     );
+    create table centre_commercial_access (
+      id text primary key,
+      organisation_id text not null,
+      branch_id text not null,
+      state text not null,
+      source text not null,
+      payment_evidence_source text,
+      payment_evidence_reference text,
+      activated_at text,
+      created_at text not null,
+      updated_at text not null
+    );
+    create unique index centre_commercial_access_branch_unique on centre_commercial_access (branch_id);
     create table courses (
       id text primary key,
       organisation_id text not null,
@@ -452,9 +476,20 @@ function seededDb() {
   });
   db.prepare("insert into organisation_commercial_access (id, organisation_id, state, trial_started_at, trial_ends_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)")
     .run("access_samyak", "org_samyak", "active", "2026-01-01", "2026-01-16", "2026-01-01", "2026-01-01");
+  insertCentreCommercialAccess(db, "cca_branch_main", "org_samyak", "branch_main", "legacy_existing");
+  insertCentreCommercialAccess(db, "cca_branch_pending", "org_samyak", "branch_pending", "pending_payment");
+  insertCentreCommercialAccess(db, "cca_branch_rememo", "org_rememo", "branch_rememo", "legacy_existing");
   db.prepare("insert into courses (id, organisation_id, code, name, duration_label, default_fee_paise, nsdc_available, admission_configuration_complete, status) values (?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .run("course_1", "org_samyak", "ADCA", "Advanced Diploma", "12 months", 4500000, 1, 1, "active");
   return db;
+}
+
+function insertCentreCommercialAccess(db: DatabaseSync, id: string, organisationId: string, branchId: string, state: string) {
+  db.prepare(
+    `insert into centre_commercial_access
+      (id, organisation_id, branch_id, state, source, payment_evidence_source, payment_evidence_reference, activated_at, created_at, updated_at)
+     values (?, ?, ?, ?, 'migration_backfill', null, null, null, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+  ).run(id, organisationId, branchId, state);
 }
 
 function insertOrganisation(db: DatabaseSync, id: string, name: string, slug: string) {

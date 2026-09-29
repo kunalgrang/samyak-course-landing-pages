@@ -19,6 +19,7 @@ try {
   ]);
 
   const schema = query("select name, type from sqlite_master where name in ('class_sessions','attendance_records','session_materials','collection_followups','fee_schedule_revisions','receipt_reversals','global_identities','organisation_memberships','signup_verifications','organisation_account_authorities','organisation_commercial_access','organisation_onboarding_progress','user_sessions_active_subject_type_idx','class_sessions_batch_date_start_unique','attendance_records_session_membership_unique','session_materials_class_session_idx','session_materials_org_session_idx','session_materials_org_trainer_created_idx','person_roles_role_status_branch_idx','collection_followups_org_branch_next_idx','collection_followups_org_enrolment_created_idx','collection_followups_org_promise_idx','fee_schedule_revisions_fee_revision_unique','fee_schedule_revisions_enrolment_created_idx','receipt_reversals_receipt_unique','receipt_reversals_idempotency_unique','receipt_reversals_org_enrolment_created_idx','global_identities_mobile_normalized_unique','global_identities_mobile_hash_idx','organisation_memberships_identity_org_unique','organisation_memberships_login_account_unique','organisation_memberships_org_status_idx','login_accounts_global_identity_id_idx','login_accounts_organisation_membership_id_idx','user_sessions_organisation_membership_id_idx','branches_organisation_name_unique','otp_challenges_mobile_hash_challenge_purpose_requested_at_idx','signup_verifications_challenge_unique','signup_verifications_global_identity_idx','organisation_account_authorities_primary_unique','organisation_account_authorities_org_status_idx','organisation_commercial_access_org_unique','organisation_commercial_access_state_idx','organisation_onboarding_progress_status_idx','organisations_kind_idx') order by type, name;");
+  const centreCommercialSchema = query("select name, type from sqlite_master where name in ('centre_commercial_access','centre_commercial_access_branch_unique','centre_commercial_access_org_state_idx','centre_commercial_access_branch_idx','centre_commercial_access_insert_org_match','centre_commercial_access_update_org_match') order by type, name;");
   const columns = query("select name from pragma_table_info('user_sessions') where name = 'active_subject_type';");
   const sessionMembershipColumn = query("select name from pragma_table_info('user_sessions') where name = 'organisation_membership_id';");
   const accountIdentityColumn = query("select name from pragma_table_info('login_accounts') where name = 'global_identity_id';");
@@ -43,6 +44,9 @@ try {
   const demoSafetyMigration = query("select name from d1_migrations where name = '0035_demo_organisation_safety_controls.sql';");
   const reportedCentreCountMigration = query("select name from d1_migrations where name = '0036_signup_reported_centre_count.sql';");
   const otpSignupPurposeMigration = query("select name from d1_migrations where name = '0037_otp_challenge_signup_purpose.sql';");
+  const centreCommercialAccessMigration = query("select name from d1_migrations where name = '0038_centre_commercial_access.sql';");
+  const centreCommercialAccessColumns = query("select name from pragma_table_info('centre_commercial_access') where name in ('state','source','payment_evidence_source','payment_evidence_reference','activated_at');");
+  const centreCommercialAccessTable = query("select sql from sqlite_master where type = 'table' and name = 'centre_commercial_access';");
   const otpChallengeTable = query("select sql from sqlite_master where type = 'table' and name = 'otp_challenges';");
   const otpChallengePurposeColumn = query("select name, dflt_value from pragma_table_info('otp_challenges') where name = 'challenge_purpose';");
   const duplicateMigrationState = query("select name, count(*) as count from d1_migrations group by name having count(*) > 1;");
@@ -81,6 +85,8 @@ try {
   expectSome(demoSafetyMigration, "0035 migration record");
   expectSome(reportedCentreCountMigration, "0036 migration record");
   expectSome(otpSignupPurposeMigration, "0037 migration record");
+  expectSome(centreCommercialAccessMigration, "0038 migration record");
+  expectSome(centreCommercialAccessColumns, "centre_commercial_access commercial columns");
   expectSome(otpChallengePurposeColumn, "otp_challenges.challenge_purpose column");
   if (otpChallengePurposeColumn[0]?.dflt_value !== "'login'") {
     throw new Error(`Expected otp_challenges.challenge_purpose default 'login', got ${otpChallengePurposeColumn[0]?.dflt_value || "none"}.`);
@@ -100,6 +106,13 @@ try {
   }
   if (duplicateMigrationState.length !== 0) {
     throw new Error(`Duplicate migration state rows found: ${duplicateMigrationState.map((row) => row.name).join(", ")}`);
+  }
+  const centreCommercialAccessSql = String(centreCommercialAccessTable[0]?.sql || "");
+  if (!centreCommercialAccessSql.includes("'pending_payment'") || !centreCommercialAccessSql.includes("'legacy_existing'")) {
+    throw new Error("Expected centre_commercial_access state CHECK constraint to include pending_payment and legacy_existing.");
+  }
+  if (!centreCommercialAccessSql.includes("'maintenance_activation'") || !centreCommercialAccessSql.includes("'billing_provider'")) {
+    throw new Error("Expected centre_commercial_access source CHECK constraint to include maintenance and billing sources.");
   }
   expectNames(schema, [
     "attendance_records",
@@ -148,6 +161,14 @@ try {
     "user_sessions_active_subject_type_idx",
     "user_sessions_organisation_membership_id_idx",
   ]);
+  expectNames(centreCommercialSchema, [
+    "centre_commercial_access",
+    "centre_commercial_access_branch_idx",
+    "centre_commercial_access_branch_unique",
+    "centre_commercial_access_insert_org_match",
+    "centre_commercial_access_org_state_idx",
+    "centre_commercial_access_update_org_match",
+  ]);
   if (subjectTriggers.length !== 0) {
     throw new Error("0027 should not create user_sessions_active_subject_* triggers through Wrangler migrations.");
   }
@@ -155,7 +176,7 @@ try {
     throw new Error("0032 should drop receipts_one_preconfirm_token_per_draft; effective pre-confirm token protection is guarded against receipt_reversals.");
   }
 
-  console.log("Wrangler local D1 migration apply passed through 0037.");
+  console.log("Wrangler local D1 migration apply passed through 0038.");
 } finally {
   rmSync(persistTo, { recursive: true, force: true });
 }

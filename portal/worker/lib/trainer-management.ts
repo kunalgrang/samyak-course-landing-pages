@@ -4,6 +4,7 @@ import { createOpaqueId, decryptText, encryptText } from "./crypto";
 import type { AppContext } from "./http";
 import { maskMobile, normalizeIndianMobile } from "./mobile";
 import { staffOrganisationId, type StaffContext } from "./staff-auth";
+import { operationalCentreJoinSql, operationalCentreWhereSql } from "./centre-commercial-access";
 
 export const TRAINER_MANAGEMENT_ROLES = ["owner", "system_admin", "admin"] as const;
 const TRAINER_ROLE_CODE = "trainer";
@@ -284,8 +285,15 @@ async function validateCreateInput(c: AppContext, staff: StaffContext, input: Tr
   const email = normalizeEmail(input.email || "");
   if (!email.ok) return email;
   const status = input.status || "active";
-  const branch = await c.env.DB.prepare("select id from branches where id = ? and organisation_id = ? and status = 'active'").bind(input.branchId, ORG_ID).first<{ id: string }>();
-  if (!branch) return { ok: false as const, status: 400, code: "invalid_branch", message: "Select an active branch.", fieldErrors: { branchId: ["Select an active branch."] } };
+  const branch = await c.env.DB.prepare(
+    `select branches.id
+     from branches
+     ${operationalCentreJoinSql("branches")}
+     where branches.id = ?
+       and branches.organisation_id = ?
+       and ${operationalCentreWhereSql("branches")}`,
+  ).bind(input.branchId, ORG_ID).first<{ id: string }>();
+  if (!branch) return { ok: false as const, status: 400, code: "invalid_branch", message: "Select an operational Centre.", fieldErrors: { branchId: ["Select an operational Centre."] } };
   if (!(await hasTrainerManagementBranchAccess(c, staff, input.branchId))) return { ok: false as const, status: 403, code: "forbidden", message: "You do not have access to this branch." };
   return {
     ok: true as const,

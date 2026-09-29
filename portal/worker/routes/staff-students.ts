@@ -8,6 +8,7 @@ import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile as normalizeCanonicalIndianMobile } from "../lib/mobile";
 import { addMobileIfMissing } from "../lib/person-contact";
 import { staffOrganisationId, ADMISSION_STAFF_ROLES, requireStaffRoles } from "../lib/staff-auth";
+import { operationalCentreJoinSql, operationalCentreWhereSql } from "../lib/centre-commercial-access";
 
 type PortalHono = Hono<{
   Bindings: WorkerBindings;
@@ -40,7 +41,11 @@ export function registerStaffStudentRoutes(app: PortalHono) {
 
     const [branches, courses] = await Promise.all([
       c.env.DB.prepare(
-        "select id, code, name from branches where organisation_id = ? and status = 'active' order by name",
+        `select branches.id, branches.code, branches.name
+         from branches
+         ${operationalCentreJoinSql("branches")}
+         where branches.organisation_id = ? and ${operationalCentreWhereSql("branches")}
+         order by branches.name`,
       )
         .bind(ORG_ID)
         .all(),
@@ -143,11 +148,16 @@ export function registerStaffStudentRoutes(app: PortalHono) {
     }
 
     const branch = await c.env.DB.prepare(
-      "select id, code from branches where id = ? and organisation_id = ? and status = 'active'",
+      `select branches.id, branches.code
+       from branches
+       ${operationalCentreJoinSql("branches")}
+       where branches.id = ?
+         and branches.organisation_id = ?
+         and ${operationalCentreWhereSql("branches")}`,
     )
       .bind(parsed.data.branchId, ORG_ID)
       .first<{ id: string; code: string }>();
-    if (!branch) return jsonError(c, { status: 400, code: "invalid_branch", message: "Select an active branch." });
+    if (!branch) return jsonError(c, { status: 400, code: "invalid_branch", message: "Select an operational Centre." });
 
     if (parsed.data.courseInterestId) {
       const course = await c.env.DB.prepare(

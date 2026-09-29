@@ -16,6 +16,16 @@ ON CONFLICT(id) DO UPDATE SET
   status = excluded.status,
   updated_at = excluded.updated_at;
 
+INSERT INTO centre_commercial_access
+  (id, organisation_id, branch_id, state, source, payment_evidence_source, payment_evidence_reference, activated_at, created_at, updated_at)
+VALUES
+  ('cca_branch_sion', 'org_samyak', 'branch_sion', 'legacy_existing', 'migration_backfill', NULL, NULL, NULL, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z')
+ON CONFLICT(branch_id) DO UPDATE SET
+  organisation_id = excluded.organisation_id,
+  state = excluded.state,
+  source = excluded.source,
+  updated_at = excluded.updated_at;
+
 WITH defaults(id, category, code, label, sort_order, requires_custom_label) AS (
   VALUES
     ('adopt_lang_english', 'preferred_language', 'english', 'English', 10, 0),

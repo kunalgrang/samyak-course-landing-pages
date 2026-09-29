@@ -11,6 +11,7 @@ import { staffOrganisationId, requireStaffRoles, type StaffContext } from "../li
 import { getCourseFeeGstBasisPoints } from "../lib/course-fee";
 import { buildPartnerPortalView } from "../lib/partner-portal";
 import { referralPublicOrigin } from "../lib/platform-config";
+import { operationalCentreJoinSql, operationalCentreWhereSql } from "../lib/centre-commercial-access";
 
 type PortalHono = Hono<{ Bindings: WorkerBindings; Variables: WorkerVariables }>;
 type PortalContext = Context<{ Bindings: WorkerBindings; Variables: WorkerVariables }>;
@@ -99,7 +100,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     const parsed = await parsePartnerBody(c);
     if (!parsed.ok) return parsed.response;
     if (!(await branchBelongsToOrganisation(c, organisationId, parsed.data.homeBranchId))) {
-      return jsonError(c, { status: 400, code: "invalid_branch", message: "Select an active branch for this organisation.", fieldErrors: { homeBranchId: ["Select an active branch for this organisation."] } });
+      return jsonError(c, { status: 400, code: "invalid_branch", message: "Select an operational Centre for this organisation.", fieldErrors: { homeBranchId: ["Select an operational Centre for this organisation."] } });
     }
     const duplicateWarnings = await duplicateWarningsFor(c, organisationId, parsed.data);
     const now = new Date().toISOString();
@@ -142,7 +143,7 @@ export function registerStaffEducationPartnerRoutes(app: PortalHono) {
     const parsed = await parsePartnerBody(c);
     if (!parsed.ok) return parsed.response;
     if (!(await branchBelongsToOrganisation(c, organisationId, parsed.data.homeBranchId))) {
-      return jsonError(c, { status: 400, code: "invalid_branch", message: "Select an active branch for this organisation.", fieldErrors: { homeBranchId: ["Select an active branch for this organisation."] } });
+      return jsonError(c, { status: 400, code: "invalid_branch", message: "Select an operational Centre for this organisation.", fieldErrors: { homeBranchId: ["Select an operational Centre for this organisation."] } });
     }
     const contact = await secureContact(c, existing.id, parsed.data.mobile || "", parsed.data.email || "");
     const mobileChanged = (existing.mobile_hash || null) !== (contact.mobileHash || null);
@@ -402,7 +403,14 @@ async function duplicateWarningsFor(c: PortalContext, organisationId: string, in
 }
 
 async function branchBelongsToOrganisation(c: PortalContext, organisationId: string, branchId: string) {
-  const branch = await c.env.DB.prepare("select id from branches where id = ? and organisation_id = ? and status = 'active'")
+  const branch = await c.env.DB.prepare(
+    `select branches.id
+     from branches
+     ${operationalCentreJoinSql("branches")}
+     where branches.id = ?
+       and branches.organisation_id = ?
+       and ${operationalCentreWhereSql("branches")}`,
+  )
     .bind(branchId, organisationId)
     .first<{ id: string }>();
   return Boolean(branch);

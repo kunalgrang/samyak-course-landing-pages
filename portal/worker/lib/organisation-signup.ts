@@ -150,6 +150,7 @@ export async function createOrganisationFromSignup(c: AppContext, input: Organis
   const organisationId = createOpaqueId("org");
   const branchId = createOpaqueId("branch");
   const branchCode = await nextCentreCode(c, organisationId);
+  const centreCommercialAccessId = createOpaqueId("cca");
   const personId = createOpaqueId("person");
   const accountId = createOpaqueId("acct");
   const membershipId = createOpaqueId("omem");
@@ -231,6 +232,12 @@ export async function createOrganisationFromSignup(c: AppContext, input: Organis
       now,
       now,
     ),
+    c.env.DB.prepare(
+      `insert into centre_commercial_access
+        (id, organisation_id, branch_id, state, source, payment_evidence_source,
+         payment_evidence_reference, activated_at, created_at, updated_at)
+       values (?, ?, ?, 'trial', 'organisation_signup_trial', null, null, null, ?, ?)`,
+    ).bind(centreCommercialAccessId, organisationId, branchId, now, now),
     c.env.DB.prepare("insert into roles (id, organisation_id, code, name, created_at) values (?, ?, 'owner', 'Owner', ?)").bind(ownerRoleId, organisationId, now),
     c.env.DB.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values (?, ?, ?, ?, ?, 'active', ?, ?)")
       .bind(personId, organisationId, branchId, input.authority.name.trim(), input.authority.name.trim(), now, now),

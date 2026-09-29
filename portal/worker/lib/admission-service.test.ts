@@ -1620,6 +1620,7 @@ function seedBase(db: SqliteD1) {
     insert into courses (id, organisation_id, code, name, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
     values ('course_full_stack', 'org_samyak', 'FSD', 'Full Stack Development', '6 months', 6, 5000000, 4000000, 1, 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
   `);
+  seedCentreCommercialAccess(db, "cca_branch_sion", "branch_sion");
 }
 
 function seedOrganisation(db: SqliteD1, id: string) {
@@ -1650,6 +1651,16 @@ function seedBranch(db: SqliteD1, id: string, code: string) {
     `insert into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at)
      values (?, 'org_samyak', ?, ?, 'Asia/Kolkata', 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z')`,
   ).run(id, code, code);
+  seedCentreCommercialAccess(db, `cca_${id}`, id);
+}
+
+function seedCentreCommercialAccess(db: SqliteD1, id: string, branchId: string) {
+  if (!tableNames(db).includes("centre_commercial_access")) return;
+  db.database.prepare(
+    `insert or ignore into centre_commercial_access
+      (id, organisation_id, branch_id, state, source, payment_evidence_source, payment_evidence_reference, activated_at, created_at, updated_at)
+     values (?, 'org_samyak', ?, 'legacy_existing', 'migration_backfill', null, null, null, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z')`,
+  ).run(id, branchId);
 }
 
 function confirmationSnapshot(db: SqliteD1) {
@@ -1664,6 +1675,10 @@ function row(db: SqliteD1, sql: string, ...values: unknown[]) {
 
 function all(db: SqliteD1, sql: string) {
   return db.database.prepare(sql).all() as Row[];
+}
+
+function tableNames(db: SqliteD1) {
+  return all(db, "select name from sqlite_master where type = 'table'").map((item) => String(item.name));
 }
 
 function count(db: SqliteD1, tableOrSql: string) {

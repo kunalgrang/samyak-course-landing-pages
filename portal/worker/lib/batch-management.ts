@@ -3,6 +3,7 @@ import { ORG_ID } from "./tenant-context";
 import { createOpaqueId } from "./crypto";
 import type { AppContext } from "./http";
 import { staffOrganisationId, type StaffContext } from "./staff-auth";
+import { operationalCentreJoinSql, operationalCentreWhereSql } from "./centre-commercial-access";
 
 export const BATCH_READ_ROLES = ["owner", "system_admin", "admin", "admission_admin", "counsellor"] as const;
 export const BATCH_MANAGE_ROLES = ["owner", "system_admin", "admin", "admission_admin"] as const;
@@ -360,6 +361,9 @@ export async function listAdmissionEligibleBatches(c: AppContext, staff: StaffCo
             coalesce(trainer.public_name, trainer.full_name) as trainer_name,
             coalesce(active_counts.active_students, 0) as active_students
      from batches
+     join branches on branches.id = batches.branch_id
+      and branches.organisation_id = batches.organisation_id
+     ${operationalCentreJoinSql("branches")}
      left join people trainer on trainer.id = batches.primary_trainer_person_id
      left join (
        select batch_id, count(*) as active_students from batch_memberships
@@ -370,6 +374,7 @@ export async function listAdmissionEligibleBatches(c: AppContext, staff: StaffCo
       and batch_courses.organisation_id = batches.organisation_id
       and batch_courses.course_id = ?
      where batches.organisation_id = ? and batches.branch_id = ? and batches.status = 'active'
+       and ${operationalCentreWhereSql("branches")}
      order by batches.start_time, batches.name collate nocase`,
   )
     .bind(courseId, ORG_ID, branchId)
@@ -386,6 +391,9 @@ export async function validateAdmissionBatchSelection(c: AppContext, staff: Staf
   }
   const access = await hasBranchAccess(c, staff, branchId);
   if (!access) return { "course.batchId": ["You do not have access to assign this batch."] };
+  if (!(await isOperationalCentre(c, ORG_ID, branchId))) {
+    return { "course.batchId": ["Select an operational Centre batch, or choose Assign later."] };
+  }
   return null;
 }
 
@@ -505,10 +513,17 @@ async function validateBatchInput(c: AppContext, staff: StaffContext, input: z.i
     const invalid = courseIds.filter((courseId) => !validCourseIds.has(courseId));
     if (invalid.length) fieldErrors.courseIds = ["Select only active courses from this organisation."];
   }
-  const branch = await c.env.DB.prepare("select id from branches where id = ? and organisation_id = ? and status = 'active'")
+  const branch = await c.env.DB.prepare(
+    `select branches.id
+     from branches
+     ${operationalCentreJoinSql("branches")}
+     where branches.id = ?
+       and branches.organisation_id = ?
+       and ${operationalCentreWhereSql("branches")}`,
+  )
     .bind(input.branchId, ORG_ID)
     .first<{ id: string }>();
-  if (!branch) fieldErrors.branchId = ["Select an active branch."];
+  if (!branch) fieldErrors.branchId = ["Select an operational Centre."];
   if (input.trainerPersonId) {
     const trainer = await eligibleTrainer(c, input.trainerPersonId, input.branchId);
     if (!trainer) fieldErrors.trainerPersonId = ["Select an active trainer for this branch."];
@@ -524,6 +539,9 @@ async function validateAssignment(c: AppContext, staff: StaffContext, batch: Bat
   if (batch.status !== "active") return { ok: false as const, status: 400, code: "inactive_batch", message: "Assign students only to an active batch." };
   const access = await hasBranchAccess(c, staff, batch.branch_id);
   if (!access) return { ok: false as const, status: 403, code: "forbidden", message: "You do not have access to this batch." };
+  if (!(await isOperationalCentre(c, ORG_ID, batch.branch_id))) {
+    return { ok: false as const, status: 400, code: "centre_not_operational", message: "Assign students only to an operational Centre." };
+  }
   const enrolment = await c.env.DB.prepare(
     `select enrolments.id, enrolments.branch_id, enrolments.course_id, enrolments.status, students.organisation_id
      from enrolments
@@ -541,6 +559,21 @@ async function validateAssignment(c: AppContext, staff: StaffContext, batch: Bat
   const current = await currentMembershipForEnrolment(c, enrolmentId);
   if (current && !(allowCurrent && current.batch_id !== batch.id)) return { ok: false as const, status: 409, code: "already_assigned", message: "This enrolment already has an active batch assignment." };
   return { ok: true as const };
+}
+
+async function isOperationalCentre(c: AppContext, organisationId: string, branchId: string) {
+  const row = await c.env.DB.prepare(
+    `select branches.id
+     from branches
+     ${operationalCentreJoinSql("branches")}
+     where branches.id = ?
+       and branches.organisation_id = ?
+       and ${operationalCentreWhereSql("branches")}
+     limit 1`,
+  )
+    .bind(branchId, organisationId)
+    .first<{ id: string }>();
+  return Boolean(row);
 }
 
 async function hasBranchAccess(c: AppContext, staff: StaffContext, branchId: string) {

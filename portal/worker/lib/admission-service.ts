@@ -8,6 +8,7 @@ import { staffOrganisationId, DISCOUNT_APPROVER_ROLES, canBackdateReceipts, canR
 import { normalizeIndianMobile } from "./mobile";
 import { maximumInstallmentsForCourse } from "./payment-schedule-policy";
 import { canReverseReceiptForBranch, financialSummaryFromReceipts, type FinancialSummary, type PublicReceipt, type ReceiptReversalInput } from "./payments-ledger";
+import { operationalCentreJoinSql, operationalCentreWhereSql } from "./centre-commercial-access";
 
 export { maximumInstallmentsForCourse } from "./payment-schedule-policy";
 
@@ -811,7 +812,14 @@ async function getEnrolmentByEnquiry(c: AppContext, enquiryId: string) {
 
 async function getBranch(c: AppContext, branchId: string) {
   const ORG_ID = authenticatedOrDefaultOrganisationId(c);
-  return c.env.DB.prepare("select id, code, name, timezone from branches where id = ? and organisation_id = ? and status = 'active'")
+  return c.env.DB.prepare(
+    `select branches.id, branches.code, branches.name, branches.timezone
+     from branches
+     ${operationalCentreJoinSql("branches")}
+     where branches.id = ?
+       and branches.organisation_id = ?
+       and ${operationalCentreWhereSql("branches")}`,
+  )
     .bind(branchId, ORG_ID)
     .first<{ id: string; code: string; name: string; timezone: string | null }>();
 }
@@ -1120,7 +1128,7 @@ async function getOrCreateConfirmationSnapshot(c: AppContext, staff: StaffContex
     return { ok: false as const, status: 400, code: "invalid_branch", message: firstFieldError(branchFieldErrors) || "Admission branch must match the enquiry branch.", fieldErrors: branchFieldErrors };
   }
   const branch = await getBranch(c, enquiry.branch_id);
-  if (!branch) return { ok: false as const, status: 400, code: "invalid_branch", message: "Select an active branch." };
+  if (!branch) return { ok: false as const, status: 400, code: "invalid_branch", message: "Select an operational Centre." };
   const course = await getActiveCourse(c, payload.course?.courseId || "");
   if (!course) return { ok: false as const, status: 400, code: "invalid_course", message: "Select an active configured course." };
   const readiness = await getAdmissionReadiness(c, enquiry, payload, draft.id, course);

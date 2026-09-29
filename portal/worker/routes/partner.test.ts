@@ -636,6 +636,7 @@ function seedOrganisation(db: DatabaseSync) {
     insert or ignore into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at)
       values ('branch_sion', 'org_samyak', 'Sion', 'SION', 'Asia/Kolkata', 'active', '${NOW}', '${NOW}');
   `);
+  seedCentreCommercialAccess(db, "cca_branch_sion", "org_samyak", "branch_sion");
 }
 
 async function seedLoginAccount(db: DatabaseSync, accountId: string, mobile: string) {
@@ -699,8 +700,19 @@ function seedTenant(db: DatabaseSync, input: { organisationId: string; slug: str
     .run(input.organisationId, input.name, input.slug, NOW, NOW);
   db.prepare("insert or ignore into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at) values (?, ?, ?, ?, 'Asia/Kolkata', 'active', ?, ?)")
     .run(input.branchId, input.organisationId, input.name, input.branchCode, NOW, NOW);
+  seedCentreCommercialAccess(db, `cca_${input.branchId}`, input.organisationId, input.branchId);
   db.prepare("insert or ignore into roles (id, organisation_id, code, name, created_at) values (?, ?, 'owner', 'Owner', ?)")
     .run(`role_owner_${input.slug}`, input.organisationId, NOW);
+}
+
+function seedCentreCommercialAccess(db: DatabaseSync, id: string, organisationId: string, branchId: string) {
+  const table = db.prepare("select name from sqlite_master where type = 'table' and name = 'centre_commercial_access'").get();
+  if (!table) return;
+  db.prepare(
+    `insert or ignore into centre_commercial_access
+      (id, organisation_id, branch_id, state, source, payment_evidence_source, payment_evidence_reference, activated_at, created_at, updated_at)
+     values (?, ?, ?, 'legacy_existing', 'migration_backfill', null, null, null, ?, ?)`,
+  ).run(id, organisationId, branchId, NOW, NOW);
 }
 
 async function seedTenantOwner(db: DatabaseSync, input: { organisationId: string; slug: string; branchId: string; token: string }) {

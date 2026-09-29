@@ -701,11 +701,19 @@ function applyMigrationFile(db: DatabaseSync, file: string) {
 }
 
 function applySeed(db: DatabaseSync) {
-  applySql(db, readFileSync(join(process.cwd(), "seed.sql"), "utf8"));
+  let sql = readFileSync(join(process.cwd(), "seed.sql"), "utf8");
+  if (!tableExists(db, "centre_commercial_access")) {
+    sql = sql.replace(/INSERT INTO centre_commercial_access[\s\S]*?ON CONFLICT\(branch_id\) DO UPDATE SET[\s\S]*?updated_at = excluded\.updated_at;\s*/m, "");
+  }
+  applySql(db, sql);
 }
 
 function applySql(db: DatabaseSync, sql: string) {
   for (const statement of sql.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) db.exec(statement);
+}
+
+function tableExists(db: DatabaseSync, name: string) {
+  return Boolean(db.prepare("select name from sqlite_master where type = 'table' and name = ?").get(name));
 }
 
 function seedBase(db: DatabaseSync) {

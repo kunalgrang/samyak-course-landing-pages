@@ -294,7 +294,8 @@ async function setup() {
 function installSchema(db: DatabaseSync) {
   db.exec(`
     create table organisations (id text primary key, name text, slug text, status text, created_at text, updated_at text);
-    create table branches (id text primary key, organisation_id text, name text, code text, timezone text, status text, created_at text, updated_at text);
+    create table branches (id text primary key, organisation_id text, name text, code text, timezone text, status text, centre_status text default 'active', created_at text, updated_at text);
+    create table centre_commercial_access (id text primary key, organisation_id text, branch_id text, state text, source text, payment_evidence_source text, payment_evidence_reference text, activated_at text, created_at text, updated_at text);
     create table people (id text primary key, organisation_id text, home_branch_id text, full_name text, public_name text, date_of_birth text, status text, created_at text, updated_at text);
     create table person_contacts (id text primary key, person_id text, contact_type text, normalized_value text, display_value text, last_four text, is_primary integer, is_verified integer default 0, created_at text, updated_at text, unique(person_id, contact_type, normalized_value));
     create table person_contact_details (contact_id text primary key, belongs_to text, is_whatsapp integer, valid_until text, status text, created_at text, updated_at text);
@@ -317,8 +318,10 @@ function installSchema(db: DatabaseSync) {
 
 function seedBase(db: DatabaseSync) {
   db.prepare("insert into organisations values ('org_samyak', 'Samyak', 'samyak', 'active', ?, ?)").run(NOW, NOW);
-  db.prepare("insert into branches values ('branch_sion', 'org_samyak', 'Sion', 'SION', 'Asia/Kolkata', 'active', ?, ?)").run(NOW, NOW);
-  db.prepare("insert into branches values ('branch_dadar', 'org_samyak', 'Dadar', 'DDR', 'Asia/Kolkata', 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into branches values ('branch_sion', 'org_samyak', 'Sion', 'SION', 'Asia/Kolkata', 'active', 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into branches values ('branch_dadar', 'org_samyak', 'Dadar', 'DDR', 'Asia/Kolkata', 'active', 'active', ?, ?)").run(NOW, NOW);
+  db.prepare("insert into centre_commercial_access values ('cca_branch_sion', 'org_samyak', 'branch_sion', 'legacy_existing', 'migration_backfill', null, null, null, ?, ?)").run(NOW, NOW);
+  db.prepare("insert into centre_commercial_access values ('cca_branch_dadar', 'org_samyak', 'branch_dadar', 'legacy_existing', 'migration_backfill', null, null, null, ?, ?)").run(NOW, NOW);
   db.prepare("insert into roles values ('role_admin', 'org_samyak', 'admin', 'Admin', ?), ('role_trainer', 'org_samyak', 'trainer', 'Trainer', ?), ('role_owner', 'org_samyak', 'owner', 'Owner', ?), ('role_system_admin', 'org_samyak', 'system_admin', 'System Admin', ?)").run(NOW, NOW, NOW, NOW);
   db.prepare("insert into people values ('person_admin', 'org_samyak', 'branch_sion', 'Admin User', 'Admin', null, 'active', ?, ?)").run(NOW, NOW);
   db.prepare("insert into people values ('person_student', 'org_samyak', 'branch_sion', 'Asha Student', 'Asha Student', null, 'active', ?, ?)").run(NOW, NOW);

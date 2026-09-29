@@ -29,6 +29,7 @@ describe("organisation signup onboarding", () => {
       expect(count(fixture.sqlite, "branches where organisation_id <> 'org_samyak'")).toBe(0);
       expect(count(fixture.sqlite, "organisation_memberships where organisation_id <> 'org_samyak'")).toBe(0);
       expect(count(fixture.sqlite, "organisation_commercial_access")).toBe(0);
+      expect(count(fixture.sqlite, "centre_commercial_access where organisation_id <> 'org_samyak'")).toBe(0);
 
       const created = await createOrganisation(fixture.env, verificationId, "signup-request-1");
       expect(created.status).toBe(200);
@@ -56,6 +57,13 @@ describe("organisation signup onboarding", () => {
       expect(count(fixture.sqlite, `organisation_memberships where organisation_id = '${orgId}' and status = 'active'`)).toBe(1);
       expect(count(fixture.sqlite, `login_account_people join people on people.id = login_account_people.person_id where people.organisation_id = '${orgId}' and login_account_people.access_type = 'staff'`)).toBe(1);
       expect(count(fixture.sqlite, `organisation_commercial_access where organisation_id = '${orgId}' and state = 'trial'`)).toBe(1);
+      expect(row(fixture.sqlite, `select state, source, payment_evidence_source, payment_evidence_reference, activated_at from centre_commercial_access where organisation_id = '${orgId}'`)).toMatchObject({
+        state: "trial",
+        source: "organisation_signup_trial",
+        payment_evidence_source: null,
+        payment_evidence_reference: null,
+        activated_at: null,
+      });
       expect(count(fixture.sqlite, `organisation_onboarding_progress where organisation_id = '${orgId}' and reported_centre_count = 1`)).toBe(1);
       expect(count(fixture.sqlite, `audit_logs where organisation_id = '${orgId}' and action in ('organisation_created', 'initial_centre_created', 'account_authority_established', 'trial_started', 'legal_entity_type_captured', 'initial_tenant_context_established')`)).toBe(6);
 
@@ -412,6 +420,46 @@ describe("organisation signup onboarding", () => {
       db.close();
     }
   });
+
+  it("applies 0038 as a backfilled per-Centre entitlement without rewriting branch lifecycle", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec("pragma foreign_keys = on");
+    try {
+      applyMigrationsThrough(db, "0037_otp_challenge_signup_purpose.sql");
+      const beforeBranches = rows(db, "select id, organisation_id, status, centre_status, created_at, updated_at from branches order by id");
+
+      applyMigrationFile(db, "0038_centre_commercial_access.sql");
+
+      expect(rows(db, "select id, organisation_id, status, centre_status, created_at, updated_at from branches order by id")).toEqual(beforeBranches);
+      expect(row(db, "select branch_id, organisation_id, state, source, payment_evidence_source, payment_evidence_reference, activated_at from centre_commercial_access where branch_id = 'branch_sion'")).toEqual({
+        branch_id: "branch_sion",
+        organisation_id: "org_samyak",
+        state: "legacy_existing",
+        source: "migration_backfill",
+        payment_evidence_source: null,
+        payment_evidence_reference: null,
+        activated_at: null,
+      });
+      expect(indexNames(db)).toEqual(expect.arrayContaining(["centre_commercial_access_branch_unique", "centre_commercial_access_org_state_idx", "centre_commercial_access_branch_idx"]));
+      expect(() =>
+        db.prepare(
+          `insert into centre_commercial_access
+             (id, organisation_id, branch_id, state, source, payment_evidence_source, payment_evidence_reference, activated_at, created_at, updated_at)
+           values ('cca_bad_org', 'org_other', 'branch_sion', 'pending_payment', 'centre_created', null, null, null, ?, ?)`,
+        ).run(NOW, NOW),
+      ).toThrow();
+      expect(() =>
+        db.prepare(
+          `update centre_commercial_access
+           set state = 'active', source = 'maintenance_activation', payment_evidence_source = null, payment_evidence_reference = null, activated_at = null
+           where branch_id = 'branch_sion'`,
+        ).run(),
+      ).toThrow();
+      expect(rows(db, "pragma foreign_key_check")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 async function verifiedSignupId(env: WorkerBindings, mobile: string) {
@@ -578,6 +626,14 @@ function seedSamyak(db: DatabaseSync) {
     insert or ignore into branches (id, organisation_id, name, code, timezone, status, created_at, updated_at)
       values ('branch_sion', 'org_samyak', 'Sion', 'SION', 'Asia/Kolkata', 'active', '${NOW}', '${NOW}');
   `);
+  if (tableNames(db).includes("centre_commercial_access")) {
+    db.prepare(
+      `insert into centre_commercial_access
+        (id, organisation_id, branch_id, state, source, payment_evidence_source, payment_evidence_reference, activated_at, created_at, updated_at)
+       values ('cca_branch_sion', 'org_samyak', 'branch_sion', 'legacy_existing', 'migration_backfill', null, null, null, ?, ?)
+       on conflict(branch_id) do update set state = excluded.state, source = excluded.source, updated_at = excluded.updated_at`,
+    ).run(NOW, NOW);
+  }
 }
 
 async function seedExistingSamyakIdentity(db: DatabaseSync, mobile: string) {

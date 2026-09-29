@@ -126,8 +126,8 @@ describe("OrganisationSettingsPage", () => {
     expect(apiMocks.getCentres).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("Samyak Main");
     expect(container.textContent).toContain("Samyak Pending");
-    expect(container.textContent).toContain("Active");
-    expect(container.textContent).toContain("Pending Subscription");
+    expect(container.textContent).toContain("Existing access");
+    expect(container.textContent).toContain("Pending subscription");
     expect(container.textContent).toContain("Centre code");
     expect(container.textContent).toContain("CTR-001");
   });
@@ -165,13 +165,13 @@ describe("OrganisationSettingsPage", () => {
     expect(apiMocks.createCentre.mock.calls[0][0]).not.toHaveProperty("code");
     expect(apiMocks.createCentre.mock.calls[0][0]).not.toHaveProperty("status");
     expect(apiMocks.createCentre.mock.calls[0][0]).not.toHaveProperty("centreStatus");
-    expect(container.textContent).toContain("Centre created. It will become active after its subscription is paid.");
+    expect(container.textContent).toContain("Centre created. It will become active after its subscription payment is verified.");
   });
 
   it("edits centre details with code and status shown read-only", async () => {
     await renderPage();
     await clickButton("Centres");
-    await clickButton("Samyak PendingCTR-002Pending Subscription");
+    await clickButton("Samyak PendingCTR-002Pending subscription");
     await setInput("centreName", "Samyak Pending Updated");
     await setInput("newMobile", "9999988888");
 
@@ -290,8 +290,10 @@ function activeCentre(overrides: Partial<StaffCentre> = {}): StaffCentre {
     gstin: "",
     status: "active",
     centreStatus: "active",
+    commercialState: "legacy_existing",
+    commercialStatusLabel: "Existing access",
     canOperate: true,
-    subscriptionStatusLabel: "Active",
+    subscriptionStatusLabel: "Existing access",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
@@ -310,8 +312,10 @@ function pendingCentre(overrides: Partial<StaffCentre> = {}): StaffCentre {
       operatingModel: "franchise_operated",
       status: "inactive",
       centreStatus: "pending_subscription",
+      commercialState: "pending_payment",
+      commercialStatusLabel: "Pending subscription",
       canOperate: false,
-      subscriptionStatusLabel: "Pending Subscription",
+      subscriptionStatusLabel: "Pending subscription",
       updatedAt: "2026-01-02T00:00:00.000Z",
     }),
     ...overrides,
