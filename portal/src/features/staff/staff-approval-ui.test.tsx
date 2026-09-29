@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { navigationForRoles, canAccessDiscountApprovals, canViewEnquiries, canViewStudents } from "../../routes/Router";
+import { navigationForRoles, canAccessDiscountApprovals, canViewEnquiries, canViewStudents, isOrganisationOwner } from "../../routes/Router";
 import { DiscountApprovalsContent } from "./DiscountApprovalsPage";
 import { courseConfigurationLabel, isCourseConfigurationComplete } from "./CourseMasterPage";
 import { BasicDetailsEditPanel, BatchAssignmentPanel, ContactEditPanel, openBatchHref } from "./StudentProfilePage";
@@ -9,8 +9,11 @@ import { StudentDirectoryContent, statusLabel } from "./StudentsPage";
 describe("staff approval UI", () => {
   it("shows approval navigation only to owners", () => {
     expect(navigationForRoles(["owner"]).map((item) => item.path)).toContain("/app/discount-approvals");
+    expect(navigationForRoles(["owner"]).map((item) => item.path)).toContain("/app/settings");
     expect(navigationForRoles(["admin"]).map((item) => item.path)).not.toContain("/app/discount-approvals");
+    expect(navigationForRoles(["admin"]).map((item) => item.path)).not.toContain("/app/settings");
     expect(canAccessDiscountApprovals(["system_admin"])).toBe(false);
+    expect(isOrganisationOwner(["system_admin"])).toBe(false);
   });
 
   it("separates Enquiries and Students navigation for current staff roles", () => {

@@ -175,6 +175,31 @@ const selectOrganisationResponseSchema = z.object({
   requestId: z.string(),
 });
 
+const organisationSettingsSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  legalName: z.string(),
+  organisationType: z.string(),
+  legalEntityType: z.string(),
+  addressLine1: z.string(),
+  city: z.string(),
+  stateRegion: z.string(),
+  country: z.string(),
+  postcode: z.string(),
+  website: z.string(),
+  currency: z.string(),
+  timezone: z.string(),
+  pan: z.string(),
+  gstin: z.string(),
+  updatedAt: z.string(),
+});
+
+const organisationSettingsResponseSchema = z.object({
+  success: z.literal(true),
+  organisation: organisationSettingsSchema,
+  changedFields: z.array(z.string()).optional(),
+});
+
 const partnerProfileSchema = z.object({
   educationPartnerId: z.string(),
   businessName: z.string(),
@@ -1738,6 +1763,7 @@ export type PartnerPortal = z.infer<typeof partnerPortalSchema>;
 export type SessionMaterial = z.infer<typeof sessionMaterialSchema>;
 export type StudentLearningEnrolment = z.infer<typeof studentLearningEnrolmentSchema>;
 export type StudentLearningDetail = z.infer<typeof studentLearningDetailSchema>;
+export type OrganisationSettings = z.infer<typeof organisationSettingsSchema>;
 
 export class ApiError extends Error {
   code?: string;
@@ -1812,6 +1838,14 @@ export async function selectOrganisation(membershipId: string) {
 
 export async function switchOrganisation(membershipId: string) {
   return postJson("/api/auth/switch-organisation", { membershipId }, selectOrganisationResponseSchema);
+}
+
+export async function getOrganisationSettings() {
+  return getJson("/api/staff/organisation-settings", organisationSettingsResponseSchema);
+}
+
+export async function updateOrganisationSettings(input: Record<string, unknown>) {
+  return patchJson("/api/staff/organisation-settings", input, organisationSettingsResponseSchema);
 }
 
 export async function selectProfile(personId: string) {

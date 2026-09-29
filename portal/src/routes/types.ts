@@ -25,6 +25,7 @@ export type AppRoute =
   | `/app/referral-operations/${string}`
   | "/app/courses"
   | "/app/discount-approvals"
+  | "/app/settings"
   | "/app/certificates"
   | "/app/referrals"
   | "/app/rules"

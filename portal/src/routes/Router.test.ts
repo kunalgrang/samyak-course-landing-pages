@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { navigationForRoles, normalizePath, redirectForRouteState } from "./Router";
+import { isOrganisationOwner, navigationForRoles, normalizePath, redirectForRouteState } from "./Router";
 
 describe("Router student namespace", () => {
   it("recognizes practical student login and dashboard URLs", () => {
@@ -13,7 +13,9 @@ describe("Router student namespace", () => {
   it("keeps staff navigation separate from student self-service navigation", () => {
     expect(navigationForRoles(["owner"]).map((item) => item.path)).not.toEqual(expect.arrayContaining(["/student/referrals", "/app/referrals"]));
     expect(navigationForRoles(["owner"]).map((item) => item.path)).toContain("/app/academic");
+    expect(navigationForRoles(["owner"]).map((item) => item.path)).toContain("/app/settings");
     expect(navigationForRoles(["counsellor"]).map((item) => item.path)).not.toContain("/app/academic");
+    expect(navigationForRoles(["system_admin"]).map((item) => item.path)).not.toContain("/app/settings");
     expect(navigationForRoles(["student"]).map((item) => item.path)).toEqual([
       "/student/dashboard",
       "/student/learning",
@@ -39,6 +41,8 @@ describe("Router student namespace", () => {
     expect(redirectForRouteState(state({ path: "/app/enquiries", isStaff: false, canAccessEnquiries: false }))).toBe("/student/dashboard");
     expect(redirectForRouteState(state({ path: "/app/academic", isStaff: true, canAccessAcademic: false }))).toBe("/app/enquiries");
     expect(redirectForRouteState(state({ path: "/app/academic", isStaff: true, canAccessAcademic: true }))).toBeNull();
+    expect(redirectForRouteState(state({ path: "/app/settings", isStaff: true, canManageOrganisationSettings: false }))).toBe("/app/enquiries");
+    expect(redirectForRouteState(state({ path: "/app/settings", isStaff: true, canManageOrganisationSettings: true }))).toBeNull();
     expect(redirectForRouteState(state({ path: "/login", isStaff: false }))).toBe("/student/dashboard");
     expect(redirectForRouteState(state({ path: "/student/login", isStaff: true }))).toBe("/app/enquiries");
   });
@@ -47,6 +51,15 @@ describe("Router student namespace", () => {
     expect(redirectForRouteState(state({ path: "/student/dashboard", isAuthenticated: false }))).toBe("/student/login");
     expect(redirectForRouteState(state({ path: "/app/referrals", isAuthenticated: false }))).toBe("/login");
     expect(redirectForRouteState(state({ path: "/student/dashboard", isAuthenticated: false, hasSessionError: true }))).toBeNull();
+  });
+
+  it("keeps organisation ownership separate from broader staff roles", () => {
+    expect(isOrganisationOwner(["owner"])).toBe(true);
+    expect(isOrganisationOwner(["system_admin"])).toBe(false);
+    expect(isOrganisationOwner(["admin"])).toBe(false);
+    expect(isOrganisationOwner(["counsellor"])).toBe(false);
+    expect(isOrganisationOwner(["admission_admin"])).toBe(false);
+    expect(navigationForRoles(["student"]).map((item) => item.path)).not.toContain("/app/settings");
   });
 });
 
@@ -63,6 +76,7 @@ function state(overrides: Partial<Parameters<typeof redirectForRouteState>[0]> =
     canAccessAcademic: false,
     canManageTrainers: false,
     isDiscountApprover: false,
+    canManageOrganisationSettings: false,
     ...overrides,
   };
 }
