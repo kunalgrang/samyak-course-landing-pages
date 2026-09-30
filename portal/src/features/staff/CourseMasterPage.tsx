@@ -52,8 +52,13 @@ export function CourseMasterPage() {
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    setIsSaving(true);
     setError(null);
+    const validationMessage = coursePricingValidationMessage(form);
+    if (validationMessage) {
+      setError(validationMessage);
+      return;
+    }
+    setIsSaving(true);
     try {
       const input = courseInputFromForm(form);
       if (editingId) await updateCourse(editingId, input);
@@ -75,8 +80,8 @@ export function CourseMasterPage() {
       name: course.name,
       durationLabel: course.duration_label || "",
       durationMonths: String(course.duration_months || 6),
-      standardFeeRupees: paiseToRupees(course.default_fee_paise || 0),
-      lowestAcceptableFeeRupees: paiseToRupees(course.lowest_acceptable_fee_paise ?? course.default_fee_paise ?? 0),
+      standardFeeRupees: course.default_fee_paise === null ? "" : paiseToRupees(course.default_fee_paise),
+      lowestAcceptableFeeRupees: course.lowest_acceptable_fee_paise === null || course.lowest_acceptable_fee_paise === undefined ? "" : paiseToRupees(course.lowest_acceptable_fee_paise),
       nsdcAvailable: Boolean(course.nsdc_available),
       status: course.status as CourseForm["status"],
     });
@@ -100,8 +105,8 @@ export function CourseMasterPage() {
           <label>Course name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label>
           <label>Duration label<input value={form.durationLabel} onChange={(event) => setForm({ ...form, durationLabel: event.target.value })} placeholder="e.g. 6 months" /></label>
           <label>Duration months<input type="number" min="0.5" step="0.5" value={form.durationMonths} onChange={(event) => setForm({ ...form, durationMonths: event.target.value })} required /></label>
-          <label>Listed price<input type="number" min="0" value={form.standardFeeRupees} onChange={(event) => setForm({ ...form, standardFeeRupees: event.target.value })} required /></label>
-          <label>Lowest acceptable fee<input type="number" min="0" value={form.lowestAcceptableFeeRupees} onChange={(event) => setForm({ ...form, lowestAcceptableFeeRupees: event.target.value })} required /></label>
+          <label>Listed price<input type="number" min="1" value={form.standardFeeRupees} onChange={(event) => setForm({ ...form, standardFeeRupees: event.target.value })} /></label>
+          <label>Lowest acceptable fee<input type="number" min="1" value={form.lowestAcceptableFeeRupees} onChange={(event) => setForm({ ...form, lowestAcceptableFeeRupees: event.target.value })} /><small>Blank defaults to listed price when saved with pricing.</small></label>
           <label>NSDC available<select value={form.nsdcAvailable ? "yes" : "no"} onChange={(event) => setForm({ ...form, nsdcAvailable: event.target.value === "yes" })}><option value="no">No</option><option value="yes">Yes</option></select></label>
           <label>Status<select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as CourseForm["status"] })}><option value="active">Active</option><option value="inactive">Inactive</option><option value="archived">Archived</option></select></label>
           <div className="staff-form-actions">
@@ -118,7 +123,7 @@ export function CourseMasterPage() {
             <article key={course.id} className="table-row">
               <strong>{course.code} {courseConfigurationLabel(course) ? <span className="status-pill status-pill--warning">{courseConfigurationLabel(course)}</span> : null}</strong>
               <span>{course.name}</span>
-              <small>{course.duration_label || `${course.duration_months || 0} months`} · Listed {formatMoney(course.default_fee_paise || 0)} · Floor {formatMoney(course.lowest_acceptable_fee_paise ?? course.default_fee_paise ?? 0)} · {course.nsdc_available ? "NSDC" : "Non-NSDC"} · {course.status}</small>
+              <small>{course.duration_label || `${course.duration_months || 0} months`} · Listed {formatOptionalMoney(course.default_fee_paise)} · Floor {formatOptionalMoney(course.lowest_acceptable_fee_paise ?? course.default_fee_paise)} · {course.nsdc_available ? "NSDC" : "Non-NSDC"} · {course.status}</small>
               <button type="button" onClick={() => edit(course)}>Edit</button>
             </article>
           ))}
@@ -134,8 +139,8 @@ export function courseInputFromForm(form: CourseForm) {
     name: form.name.trim(),
     durationLabel: form.durationLabel.trim() || null,
     durationMonths: Number(form.durationMonths || 0),
-    standardFeePaise: Math.round(Number(form.standardFeeRupees || 0) * 100),
-    lowestAcceptableFeePaise: Math.round(Number(form.lowestAcceptableFeeRupees || 0) * 100),
+    standardFeePaise: paiseFromRupeesOrNull(form.standardFeeRupees),
+    lowestAcceptableFeePaise: paiseFromRupeesOrNull(form.lowestAcceptableFeeRupees),
     nsdcAvailable: form.nsdcAvailable,
     status: form.status,
   };
@@ -151,6 +156,27 @@ export function courseConfigurationLabel(course: StaffCourse) {
 
 function paiseToRupees(value: number) {
   return String(Math.round(value / 100));
+}
+
+export function coursePricingValidationMessage(form: CourseForm) {
+  if (form.status === "active" && form.standardFeeRupees.trim() === "") return "Set a listed price greater than 0 before activating this course.";
+  if (isExplicitZero(form.standardFeeRupees)) return "Set a listed price greater than 0.";
+  if (isExplicitZero(form.lowestAcceptableFeeRupees)) return "Set lowest acceptable fee greater than 0.";
+  return "";
+}
+
+function paiseFromRupeesOrNull(value: string) {
+  const trimmed = value.trim();
+  return trimmed === "" ? null : Math.round(Number(trimmed) * 100);
+}
+
+function formatOptionalMoney(paise: number | null | undefined) {
+  return paise === null || paise === undefined ? "Not configured" : formatMoney(paise);
+}
+
+function isExplicitZero(value: string) {
+  const trimmed = value.trim();
+  return trimmed !== "" && Number(trimmed) === 0;
 }
 
 function formatMoney(paise: number) {

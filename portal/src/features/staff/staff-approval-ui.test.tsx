@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { navigationForRoles, canAccessDiscountApprovals, canViewEnquiries, canViewStudents, isOrganisationOwner } from "../../routes/Router";
 import { DiscountApprovalsContent } from "./DiscountApprovalsPage";
-import { courseConfigurationLabel, isCourseConfigurationComplete } from "./CourseMasterPage";
+import { courseConfigurationLabel, courseInputFromForm, coursePricingValidationMessage, isCourseConfigurationComplete } from "./CourseMasterPage";
 import { BasicDetailsEditPanel, BatchAssignmentPanel, ContactEditPanel, openBatchHref } from "./StudentProfilePage";
 import { StudentDirectoryContent, statusLabel } from "./StudentsPage";
 
@@ -89,6 +89,33 @@ describe("staff approval UI", () => {
     expect(courseConfigurationLabel({ ...baseCourse, admission_configuration_complete: false })).toBe("Configuration required");
     expect(isCourseConfigurationComplete({ ...baseCourse, admission_configuration_complete: true })).toBe(true);
     expect(courseConfigurationLabel({ ...baseCourse, admission_configuration_complete: true })).toBe("");
+  });
+
+  it("keeps blank Course pricing nullable in frontend API input", () => {
+    const unpricedInactiveCourse = {
+      code: " draft ",
+      name: " Draft Course ",
+      durationLabel: "",
+      durationMonths: "6",
+      standardFeeRupees: "",
+      lowestAcceptableFeeRupees: "",
+      nsdcAvailable: false,
+      status: "inactive",
+    } as const;
+
+    expect(courseInputFromForm(unpricedInactiveCourse)).toMatchObject({
+      code: "draft",
+      name: "Draft Course",
+      durationLabel: null,
+      durationMonths: 6,
+      standardFeePaise: null,
+      lowestAcceptableFeePaise: null,
+      status: "inactive",
+    });
+    expect(coursePricingValidationMessage(unpricedInactiveCourse)).toBe("");
+    expect(coursePricingValidationMessage({ ...unpricedInactiveCourse, status: "active" })).toBe("Set a listed price greater than 0 before activating this course.");
+    expect(coursePricingValidationMessage({ ...unpricedInactiveCourse, standardFeeRupees: "0" })).toBe("Set a listed price greater than 0.");
+    expect(coursePricingValidationMessage({ ...unpricedInactiveCourse, standardFeeRupees: "15000", lowestAcceptableFeeRupees: "0" })).toBe("Set lowest acceptable fee greater than 0.");
   });
 
   it("renders owner contact maintenance confirmation without raw mobile", () => {

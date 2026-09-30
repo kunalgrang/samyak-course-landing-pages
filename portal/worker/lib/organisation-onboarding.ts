@@ -85,16 +85,39 @@ export async function getOrganisationOnboardingSnapshot(c: AppContext, organisat
 }
 
 export async function syncCoursesOnboardingStep(c: AppContext, organisationId: string, actor?: SyncActor) {
+  return syncCourseBackedOnboardingStep(c, organisationId, "courses", "course_state", actor, {
+    andWhere: "and admission_configuration_complete = 1",
+    missingReason: "no_qualifying_course",
+    missingStepReason: "courses_step_missing",
+  });
+}
+
+export async function syncFeesOnboardingStep(c: AppContext, organisationId: string, actor?: SyncActor) {
+  return syncCourseBackedOnboardingStep(c, organisationId, "fees", "course_pricing", actor, {
+    andWhere: "and default_fee_paise > 0",
+    missingReason: "no_active_priced_course",
+    missingStepReason: "fees_step_missing",
+  });
+}
+
+async function syncCourseBackedOnboardingStep(
+  c: AppContext,
+  organisationId: string,
+  step: "courses" | "fees",
+  source: "course_state" | "course_pricing",
+  actor: SyncActor | undefined,
+  options: { andWhere: string; missingReason: string; missingStepReason: string },
+) {
   try {
     const qualifyingCourse = await c.env.DB.prepare(
       `select id
        from courses
        where organisation_id = ?
          and status = 'active'
-         and admission_configuration_complete = 1
+         ${options.andWhere}
        limit 1`,
     ).bind(organisationId).first<{ id: string }>();
-    if (!qualifyingCourse) return { completed: false as const, reason: "no_qualifying_course" as const };
+    if (!qualifyingCourse) return { completed: false as const, reason: options.missingReason };
 
     const onboarding = await c.env.DB.prepare(
       `select status, completed_steps_json, checklist_json, reported_centre_count
@@ -107,17 +130,17 @@ export async function syncCoursesOnboardingStep(c: AppContext, organisationId: s
     const completedSteps = parseCompletedSteps(onboarding.completed_steps_json);
     const checklist = parseChecklist(onboarding.checklist_json);
     if (!completedSteps || !checklist) return { completed: false as const, reason: "onboarding_state_invalid" as const };
-    if (completedSteps.includes("courses")) return { completed: false as const, reason: "already_complete" as const };
+    if (completedSteps.includes(step)) return { completed: false as const, reason: "already_complete" as const };
 
-    let foundCoursesStep = false;
+    let foundStep = false;
     const nextChecklist = checklist.map((item) => {
-      if (item.code !== "courses") return item;
-      foundCoursesStep = true;
+      if (item.code !== step) return item;
+      foundStep = true;
       return { ...item, done: true };
     });
-    if (!foundCoursesStep) return { completed: false as const, reason: "courses_step_missing" as const };
+    if (!foundStep) return { completed: false as const, reason: options.missingStepReason };
 
-    const nextCompletedSteps = [...completedSteps, "courses"];
+    const nextCompletedSteps = [...completedSteps, step];
     const nextStatus = nextChecklist.every((item) => item.done) ? "complete" : "in_progress";
     const now = new Date().toISOString();
     const progressUpdate = c.env.DB.prepare(
@@ -127,7 +150,7 @@ export async function syncCoursesOnboardingStep(c: AppContext, organisationId: s
     ).bind(nextStatus, JSON.stringify(nextCompletedSteps), JSON.stringify(nextChecklist), now, organisationId);
 
     if (actor) {
-      const auditMetadata = JSON.stringify({ step: "courses", source: "course_state" });
+      const auditMetadata = JSON.stringify({ step, source });
       const auditInsert = c.env.DB.prepare(
         `insert into audit_logs
            (id, organisation_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)

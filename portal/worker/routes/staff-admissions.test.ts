@@ -157,7 +157,7 @@ describe("staff Course Master onboarding synchronisation", () => {
     authenticateAs(["owner"]);
   });
 
-  it("completes only the courses step after creating an active configured Course", async () => {
+  it("completes courses and fees after creating an active priced Course", async () => {
     const app = routeApp();
     const db = courseOnboardingDb();
 
@@ -166,14 +166,68 @@ describe("staff Course Master onboarding synchronisation", () => {
     expect(response.status).toBe(201);
     expect(onboardingState(db, "org_samyak")).toMatchObject({
       status: "in_progress",
+      completedSteps: ["organisation_profile", "centre_profile", "owner_account", "courses", "fees"],
+      checklist: expect.arrayContaining([
+        { code: "courses", label: "Courses", done: true },
+        { code: "fees", label: "Fees", done: true },
+      ]),
+    });
+    expect(count(db, "audit_logs where action = 'onboarding_step_completed'")).toBe(2);
+    expect(metadataRows(db)).toEqual(expect.arrayContaining([{ step: "courses", source: "course_state" }, { step: "fees", source: "course_pricing" }]));
+  });
+
+  it("marks only fees when courses onboarding is already complete", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    markOnboardingCoursesComplete(db, "org_samyak");
+
+    const response = await createCourse(app, db, { code: "FEESONLY", status: "active" });
+
+    expect(response.status).toBe(201);
+    expect(onboardingState(db, "org_samyak")).toMatchObject({
+      completedSteps: ["organisation_profile", "centre_profile", "owner_account", "courses", "fees"],
+      checklist: expect.arrayContaining([
+        { code: "courses", label: "Courses", done: true },
+        { code: "fees", label: "Fees", done: true },
+        { code: "staff_invitations", label: "Staff invitations", done: false },
+      ]),
+    });
+    expect(metadataRows(db)).toEqual([{ step: "fees", source: "course_pricing" }]);
+  });
+
+  it("keeps fees onboarding atomic when the fees audit insert fails and retries exactly once", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    markOnboardingCoursesComplete(db, "org_samyak");
+    db.exec(`
+      create trigger reject_fees_onboarding_audit
+      before insert on audit_logs
+      when new.action = 'onboarding_step_completed'
+       and new.metadata_json = '{"step":"fees","source":"course_pricing"}'
+      begin
+        select raise(abort, 'forced fees audit failure');
+      end;
+    `);
+
+    const create = await createCourse(app, db, { code: "FEEFAIL", status: "active" });
+
+    expect(create.status).toBe(201);
+    expect(onboardingState(db, "org_samyak")).toMatchObject({
       completedSteps: ["organisation_profile", "centre_profile", "owner_account", "courses"],
       checklist: expect.arrayContaining([
         { code: "courses", label: "Courses", done: true },
         { code: "fees", label: "Fees", done: false },
       ]),
     });
-    expect(count(db, "audit_logs where action = 'onboarding_step_completed'")).toBe(1);
-    expect(JSON.parse(row(db, "select metadata_json from audit_logs where action = 'onboarding_step_completed'")?.metadata_json)).toEqual({ step: "courses", source: "course_state" });
+    expect(metadataRows(db)).toEqual([]);
+
+    db.exec("drop trigger reject_fees_onboarding_audit");
+    const courseId = row(db, "select id from courses where code = 'FEEFAIL'")?.id;
+    const retry = await patchCourse(app, db, String(courseId), { name: "Fees Retry Course" });
+
+    expect(retry.status).toBe(200);
+    expect(onboardingState(db, "org_samyak").completedSteps.filter((step) => step === "fees")).toHaveLength(1);
+    expect(metadataRows(db)).toEqual([{ step: "fees", source: "course_pricing" }]);
   });
 
   it("rolls back onboarding progress when the transition audit insert fails and can retry safely", async () => {
@@ -206,8 +260,12 @@ describe("staff Course Master onboarding synchronisation", () => {
     expect(retry.status).toBe(200);
     const state = onboardingState(db, "org_samyak");
     expect(state.completedSteps.filter((step) => step === "courses")).toHaveLength(1);
-    expect(state.checklist).toEqual(expect.arrayContaining([{ code: "courses", label: "Courses", done: true }]));
-    expect(count(db, "audit_logs where action = 'onboarding_step_completed'")).toBe(1);
+    expect(state.completedSteps.filter((step) => step === "fees")).toHaveLength(1);
+    expect(state.checklist).toEqual(expect.arrayContaining([
+      { code: "courses", label: "Courses", done: true },
+      { code: "fees", label: "Fees", done: true },
+    ]));
+    expect(count(db, "audit_logs where action = 'onboarding_step_completed'")).toBe(2);
   });
 
   it.each(["inactive", "archived"] as const)("does not complete courses after creating a %s configured Course", async (status) => {
@@ -228,6 +286,199 @@ describe("staff Course Master onboarding synchronisation", () => {
     expect(count(db, "audit_logs where action = 'onboarding_step_completed'")).toBe(0);
   });
 
+  it.each(["inactive", "archived"] as const)("allows a %s Course to be saved without pricing", async (status) => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+
+    const response = await createCourse(app, db, {
+      code: status === "inactive" ? "DRAFT" : "ARCHDRAFT",
+      status,
+      standardFeePaise: null,
+      lowestAcceptableFeePaise: null,
+    });
+
+    expect(response.status).toBe(201);
+    expect(row(db, "select default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete from courses where status = ?", status)).toMatchObject({
+      default_fee_paise: null,
+      lowest_acceptable_fee_paise: null,
+      admission_configuration_complete: 0,
+    });
+    expect(onboardingState(db, "org_samyak")).toMatchObject({
+      completedSteps: ["organisation_profile", "centre_profile", "owner_account"],
+      checklist: expect.arrayContaining([
+        { code: "courses", label: "Courses", done: false },
+        { code: "fees", label: "Fees", done: false },
+      ]),
+    });
+  });
+
+  it("keeps an unpriced inactive Course out of active admission choices", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    await createCourse(app, db, {
+      code: "DRAFT",
+      status: "inactive",
+      standardFeePaise: null,
+      lowestAcceptableFeePaise: null,
+    });
+
+    const activeChoices = await app.request("/api/staff/courses/active", {}, { DB: new D1Adapter(db) });
+
+    await expect(activeChoices.json()).resolves.toMatchObject({ courses: [] });
+  });
+
+  it("rejects an active Course without a listed price", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+
+    const response = await createCourse(app, db, { code: "NOPRICE", status: "active", standardFeePaise: null, lowestAcceptableFeePaise: null });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ success: false, error: { code: "invalid_course", message: "Set a listed price greater than 0 before activating this course." } });
+    expect(count(db, "courses where code = 'NOPRICE'")).toBe(0);
+  });
+
+  it.each([
+    ["inactive", "INAZERO"],
+    ["active", "ACTZERO"],
+  ] as const)("rejects a %s Course with zero listed price", async (status, code) => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+
+    const response = await createCourse(app, db, { code, status, standardFeePaise: 0, lowestAcceptableFeePaise: null });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ success: false, error: { code: "invalid_course", message: "Set a listed price greater than 0." } });
+    expect(count(db, `courses where code = '${code}'`)).toBe(0);
+  });
+
+  it("defaults blank lowest acceptable fee to the listed price when saving with pricing", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+
+    const response = await createCourse(app, db, { code: "ONEFEE", status: "active", standardFeePaise: 1, lowestAcceptableFeePaise: undefined });
+
+    expect(response.status).toBe(201);
+    expect(row(db, "select default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete from courses where code = 'ONEFEE'")).toMatchObject({
+      default_fee_paise: 1,
+      lowest_acceptable_fee_paise: 1,
+      admission_configuration_complete: 1,
+    });
+  });
+
+  it("rejects zero lowest acceptable fee", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+
+    const response = await createCourse(app, db, { code: "ZEROFLOOR", standardFeePaise: 1000000, lowestAcceptableFeePaise: 0 });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ success: false, error: { code: "invalid_course", message: "Set lowest acceptable fee greater than 0." } });
+  });
+
+  it("accepts an explicit positive lower floor", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+
+    const response = await createCourse(app, db, { code: "LOWERFLOOR", standardFeePaise: 1500000, lowestAcceptableFeePaise: 1200000 });
+
+    expect(response.status).toBe(201);
+    expect(row(db, "select default_fee_paise, lowest_acceptable_fee_paise from courses where code = 'LOWERFLOOR'")).toMatchObject({
+      default_fee_paise: 1500000,
+      lowest_acceptable_fee_paise: 1200000,
+    });
+  });
+
+  it("requires pricing before an inactive Course can be activated", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    seedCourse(db, { id: "course_unpriced", status: "inactive", admissionConfigurationComplete: 0, defaultFeePaise: null, lowestAcceptableFeePaise: null });
+
+    const withoutPrice = await patchCourse(app, db, "course_unpriced", { status: "active" });
+    expect(withoutPrice.status).toBe(400);
+    expect(row(db, "select status, default_fee_paise from courses where id = 'course_unpriced'")).toMatchObject({ status: "inactive", default_fee_paise: null });
+
+    const withPrice = await patchCourse(app, db, "course_unpriced", { status: "active", standardFeePaise: 1200000, lowestAcceptableFeePaise: null });
+    expect(withPrice.status).toBe(200);
+    expect(row(db, "select status, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete from courses where id = 'course_unpriced'")).toMatchObject({
+      status: "active",
+      default_fee_paise: 1200000,
+      lowest_acceptable_fee_paise: 1200000,
+      admission_configuration_complete: 1,
+    });
+    expect(onboardingState(db, "org_samyak").completedSteps).toEqual(expect.arrayContaining(["courses", "fees"]));
+  });
+
+  it("rejects a lowest acceptable fee above listed price", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+
+    const response = await createCourse(app, db, { code: "BADFLOOR", standardFeePaise: 1000000, lowestAcceptableFeePaise: 1200000 });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ success: false, error: { code: "invalid_course", message: "Lowest acceptable fee cannot exceed listed price." } });
+  });
+
+  it("preserves an existing explicit floor when listed price increases", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    seedCourse(db, { id: "course_floor", status: "inactive", admissionConfigurationComplete: 1, defaultFeePaise: 1500000, lowestAcceptableFeePaise: 1200000 });
+
+    const response = await patchCourse(app, db, "course_floor", { standardFeePaise: 1600000 });
+
+    expect(response.status).toBe(200);
+    expect(row(db, "select default_fee_paise, lowest_acceptable_fee_paise from courses where id = 'course_floor'")).toMatchObject({
+      default_fee_paise: 1600000,
+      lowest_acceptable_fee_paise: 1200000,
+    });
+  });
+
+  it("rejects listed price reduction below an existing explicit floor", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    seedCourse(db, { id: "course_floor_block", status: "inactive", admissionConfigurationComplete: 1, defaultFeePaise: 1500000, lowestAcceptableFeePaise: 1200000 });
+
+    const response = await patchCourse(app, db, "course_floor_block", { standardFeePaise: 1000000 });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ success: false, error: { code: "invalid_course", message: "Lowest acceptable fee cannot exceed listed price." } });
+    expect(row(db, "select default_fee_paise, lowest_acceptable_fee_paise from courses where id = 'course_floor_block'")).toMatchObject({
+      default_fee_paise: 1500000,
+      lowest_acceptable_fee_paise: 1200000,
+    });
+  });
+
+  it("allows pricing to be cleared only after a Course is inactive", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    seedCourse(db, { id: "course_clear_price", status: "inactive", admissionConfigurationComplete: 1, defaultFeePaise: 1500000, lowestAcceptableFeePaise: 1200000 });
+
+    const response = await patchCourse(app, db, "course_clear_price", { standardFeePaise: null, lowestAcceptableFeePaise: null });
+
+    expect(response.status).toBe(200);
+    expect(row(db, "select default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete from courses where id = 'course_clear_price'")).toMatchObject({
+      default_fee_paise: null,
+      lowest_acceptable_fee_paise: null,
+      admission_configuration_complete: 0,
+    });
+  });
+
+  it("rejects pricing removal from an active Course", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    seedCourse(db, { id: "course_active_clear", status: "active", admissionConfigurationComplete: 1, defaultFeePaise: 1500000, lowestAcceptableFeePaise: 1200000 });
+
+    const response = await patchCourse(app, db, "course_active_clear", { standardFeePaise: null, lowestAcceptableFeePaise: null });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ success: false, error: { code: "invalid_course", message: "Set a listed price greater than 0 before activating this course." } });
+    expect(row(db, "select status, default_fee_paise, lowest_acceptable_fee_paise from courses where id = 'course_active_clear'")).toMatchObject({
+      status: "active",
+      default_fee_paise: 1500000,
+      lowest_acceptable_fee_paise: 1200000,
+    });
+  });
+
   it("completes courses when an existing configured inactive Course is updated to active", async () => {
     const app = routeApp();
     const db = courseOnboardingDb();
@@ -237,18 +488,21 @@ describe("staff Course Master onboarding synchronisation", () => {
 
     expect(response.status).toBe(200);
     expect(onboardingState(db, "org_samyak")).toMatchObject({
-      completedSteps: ["organisation_profile", "centre_profile", "owner_account", "courses"],
-      checklist: expect.arrayContaining([{ code: "courses", label: "Courses", done: true }]),
+      completedSteps: ["organisation_profile", "centre_profile", "owner_account", "courses", "fees"],
+      checklist: expect.arrayContaining([
+        { code: "courses", label: "Courses", done: true },
+        { code: "fees", label: "Fees", done: true },
+      ]),
     });
   });
 
   it("waits until canonical Course configuration becomes complete before completing courses", async () => {
     const app = routeApp();
     const db = courseOnboardingDb();
-    seedCourse(db, { id: "course_incomplete", status: "active", admissionConfigurationComplete: 0 });
+    seedCourse(db, { id: "course_incomplete", status: "active", admissionConfigurationComplete: 0, defaultFeePaise: null, lowestAcceptableFeePaise: null });
 
     const unchanged = await patchCourse(app, db, "course_incomplete", { status: "active" });
-    expect(unchanged.status).toBe(200);
+    expect(unchanged.status).toBe(400);
     expect(onboardingState(db, "org_samyak")).toMatchObject({
       completedSteps: ["organisation_profile", "centre_profile", "owner_account"],
       checklist: expect.arrayContaining([{ code: "courses", label: "Courses", done: false }]),
@@ -263,8 +517,11 @@ describe("staff Course Master onboarding synchronisation", () => {
     expect(configured.status).toBe(200);
     expect(row(db, "select admission_configuration_complete from courses where id = 'course_incomplete'")).toMatchObject({ admission_configuration_complete: 1 });
     expect(onboardingState(db, "org_samyak")).toMatchObject({
-      completedSteps: ["organisation_profile", "centre_profile", "owner_account", "courses"],
-      checklist: expect.arrayContaining([{ code: "courses", label: "Courses", done: true }]),
+      completedSteps: ["organisation_profile", "centre_profile", "owner_account", "courses", "fees"],
+      checklist: expect.arrayContaining([
+        { code: "courses", label: "Courses", done: true },
+        { code: "fees", label: "Fees", done: true },
+      ]),
     });
   });
 
@@ -279,8 +536,12 @@ describe("staff Course Master onboarding synchronisation", () => {
     expect(response.status).toBe(200);
     const state = onboardingState(db, "org_samyak");
     expect(state.completedSteps.filter((step) => step === "courses")).toHaveLength(1);
-    expect(state.checklist).toEqual(expect.arrayContaining([{ code: "courses", label: "Courses", done: true }]));
-    expect(count(db, "audit_logs where action = 'onboarding_step_completed'")).toBe(1);
+    expect(state.completedSteps.filter((step) => step === "fees")).toHaveLength(1);
+    expect(state.checklist).toEqual(expect.arrayContaining([
+      { code: "courses", label: "Courses", done: true },
+      { code: "fees", label: "Fees", done: true },
+    ]));
+    expect(count(db, "audit_logs where action = 'onboarding_step_completed'")).toBe(2);
   });
 
   it("does not fabricate onboarding rows for existing Organisations without onboarding progress", async () => {
@@ -308,7 +569,9 @@ describe("staff Course Master onboarding synchronisation", () => {
 
     expect(response.status).toBe(201);
     expect(onboardingState(db, "org_rememo").completedSteps).toContain("courses");
+    expect(onboardingState(db, "org_rememo").completedSteps).toContain("fees");
     expect(onboardingState(db, "org_samyak").completedSteps).not.toContain("courses");
+    expect(onboardingState(db, "org_samyak").completedSteps).not.toContain("fees");
   });
 
   it("keeps Course mutations successful and malformed onboarding state unchanged", async () => {
@@ -650,12 +913,23 @@ async function patchCourse(app: Hono, db: DatabaseSync, courseId: string, body: 
   }, { DB: new D1Adapter(db) });
 }
 
-function seedCourse(db: DatabaseSync, input: { id: string; organisationId?: string; status: string; admissionConfigurationComplete: 0 | 1 }) {
+function seedCourse(db: DatabaseSync, input: { id: string; organisationId?: string; status: string; admissionConfigurationComplete: 0 | 1; defaultFeePaise?: number | null; lowestAcceptableFeePaise?: number | null }) {
   db.prepare(
     `insert into courses
        (id, organisation_id, code, name, category_id, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
-     values (?, ?, ?, ?, null, '6 months', 6, 5000000, 4000000, ?, 0, ?, ?, ?)`,
-  ).run(input.id, input.organisationId ?? "org_samyak", input.id.toUpperCase(), "Seeded Course", input.admissionConfigurationComplete, input.status, "2026-09-30T00:00:00.000Z", "2026-09-30T00:00:00.000Z");
+     values (?, ?, ?, ?, null, '6 months', 6, ?, ?, ?, 0, ?, ?, ?)`,
+  ).run(
+    input.id,
+    input.organisationId ?? "org_samyak",
+    input.id.toUpperCase(),
+    "Seeded Course",
+    input.defaultFeePaise !== undefined ? input.defaultFeePaise : 5000000,
+    input.lowestAcceptableFeePaise !== undefined ? input.lowestAcceptableFeePaise : 4000000,
+    input.admissionConfigurationComplete,
+    input.status,
+    "2026-09-30T00:00:00.000Z",
+    "2026-09-30T00:00:00.000Z",
+  );
 }
 
 function onboardingState(db: DatabaseSync, organisationId: string) {
@@ -667,12 +941,23 @@ function onboardingState(db: DatabaseSync, organisationId: string) {
   };
 }
 
+function markOnboardingCoursesComplete(db: DatabaseSync, organisationId: string) {
+  const state = onboardingState(db, organisationId);
+  const completedSteps = state.completedSteps.includes("courses") ? state.completedSteps : [...state.completedSteps, "courses"];
+  const checklist = state.checklist.map((item) => item.code === "courses" ? { ...item, done: true } : item);
+  db.prepare("update organisation_onboarding_progress set completed_steps_json = ?, checklist_json = ? where organisation_id = ?").run(JSON.stringify(completedSteps), JSON.stringify(checklist), organisationId);
+}
+
 function row(db: DatabaseSync, sql: string, ...values: SqlValue[]) {
   return db.prepare(sql).get(...values) as Record<string, any> | undefined;
 }
 
 function count(db: DatabaseSync, tableAndWhere: string) {
   return Number(row(db, `select count(*) as count from ${tableAndWhere}`)?.count ?? 0);
+}
+
+function metadataRows(db: DatabaseSync) {
+  return db.prepare("select metadata_json from audit_logs where action = 'onboarding_step_completed' order by metadata_json").all().map((audit) => JSON.parse(String(audit.metadata_json)));
 }
 
 class D1Adapter {

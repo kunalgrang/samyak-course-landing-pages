@@ -27,7 +27,7 @@ import { mapStatusToPipelineStage } from "../lib/enquiry-crm";
 import { isResponse, readJsonBody, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
-import { syncCoursesOnboardingStep } from "../lib/organisation-onboarding";
+import { syncCoursesOnboardingStep, syncFeesOnboardingStep } from "../lib/organisation-onboarding";
 import { changeStudentFullName, changeStudentPrimaryMobile, getStudentBasicDetailsVersion, getStudentContactHistory, getStudentContactVersion } from "../lib/owner-student-maintenance";
 import { addMobileIfMissing } from "../lib/person-contact";
 import { getRecoverableReferralLink, rotateReferralLink, type ReferralServiceEnv } from "../lib/referral-service";
@@ -43,23 +43,35 @@ type PortalContext = Parameters<typeof getAdmissionDraft>[0];
 
 const REFERRAL_PROGRAMME_ID = "rprog_samyak_skill_circle";
 
+const nullablePaiseSchema = z.union([z.number().int(), z.null()]).optional();
+const courseStatusSchema = z.enum(["active", "inactive", "archived"]);
+
 const baseCourseSchema = z.object({
   code: z.string().trim().min(2).max(30).regex(/^[A-Za-z0-9_-]+$/),
   name: z.string().trim().min(2).max(140),
   categoryId: z.string().trim().max(120).nullable().optional(),
   durationLabel: z.string().trim().max(80).nullable().optional(),
   durationMonths: z.coerce.number().min(0.5),
-  standardFeePaise: z.coerce.number().int().min(0),
-  lowestAcceptableFeePaise: z.coerce.number().int().min(0),
+  standardFeePaise: nullablePaiseSchema,
+  lowestAcceptableFeePaise: nullablePaiseSchema,
   nsdcAvailable: z.boolean().default(false),
-  status: z.enum(["active", "inactive", "archived"]).default("active"),
+  status: courseStatusSchema.default("active"),
 });
 
-const courseSchema = baseCourseSchema.refine((course) => course.lowestAcceptableFeePaise <= course.standardFeePaise, {
-  path: ["lowestAcceptableFeePaise"],
-  message: "Lowest acceptable fee cannot exceed listed price.",
+const courseSchema = baseCourseSchema.transform(normalizeCourseInput).superRefine(validateCourseInput);
+const coursePatchSchema = z.object({
+  code: z.string().trim().min(2).max(30).regex(/^[A-Za-z0-9_-]+$/).optional(),
+  name: z.string().trim().min(2).max(140).optional(),
+  categoryId: z.string().trim().max(120).nullable().optional(),
+  durationLabel: z.string().trim().max(80).nullable().optional(),
+  durationMonths: z.coerce.number().min(0.5).optional(),
+  standardFeePaise: nullablePaiseSchema,
+  lowestAcceptableFeePaise: nullablePaiseSchema,
+  nsdcAvailable: z.boolean().optional(),
+  status: courseStatusSchema.optional(),
 });
-const coursePatchSchema = baseCourseSchema.partial();
+type CourseInput = z.infer<typeof courseSchema>;
+type CoursePatchInput = z.infer<typeof coursePatchSchema>;
 
 const discountDecisionSchema = z.object({ decision: z.enum(["approved", "rejected"]) });
 const personLinkSchema = z.discriminatedUnion("mode", [
@@ -144,7 +156,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
       await c.env.DB.prepare(
         `insert into courses
            (id, organisation_id, code, name, category_id, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
         .bind(
           courseId,
@@ -156,6 +168,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
           parsed.data.durationMonths,
           parsed.data.standardFeePaise,
           parsed.data.lowestAcceptableFeePaise,
+          parsed.data.standardFeePaise !== null ? 1 : 0,
           parsed.data.nsdcAvailable ? 1 : 0,
           parsed.data.status,
           now,
@@ -166,6 +179,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
       return jsonError(c, { status: 409, code: "course_code_exists", message: "Course code already exists." });
     }
     await syncCoursesOnboardingStep(c, ORG_ID, { loginAccountId: staff.loginAccountId, activePersonId: staff.activePersonId });
+    await syncFeesOnboardingStep(c, ORG_ID, { loginAccountId: staff.loginAccountId, activePersonId: staff.activePersonId });
     await audit(c, staff, "course_created", "course", courseId, { code: parsed.data.code.toUpperCase() });
     return jsonPlain(c, { success: true, courseId }, { status: 201 });
   });
@@ -181,30 +195,26 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
       .first<{ id: string }>();
     if (!existing) return jsonError(c, { status: 404, code: "course_not_found", message: "Course was not found." });
     const current = await c.env.DB.prepare("select * from courses where id = ?").bind(existing.id).first<Record<string, unknown>>();
-    const next = { ...current, ...toCourseRow(parsed.data), updated_at: new Date().toISOString() };
-    if (Number(next.lowest_acceptable_fee_paise ?? 0) > Number(next.default_fee_paise ?? 0)) {
-      return jsonError(c, { status: 400, code: "invalid_course", message: "Lowest acceptable fee cannot exceed listed price." });
-    }
-    const explicitlyValidatedConfiguration =
-      parsed.data.durationMonths !== undefined &&
-      parsed.data.standardFeePaise !== undefined &&
-      parsed.data.lowestAcceptableFeePaise !== undefined;
-    const admissionConfigurationComplete = Boolean(current?.admission_configuration_complete) || explicitlyValidatedConfiguration;
+    const next = normalizeCourseRow({ ...current, ...toCourseRow(parsed.data), updated_at: new Date().toISOString() });
+    const validation = validateCourseRow(next);
+    if (validation) return jsonError(c, { status: 400, code: "invalid_course", message: validation });
+    const admissionConfigurationComplete = next.default_fee_paise !== null && next.duration_months !== null;
     const coursePriceChanged =
-      Number(current?.default_fee_paise ?? 0) !== Number(next.default_fee_paise ?? 0) ||
-      Number(current?.lowest_acceptable_fee_paise ?? 0) !== Number(next.lowest_acceptable_fee_paise ?? 0);
+      nullableNumber(current?.default_fee_paise) !== nullableNumber(next.default_fee_paise) ||
+      nullableNumber(current?.lowest_acceptable_fee_paise) !== nullableNumber(next.lowest_acceptable_fee_paise);
     try {
       await c.env.DB.prepare(
         `update courses
          set code = ?, name = ?, category_id = ?, duration_label = ?, duration_months = ?, default_fee_paise = ?, lowest_acceptable_fee_paise = ?, admission_configuration_complete = ?, nsdc_available = ?, status = ?, updated_at = ?
          where id = ? and organisation_id = ?`,
       )
-        .bind(next.code, next.name, next.category_id ?? null, next.duration_label ?? null, next.duration_months, next.default_fee_paise ?? 0, next.lowest_acceptable_fee_paise ?? 0, admissionConfigurationComplete ? 1 : 0, next.nsdc_available ? 1 : 0, next.status, next.updated_at, existing.id, ORG_ID)
+        .bind(next.code, next.name, next.category_id ?? null, next.duration_label ?? null, next.duration_months, next.default_fee_paise, next.lowest_acceptable_fee_paise, admissionConfigurationComplete ? 1 : 0, next.nsdc_available ? 1 : 0, next.status, next.updated_at, existing.id, ORG_ID)
         .run();
     } catch {
       return jsonError(c, { status: 409, code: "course_code_exists", message: "Course code already exists." });
     }
     await syncCoursesOnboardingStep(c, ORG_ID, { loginAccountId: staff.loginAccountId, activePersonId: staff.activePersonId });
+    await syncFeesOnboardingStep(c, ORG_ID, { loginAccountId: staff.loginAccountId, activePersonId: staff.activePersonId });
     if (coursePriceChanged) await supersedeCoursePriceApprovals(c, existing.id);
     await audit(c, staff, "course_updated", "course", existing.id, { status: next.status });
     return jsonPlain(c, { success: true, courseId: existing.id });
@@ -897,7 +907,66 @@ async function supersedeCoursePriceApprovals(c: Parameters<typeof getAdmissionDr
     .run();
 }
 
-function toCourseRow(input: Partial<z.infer<typeof courseSchema>>) {
+type CourseRow = {
+  status?: unknown;
+  duration_months?: unknown;
+  default_fee_paise?: unknown;
+  lowest_acceptable_fee_paise?: unknown;
+};
+
+function normalizeCourseInput(input: z.infer<typeof baseCourseSchema>) {
+  const standardFeePaise = input.standardFeePaise ?? null;
+  return {
+    ...input,
+    standardFeePaise,
+    lowestAcceptableFeePaise: standardFeePaise === null ? input.lowestAcceptableFeePaise ?? null : input.lowestAcceptableFeePaise ?? standardFeePaise,
+  };
+}
+
+function validateCourseInput(course: CourseInput, ctx: z.RefinementCtx) {
+  const issue = validateCourseRow({
+    status: course.status,
+    duration_months: course.durationMonths,
+    default_fee_paise: course.standardFeePaise,
+    lowest_acceptable_fee_paise: course.lowestAcceptableFeePaise,
+  });
+  if (!issue) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: issue.includes("Lowest") ? ["lowestAcceptableFeePaise"] : ["standardFeePaise"],
+    message: issue,
+  });
+}
+
+function normalizeCourseRow<T extends CourseRow>(row: T) {
+  const defaultFee = nullableNumber(row.default_fee_paise);
+  const floor = nullableNumber(row.lowest_acceptable_fee_paise);
+  return {
+    ...row,
+    default_fee_paise: defaultFee,
+    lowest_acceptable_fee_paise: defaultFee === null ? null : floor ?? defaultFee,
+  };
+}
+
+function validateCourseRow(row: CourseRow) {
+  const status = String(row.status ?? "active");
+  const defaultFee = nullableNumber(row.default_fee_paise);
+  const floor = nullableNumber(row.lowest_acceptable_fee_paise);
+  if (defaultFee !== null && defaultFee <= 0) return "Set a listed price greater than 0.";
+  if (floor !== null && floor <= 0) return "Set lowest acceptable fee greater than 0.";
+  if (status === "active" && defaultFee === null) return "Set a listed price greater than 0 before activating this course.";
+  if (defaultFee === null && floor !== null) return "Set a listed price before setting lowest acceptable fee.";
+  if (defaultFee !== null && floor !== null && floor > defaultFee) return "Lowest acceptable fee cannot exceed listed price.";
+  return "";
+}
+
+function nullableNumber(value: unknown) {
+  if (value === null || value === undefined) return null;
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function toCourseRow(input: Partial<CourseInput | CoursePatchInput>) {
   return {
     ...(input.code ? { code: input.code.toUpperCase() } : {}),
     ...(input.name ? { name: input.name } : {}),
