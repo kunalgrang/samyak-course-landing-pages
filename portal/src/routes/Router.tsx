@@ -24,6 +24,7 @@ import { BatchManagementPage } from "../features/staff/BatchManagementPage";
 import { AcademicOperationsPage } from "../features/staff/AcademicOperationsPage";
 import { TrainerManagementPage } from "../features/staff/TrainerManagementPage";
 import { DiscountApprovalsPage } from "../features/staff/DiscountApprovalsPage";
+import { OrganisationOnboardingPage } from "../features/staff/OrganisationOnboardingPage";
 import { OrganisationSettingsPage } from "../features/staff/OrganisationSettingsPage";
 import { EnquiryDetailPage } from "../features/staff/EnquiryDetailPage";
 import { StudentProfilePage } from "../features/staff/StudentProfilePage";
@@ -34,9 +35,10 @@ import { ShellHomePage } from "./ShellHomePage";
 import { AppShell } from "./AppShell";
 import type { AppRoute, RoutePath, StudentRoute } from "./types";
 
-const appRoutes = new Set<RoutePath>(["/app", "/app/enquiries", "/app/students", "/app/collections", "/app/batches", "/app/academic", "/app/trainers", "/app/trainers/new", "/app/education-partners", "/app/referral-operations", "/app/courses", "/app/discount-approvals", "/app/settings", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
+const appRoutes = new Set<RoutePath>(["/app", "/app/onboarding", "/app/enquiries", "/app/students", "/app/collections", "/app/batches", "/app/academic", "/app/trainers", "/app/trainers/new", "/app/education-partners", "/app/referral-operations", "/app/courses", "/app/discount-approvals", "/app/settings", "/app/certificates", "/app/referrals", "/app/rules", "/app/profile"]);
 const studentRoutes = new Set<RoutePath>(["/student/dashboard", "/student/learning", "/student/certificates", "/student/referrals", "/student/rules", "/student/profile"]);
 const staffBlockedSelfServiceRoutes = new Set<RoutePath>(["/app", "/app/referrals", "/app/rules", "/app/profile"]);
+export const SIGNUP_COMPLETION_PATH: RoutePath = "/app/onboarding";
 const staffRoles = new Set(["owner", "admin", "system_admin", "counsellor", "admission_admin"]);
 const courseAdminRoles = new Set(["owner", "admin", "system_admin"]);
 const academicRoles = new Set(["owner", "admin", "system_admin"]);
@@ -57,6 +59,7 @@ type RedirectState = {
   canManageTrainers: boolean;
   isDiscountApprover: boolean;
   canManageOrganisationSettings: boolean;
+  canAccessOnboarding: boolean;
 };
 
 export function normalizePath(pathname: string): RoutePath {
@@ -96,6 +99,7 @@ export function Router() {
   const canManageTrainers = Boolean(session?.accountRoles.some((role) => trainerManagementRoles.has(role)));
   const isDiscountApprover = canAccessDiscountApprovals(session?.accountRoles || []);
   const canManageOrganisationSettings = isOrganisationOwner(session?.accountRoles || []);
+  const canAccessOnboarding = isOrganisationOwner(session?.accountRoles || []);
   const navigation = navigationForRoles(session?.accountRoles || [], isStaff);
   const isStudentPath = path === "/student/login" || path.startsWith("/student/");
 
@@ -121,9 +125,10 @@ export function Router() {
       canManageTrainers,
       isDiscountApprover,
       canManageOrganisationSettings,
+      canAccessOnboarding,
     });
     if (redirect && redirect !== path) navigate(redirect, true);
-  }, [canAccessAcademic, canAccessEnquiries, canAccessStudents, canManageOrganisationSettings, canManageTrainers, hasSessionError, isAuthenticated, isCourseAdmin, isDiscountApprover, isLoading, isStaff, path]);
+  }, [canAccessAcademic, canAccessEnquiries, canAccessOnboarding, canAccessStudents, canManageOrganisationSettings, canManageTrainers, hasSessionError, isAuthenticated, isCourseAdmin, isDiscountApprover, isLoading, isStaff, path]);
 
   const activeAppPath = useMemo<AppRoute>(
     () => (path.startsWith("/app") ? (path as AppRoute) : "/app"),
@@ -170,7 +175,7 @@ export function Router() {
   }
 
   if (path === "/signup") {
-    return <SignupPage onComplete={() => navigate("/app", true)} />;
+    return <SignupPage onComplete={() => navigate(SIGNUP_COMPLETION_PATH, true)} />;
   }
 
   if (path.startsWith("/trainer/")) {
@@ -239,6 +244,7 @@ export function Router() {
   return (
     <AppShell activePath={activeAppPath} navigation={navigation} onNavigate={navigate} onSignOut={handleSignOut} organisations={session?.organisations || []} session={session}>
       {activeAppPath === "/app" ? <ShellHomePage /> : null}
+      {activeAppPath === "/app/onboarding" && canAccessOnboarding ? <OrganisationOnboardingPage /> : null}
       {activeAppPath === "/app/enquiries" && canAccessEnquiries ? <EnquiriesPage /> : null}
       {activeAppPath === "/app/students" && canAccessStudents ? <StudentsPage /> : null}
       {activeAppPath === "/app/collections" && isStaff ? <CollectionsPage onNavigate={navigate} /> : null}
@@ -349,6 +355,7 @@ export function redirectForRouteState({
   canManageTrainers,
   isDiscountApprover,
   canManageOrganisationSettings,
+  canAccessOnboarding,
 }: RedirectState): RoutePath | null {
   if (isLoading) return null;
   if (!hasSessionError && !isAuthenticated && (path.startsWith("/app") || path.startsWith("/student/"))) {
@@ -363,7 +370,7 @@ export function redirectForRouteState({
   if (!isStaff && studentRoute) return studentRoute;
   if ((path === "/app/enquiries" || path.startsWith("/app/enquiries/")) && !canAccessEnquiries) return isStaff ? "/app" : "/student/dashboard";
   if ((path === "/app/students" || path.startsWith("/app/students/")) && !canAccessStudents) return isStaff ? "/app" : "/student/dashboard";
-  if ((path === "/app/education-partners" || path === "/app/referral-operations" || path === "/app/collections" || path === "/app/batches" || path === "/app/academic" || path === "/app/trainers" || path === "/app/trainers/new" || path === "/app/courses" || path === "/app/discount-approvals" || path === "/app/settings" || path.startsWith("/app/education-partners/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/collections/") || path.startsWith("/app/batches/") || path.startsWith("/app/academic/") || path.startsWith("/app/trainers/") || path.startsWith("/app/enrolments/")) && !isStaff) {
+  if ((path === "/app/onboarding" || path === "/app/education-partners" || path === "/app/referral-operations" || path === "/app/collections" || path === "/app/batches" || path === "/app/academic" || path === "/app/trainers" || path === "/app/trainers/new" || path === "/app/courses" || path === "/app/discount-approvals" || path === "/app/settings" || path.startsWith("/app/education-partners/") || path.startsWith("/app/referral-operations/") || path.startsWith("/app/collections/") || path.startsWith("/app/batches/") || path.startsWith("/app/academic/") || path.startsWith("/app/trainers/") || path.startsWith("/app/enrolments/")) && !isStaff) {
     return "/student/dashboard";
   }
   if ((path === "/app/academic" || path.startsWith("/app/academic/")) && !canAccessAcademic) return "/app/enquiries";
@@ -372,6 +379,7 @@ export function redirectForRouteState({
   if (path === "/app/courses" && !isCourseAdmin) return "/app/enquiries";
   if (path === "/app/discount-approvals" && !isDiscountApprover) return "/app/enquiries";
   if (path === "/app/settings" && !canManageOrganisationSettings) return "/app/enquiries";
+  if (path === "/app/onboarding" && !canAccessOnboarding) return "/app/enquiries";
   return null;
 }
 

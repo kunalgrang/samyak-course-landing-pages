@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isOrganisationOwner, navigationForRoles, normalizePath, redirectForRouteState } from "./Router";
+import { SIGNUP_COMPLETION_PATH, isOrganisationOwner, navigationForRoles, normalizePath, redirectForRouteState } from "./Router";
 
 describe("Router student namespace", () => {
   it("recognizes practical student login and dashboard URLs", () => {
@@ -43,6 +43,8 @@ describe("Router student namespace", () => {
     expect(redirectForRouteState(state({ path: "/app/academic", isStaff: true, canAccessAcademic: true }))).toBeNull();
     expect(redirectForRouteState(state({ path: "/app/settings", isStaff: true, canManageOrganisationSettings: false }))).toBe("/app/enquiries");
     expect(redirectForRouteState(state({ path: "/app/settings", isStaff: true, canManageOrganisationSettings: true }))).toBeNull();
+    expect(redirectForRouteState(state({ path: "/app/onboarding", isStaff: true, canAccessOnboarding: false }))).toBe("/app/enquiries");
+    expect(redirectForRouteState(state({ path: "/app/onboarding", isStaff: true, canAccessOnboarding: true }))).toBeNull();
     expect(redirectForRouteState(state({ path: "/login", isStaff: false }))).toBe("/student/dashboard");
     expect(redirectForRouteState(state({ path: "/student/login", isStaff: true }))).toBe("/app/enquiries");
   });
@@ -61,6 +63,11 @@ describe("Router student namespace", () => {
     expect(isOrganisationOwner(["admission_admin"])).toBe(false);
     expect(navigationForRoles(["student"]).map((item) => item.path)).not.toContain("/app/settings");
   });
+
+  it("sends completed signups to the owner onboarding route", () => {
+    expect(SIGNUP_COMPLETION_PATH).toBe("/app/onboarding");
+    expect(normalizePath(SIGNUP_COMPLETION_PATH)).toBe("/app/onboarding");
+  });
 });
 
 function state(overrides: Partial<Parameters<typeof redirectForRouteState>[0]> = {}): Parameters<typeof redirectForRouteState>[0] {
@@ -77,6 +84,7 @@ function state(overrides: Partial<Parameters<typeof redirectForRouteState>[0]> =
     canManageTrainers: false,
     isDiscountApprover: false,
     canManageOrganisationSettings: false,
+    canAccessOnboarding: false,
     ...overrides,
   };
 }

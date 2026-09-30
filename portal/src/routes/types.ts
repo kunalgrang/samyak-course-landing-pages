@@ -1,5 +1,6 @@
 export type AppRoute =
   | "/app"
+  | "/app/onboarding"
   | "/app/enquiries"
   | "/app/students"
   | "/app/collections"

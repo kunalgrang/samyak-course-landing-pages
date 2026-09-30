@@ -199,6 +199,25 @@ const organisationSettingsResponseSchema = z.object({
   changedFields: z.array(z.string()).optional(),
 });
 
+const organisationOnboardingResponseSchema = z.object({
+  success: z.literal(true),
+  onboarding: z.object({
+    status: z.union([z.literal("in_progress"), z.literal("complete")]),
+    reportedCentreCount: z.number().nullable(),
+    completedSteps: z.array(z.string()),
+    checklist: z.array(z.object({
+      code: z.string(),
+      label: z.string(),
+      done: z.boolean(),
+    })),
+  }),
+  trial: z.object({
+    state: z.string(),
+    startedAt: z.string(),
+    endsAt: z.string(),
+  }),
+});
+
 const centreSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -1800,6 +1819,7 @@ export type SessionMaterial = z.infer<typeof sessionMaterialSchema>;
 export type StudentLearningEnrolment = z.infer<typeof studentLearningEnrolmentSchema>;
 export type StudentLearningDetail = z.infer<typeof studentLearningDetailSchema>;
 export type OrganisationSettings = z.infer<typeof organisationSettingsSchema>;
+export type OrganisationOnboarding = z.infer<typeof organisationOnboardingResponseSchema>;
 export type StaffCentre = z.infer<typeof centreSchema>;
 
 export type CreateCentreInput = {
@@ -1903,6 +1923,10 @@ export async function getOrganisationSettings() {
 
 export async function updateOrganisationSettings(input: Record<string, unknown>) {
   return patchJson("/api/staff/organisation-settings", input, organisationSettingsResponseSchema);
+}
+
+export async function getOrganisationOnboarding() {
+  return getJson("/api/staff/onboarding", organisationOnboardingResponseSchema);
 }
 
 export async function getCentres() {
