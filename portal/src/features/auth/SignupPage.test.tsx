@@ -189,6 +189,7 @@ describe("SignupPage organisation details", () => {
     expect(payload.centre.name).toBe("Sion");
     expect(payload.onboarding.reportedCentreCount).toBe(3);
     expect(payload).toHaveProperty("centre");
+    expect(payload.centre).not.toHaveProperty("status");
     expect(payload).not.toHaveProperty("branches");
     expect(payload).not.toHaveProperty("centres");
   });

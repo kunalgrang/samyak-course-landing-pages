@@ -26,7 +26,6 @@ import { validateTurnstile } from "../lib/turnstile";
 import { jsonError } from "../lib/json-response";
 import {
   CENTRE_OPERATING_MODELS,
-  CENTRE_STATUSES,
   LEGAL_ENTITY_TYPES,
   ORGANISATION_TYPES,
   createOrganisationFromSignup,
@@ -91,7 +90,6 @@ const signupCreateSchema = z.object({
     mobile: z.string().min(1).max(40),
     email: z.string().max(200).optional(),
     operatingModel: z.enum(CENTRE_OPERATING_MODELS),
-    status: z.enum(CENTRE_STATUSES),
     currency: z.string().max(12).optional(),
     timezone: z.string().max(80).optional(),
     pan: z.string().max(20).optional(),

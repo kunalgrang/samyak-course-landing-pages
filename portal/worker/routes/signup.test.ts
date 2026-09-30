@@ -113,14 +113,14 @@ describe("organisation signup onboarding", () => {
     }
   });
 
-  it("allows duplicate display names across organisations, blocks duplicate retry creation, and ignores client trial dates and demo flags", async () => {
+  it("allows duplicate display names across organisations, blocks duplicate retry creation, and ignores client-controlled lifecycle fields", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(NOW));
     installTurnstile();
     const fixture = createFixture();
     try {
       const firstVerification = await verifiedSignupId(fixture.env, "9876543210");
-      const first = await createOrganisation(fixture.env, firstVerification, "same-submit", { brandName: "Shared Academy", trialEndsAt: "2099-01-01T00:00:00.000Z", organisationKind: "demo" });
+      const first = await createOrganisation(fixture.env, firstVerification, "same-submit", { brandName: "Shared Academy", trialEndsAt: "2099-01-01T00:00:00.000Z", organisationKind: "demo", centre: { status: "closed" } });
       const firstBody = await first.json() as Row;
       const retry = await createOrganisation(fixture.env, firstVerification, "same-submit", { brandName: "Shared Academy" });
       const retryBody = await retry.json() as Row;
@@ -130,6 +130,10 @@ describe("organisation signup onboarding", () => {
         .toBe("2026-10-09T10:00:00.000Z");
       expect(row(fixture.sqlite, "select organisation_kind from organisations where id = ?", String(firstBody.organisation.id))?.organisation_kind)
         .toBe("normal");
+      expect(row(fixture.sqlite, "select status, centre_status from branches where organisation_id = ?", String(firstBody.organisation.id)))
+        .toEqual({ status: "active", centre_status: "active" });
+      expect(row(fixture.sqlite, "select state, source from centre_commercial_access where organisation_id = ?", String(firstBody.organisation.id)))
+        .toEqual({ state: "trial", source: "organisation_signup_trial" });
 
       const secondVerification = await verifiedSignupId(fixture.env, "9876543211");
       const second = await createOrganisation(fixture.env, secondVerification, "second-submit", { brandName: "Shared Academy", centreName: "Dadar Centre", centreMobile: "9876543211" });
@@ -555,7 +559,7 @@ async function createOrganisation(env: WorkerBindings, signupVerificationId: str
       mobile: overrides.centreMobile || "9876543210",
       email: "sion@example.com",
       operatingModel: "company_owned",
-      status: "active",
+      ...(typeof overrides.centre === "object" && overrides.centre ? overrides.centre : {}),
     },
   };
   return app.request("http://localhost/api/signup/create-organisation", {

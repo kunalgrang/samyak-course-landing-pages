@@ -27,7 +27,6 @@ export const LEGAL_ENTITY_TYPES = [
 ] as const;
 
 export const CENTRE_OPERATING_MODELS = ["company_owned", "franchise_operated"] as const;
-export const CENTRE_STATUSES = ["active", "suspended", "closed"] as const;
 
 export type OrganisationSignupInput = {
   signupVerificationId: string;
@@ -69,7 +68,6 @@ export type OrganisationSignupInput = {
     mobile: string;
     email?: string;
     operatingModel: typeof CENTRE_OPERATING_MODELS[number];
-    status: typeof CENTRE_STATUSES[number];
     currency?: string;
     timezone?: string;
     pan?: string;
@@ -210,7 +208,7 @@ export async function createOrganisationFromSignup(c: AppContext, input: Organis
         id, organisation_id, name, code, timezone, status, address_line1, city,
         state_region, postcode, country, mobile_hash, mobile_last_four, email,
         currency, operating_model, centre_status, tax_identifiers_json, created_at, updated_at
-      ) values (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) values (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
     ).bind(
       branchId,
       organisationId,
@@ -227,7 +225,6 @@ export async function createOrganisationFromSignup(c: AppContext, input: Organis
       cleanOptional(input.centre.email),
       cleanOptional(input.centre.currency) || centreDefaults.currency,
       input.centre.operatingModel,
-      input.centre.status,
       centreTaxIdentifiers,
       now,
       now,
@@ -309,7 +306,6 @@ async function validateSignupInput(c: AppContext, input: OrganisationSignupInput
   if (authorityMobileHash !== verification.mobile_hash) return invalid("AUTHORITY_MOBILE_MISMATCH", "The authorised contact mobile must match the verified mobile.");
   if (!nonEmpty(input.centre.name)) return invalid("CENTRE_REQUIRED", "Enter the initial Centre name.");
   if (!CENTRE_OPERATING_MODELS.includes(input.centre.operatingModel)) return invalid("INVALID_CENTRE_OPERATING_MODEL", "Choose a supported Centre operating model.");
-  if (!CENTRE_STATUSES.includes(input.centre.status)) return invalid("INVALID_CENTRE_STATUS", "Choose a supported Centre status.");
   for (const value of [input.centre.address, input.centre.city, input.centre.postcode, input.centre.country]) {
     if (!nonEmpty(value)) return invalid("CENTRE_ADDRESS_REQUIRED", "Enter the initial Centre address.");
   }

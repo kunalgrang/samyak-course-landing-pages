@@ -148,7 +148,6 @@ export type SignupCreateInput = {
     mobile: string;
     email?: string;
     operatingModel: string;
-    status: string;
     currency?: string;
     timezone?: string;
     pan?: string;

@@ -74,7 +74,6 @@ export const signupDefaultForm = {
   centreMobile: "",
   centreEmail: "",
   centreOperatingModel: "company_owned",
-  centreStatus: "active",
   sameCentreAddress: true,
   sameCentreContact: true,
   hasMultipleCentres: false,
@@ -123,7 +122,6 @@ export function buildSignupCreatePayload(form: SignupFormState, signupVerificati
       mobile: centreContact.mobile,
       email: centreContact.email,
       operatingModel: form.centreOperatingModel,
-      status: form.centreStatus,
     },
   };
 }
