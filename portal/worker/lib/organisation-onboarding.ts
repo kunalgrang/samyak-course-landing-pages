@@ -1,4 +1,5 @@
 import type { AppContext } from "./http";
+import { createOpaqueId } from "./crypto";
 
 type OnboardingRow = {
   status: string;
@@ -17,6 +18,11 @@ type ChecklistItem = {
   code: string;
   label: string;
   done: boolean;
+};
+
+type SyncActor = {
+  loginAccountId: string;
+  activePersonId: string | null;
 };
 
 export type OrganisationOnboardingSnapshot = {
@@ -76,6 +82,89 @@ export async function getOrganisationOnboardingSnapshot(c: AppContext, organisat
       },
     } satisfies OrganisationOnboardingSnapshot,
   };
+}
+
+export async function syncCoursesOnboardingStep(c: AppContext, organisationId: string, actor?: SyncActor) {
+  try {
+    const qualifyingCourse = await c.env.DB.prepare(
+      `select id
+       from courses
+       where organisation_id = ?
+         and status = 'active'
+         and admission_configuration_complete = 1
+       limit 1`,
+    ).bind(organisationId).first<{ id: string }>();
+    if (!qualifyingCourse) return { completed: false as const, reason: "no_qualifying_course" as const };
+
+    const onboarding = await c.env.DB.prepare(
+      `select status, completed_steps_json, checklist_json, reported_centre_count
+       from organisation_onboarding_progress
+       where organisation_id = ?
+       limit 1`,
+    ).bind(organisationId).first<OnboardingRow>();
+    if (!onboarding) return { completed: false as const, reason: "onboarding_not_found" as const };
+
+    const completedSteps = parseCompletedSteps(onboarding.completed_steps_json);
+    const checklist = parseChecklist(onboarding.checklist_json);
+    if (!completedSteps || !checklist) return { completed: false as const, reason: "onboarding_state_invalid" as const };
+    if (completedSteps.includes("courses")) return { completed: false as const, reason: "already_complete" as const };
+
+    let foundCoursesStep = false;
+    const nextChecklist = checklist.map((item) => {
+      if (item.code !== "courses") return item;
+      foundCoursesStep = true;
+      return { ...item, done: true };
+    });
+    if (!foundCoursesStep) return { completed: false as const, reason: "courses_step_missing" as const };
+
+    const nextCompletedSteps = [...completedSteps, "courses"];
+    const nextStatus = nextChecklist.every((item) => item.done) ? "complete" : "in_progress";
+    const now = new Date().toISOString();
+    const progressUpdate = c.env.DB.prepare(
+      `update organisation_onboarding_progress
+       set status = ?, completed_steps_json = ?, checklist_json = ?, updated_at = ?
+       where organisation_id = ?`,
+    ).bind(nextStatus, JSON.stringify(nextCompletedSteps), JSON.stringify(nextChecklist), now, organisationId);
+
+    if (actor) {
+      const auditMetadata = JSON.stringify({ step: "courses", source: "course_state" });
+      const auditInsert = c.env.DB.prepare(
+        `insert into audit_logs
+           (id, organisation_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
+         select ?, ?, ?, ?, ?, ?, ?, ?, ?
+         where not exists (
+           select 1
+           from audit_logs
+           where organisation_id = ?
+             and action = 'onboarding_step_completed'
+             and entity_type = 'organisation_onboarding_progress'
+             and entity_id = ?
+             and metadata_json = ?
+         )`,
+      )
+        .bind(
+          createOpaqueId("audit"),
+          organisationId,
+          actor.loginAccountId,
+          actor.activePersonId,
+          "onboarding_step_completed",
+          "organisation_onboarding_progress",
+          organisationId,
+          auditMetadata,
+          now,
+          organisationId,
+          organisationId,
+          auditMetadata,
+        );
+      await c.env.DB.batch([progressUpdate, auditInsert]);
+    } else {
+      await progressUpdate.run();
+    }
+
+    return { completed: true as const, status: nextStatus };
+  } catch {
+    return { completed: false as const, reason: "sync_failed" as const };
+  }
 }
 
 function parseCompletedSteps(value: string) {

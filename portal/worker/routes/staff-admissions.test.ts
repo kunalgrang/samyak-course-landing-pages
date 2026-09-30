@@ -43,9 +43,13 @@ function routeApp() {
   return app;
 }
 
-function authenticateAs(roles: string[]) {
+function authenticateAs(roles: string[], organisationId = "org_samyak") {
   mocks.getSessionFromRequest.mockResolvedValue({
-    record: { login_account_id: "acct_test", active_person_id: "person_test" },
+    record: {
+      login_account_id: organisationId === "org_samyak" ? "acct_test" : `acct_${organisationId}`,
+      active_person_id: organisationId === "org_samyak" ? "person_test" : `person_${organisationId}`,
+      organisation_id: organisationId,
+    },
   });
   mocks.getAccountRoles.mockResolvedValue(roles);
 }
@@ -144,6 +148,183 @@ describe("staff admission draft routes", () => {
         fieldErrors: { "contact.primaryMobile": ["Enter a valid Indian primary mobile number."] },
       },
     });
+  });
+});
+
+describe("staff Course Master onboarding synchronisation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authenticateAs(["owner"]);
+  });
+
+  it("completes only the courses step after creating an active configured Course", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+
+    const response = await createCourse(app, db, { code: "FSD", status: "active" });
+
+    expect(response.status).toBe(201);
+    expect(onboardingState(db, "org_samyak")).toMatchObject({
+      status: "in_progress",
+      completedSteps: ["organisation_profile", "centre_profile", "owner_account", "courses"],
+      checklist: expect.arrayContaining([
+        { code: "courses", label: "Courses", done: true },
+        { code: "fees", label: "Fees", done: false },
+      ]),
+    });
+    expect(count(db, "audit_logs where action = 'onboarding_step_completed'")).toBe(1);
+    expect(JSON.parse(row(db, "select metadata_json from audit_logs where action = 'onboarding_step_completed'")?.metadata_json)).toEqual({ step: "courses", source: "course_state" });
+  });
+
+  it("rolls back onboarding progress when the transition audit insert fails and can retry safely", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    db.exec(`
+      create trigger reject_courses_onboarding_audit
+      before insert on audit_logs
+      when new.action = 'onboarding_step_completed'
+      begin
+        select raise(abort, 'forced onboarding audit failure');
+      end;
+    `);
+
+    const create = await createCourse(app, db, { code: "BATCH", status: "active" });
+
+    expect(create.status).toBe(201);
+    expect(count(db, "courses where organisation_id = 'org_samyak' and code = 'BATCH'")).toBe(1);
+    expect(onboardingState(db, "org_samyak")).toMatchObject({
+      status: "in_progress",
+      completedSteps: ["organisation_profile", "centre_profile", "owner_account"],
+      checklist: expect.arrayContaining([{ code: "courses", label: "Courses", done: false }]),
+    });
+    expect(count(db, "audit_logs where action = 'onboarding_step_completed'")).toBe(0);
+
+    db.exec("drop trigger reject_courses_onboarding_audit");
+    const courseId = row(db, "select id from courses where code = 'BATCH'")?.id;
+    const retry = await patchCourse(app, db, String(courseId), { name: "Batch Retry Course" });
+
+    expect(retry.status).toBe(200);
+    const state = onboardingState(db, "org_samyak");
+    expect(state.completedSteps.filter((step) => step === "courses")).toHaveLength(1);
+    expect(state.checklist).toEqual(expect.arrayContaining([{ code: "courses", label: "Courses", done: true }]));
+    expect(count(db, "audit_logs where action = 'onboarding_step_completed'")).toBe(1);
+  });
+
+  it.each(["inactive", "archived"] as const)("does not complete courses after creating a %s configured Course", async (status) => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+
+    const response = await createCourse(app, db, { code: status === "inactive" ? "INA" : "ARC", status });
+
+    expect(response.status).toBe(201);
+    expect(onboardingState(db, "org_samyak")).toMatchObject({
+      status: "in_progress",
+      completedSteps: ["organisation_profile", "centre_profile", "owner_account"],
+      checklist: expect.arrayContaining([
+        { code: "courses", label: "Courses", done: false },
+        { code: "fees", label: "Fees", done: false },
+      ]),
+    });
+    expect(count(db, "audit_logs where action = 'onboarding_step_completed'")).toBe(0);
+  });
+
+  it("completes courses when an existing configured inactive Course is updated to active", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    seedCourse(db, { id: "course_inactive", status: "inactive", admissionConfigurationComplete: 1 });
+
+    const response = await patchCourse(app, db, "course_inactive", { status: "active" });
+
+    expect(response.status).toBe(200);
+    expect(onboardingState(db, "org_samyak")).toMatchObject({
+      completedSteps: ["organisation_profile", "centre_profile", "owner_account", "courses"],
+      checklist: expect.arrayContaining([{ code: "courses", label: "Courses", done: true }]),
+    });
+  });
+
+  it("waits until canonical Course configuration becomes complete before completing courses", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    seedCourse(db, { id: "course_incomplete", status: "active", admissionConfigurationComplete: 0 });
+
+    const unchanged = await patchCourse(app, db, "course_incomplete", { status: "active" });
+    expect(unchanged.status).toBe(200);
+    expect(onboardingState(db, "org_samyak")).toMatchObject({
+      completedSteps: ["organisation_profile", "centre_profile", "owner_account"],
+      checklist: expect.arrayContaining([{ code: "courses", label: "Courses", done: false }]),
+    });
+
+    const configured = await patchCourse(app, db, "course_incomplete", {
+      durationMonths: 4,
+      standardFeePaise: 3200000,
+      lowestAcceptableFeePaise: 2800000,
+    });
+
+    expect(configured.status).toBe(200);
+    expect(row(db, "select admission_configuration_complete from courses where id = 'course_incomplete'")).toMatchObject({ admission_configuration_complete: 1 });
+    expect(onboardingState(db, "org_samyak")).toMatchObject({
+      completedSteps: ["organisation_profile", "centre_profile", "owner_account", "courses"],
+      checklist: expect.arrayContaining([{ code: "courses", label: "Courses", done: true }]),
+    });
+  });
+
+  it("keeps courses completion monotonic and does not duplicate steps or audits", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    await createCourse(app, db, { code: "FSD", status: "active" });
+
+    const courseId = row(db, "select id from courses where code = 'FSD'")?.id;
+    const response = await patchCourse(app, db, String(courseId), { status: "inactive" });
+
+    expect(response.status).toBe(200);
+    const state = onboardingState(db, "org_samyak");
+    expect(state.completedSteps.filter((step) => step === "courses")).toHaveLength(1);
+    expect(state.checklist).toEqual(expect.arrayContaining([{ code: "courses", label: "Courses", done: true }]));
+    expect(count(db, "audit_logs where action = 'onboarding_step_completed'")).toBe(1);
+  });
+
+  it("does not fabricate onboarding rows for existing Organisations without onboarding progress", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    db.prepare("delete from organisation_onboarding_progress where organisation_id = ?").run("org_samyak");
+    seedCourse(db, { id: "course_no_onboarding", status: "inactive", admissionConfigurationComplete: 1 });
+
+    const create = await createCourse(app, db, { code: "NOROW", status: "active" });
+    const update = await patchCourse(app, db, "course_no_onboarding", { status: "active" });
+
+    expect(create.status).toBe(201);
+    expect(update.status).toBe(200);
+    expect(count(db, "courses where organisation_id = 'org_samyak' and code = 'NOROW'")).toBe(1);
+    expect(row(db, "select status from courses where id = 'course_no_onboarding'")).toMatchObject({ status: "active" });
+    expect(count(db, "organisation_onboarding_progress where organisation_id = 'org_samyak'")).toBe(0);
+  });
+
+  it("uses the authenticated Organisation when synchronising onboarding", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    authenticateAs(["owner"], "org_rememo");
+
+    const response = await createCourse(app, db, { code: "REMOTE", status: "active" });
+
+    expect(response.status).toBe(201);
+    expect(onboardingState(db, "org_rememo").completedSteps).toContain("courses");
+    expect(onboardingState(db, "org_samyak").completedSteps).not.toContain("courses");
+  });
+
+  it("keeps Course mutations successful and malformed onboarding state unchanged", async () => {
+    const app = routeApp();
+    const db = courseOnboardingDb();
+    seedCourse(db, { id: "course_bad_json", status: "inactive", admissionConfigurationComplete: 1 });
+    db.prepare("update organisation_onboarding_progress set checklist_json = ? where organisation_id = ?").run("{bad", "org_samyak");
+
+    const create = await createCourse(app, db, { code: "BADJSON", status: "active" });
+    const update = await patchCourse(app, db, "course_bad_json", { status: "active" });
+
+    expect(create.status).toBe(201);
+    expect(update.status).toBe(200);
+    expect(count(db, "courses where organisation_id = 'org_samyak' and code = 'BADJSON'")).toBe(1);
+    expect(row(db, "select status from courses where id = 'course_bad_json'")).toMatchObject({ status: "active" });
+    expect(row(db, "select checklist_json from organisation_onboarding_progress where organisation_id = 'org_samyak'")).toMatchObject({ checklist_json: "{bad" });
   });
 });
 
@@ -373,8 +554,125 @@ function installStudentProfileSchema(db: DatabaseSync) {
   `);
 }
 
+function courseOnboardingDb() {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    create table courses (
+      id text primary key,
+      organisation_id text not null,
+      code text not null,
+      name text not null,
+      category_id text,
+      duration_label text,
+      duration_months real,
+      default_fee_paise integer,
+      lowest_acceptable_fee_paise integer,
+      admission_configuration_complete integer not null default 0,
+      nsdc_available integer,
+      status text not null,
+      created_at text,
+      updated_at text
+    );
+    create unique index courses_org_code_unique on courses (organisation_id, code);
+    create table organisation_onboarding_progress (
+      organisation_id text primary key,
+      status text not null,
+      completed_steps_json text not null,
+      checklist_json text not null,
+      reported_centre_count integer,
+      created_at text not null,
+      updated_at text not null
+    );
+    create table admission_discount_approvals (
+      id text primary key,
+      organisation_id text,
+      course_id text,
+      status text,
+      updated_at text
+    );
+    create table audit_logs (
+      id text primary key,
+      organisation_id text,
+      branch_id text,
+      actor_login_account_id text,
+      actor_person_id text,
+      action text,
+      entity_type text,
+      entity_id text,
+      metadata_json text,
+      created_at text
+    );
+  `);
+  insertCourseOnboarding(db, "org_samyak");
+  insertCourseOnboarding(db, "org_rememo");
+  return db;
+}
+
+function insertCourseOnboarding(db: DatabaseSync, organisationId: string) {
+  const checklist = [
+    { code: "organisation_profile", label: "Organisation profile", done: true },
+    { code: "centre_profile", label: "Centre profile", done: true },
+    { code: "owner_account", label: "Owner account", done: true },
+    { code: "courses", label: "Courses", done: false },
+    { code: "fees", label: "Fees", done: false },
+    { code: "staff_invitations", label: "Staff invitations", done: false },
+    { code: "branding", label: "Branding", done: false },
+    { code: "data_import", label: "Data import", done: false },
+  ];
+  db.prepare(
+    "insert into organisation_onboarding_progress (organisation_id, status, completed_steps_json, checklist_json, reported_centre_count, created_at, updated_at) values (?, 'in_progress', ?, ?, 1, ?, ?)",
+  ).run(organisationId, JSON.stringify(["organisation_profile", "centre_profile", "owner_account"]), JSON.stringify(checklist), "2026-09-30T00:00:00.000Z", "2026-09-30T00:00:00.000Z");
+}
+
+async function createCourse(app: Hono, db: DatabaseSync, overrides: Partial<Record<string, unknown>> = {}) {
+  return app.request("/api/staff/courses", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      code: "FSD",
+      name: "Full Stack Development",
+      durationLabel: "6 months",
+      durationMonths: 6,
+      standardFeePaise: 5000000,
+      lowestAcceptableFeePaise: 4000000,
+      nsdcAvailable: false,
+      status: "active",
+      ...overrides,
+    }),
+  }, { DB: new D1Adapter(db) });
+}
+
+async function patchCourse(app: Hono, db: DatabaseSync, courseId: string, body: Record<string, unknown>) {
+  return app.request(`/api/staff/courses/${courseId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }, { DB: new D1Adapter(db) });
+}
+
+function seedCourse(db: DatabaseSync, input: { id: string; organisationId?: string; status: string; admissionConfigurationComplete: 0 | 1 }) {
+  db.prepare(
+    `insert into courses
+       (id, organisation_id, code, name, category_id, duration_label, duration_months, default_fee_paise, lowest_acceptable_fee_paise, admission_configuration_complete, nsdc_available, status, created_at, updated_at)
+     values (?, ?, ?, ?, null, '6 months', 6, 5000000, 4000000, ?, 0, ?, ?, ?)`,
+  ).run(input.id, input.organisationId ?? "org_samyak", input.id.toUpperCase(), "Seeded Course", input.admissionConfigurationComplete, input.status, "2026-09-30T00:00:00.000Z", "2026-09-30T00:00:00.000Z");
+}
+
+function onboardingState(db: DatabaseSync, organisationId: string) {
+  const progress = row(db, "select status, completed_steps_json, checklist_json from organisation_onboarding_progress where organisation_id = ?", organisationId)!;
+  return {
+    status: progress.status,
+    completedSteps: JSON.parse(progress.completed_steps_json) as string[],
+    checklist: JSON.parse(progress.checklist_json) as Array<{ code: string; label: string; done: boolean }>,
+  };
+}
+
 function row(db: DatabaseSync, sql: string, ...values: SqlValue[]) {
   return db.prepare(sql).get(...values) as Record<string, any> | undefined;
+}
+
+function count(db: DatabaseSync, tableAndWhere: string) {
+  return Number(row(db, `select count(*) as count from ${tableAndWhere}`)?.count ?? 0);
 }
 
 class D1Adapter {

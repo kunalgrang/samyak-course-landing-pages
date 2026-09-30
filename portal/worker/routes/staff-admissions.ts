@@ -27,6 +27,7 @@ import { mapStatusToPipelineStage } from "../lib/enquiry-crm";
 import { isResponse, readJsonBody, requireSameOrigin } from "../lib/http";
 import { jsonError, jsonPlain } from "../lib/json-response";
 import { normalizeIndianMobile } from "../lib/mobile";
+import { syncCoursesOnboardingStep } from "../lib/organisation-onboarding";
 import { changeStudentFullName, changeStudentPrimaryMobile, getStudentBasicDetailsVersion, getStudentContactHistory, getStudentContactVersion } from "../lib/owner-student-maintenance";
 import { addMobileIfMissing } from "../lib/person-contact";
 import { getRecoverableReferralLink, rotateReferralLink, type ReferralServiceEnv } from "../lib/referral-service";
@@ -164,6 +165,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     } catch {
       return jsonError(c, { status: 409, code: "course_code_exists", message: "Course code already exists." });
     }
+    await syncCoursesOnboardingStep(c, ORG_ID, { loginAccountId: staff.loginAccountId, activePersonId: staff.activePersonId });
     await audit(c, staff, "course_created", "course", courseId, { code: parsed.data.code.toUpperCase() });
     return jsonPlain(c, { success: true, courseId }, { status: 201 });
   });
@@ -202,6 +204,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     } catch {
       return jsonError(c, { status: 409, code: "course_code_exists", message: "Course code already exists." });
     }
+    await syncCoursesOnboardingStep(c, ORG_ID, { loginAccountId: staff.loginAccountId, activePersonId: staff.activePersonId });
     if (coursePriceChanged) await supersedeCoursePriceApprovals(c, existing.id);
     await audit(c, staff, "course_updated", "course", existing.id, { status: next.status });
     return jsonPlain(c, { success: true, courseId: existing.id });
