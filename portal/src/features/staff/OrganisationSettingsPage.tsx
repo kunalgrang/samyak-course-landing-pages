@@ -126,7 +126,7 @@ export function OrganisationSettingsPage() {
   }, []);
 
   useEffect(() => {
-    if (activeTab !== "centres" || centresLoaded || centresLoading) return;
+    if (activeTab !== "centres" || centresLoaded) return;
     let active = true;
     async function loadCentres() {
       setCentresLoading(true);
@@ -151,7 +151,7 @@ export function OrganisationSettingsPage() {
     return () => {
       active = false;
     };
-  }, [activeTab, centresLoaded, centresLoading, selectedCentreId]);
+  }, [activeTab, centresLoaded]);
 
   function change(field: keyof OrganisationSettings) {
     return (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {

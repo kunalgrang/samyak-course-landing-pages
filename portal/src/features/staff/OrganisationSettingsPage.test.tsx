@@ -132,6 +132,58 @@ describe("OrganisationSettingsPage", () => {
     expect(container.textContent).toContain("CTR-001");
   });
 
+  it("finishes a delayed successful Centres request without refetching on rerender or selection", async () => {
+    const centresRequest = deferred<{ success: true; centres: StaffCentre[] }>();
+    apiMocks.getCentres.mockReturnValue(centresRequest.promise);
+
+    await renderPage();
+    await clickButton("Centres");
+
+    expect(container.textContent).toContain("Loading centres");
+    await act(async () => {});
+    expect(apiMocks.getCentres).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      centresRequest.resolve({ success: true, centres: [activeCentre(), pendingCentre()] });
+      await centresRequest.promise;
+    });
+    await act(async () => {});
+
+    expect(container.textContent).not.toContain("Loading centres");
+    expect(container.textContent).toContain("Samyak Main");
+    expect(container.textContent).toContain("Samyak Pending");
+    expect((input("centreName") as HTMLInputElement).value).toBe("Samyak Main");
+    expect((input("centreAddressLine1") as HTMLInputElement).value).toBe("1 Main Road");
+
+    await clickButton("Samyak PendingCTR-002Pending subscription");
+
+    expect((input("centreName") as HTMLInputElement).value).toBe("Samyak Pending");
+    expect((input("centreAddressLine1") as HTMLInputElement).value).toBe("2 Trial Road");
+    expect(apiMocks.getCentres).toHaveBeenCalledTimes(1);
+  });
+
+  it("finishes a delayed rejected Centres request without getting stuck loading", async () => {
+    const centresRequest = deferred<{ success: true; centres: StaffCentre[] }>();
+    apiMocks.getCentres.mockReturnValue(centresRequest.promise);
+
+    await renderPage();
+    await clickButton("Centres");
+
+    expect(container.textContent).toContain("Loading centres");
+    await act(async () => {});
+
+    await act(async () => {
+      centresRequest.reject(new Error("Owner access is required."));
+      await centresRequest.promise.catch(() => {});
+    });
+    await act(async () => {});
+
+    expect(container.textContent).not.toContain("Loading centres");
+    expect(container.textContent).toContain("Could not load centres");
+    expect(container.textContent).toContain("Owner access is required.");
+    expect(apiMocks.getCentres).toHaveBeenCalledTimes(1);
+  });
+
   it("creates a centre without client-controlled code or lifecycle fields", async () => {
     await renderPage();
     await clickButton("Centres");
@@ -320,4 +372,14 @@ function pendingCentre(overrides: Partial<StaffCentre> = {}): StaffCentre {
     }),
     ...overrides,
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
 }
