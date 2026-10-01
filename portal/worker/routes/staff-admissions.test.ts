@@ -151,6 +151,52 @@ describe("staff admission draft routes", () => {
   });
 });
 
+describe("staff admission enquiry detail routes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(admissionService.getAdmissionDraft).mockResolvedValue(null);
+  });
+
+  it("uses the authenticated Organisation for enquiry detail reads", async () => {
+    const app = routeApp();
+    const db = admissionDetailDb();
+    authenticateAs(["owner"], "org_rememo");
+
+    const response = await app.request("/api/staff/enquiries/enq_rememo", undefined, { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      enquiry: {
+        id: "enq_rememo",
+        organisation_id: "org_rememo",
+        enquiry_number: "RMO-001",
+        branch_name: "Demo Branch",
+        course_name: "Demo Course",
+      },
+      personLinkCandidate: {
+        displayName: "Demo Prospect",
+        enquiryNumber: "RMO-001",
+      },
+    });
+    const draftContext = vi.mocked(admissionService.getAdmissionDraft).mock.calls[0]?.[0] as { get?: (key: string) => string | undefined };
+    expect(draftContext.get?.("authenticatedOrganisationId")).toBe("org_rememo");
+  });
+
+  it("does not allow an authenticated Demo owner to read Samyak enquiry detail", async () => {
+    const app = routeApp();
+    const db = admissionDetailDb();
+    authenticateAs(["owner"], "org_rememo");
+
+    const response = await app.request("/api/staff/enquiries/enq_samyak", undefined, { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" });
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      error: { code: "enquiry_not_found" },
+    });
+  });
+});
+
 describe("staff Course Master onboarding synchronisation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -815,6 +861,49 @@ function installStudentProfileSchema(db: DatabaseSync) {
     create table referral_link_secrets (referral_link_id text primary key, token_ciphertext text, encryption_version text, created_at text, updated_at text);
     create table audit_logs (id text primary key, organisation_id text, branch_id text, actor_login_account_id text, actor_person_id text, action text, entity_type text, entity_id text, metadata_json text, created_at text);
   `);
+}
+
+function admissionDetailDb() {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    create table branches (id text primary key, organisation_id text, code text, name text);
+    create table courses (id text primary key, organisation_id text, code text, name text);
+    create table people (id text primary key, organisation_id text, full_name text, date_of_birth text);
+    create table students (id text primary key, organisation_id text, person_id text, student_number text);
+    create table enquiries (
+      id text primary key,
+      organisation_id text not null,
+      branch_id text,
+      person_id text,
+      course_interest_id text,
+      enquiry_number text,
+      status text,
+      created_at text,
+      updated_at text
+    );
+    create table enquiry_course_interests (enquiry_id text primary key, course_interest_text text);
+    create table enrolments (id text primary key, organisation_id text, student_id text, course_id text, enrolment_number text, status text, joining_date text, created_at text);
+    create table referrals (
+      id text primary key,
+      organisation_id text not null,
+      enquiry_id text,
+      prospect_name text,
+      referral_link_id text,
+      prospect_mobile_hash text,
+      prospect_mobile_ciphertext text
+    );
+
+    insert into branches values ('branch_samyak', 'org_samyak', 'SYK', 'Samyak Branch');
+    insert into branches values ('branch_rememo', 'org_rememo', 'RMO', 'Demo Branch');
+    insert into courses values ('course_samyak', 'org_samyak', 'SYK-FSD', 'Samyak Course');
+    insert into courses values ('course_rememo', 'org_rememo', 'RMO-FSD', 'Demo Course');
+    insert into enquiries values ('enq_samyak', 'org_samyak', 'branch_samyak', null, 'course_samyak', 'SYK-001', 'new', '2026-09-30T00:00:00.000Z', '2026-09-30T00:00:00.000Z');
+    insert into enquiries values ('enq_rememo', 'org_rememo', 'branch_rememo', null, 'course_rememo', 'RMO-001', 'new', '2026-09-30T00:00:00.000Z', '2026-09-30T00:00:00.000Z');
+    insert into enquiry_course_interests values ('enq_rememo', 'Demo Course');
+    insert into referrals values ('ref_samyak', 'org_samyak', 'enq_samyak', 'Samyak Prospect', null, null, null);
+    insert into referrals values ('ref_rememo', 'org_rememo', 'enq_rememo', 'Demo Prospect', null, null, null);
+  `);
+  return db;
 }
 
 function courseOnboardingDb() {

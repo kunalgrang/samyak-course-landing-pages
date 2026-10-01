@@ -231,7 +231,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
     const staff = await requireStaffRoles(c, ADMISSION_STAFF_ROLES);
     if (!staff) return forbidden(c);
     const ORG_ID = staffOrganisationId(staff);
-    const detail = await getEnquiryDetail(c, c.req.param("enquiryId"));
+    const detail = await getEnquiryDetail(c, ORG_ID, c.req.param("enquiryId"));
     if (!detail) return jsonError(c, { status: 404, code: "enquiry_not_found", message: "Enquiry was not found." });
     return jsonPlain(c, detail);
   });
@@ -459,7 +459,7 @@ export function registerStaffAdmissionRoutes(app: PortalHono) {
   });
 }
 
-async function getEnquiryDetail(c: Parameters<typeof getAdmissionDraft>[0], enquiryId: string) {
+async function getEnquiryDetail(c: Parameters<typeof getAdmissionDraft>[0], organisationId: string, enquiryId: string) {
   const enquiry = await c.env.DB.prepare(
     `select enquiries.*, people.full_name, people.date_of_birth, students.id as student_id, students.student_number,
             courses.name as course_name, courses.id as course_id, branches.name as branch_name, branches.code as branch_code, enquiry_course_interests.course_interest_text
@@ -471,7 +471,7 @@ async function getEnquiryDetail(c: Parameters<typeof getAdmissionDraft>[0], enqu
      left join enquiry_course_interests on enquiry_course_interests.enquiry_id = enquiries.id
      where enquiries.id = ? and enquiries.organisation_id = ?`,
   )
-    .bind(enquiryId, ORG_ID)
+    .bind(enquiryId, organisationId)
     .first<Record<string, unknown>>();
   if (!enquiry) return null;
   const enrolments = enquiry.person_id
@@ -480,14 +480,14 @@ async function getEnquiryDetail(c: Parameters<typeof getAdmissionDraft>[0], enqu
          from enrolments
          join students on students.id = enrolments.student_id
          join courses on courses.id = enrolments.course_id
-         where students.person_id = ?
+         where students.person_id = ? and students.organisation_id = ? and enrolments.organisation_id = ?
          order by enrolments.created_at desc`,
       )
-        .bind(enquiry.person_id)
+        .bind(enquiry.person_id, organisationId, organisationId)
         .all()
     : { results: [] };
   const mobiles = enquiry.person_id ? await fullMobileContacts(c, String(enquiry.person_id)) : { primaryMobile: null, alternateMobile: null };
-  const personLinkCandidate = enquiry.person_id ? null : await admissionPersonLinkCandidate(c, enquiryId);
+  const personLinkCandidate = enquiry.person_id ? null : await admissionPersonLinkCandidate(c, organisationId, enquiryId);
   const draft = await getAdmissionDraft(c, enquiryId);
   return {
     enquiry: safeAdmissionEnquiry(enquiry),
@@ -539,7 +539,7 @@ async function linkExistingAdmissionPerson(c: PortalContext, staff: StaffContext
   const result = await c.env.DB.prepare("update enquiries set person_id = ?, updated_at = ? where id = ? and organisation_id = ? and person_id is null")
     .bind(personId, now, enquiry.id, ORG_ID)
     .run();
-  if (!changed(result)) return personLinkConflict(c, enquiry.id);
+  if (!changed(result)) return personLinkConflict(c, ORG_ID, enquiry.id);
   await c.env.DB.prepare("update referrals set prospect_person_id = coalesce(prospect_person_id, ?), updated_at = ? where organisation_id = ? and enquiry_id = ?")
     .bind(personId, now, ORG_ID, enquiry.id)
     .run();
@@ -550,7 +550,7 @@ async function linkExistingAdmissionPerson(c: PortalContext, staff: StaffContext
 async function createAndLinkAdmissionPerson(c: PortalContext, staff: StaffContext, enquiry: { id: string; branch_id: string; person_id: string | null; enquiry_number: string }, idempotencyKey: string) {
   const ORG_ID = staffOrganisationId(staff);
   if (enquiry.person_id) return { ok: true as const, enquiryId: enquiry.id, personId: enquiry.person_id, mode: "create" as const, alreadyLinked: true };
-  const candidate = await admissionPersonLinkCandidate(c, enquiry.id);
+  const candidate = await admissionPersonLinkCandidate(c, ORG_ID, enquiry.id);
   if (!candidate?.mobile) {
     return { ok: false as const, status: 400, code: "prospect_contact_required", message: "Referral prospect contact is unavailable. Link an existing student record instead." };
   }
@@ -581,7 +581,7 @@ async function createAndLinkAdmissionPerson(c: PortalContext, staff: StaffContex
     .run();
   if (!changed(result)) {
     if (insertedPerson) await cleanupUnlinkedCreatedPerson(c, personId);
-    return personLinkConflict(c, enquiry.id);
+    return personLinkConflict(c, ORG_ID, enquiry.id);
   }
   await c.env.DB.prepare("update referrals set prospect_person_id = coalesce(prospect_person_id, ?), updated_at = ? where organisation_id = ? and enquiry_id = ?")
     .bind(personId, now, ORG_ID, enquiry.id)
@@ -590,9 +590,9 @@ async function createAndLinkAdmissionPerson(c: PortalContext, staff: StaffContex
   return { ok: true as const, enquiryId: enquiry.id, personId, mode: "create" as const, alreadyLinked: false };
 }
 
-async function personLinkConflict(c: PortalContext, enquiryId: string) {
+async function personLinkConflict(c: PortalContext, organisationId: string, enquiryId: string) {
   const linked = await c.env.DB.prepare("select person_id from enquiries where id = ? and organisation_id = ?")
-    .bind(enquiryId, ORG_ID)
+    .bind(enquiryId, organisationId)
     .first<{ person_id: string | null }>();
   if (linked?.person_id) {
     return { ok: false as const, status: 409, code: "person_already_linked", message: "This enquiry was already linked to a student record. Refresh admission to continue." };
@@ -600,7 +600,7 @@ async function personLinkConflict(c: PortalContext, enquiryId: string) {
   return { ok: false as const, status: 409, code: "person_link_conflict", message: "Student link could not be saved. Refresh and retry." };
 }
 
-async function admissionPersonLinkCandidate(c: PortalContext, enquiryId: string) {
+async function admissionPersonLinkCandidate(c: PortalContext, organisationId: string, enquiryId: string) {
   const referral = await c.env.DB.prepare(
     `select referrals.prospect_name, referrals.referral_link_id, referrals.prospect_mobile_hash, referrals.prospect_mobile_ciphertext,
             enquiries.enquiry_number
@@ -609,7 +609,7 @@ async function admissionPersonLinkCandidate(c: PortalContext, enquiryId: string)
      where referrals.organisation_id = ? and referrals.enquiry_id = ?
      limit 1`,
   )
-    .bind(ORG_ID, enquiryId)
+    .bind(organisationId, enquiryId)
     .first<{ prospect_name: string; referral_link_id: string | null; prospect_mobile_hash: string | null; prospect_mobile_ciphertext: string | null; enquiry_number: string }>();
   if (!referral) return null;
   const mobile = await referralProspectMobile(c, referral);
