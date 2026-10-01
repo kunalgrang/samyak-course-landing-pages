@@ -7,6 +7,8 @@ import { ApiError, type OrganisationSettings, type StaffCentre } from "../../lib
 const apiMocks = vi.hoisted(() => ({
   getOrganisationSettings: vi.fn(),
   updateOrganisationSettings: vi.fn(),
+  getPaymentPlanPolicy: vi.fn(),
+  updatePaymentPlanPolicy: vi.fn(),
   getCentres: vi.fn(),
   createCentre: vi.fn(),
   updateCentre: vi.fn(),
@@ -19,6 +21,8 @@ vi.mock("../../lib/api", async (importOriginal) => {
     ...actual,
     getOrganisationSettings: apiMocks.getOrganisationSettings,
     updateOrganisationSettings: apiMocks.updateOrganisationSettings,
+    getPaymentPlanPolicy: apiMocks.getPaymentPlanPolicy,
+    updatePaymentPlanPolicy: apiMocks.updatePaymentPlanPolicy,
     getCentres: apiMocks.getCentres,
     createCentre: apiMocks.createCentre,
     updateCentre: apiMocks.updateCentre,
@@ -51,6 +55,8 @@ describe("OrganisationSettingsPage", () => {
     root = createRoot(container);
     apiMocks.getOrganisationSettings.mockResolvedValue({ success: true, organisation: settings() });
     apiMocks.updateOrganisationSettings.mockResolvedValue({ success: true, organisation: settings({ name: "Samyak Education" }), changedFields: ["name"] });
+    apiMocks.getPaymentPlanPolicy.mockResolvedValue({ success: true, policy: paymentPolicy() });
+    apiMocks.updatePaymentPlanPolicy.mockResolvedValue({ success: true, policy: paymentPolicy(), changedRuleIds: ["payrule_two"] });
     apiMocks.getCentres.mockResolvedValue({ success: true, centres: [activeCentre(), pendingCentre()] });
     apiMocks.createCentre.mockResolvedValue({ success: true, centre: pendingCentre({ id: "branch_new", name: "Andheri Centre", code: "CTR-003" }) });
     apiMocks.updateCentre.mockResolvedValue({ success: true, centre: pendingCentre({ name: "Samyak Pending Updated" }), changedFields: ["name"] });
@@ -259,6 +265,48 @@ describe("OrganisationSettingsPage", () => {
     expect(container.textContent).toContain("Enter a valid Indian mobile number.");
   });
 
+  it("renders current payment-plan rules with the historical-agreement explanation", async () => {
+    await renderPage();
+    await clickButton("Payment Plans");
+
+    expect(apiMocks.getPaymentPlanPolicy).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("These rules control payment-plan options for new admissions. Existing student fee agreements are not changed.");
+    expect(container.textContent).toContain("Full payment");
+    expect(container.textContent).toContain("2 instalments");
+    expect((input("paymentPlan.full.minDurationMonths") as HTMLInputElement).value).toBe("0.5");
+    expect((input("paymentPlan.two_instalments.minDurationMonths") as HTMLInputElement).value).toBe("2");
+    expect((input("paymentPlan.custom.minDurationMonths") as HTMLInputElement).value).toBe("7");
+  });
+
+  it("edits fractional payment-plan values and saves the policy", async () => {
+    await renderPage();
+    await clickButton("Payment Plans");
+    await setInput("paymentPlan.two_instalments.minDurationMonths", "1.5");
+    await setInput("paymentPlan.two_instalments.maxDurationMonths", "6");
+
+    await submit();
+
+    expect(apiMocks.updatePaymentPlanPolicy).toHaveBeenCalledWith({
+      rules: expect.arrayContaining([
+        { planType: "full", isActive: true, minDurationMonths: 0.5, maxDurationMonths: null },
+        { planType: "two_instalments", isActive: true, minDurationMonths: 1.5, maxDurationMonths: 6 },
+      ]),
+    });
+    expect(container.textContent).toContain("Payment plan policy saved.");
+  });
+
+  it("shows payment-plan validation errors", async () => {
+    apiMocks.updatePaymentPlanPolicy.mockRejectedValueOnce(new ApiError("Please correct the highlighted payment plan rules.", { "rules.1.minDurationMonths": ["Minimum duration must be at least 0.5 months."] }, "invalid_policy"));
+    await renderPage();
+    await clickButton("Payment Plans");
+    await setInput("paymentPlan.two_instalments.minDurationMonths", "0.25");
+
+    await submit();
+
+    expect(container.textContent).toContain("Please correct the highlighted payment plan rules.");
+    expect(container.textContent).toContain("Minimum duration must be at least 0.5 months.");
+  });
+
   async function renderPage() {
     await act(async () => {
       root.render(<OrganisationSettingsPage />);
@@ -371,6 +419,17 @@ function pendingCentre(overrides: Partial<StaffCentre> = {}): StaffCentre {
       updatedAt: "2026-01-02T00:00:00.000Z",
     }),
     ...overrides,
+  };
+}
+
+function paymentPolicy() {
+  return {
+    rules: [
+      { id: "payrule_full", planType: "full" as const, fixedInstalments: 1, minDurationMonths: 0.5, maxDurationMonths: null, isActive: true },
+      { id: "payrule_two", planType: "two_instalments" as const, fixedInstalments: 2, minDurationMonths: 2, maxDurationMonths: null, isActive: true },
+      { id: "payrule_three", planType: "three_instalments" as const, fixedInstalments: 3, minDurationMonths: 4, maxDurationMonths: null, isActive: true },
+      { id: "payrule_custom", planType: "custom" as const, fixedInstalments: null, minDurationMonths: 7, maxDurationMonths: null, isActive: true },
+    ],
   };
 }
 

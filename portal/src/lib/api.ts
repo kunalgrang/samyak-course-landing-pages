@@ -199,6 +199,34 @@ const organisationSettingsResponseSchema = z.object({
   changedFields: z.array(z.string()).optional(),
 });
 
+const paymentPlanPolicyRuleSchema = z.object({
+  id: z.string().nullable(),
+  planType: z.union([z.literal("full"), z.literal("two_instalments"), z.literal("three_instalments"), z.literal("custom")]),
+  fixedInstalments: z.number().nullable(),
+  minDurationMonths: z.number(),
+  maxDurationMonths: z.number().nullable(),
+  isActive: z.boolean(),
+});
+
+const paymentPlanPolicySchema = z.object({
+  rules: z.array(paymentPlanPolicyRuleSchema),
+});
+
+const paymentPlanPolicyResponseSchema = z.object({
+  success: z.literal(true),
+  policy: paymentPlanPolicySchema,
+  changedRuleIds: z.array(z.string()).optional(),
+});
+
+export type PaymentPlanPolicyRule = z.infer<typeof paymentPlanPolicyRuleSchema>;
+export type PaymentPlanPolicy = z.infer<typeof paymentPlanPolicySchema>;
+export type PaymentPlanPolicyInputRule = {
+  planType: PaymentPlanPolicyRule["planType"];
+  minDurationMonths: number;
+  maxDurationMonths: number | null;
+  isActive: boolean;
+};
+
 const organisationOnboardingResponseSchema = z.object({
   success: z.literal(true),
   onboarding: z.object({
@@ -1923,6 +1951,14 @@ export async function getOrganisationSettings() {
 
 export async function updateOrganisationSettings(input: Record<string, unknown>) {
   return patchJson("/api/staff/organisation-settings", input, organisationSettingsResponseSchema);
+}
+
+export async function getPaymentPlanPolicy() {
+  return getJson("/api/staff/organisation-settings/payment-plan-policy", paymentPlanPolicyResponseSchema);
+}
+
+export async function updatePaymentPlanPolicy(input: { rules: PaymentPlanPolicyInputRule[] }) {
+  return putJson("/api/staff/organisation-settings/payment-plan-policy", input, paymentPlanPolicyResponseSchema);
 }
 
 export async function getOrganisationOnboarding() {
