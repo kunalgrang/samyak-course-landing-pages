@@ -244,8 +244,8 @@ export const paymentPlanRules = sqliteTable(
     organisationId: text("organisation_id")
       .notNull()
       .references(() => organisations.id),
-    minDurationMonths: integer("min_duration_months").notNull(),
-    maxDurationMonths: integer("max_duration_months"),
+    minDurationMonths: real("min_duration_months").notNull(),
+    maxDurationMonths: real("max_duration_months"),
     planType: text("plan_type").notNull(),
     fixedInstalments: integer("fixed_instalments"),
     isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
@@ -253,7 +253,7 @@ export const paymentPlanRules = sqliteTable(
   },
   (table) => [
     index("payment_plan_rules_duration_idx").on(table.organisationId, table.minDurationMonths, table.maxDurationMonths, table.isActive),
-    check("payment_plan_rules_duration_check", sql`${table.minDurationMonths} >= 1 and (${table.maxDurationMonths} is null or ${table.maxDurationMonths} >= ${table.minDurationMonths})`),
+    check("payment_plan_rules_duration_check", sql`${table.minDurationMonths} >= 0.5 and (${table.maxDurationMonths} is null or ${table.maxDurationMonths} >= ${table.minDurationMonths})`),
     check("payment_plan_rules_plan_check", sql`${table.planType} in ('full', 'two_instalments', 'three_instalments', 'custom')`),
   ],
 );

@@ -170,8 +170,8 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const review = useMemo(() => admissionReview(payload, reviewCourse), [payload, reviewCourse]);
   const optionGroups = useMemo(() => groupOptions(configuration), [configuration]);
   const allowedPaymentRules = useMemo(() => allowedPaymentRulesForCourse(selectedCourse, configuration.paymentPlanRules), [configuration.paymentPlanRules, selectedCourse]);
-  const installmentOptions = useMemo(() => installmentOptionsForCourse(selectedCourse), [selectedCourse]);
-  const maxInstallments = maximumInstallmentsForCourse(selectedCourse);
+  const installmentOptions = useMemo(() => installmentOptionsForRules(allowedPaymentRules), [allowedPaymentRules]);
+  const maxInstallments = maximumInstallmentsForRules(allowedPaymentRules);
   const admissionSchedule = useMemo(() => admissionScheduleRows(payload), [payload]);
   const admissionScheduleTotal = useMemo(() => sumPaise(admissionSchedule), [admissionSchedule]);
   const admissionScheduleDifference = admissionScheduleTotal - Number(payload.fee.finalAgreedFeePaise || 0);
@@ -205,8 +205,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   useEffect(() => {
     if (!selectedCourse || isLocked || commercialLocked) return;
     const selectedCount = Number(payload.fee.numberOfInstalments || 0);
-    const maxCount = maximumInstallmentsForCourse(selectedCourse);
-    if (!selectedCount || selectedCount <= maxCount) return;
+    if (!selectedCount || installmentOptions.includes(selectedCount)) return;
     setPayload((current) => ({
       ...current,
       fee: {
@@ -217,7 +216,7 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
       },
     }));
     setSaved(INSTALLMENT_SELECTION_RESET_MESSAGE);
-  }, [commercialLocked, isLocked, payload.fee.numberOfInstalments, selectedCourse]);
+  }, [commercialLocked, installmentOptions, isLocked, payload.fee.numberOfInstalments, selectedCourse]);
 
   useEffect(() => {
     const branchId = String(payload.course.branchId || "");
@@ -925,14 +924,31 @@ export function paymentPlanPolicyMessage(course: StaffCourse | undefined, rules:
   return PAYMENT_PLAN_MISSING_MESSAGE;
 }
 
-export function maximumInstallmentsForCourse(course: Pick<StaffCourse, "duration_months"> | undefined) {
-  const durationMonths = Number(course?.duration_months);
-  return Number.isInteger(durationMonths) && durationMonths >= 1 ? durationMonths : 3;
+const MAX_CUSTOM_INSTALLMENTS = 24;
+const FIXED_INSTALLMENTS_BY_PLAN: Record<string, number> = {
+  full: 1,
+  two_instalments: 2,
+  three_instalments: 3,
+};
+
+export function maximumInstallmentsForRules(rules: PaymentPlanRule[]) {
+  const options = installmentOptionsForRules(rules);
+  return options.length ? Math.max(...options) : 0;
 }
 
-export function installmentOptionsForCourse(course: StaffCourse | undefined) {
-  if (!course) return [];
-  return Array.from({ length: maximumInstallmentsForCourse(course) }, (_item, index) => index + 1);
+export function installmentOptionsForRules(rules: PaymentPlanRule[]) {
+  const options = new Set<number>();
+  for (const rule of rules) {
+    if (rule.plan_type === "custom") {
+      for (let count = 4; count <= MAX_CUSTOM_INSTALLMENTS; count += 1) {
+        options.add(count);
+      }
+      continue;
+    }
+    const fixedCount = FIXED_INSTALLMENTS_BY_PLAN[rule.plan_type] ?? Number(rule.fixed_instalments || 0);
+    if (Number.isInteger(fixedCount) && fixedCount > 0) options.add(fixedCount);
+  }
+  return Array.from(options).sort((left, right) => left - right);
 }
 
 export function paymentPlanTypeForInstallmentCount(count: number) {

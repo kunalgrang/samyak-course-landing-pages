@@ -16,7 +16,6 @@ import {
   getAdmissionReceiptCorrectionCapability,
   getAdmissionReceiptSummary,
   listDiscountApprovals,
-  maximumInstallmentsForCourse,
   recordAdmissionReceipt,
   requestDiscountApproval,
   reverseAdmissionReceipt,
@@ -321,7 +320,7 @@ describe("admission configuration defaults migration", () => {
     });
     expect(config.configuration).toEqual({ ready: true, missingCategories: [], paymentPlanRulesConfigured: true });
     expect(config.options).toHaveLength(42);
-    expect(config.paymentPlanRules).toHaveLength(10);
+    expect(config.paymentPlanRules).toHaveLength(7);
     expect(codesFor(db, "preferred_language")).toContain("gujarati");
     expect(codesFor(db, "qualification_level")).toEqual(expect.arrayContaining(["below_10th", "undergraduate", "postgraduate", "doctorate"]));
     expect(codesFor(db, "stream")).toEqual(expect.arrayContaining(["general", "engineering", "management", "vocational"]));
@@ -362,10 +361,20 @@ describe("admission configuration defaults migration", () => {
     expect(row(db, "select is_active from admission_option_values where code = 'merit'")).toMatchObject({ is_active: 0 });
     expect(count(db, "admission_option_values where organisation_id = 'org_samyak' and is_active = 1")).toBe(42);
     expect(count(db, "select category, code from admission_option_values where organisation_id = 'org_samyak' and is_active = 1 group by category, code having count(*) > 1")).toBe(0);
+    applyMigrationFile(db, "0039_samyak_fractional_payment_plan_policy.sql");
+
     expect(row(db, "select min_duration_months, max_duration_months from payment_plan_rules where id = 'payrule_short_two'")).toMatchObject({
       min_duration_months: 2,
       max_duration_months: 3,
     });
+    expect(row(db, "select min_duration_months, max_duration_months, is_active from payment_plan_rules where id = 'payrule_one_full'")).toMatchObject({
+      min_duration_months: 0.5,
+      max_duration_months: null,
+      is_active: 1,
+    });
+    expect(row(db, "select sql from sqlite_master where type = 'table' and name = 'payment_plan_rules'")?.sql).toContain("min_duration_months` real");
+    expect(() => db.database.exec("insert into payment_plan_rules (id, organisation_id, min_duration_months, max_duration_months, plan_type, fixed_instalments, is_active, created_at, updated_at) values ('bad_duration', 'org_samyak', 0.25, null, 'full', 1, 1, '2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z')")).toThrow();
+    expect(count(db, "payment_plan_rules where organisation_id = 'org_samyak' and id in ('payrule_short_full', 'payrule_mid_full', 'payrule_long_full') and is_active = 1")).toBe(0);
     expect(count(db, "select min_duration_months, coalesce(max_duration_months, -1), plan_type from payment_plan_rules where organisation_id = 'org_samyak' and is_active = 1 group by min_duration_months, coalesce(max_duration_months, -1), plan_type having count(*) > 1")).toBe(0);
     db.close();
   });
@@ -377,6 +386,7 @@ describe("admission configuration defaults migration", () => {
     seedOrganisation(db, "org_other");
 
     applyMigrationFile(db, "0011_admission_configuration_defaults.sql");
+    applyMigrationFile(db, "0039_samyak_fractional_payment_plan_policy.sql");
 
     expect(count(db, "admission_option_values where organisation_id = 'org_other'")).toBe(0);
     expect(count(db, "payment_plan_rules where organisation_id = 'org_other'")).toBe(0);
@@ -384,7 +394,9 @@ describe("admission configuration defaults migration", () => {
   });
 
   it.each([
+    [0.5, ["full"]],
     [1, ["full"]],
+    [1.5, ["full"]],
     [2, ["full", "two_instalments"]],
     [3, ["full", "two_instalments"]],
     [4, ["full", "two_instalments", "three_instalments"]],
@@ -1039,7 +1051,7 @@ describe("confirmAdmission service integration", () => {
     db.close();
   });
 
-  it("rejects forged instalment counts above the course duration", async () => {
+  it("rejects custom plans when Organisation policy does not permit them for the duration", async () => {
     const db = testDb();
     const c = context(db);
     const payload = validPayload();
@@ -1049,7 +1061,7 @@ describe("confirmAdmission service integration", () => {
 
     const confirmed = await confirmAdmission(c, staff, "enq_first");
     expect(confirmed).toMatchObject({ ok: false, status: 400, code: "invalid_admission" });
-    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.numberOfInstalments"]?.[0]).toContain("maximum of 6");
+    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.paymentPlanType"]?.[0]).toContain("not permitted");
     db.close();
   });
 
@@ -1062,7 +1074,7 @@ describe("confirmAdmission service integration", () => {
     const confirmed = await confirmAdmission(c, staff, "enq_first");
 
     expect(confirmed).toMatchObject({ ok: false, status: 400, code: "invalid_admission" });
-    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.numberOfInstalments"]?.[0]).toContain("maximum of 1");
+    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.paymentPlanType"]?.[0]).toContain("not permitted");
     db.close();
   });
 
@@ -1070,8 +1082,6 @@ describe("confirmAdmission service integration", () => {
     [1, "full", 1],
     [2, "two_instalments", 2],
     [3, "three_instalments", 3],
-    [4, "custom", 4],
-    [6, "custom", 6],
   ])("accepts %s instalment(s) for a six-month course", async (_label, paymentPlanType, numberOfInstalments) => {
     const db = testDb();
     const c = context(db);
@@ -1091,44 +1101,148 @@ describe("confirmAdmission service integration", () => {
     db.close();
   });
 
-  it.each([
-    [1, 1],
-    [2, 2],
-    [3, 3],
-    [4, 4],
-    [6, 6],
-  ])("uses course duration %s as the maximum instalment count", (durationMonths, expected) => {
-    expect(maximumInstallmentsForCourse({ duration_months: durationMonths })).toBe(expected);
-  });
-
-  it("allows fewer instalments than the course duration", async () => {
+  it("accepts a custom plan where Organisation policy permits it", async () => {
     const db = testDb();
     const c = context(db);
+    db.database.exec("update courses set duration_label = '7 months', duration_months = 7 where id = 'course_full_stack'");
     const payload = validPayload();
-    payload.fee.paymentPlanType = "two_instalments";
-    payload.fee.numberOfInstalments = 2;
+    payload.fee.paymentPlanType = "custom";
+    payload.fee.numberOfInstalments = 6;
     await createAdmissionDraft(c, "enq_first", payload);
 
     const confirmed = await expectOk(confirmAdmission(c, staff, "enq_first"));
 
     expect(confirmed.enrolmentNumber).toMatch(/^ENR-SION-2026-/);
-    expect(count(db, "fee_agreement_instalments")).toBe(2);
+    expect(row(db, "select payment_plan_type, number_of_instalments from fee_agreements")).toMatchObject({ payment_plan_type: "custom", number_of_instalments: 6 });
+    expect(count(db, "fee_agreement_instalments")).toBe(6);
     db.close();
   });
 
-  it("rejects a forged twelve-instalment client count for a four-month course", async () => {
+  it("rejects custom plans above the operational instalment limit", async () => {
+    const db = testDb();
+    const c = context(db);
+    db.database.exec("update courses set duration_label = '7 months', duration_months = 7 where id = 'course_full_stack'");
+    const payload = validPayload();
+    payload.fee.paymentPlanType = "custom";
+    payload.fee.numberOfInstalments = 25;
+
+    const saved = await saveAdmissionDraft(c, staff, "enq_first", { payload, currentStep: "review" });
+
+    expect(saved).toMatchObject({ ok: false, status: 400, code: "invalid_draft" });
+    expect(saved.ok ? "" : saved.fieldErrors?.["fee.numberOfInstalments"]?.[0]).toContain("<=24");
+    db.close();
+  });
+
+  it("rejects client-overridden fixed instalment counts from Organisation policy", async () => {
     const db = testDb();
     const c = context(db);
     db.database.exec("update courses set duration_label = '4 months', duration_months = 4 where id = 'course_full_stack'");
     const payload = validPayload();
-    payload.fee.paymentPlanType = "custom";
-    payload.fee.numberOfInstalments = 12;
+    payload.fee.paymentPlanType = "two_instalments";
+    payload.fee.numberOfInstalments = 3;
     await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
 
     const confirmed = await confirmAdmission(c, staff, "enq_first");
 
     expect(confirmed).toMatchObject({ ok: false, status: 400, code: "invalid_admission" });
-    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.numberOfInstalments"]?.[0]).toContain("maximum of 4");
+    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.numberOfInstalments"]?.[0]).toContain("Two instalments");
+    db.close();
+  });
+
+  it.each([
+    [0.5, "0.5 months"],
+    [1, "1 month"],
+    [1.5, "1.5 months"],
+  ])("resolves %s-month course durations to full payment from Organisation rules", async (durationMonths, durationLabel) => {
+    const db = testDb();
+    const c = context(db);
+    db.database.prepare("update courses set duration_label = ?, duration_months = ? where id = 'course_full_stack'").run(durationLabel, durationMonths);
+    const payload = validPayload();
+    payload.fee.paymentPlanType = "full";
+    payload.fee.numberOfInstalments = 1;
+    await createAdmissionDraft(c, "enq_first", payload);
+
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
+    expect(row(db, "select payment_plan_type, number_of_instalments from fee_agreements")).toMatchObject({ payment_plan_type: "full", number_of_instalments: 1 });
+    db.close();
+  });
+
+  it.each([
+    ["two_instalments", 2],
+    ["three_instalments", 3],
+    ["custom", 4],
+  ])("rejects %s for a 0.5-month course", async (paymentPlanType, numberOfInstalments) => {
+    const db = testDb();
+    const c = context(db);
+    db.database.exec("update courses set duration_label = '0.5 months', duration_months = 0.5 where id = 'course_full_stack'");
+    const payload = validPayload();
+    payload.fee.paymentPlanType = paymentPlanType;
+    payload.fee.numberOfInstalments = numberOfInstalments;
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
+
+    const confirmed = await confirmAdmission(c, staff, "enq_first");
+
+    expect(confirmed).toMatchObject({ ok: false, status: 400, code: "invalid_admission" });
+    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.paymentPlanType"]?.[0]).toContain("not permitted");
+    db.close();
+  });
+
+  it("fails clearly when no Organisation rule matches the course duration", async () => {
+    const db = testDb();
+    const c = context(db);
+    db.database.exec("delete from payment_plan_rules where organisation_id = 'org_samyak'");
+    const payload = validPayload();
+    payload.fee.paymentPlanType = "full";
+    payload.fee.numberOfInstalments = 1;
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
+
+    const confirmed = await confirmAdmission(c, staff, "enq_first");
+
+    expect(confirmed).toMatchObject({ ok: false, status: 400, code: "invalid_admission" });
+    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.paymentPlanType"]?.[0]).toContain("No payment plan policy");
+    db.close();
+  });
+
+  it("does not use another Organisation's payment-plan rules", async () => {
+    const db = testDb();
+    const c = context(db);
+    db.database.exec(`
+      delete from payment_plan_rules where organisation_id = 'org_samyak' and plan_type = 'three_instalments';
+      insert into organisations (id, name, slug, status, created_at, updated_at)
+      values ('org_other', 'Other', 'other', 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+      insert into payment_plan_rules
+        (id, organisation_id, min_duration_months, max_duration_months, plan_type, fixed_instalments, is_active, created_at, updated_at)
+      values ('other_three', 'org_other', 1, null, 'three_instalments', 3, 1, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+    `);
+    const payload = validPayload();
+    payload.fee.paymentPlanType = "three_instalments";
+    payload.fee.numberOfInstalments = 3;
+    await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
+
+    const confirmed = await confirmAdmission(c, staff, "enq_first");
+
+    expect(confirmed).toMatchObject({ ok: false, status: 400, code: "invalid_admission" });
+    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.paymentPlanType"]?.[0]).toContain("not permitted");
+    expect(count(db, "payment_plan_rules where organisation_id = 'org_other'")).toBe(1);
+    db.close();
+  });
+
+  it("does not invalidate commercial-locked admission terms after Organisation policy changes", async () => {
+    const db = testDb();
+    const c = context(db);
+    const payload = validPayload();
+    payload.fee.paymentPlanType = "three_instalments";
+    payload.fee.numberOfInstalments = 3;
+    await createAdmissionDraft(c, "enq_first", payload);
+    db.database.exec("delete from payment_plan_rules where organisation_id = 'org_samyak' and plan_type = 'three_instalments'");
+
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
+
+    expect(row(db, "select payment_plan_type, number_of_instalments from fee_agreements")).toMatchObject({
+      payment_plan_type: "three_instalments",
+      number_of_instalments: 3,
+    });
+    expect(count(db, "fee_agreement_instalments")).toBe(3);
     db.close();
   });
 
@@ -1145,7 +1259,7 @@ describe("confirmAdmission service integration", () => {
     payload.fee.finalAgreedFeePaise = finalFeePaise;
     payload.fee.standardFeePaise = finalFeePaise;
     payload.fee.initialPaymentExpectedPaise = 0;
-    db.database.exec(`update courses set default_fee_paise = ${finalFeePaise}, lowest_acceptable_fee_paise = ${finalFeePaise} where id = 'course_full_stack'`);
+    db.database.exec(`update courses set duration_label = '7 months', duration_months = 7, default_fee_paise = ${finalFeePaise}, lowest_acceptable_fee_paise = ${finalFeePaise} where id = 'course_full_stack'`);
     await createAdmissionDraft(c, "enq_first", payload);
 
     await expectOk(confirmAdmission(c, staff, "enq_first"));
@@ -1159,7 +1273,7 @@ describe("confirmAdmission service integration", () => {
   it("preserves custom unequal instalment amounts and due dates through admission confirmation", async () => {
     const db = testDb();
     const c = context(db);
-    db.database.exec("update courses set duration_label = '4 months', duration_months = 4, default_fee_paise = 2000000, lowest_acceptable_fee_paise = 2000000 where id = 'course_full_stack'");
+    db.database.exec("update courses set duration_label = '7 months', duration_months = 7, default_fee_paise = 2000000, lowest_acceptable_fee_paise = 2000000 where id = 'course_full_stack'");
     const payload = validPayload();
     payload.fee.paymentPlanType = "custom";
     payload.fee.numberOfInstalments = 4;
@@ -1187,7 +1301,7 @@ describe("confirmAdmission service integration", () => {
   ])("rejects a custom instalment schedule totalling %s", async (_label, amountPaise) => {
     const db = testDb();
     const c = context(db);
-    db.database.exec("update courses set duration_label = '4 months', duration_months = 4, default_fee_paise = 2000000, lowest_acceptable_fee_paise = 2000000 where id = 'course_full_stack'");
+    db.database.exec("update courses set duration_label = '7 months', duration_months = 7, default_fee_paise = 2000000, lowest_acceptable_fee_paise = 2000000 where id = 'course_full_stack'");
     const payload = validPayload();
     payload.fee.paymentPlanType = "custom";
     payload.fee.numberOfInstalments = 4;
@@ -1550,6 +1664,7 @@ function testDb() {
   applyMigrations(db);
   seedBase(db);
   applyMigrationFile(db, "0011_admission_configuration_defaults.sql");
+  applyMigrationFile(db, "0039_samyak_fractional_payment_plan_policy.sql");
   seedEnquiry(db, { id: "enq_first", personId: "person_asha", number: "ENQ-SION-2026-001" });
   return db;
 }
@@ -1559,6 +1674,7 @@ function configurationDb() {
   applyMigrations(db, "0010_admission_confirmation_lock.sql");
   seedOrganisation(db, "org_samyak");
   applyMigrationFile(db, "0011_admission_configuration_defaults.sql");
+  applyMigrationFile(db, "0039_samyak_fractional_payment_plan_policy.sql");
   return db;
 }
 

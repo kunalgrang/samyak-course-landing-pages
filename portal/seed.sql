@@ -100,7 +100,7 @@ WHERE organisation_id = 'org_samyak'
 
 WITH defaults(id, min_duration_months, max_duration_months, plan_type, fixed_instalments) AS (
   VALUES
-    ('payrule_one_full', 1, 1, 'full', 1),
+    ('payrule_one_full', 1, NULL, 'full', 1),
     ('payrule_short_full', 2, 3, 'full', 1),
     ('payrule_short_two', 2, 3, 'two_instalments', 2),
     ('payrule_mid_full', 4, 6, 'full', 1),
@@ -127,21 +127,33 @@ ON CONFLICT(id) DO UPDATE SET
   updated_at = excluded.updated_at;
 
 UPDATE payment_plan_rules
+SET min_duration_months = 0.5,
+    max_duration_months = NULL,
+    updated_at = '2026-08-03T00:00:00.000Z'
+WHERE organisation_id = 'org_samyak'
+  AND id = 'payrule_one_full'
+  AND EXISTS (
+    SELECT 1
+    FROM sqlite_master
+    WHERE type = 'table'
+      AND name = 'payment_plan_rules'
+      AND sql LIKE '%min_duration_months%>=%0.5%'
+  );
+
+UPDATE payment_plan_rules
 SET is_active = 0,
     updated_at = '2026-08-03T00:00:00.000Z'
 WHERE organisation_id = 'org_samyak'
-  AND id NOT IN (
+  AND (id NOT IN (
     'payrule_one_full',
-    'payrule_short_full',
     'payrule_short_two',
-    'payrule_mid_full',
     'payrule_mid_two',
     'payrule_mid_three',
-    'payrule_long_full',
     'payrule_long_two',
     'payrule_long_three',
     'payrule_long_custom'
-  );
+  )
+  OR id IN ('payrule_short_full', 'payrule_mid_full', 'payrule_long_full'));
 
 INSERT INTO roles (id, organisation_id, code, name, created_at)
 VALUES

@@ -5,8 +5,8 @@ import { createOpaqueId, decryptText, hmacHex } from "./crypto";
 import type { AppContext } from "./http";
 import { normalizeIndianMobile } from "./mobile";
 import { staffOrganisationId, ADMISSION_STAFF_ROLES, type StaffContext } from "./staff-auth";
-import { maximumInstallmentsForCourse } from "./payment-schedule-policy";
 import { allocateInstalments, financialSummaryFromReceipts, type LedgerInstalment } from "./payments-ledger";
+import { MAX_PAYMENT_PLAN_INSTALMENTS } from "./payment-plan-policy";
 
 export const COLLECTION_STAFF_ROLES = ADMISSION_STAFF_ROLES;
 export const PAYMENT_SCHEDULE_MANAGER_ROLES = ["owner", "system_admin", "admin"] as const;
@@ -433,7 +433,7 @@ async function scheduleRevisionState(c: AppContext, staff: StaffContext, row: En
     reasonRequired: true,
     version: await paymentScheduleVersion(c, row, instalments),
     courseDurationMonths: row.duration_months === null ? null : Number(row.duration_months),
-    maxInstallments: maximumInstallmentsForCourse(row),
+    maxInstallments: MAX_PAYMENT_PLAN_INSTALMENTS,
     finalAgreedFeePaise,
     totalReceivedPaise,
     fullyPaid: finalAgreedFeePaise > 0 && totalReceivedPaise >= finalAgreedFeePaise,
@@ -468,9 +468,8 @@ async function paymentScheduleVersion(c: AppContext, row: EnrolmentCollectionRow
 }
 
 function validateScheduleRevision(row: EnrolmentCollectionRow, currentRows: InstalmentRow[], receipts: ReceiptRow[], next: Array<{ instalmentNumber: number; amountPaise: number; dueDate: string | null }>): { ok: true } | CollectionFailure {
-  const maxInstallments = maximumInstallmentsForCourse(row);
   if (next.length < 1) return { ok: false, status: 400, code: "invalid_schedule", message: "At least one instalment is required.", fieldErrors: { installments: ["At least one instalment is required."] } };
-  if (next.length > maxInstallments) return { ok: false, status: 400, code: "invalid_schedule", message: `This course allows a maximum of ${maxInstallments} instalment${maxInstallments === 1 ? "" : "s"}.`, fieldErrors: { installments: [`Maximum ${maxInstallments} instalments allowed.`] } };
+  if (next.length > MAX_PAYMENT_PLAN_INSTALMENTS) return { ok: false, status: 400, code: "invalid_schedule", message: `Payment schedules can have a maximum of ${MAX_PAYMENT_PLAN_INSTALMENTS} instalments.`, fieldErrors: { installments: [`Maximum ${MAX_PAYMENT_PLAN_INSTALMENTS} instalments allowed.`] } };
   for (const [index, item] of next.entries()) {
     if (item.instalmentNumber !== index + 1 || !Number.isInteger(item.amountPaise) || item.amountPaise <= 0) {
       return { ok: false, status: 400, code: "invalid_schedule", message: "Instalment amounts must be positive.", fieldErrors: { installments: ["Every instalment amount must be greater than zero."] } };

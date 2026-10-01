@@ -6,6 +6,7 @@ import { assignBatchOnAdmissionConfirmation, validateAdmissionBatchSelection } f
 import { createOpaqueId, decryptText, encryptText, hmacHex } from "./crypto";
 import { staffOrganisationId, DISCOUNT_APPROVER_ROLES, canBackdateReceipts, canRecordReceipts, canReverseReceipts, type StaffContext } from "./staff-auth";
 import { normalizeIndianMobile } from "./mobile";
+import { fixedInstalmentsForRule, MAX_PAYMENT_PLAN_INSTALMENTS, resolvePaymentPlanPolicy, type PaymentPlanType } from "./payment-plan-policy";
 import { maximumInstallmentsForCourse } from "./payment-schedule-policy";
 import { canReverseReceiptForBranch, financialSummaryFromReceipts, type FinancialSummary, type PublicReceipt, type ReceiptReversalInput } from "./payments-ledger";
 import { operationalCentreJoinSql, operationalCentreWhereSql } from "./centre-commercial-access";
@@ -1427,7 +1428,7 @@ async function getAdmissionReadiness(c: AppContext, enquiry: EnquiryRecord, payl
     return { fieldErrors };
   }
   mergeFieldErrors(fieldErrors, courseConfigurationFieldErrors(course));
-  mergeFieldErrors(fieldErrors, await paymentPlanFieldErrors(c, payload, course));
+  mergeFieldErrors(fieldErrors, await paymentPlanFieldErrors(c, payload, course, (await preConfirmationReceiptCount(c, draftId)) === 0));
   mergeFieldErrors(fieldErrors, await discountApprovalFieldErrors(c, payload, draftId, course));
   return { fieldErrors };
 }
@@ -1953,7 +1954,7 @@ function courseConfigurationFieldErrors(course: CourseRecord) {
   const standard = Number(course.default_fee_paise);
   const floor = Number(course.lowest_acceptable_fee_paise);
   if (!Boolean(course.admission_configuration_complete)) addFieldError(fieldErrors, "course.courseId", "Selected course requires Course Master configuration before admission.");
-  if (!Number.isInteger(duration) || duration < 1) addFieldError(fieldErrors, "course.courseId", "Selected course must have a duration of at least one month.");
+  if (!Number.isFinite(duration) || duration < 0.5) addFieldError(fieldErrors, "course.courseId", "Selected course must have a duration of at least 0.5 months.");
   if (!Number.isInteger(standard) || standard < 0) addFieldError(fieldErrors, "fee.standardFeePaise", "Selected course must have a configured listed price.");
   if (!Number.isInteger(floor) || floor < 0) addFieldError(fieldErrors, "fee.finalAgreedFeePaise", "Selected course must have a configured floor price.");
   if (Number.isInteger(standard) && Number.isInteger(floor) && floor > standard) {
@@ -1962,7 +1963,7 @@ function courseConfigurationFieldErrors(course: CourseRecord) {
   return fieldErrors;
 }
 
-async function paymentPlanFieldErrors(c: AppContext, payload: AdmissionPayload, course: CourseRecord) {
+async function paymentPlanFieldErrors(c: AppContext, payload: AdmissionPayload, course: CourseRecord, enforceCurrentPolicy: boolean) {
   const fieldErrors: FieldErrors = {};
   const selected = String(payload.fee?.paymentPlanType || "");
   if (!selected) {
@@ -1970,11 +1971,26 @@ async function paymentPlanFieldErrors(c: AppContext, payload: AdmissionPayload, 
     return fieldErrors;
   }
   const count = instalmentsFor(selected, Number(payload.fee?.numberOfInstalments || 0));
-  const maxInstallments = maximumInstallmentsForCourse(course);
+  let fixedCount: number | null = null;
+  if (enforceCurrentPolicy) {
+    const policy = await resolvePaymentPlanPolicy(c, authenticatedOrDefaultOrganisationId(c), course);
+    if (!policy.ok) {
+      addFieldError(fieldErrors, policy.code === "invalid_course_duration" ? "course.courseId" : "fee.paymentPlanType", policy.message);
+      return fieldErrors;
+    }
+    const rule = policy.plans.get(selected as PaymentPlanType);
+    if (!rule) {
+      addFieldError(fieldErrors, "fee.paymentPlanType", `${paymentPlanLabel(selected)} is not permitted for this course duration.`);
+      return fieldErrors;
+    }
+    fixedCount = fixedInstalmentsForRule(rule);
+  }
   if (!Number.isInteger(count) || count < 1) {
     addFieldError(fieldErrors, "fee.numberOfInstalments", "Select at least one instalment.");
-  } else if (count > maxInstallments) {
-    addFieldError(fieldErrors, "fee.numberOfInstalments", `Selected course allows a maximum of ${maxInstallments} instalment${maxInstallments === 1 ? "" : "s"}.`);
+  } else if (count > MAX_PAYMENT_PLAN_INSTALMENTS) {
+    addFieldError(fieldErrors, "fee.numberOfInstalments", `Payment schedules can have a maximum of ${MAX_PAYMENT_PLAN_INSTALMENTS} instalments.`);
+  } else if (fixedCount !== null && count !== fixedCount) {
+    addFieldError(fieldErrors, "fee.numberOfInstalments", `${paymentPlanLabel(selected)} requires ${fixedCount} instalment${fixedCount === 1 ? "" : "s"}.`);
   }
   const schedule = buildInstalmentSchedule(payload);
   const finalFee = Number(payload.fee?.finalAgreedFeePaise || 0);

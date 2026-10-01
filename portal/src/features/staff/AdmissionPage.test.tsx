@@ -54,10 +54,10 @@ import {
   emptyAdmissionConfiguration,
   isAdmissionLockedError,
   isAdmissionConfigurationReady,
-  installmentOptionsForCourse,
+  installmentOptionsForRules,
   mergeDraftResponsePayload,
   mergeAdmissionPayload,
-  maximumInstallmentsForCourse,
+  maximumInstallmentsForRules,
   paymentPlanPolicyMessage,
   paymentPlanTypeForInstallmentCount,
   shouldSaveDraftBeforeConfirm,
@@ -76,6 +76,7 @@ const course = {
   nsdc_available: true,
   status: "active",
 };
+const longCourse = { ...course, id: "course_advanced", name: "Advanced Full Stack", duration_label: "7 months", duration_months: 7 };
 
 describe("AdmissionPage helpers", () => {
   it("builds a default draft from enquiry detail", () => {
@@ -369,25 +370,32 @@ describe("AdmissionPage helpers", () => {
   it("updates payment-plan choices when course duration changes", () => {
     const rules = populatedConfiguration().paymentPlanRules;
 
+    expect(allowedPaymentRulesForCourse({ ...course, duration_months: 0.5 }, rules).map((rule) => rule.plan_type)).toEqual(["full"]);
     expect(allowedPaymentRulesForCourse({ ...course, duration_months: 1 }, rules).map((rule) => rule.plan_type)).toEqual(["full"]);
+    expect(allowedPaymentRulesForCourse({ ...course, duration_months: 1.5 }, rules).map((rule) => rule.plan_type)).toEqual(["full"]);
     expect(allowedPaymentRulesForCourse({ ...course, duration_months: 2 }, rules).map((rule) => rule.plan_type)).toEqual(["full", "two_instalments"]);
+    expect(allowedPaymentRulesForCourse({ ...course, duration_months: 4 }, rules).map((rule) => rule.plan_type)).toEqual(["full", "two_instalments", "three_instalments"]);
     expect(allowedPaymentRulesForCourse({ ...course, duration_months: 7 }, rules).map((rule) => rule.plan_type)).toEqual(["full", "two_instalments", "three_instalments", "custom"]);
   });
 
   it.each([
+    [0.5, [1]],
     [1, [1]],
+    [1.5, [1]],
     [2, [1, 2]],
-    [3, [1, 2, 3]],
-    [4, [1, 2, 3, 4]],
-    [6, [1, 2, 3, 4, 5, 6]],
-  ])("derives %s-month course instalment options from structured duration", (durationMonths, expected) => {
-    expect(maximumInstallmentsForCourse({ ...course, duration_months: durationMonths })).toBe(durationMonths);
-    expect(installmentOptionsForCourse({ ...course, duration_months: durationMonths })).toEqual(expected);
+    [4, [1, 2, 3]],
+    [7, Array.from({ length: 24 }, (_item, index) => index + 1)],
+  ])("derives %s-month course instalment options from organisation rules", (durationMonths, expected) => {
+    const allowedRules = allowedPaymentRulesForCourse({ ...course, duration_months: durationMonths }, populatedConfiguration().paymentPlanRules);
+
+    expect(installmentOptionsForRules(allowedRules)).toEqual(expected);
+    expect(maximumInstallmentsForRules(allowedRules)).toBe(expected.at(-1) || 0);
   });
 
-  it("falls back to the existing three-instalment maximum for non-month course duration data", () => {
-    expect(maximumInstallmentsForCourse({ ...course, duration_months: 1.5 })).toBe(3);
-    expect(installmentOptionsForCourse({ ...course, duration_months: null })).toEqual([1, 2, 3]);
+  it("does not offer fixed instalment counts without a matching organisation rule", () => {
+    const allowedRules = allowedPaymentRulesForCourse({ ...course, duration_months: 1.5 }, populatedConfiguration().paymentPlanRules);
+
+    expect(installmentOptionsForRules(allowedRules)).toEqual([1]);
   });
 
   it.each([
@@ -543,13 +551,14 @@ describe("AdmissionPage draft validation interactions", () => {
     );
   });
 
-  it("saves six selected instalments as a custom payment plan for a six-month course", async () => {
+  it("saves six selected instalments as a custom payment plan for a long course", async () => {
+    apiMocks.getActiveCourses.mockResolvedValue({ courses: [course, longCourse] });
     const container = await renderAdmissionPage(roots);
     const courseSelect = windowRef.document.getElementById(admissionFieldId("course.courseId")) as unknown as HTMLSelectElement;
-    await changeValue(courseSelect as unknown as HTMLInputElement, "course_full_stack");
+    await changeValue(courseSelect as unknown as HTMLInputElement, "course_advanced");
     const instalments = windowRef.document.getElementById(admissionFieldId("fee.numberOfInstalments")) as unknown as HTMLSelectElement;
 
-    expect(Array.from(instalments.options).map((option) => option.value)).toEqual(["", "1", "2", "3", "4", "5", "6"]);
+    expect(Array.from(instalments.options).map((option) => option.value)).toEqual(["", ...Array.from({ length: 24 }, (_item, index) => String(index + 1))]);
     await changeValue(instalments as unknown as HTMLInputElement, "6");
     await click(buttonByText(container, "Save Draft"));
 
@@ -563,12 +572,13 @@ describe("AdmissionPage draft validation interactions", () => {
   });
 
   it("saves custom unequal instalment amounts and due dates in the Admission draft", async () => {
+    apiMocks.getActiveCourses.mockResolvedValue({ courses: [course, longCourse] });
     const container = await renderAdmissionPage(roots);
     const courseSelect = windowRef.document.getElementById(admissionFieldId("course.courseId")) as unknown as HTMLSelectElement;
     const feeInput = windowRef.document.getElementById(admissionFieldId("fee.finalAgreedFeePaise")) as unknown as HTMLInputElement;
     const instalments = windowRef.document.getElementById(admissionFieldId("fee.numberOfInstalments")) as unknown as HTMLSelectElement;
 
-    await changeValue(courseSelect as unknown as HTMLInputElement, "course_full_stack");
+    await changeValue(courseSelect as unknown as HTMLInputElement, "course_advanced");
     await changeValue(feeInput, "20000");
     await changeValue(instalments as unknown as HTMLInputElement, "4");
     await flushAdmissionPage();
@@ -602,7 +612,7 @@ describe("AdmissionPage draft validation interactions", () => {
   it("clears a stale custom schedule when a shorter course invalidates the selected count", async () => {
     apiMocks.getActiveCourses.mockResolvedValue({
       courses: [
-        course,
+        longCourse,
         { ...course, id: "course_four_months", name: "Four Month Course", duration_label: "4 months", duration_months: 4 },
       ],
     });
@@ -611,7 +621,7 @@ describe("AdmissionPage draft validation interactions", () => {
     const feeInput = windowRef.document.getElementById(admissionFieldId("fee.finalAgreedFeePaise")) as unknown as HTMLInputElement;
     const instalments = windowRef.document.getElementById(admissionFieldId("fee.numberOfInstalments")) as unknown as HTMLSelectElement;
 
-    await changeValue(courseSelect as unknown as HTMLInputElement, "course_full_stack");
+    await changeValue(courseSelect as unknown as HTMLInputElement, "course_advanced");
     await changeValue(feeInput, "30000");
     await changeValue(instalments as unknown as HTMLInputElement, "6");
     await flushAdmissionPage();
@@ -890,13 +900,10 @@ function populatedConfiguration() {
       option("discount_reason", "other", "Other", 90, true),
     ],
     paymentPlanRules: [
-      plan(1, 1, "full", 1),
-      plan(2, 3, "full", 1),
+      plan(0.5, null, "full", 1),
       plan(2, 3, "two_instalments", 2),
-      plan(4, 6, "full", 1),
       plan(4, 6, "two_instalments", 2),
       plan(4, 6, "three_instalments", 3),
-      plan(7, null, "full", 1),
       plan(7, null, "two_instalments", 2),
       plan(7, null, "three_instalments", 3),
       plan(7, null, "custom", null),

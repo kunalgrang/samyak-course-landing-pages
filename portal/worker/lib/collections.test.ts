@@ -496,8 +496,16 @@ describe("Payments / Collections V2", () => {
       await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_b", { expectedVersion: version.paymentSchedule.version, reason: "Negative", installments: [{ amountPaise: -2000000, dueDate: "2026-09-10" }] })).resolves.toMatchObject({ ok: false, code: "invalid_schedule" });
       await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_b", {
         expectedVersion: version.paymentSchedule.version,
-        reason: "Too many rows",
+        reason: "Historical agreement operational split",
         installments: Array.from({ length: 5 }, () => ({ amountPaise: 400000, dueDate: "2026-09-10" })),
+      })).resolves.toMatchObject({ ok: true });
+
+      const operationalVersion = (await getCollectionDetail(c, ownerStaff(), "enrol_b"));
+      if (!operationalVersion.ok) throw new Error(operationalVersion.message);
+      await expect(updatePaymentSchedule(c, ownerStaff(), "enrol_b", {
+        expectedVersion: operationalVersion.paymentSchedule.version,
+        reason: "Too many rows",
+        installments: Array.from({ length: 25 }, () => ({ amountPaise: 80000, dueDate: "2026-09-10" })),
       })).resolves.toMatchObject({ ok: false, code: "invalid_schedule" });
     } finally {
       db.close();
