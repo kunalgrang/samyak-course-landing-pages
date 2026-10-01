@@ -480,10 +480,10 @@ async function getEnquiryDetail(c: Parameters<typeof getAdmissionDraft>[0], orga
          from enrolments
          join students on students.id = enrolments.student_id
          join courses on courses.id = enrolments.course_id
-         where students.person_id = ? and students.organisation_id = ? and enrolments.organisation_id = ?
+         where students.person_id = ? and students.organisation_id = ?
          order by enrolments.created_at desc`,
       )
-        .bind(enquiry.person_id, organisationId, organisationId)
+        .bind(enquiry.person_id, organisationId)
         .all()
     : { results: [] };
   const mobiles = enquiry.person_id ? await fullMobileContacts(c, String(enquiry.person_id)) : { primaryMobile: null, alternateMobile: null };

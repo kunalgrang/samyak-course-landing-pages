@@ -882,7 +882,7 @@ function admissionDetailDb() {
       updated_at text
     );
     create table enquiry_course_interests (enquiry_id text primary key, course_interest_text text);
-    create table enrolments (id text primary key, organisation_id text, student_id text, course_id text, enrolment_number text, status text, joining_date text, created_at text);
+    create table enrolments (id text primary key, student_id text, course_id text, enrolment_number text, status text, joining_date text, created_at text);
     create table referrals (
       id text primary key,
       organisation_id text not null,
