@@ -30,6 +30,7 @@ describe("organisation signup onboarding", () => {
       expect(count(fixture.sqlite, "organisation_memberships where organisation_id <> 'org_samyak'")).toBe(0);
       expect(count(fixture.sqlite, "organisation_commercial_access")).toBe(0);
       expect(count(fixture.sqlite, "centre_commercial_access where organisation_id <> 'org_samyak'")).toBe(0);
+      expect(count(fixture.sqlite, "payment_plan_rules where organisation_id <> 'org_samyak'")).toBe(0);
 
       const created = await createOrganisation(fixture.env, verificationId, "signup-request-1");
       expect(created.status).toBe(200);
@@ -57,6 +58,14 @@ describe("organisation signup onboarding", () => {
       expect(count(fixture.sqlite, `organisation_memberships where organisation_id = '${orgId}' and status = 'active'`)).toBe(1);
       expect(count(fixture.sqlite, `login_account_people join people on people.id = login_account_people.person_id where people.organisation_id = '${orgId}' and login_account_people.access_type = 'staff'`)).toBe(1);
       expect(count(fixture.sqlite, `organisation_commercial_access where organisation_id = '${orgId}' and state = 'trial'`)).toBe(1);
+      expect(activePaymentRules(fixture.sqlite, orgId)).toEqual([
+        { plan_type: "full", min_duration_months: 0.5, max_duration_months: null, fixed_instalments: 1 },
+        { plan_type: "two_instalments", min_duration_months: 3, max_duration_months: null, fixed_instalments: 2 },
+        { plan_type: "three_instalments", min_duration_months: 3, max_duration_months: null, fixed_instalments: 3 },
+      ]);
+      expect(count(fixture.sqlite, `payment_plan_rules where organisation_id = '${orgId}' and plan_type = 'custom' and is_active = 1`)).toBe(0);
+      expect(duplicateActiveSemanticPaymentRules(fixture.sqlite, orgId)).toEqual([]);
+      expect(count(fixture.sqlite, `payment_plan_rules where organisation_id <> '${orgId}' and organisation_id <> 'org_samyak'`)).toBe(0);
       expect(row(fixture.sqlite, `select state, source, payment_evidence_source, payment_evidence_reference, activated_at from centre_commercial_access where organisation_id = '${orgId}'`)).toMatchObject({
         state: "trial",
         source: "organisation_signup_trial",
@@ -66,6 +75,7 @@ describe("organisation signup onboarding", () => {
       });
       expect(count(fixture.sqlite, `organisation_onboarding_progress where organisation_id = '${orgId}' and reported_centre_count = 1`)).toBe(1);
       expect(count(fixture.sqlite, `audit_logs where organisation_id = '${orgId}' and action in ('organisation_created', 'initial_centre_created', 'account_authority_established', 'trial_started', 'legal_entity_type_captured', 'initial_tenant_context_established')`)).toBe(6);
+      expect(count(fixture.sqlite, `audit_logs where organisation_id = '${orgId}' and action = 'payment_plan_policy_updated'`)).toBe(0);
 
       const session = await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, fixture.env);
       await expect(session.json()).resolves.toMatchObject({
@@ -77,6 +87,44 @@ describe("organisation signup onboarding", () => {
       expect(studentHome.status).toBe(403);
       await expect(studentHome.json()).resolves.toMatchObject({ error: { code: "student_profile_required" } });
       expect((await app.request("http://localhost/api/staff/enquiry-options", { headers: { Cookie: cookie } }, fixture.env)).status).toBe(200);
+      const paymentPolicy = await app.request("http://localhost/api/staff/organisation-settings/payment-plan-policy?organisationId=org_samyak", { headers: { Cookie: cookie } }, fixture.env);
+      expect(paymentPolicy.status).toBe(200);
+      await expect(paymentPolicy.json()).resolves.toMatchObject({
+        success: true,
+        policy: {
+          fullPayment: { enabled: true, minimumCourseDurationMonths: 0.5 },
+          twoInstalments: { enabled: true, minimumCourseDurationMonths: 3 },
+          threeInstalments: { enabled: true, minimumCourseDurationMonths: 3 },
+          flexibleInstalments: { enabled: false, minimumCourseDurationMonths: 4 },
+        },
+      });
+      const admissionConfiguration = await app.request("http://localhost/api/staff/admission-configuration", { headers: { Cookie: cookie } }, fixture.env);
+      expect(admissionConfiguration.status).toBe(200);
+      await expect(admissionConfiguration.json()).resolves.toMatchObject({
+        configuration: { paymentPlanRulesConfigured: true },
+        paymentPlanRules: [
+          { plan_type: "full", min_duration_months: 0.5, max_duration_months: null, fixed_instalments: 1 },
+          { plan_type: "two_instalments", min_duration_months: 3, max_duration_months: null, fixed_instalments: 2 },
+          { plan_type: "three_instalments", min_duration_months: 3, max_duration_months: null, fixed_instalments: 3 },
+        ],
+      });
+      const updatedPolicy = await app.request("http://localhost/api/staff/organisation-settings/payment-plan-policy", {
+        method: "PUT",
+        headers: { Cookie: cookie, Origin: "http://localhost", "Content-Type": "application/json" },
+        body: JSON.stringify(paymentPolicyPayload({
+          twoInstalments: { minimumCourseDurationMonths: 2 },
+          threeInstalments: { minimumCourseDurationMonths: 3.5 },
+          flexibleInstalments: { enabled: true, minimumCourseDurationMonths: 4.5 },
+        })),
+      }, fixture.env);
+      expect(updatedPolicy.status).toBe(200);
+      expect(activePaymentRules(fixture.sqlite, orgId)).toEqual([
+        { plan_type: "full", min_duration_months: 0.5, max_duration_months: null, fixed_instalments: 1 },
+        { plan_type: "two_instalments", min_duration_months: 2, max_duration_months: null, fixed_instalments: 2 },
+        { plan_type: "three_instalments", min_duration_months: 3.5, max_duration_months: null, fixed_instalments: 3 },
+        { plan_type: "custom", min_duration_months: 4.5, max_duration_months: null, fixed_instalments: null },
+      ]);
+      expect(count(fixture.sqlite, `audit_logs where organisation_id = '${orgId}' and action = 'payment_plan_policy_updated'`)).toBe(1);
       await expect((await app.request("http://localhost/api/trainer/session", { headers: { Cookie: cookie } }, fixture.env)).json()).resolves.toMatchObject({
         authenticated: false,
       });
@@ -86,7 +134,7 @@ describe("organisation signup onboarding", () => {
     } finally {
       fixture.close();
     }
-  });
+  }, 10_000);
 
   it("reuses an existing global identity and leaves existing memberships untouched", async () => {
     vi.useFakeTimers();
@@ -134,12 +182,64 @@ describe("organisation signup onboarding", () => {
         .toEqual({ status: "active", centre_status: "active" });
       expect(row(fixture.sqlite, "select state, source from centre_commercial_access where organisation_id = ?", String(firstBody.organisation.id)))
         .toEqual({ state: "trial", source: "organisation_signup_trial" });
+      expect(activePaymentRules(fixture.sqlite, String(firstBody.organisation.id))).toHaveLength(3);
+      expect(count(fixture.sqlite, "payment_plan_rules where organisation_id = ? and plan_type = 'custom' and is_active = 1", String(firstBody.organisation.id))).toBe(0);
 
       const secondVerification = await verifiedSignupId(fixture.env, "9876543211");
       const second = await createOrganisation(fixture.env, secondVerification, "second-submit", { brandName: "Shared Academy", centreName: "Dadar Centre", centreMobile: "9876543211" });
       const secondBody = await second.json() as Row;
       expect(secondBody.organisation.id).not.toBe(firstBody.organisation.id);
       expect(count(fixture.sqlite, "organisations where name = 'Shared Academy'")).toBe(2);
+      expect(activePaymentRules(fixture.sqlite, String(firstBody.organisation.id))).toHaveLength(3);
+      expect(activePaymentRules(fixture.sqlite, String(secondBody.organisation.id))).toHaveLength(3);
+      expect(duplicateActiveSemanticPaymentRules(fixture.sqlite, String(firstBody.organisation.id))).toEqual([]);
+      expect(duplicateActiveSemanticPaymentRules(fixture.sqlite, String(secondBody.organisation.id))).toEqual([]);
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("rolls back the entire signup when default payment policy provisioning fails, then retries cleanly", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+    installTurnstile();
+    const fixture = createFixture();
+    try {
+      const verificationId = await verifiedSignupId(fixture.env, "9876543210");
+      dbCreateRejectPaymentRuleTrigger(fixture.sqlite);
+
+      const failed = await createOrganisation(fixture.env, verificationId, "policy-fail-once");
+
+      expect(failed.status).toBe(500);
+      expect(count(fixture.sqlite, "organisations where id <> 'org_samyak'")).toBe(0);
+      expect(count(fixture.sqlite, "branches where organisation_id <> 'org_samyak'")).toBe(0);
+      expect(count(fixture.sqlite, "roles where organisation_id <> 'org_samyak'")).toBe(0);
+      expect(count(fixture.sqlite, "people where organisation_id <> 'org_samyak'")).toBe(0);
+      expect(count(fixture.sqlite, "login_accounts where organisation_id <> 'org_samyak'")).toBe(0);
+      expect(count(fixture.sqlite, "organisation_memberships where organisation_id <> 'org_samyak'")).toBe(0);
+      expect(count(fixture.sqlite, "organisation_account_authorities where organisation_id <> 'org_samyak'")).toBe(0);
+      expect(count(fixture.sqlite, "organisation_commercial_access")).toBe(0);
+      expect(count(fixture.sqlite, "centre_commercial_access where organisation_id <> 'org_samyak'")).toBe(0);
+      expect(count(fixture.sqlite, "organisation_onboarding_progress")).toBe(0);
+      expect(count(fixture.sqlite, "payment_plan_rules where organisation_id <> 'org_samyak'")).toBe(0);
+      expect(count(fixture.sqlite, "audit_logs where organisation_id <> 'org_samyak'")).toBe(0);
+      expect(row(fixture.sqlite, "select status, created_organisation_id from signup_verifications where id = ?", verificationId)).toEqual({
+        status: "verified",
+        created_organisation_id: null,
+      });
+
+      fixture.sqlite.exec("drop trigger reject_signup_payment_policy");
+      const retry = await createOrganisation(fixture.env, verificationId, "policy-retry");
+      expect(retry.status).toBe(200);
+      const retryBody = await retry.json() as Row;
+      const orgId = String(retryBody.organisation.id);
+      expect(activePaymentRules(fixture.sqlite, orgId)).toEqual([
+        { plan_type: "full", min_duration_months: 0.5, max_duration_months: null, fixed_instalments: 1 },
+        { plan_type: "two_instalments", min_duration_months: 3, max_duration_months: null, fixed_instalments: 2 },
+        { plan_type: "three_instalments", min_duration_months: 3, max_duration_months: null, fixed_instalments: 3 },
+      ]);
+      expect(count(fixture.sqlite, `payment_plan_rules where organisation_id = '${orgId}' and is_active = 1`)).toBe(3);
+      expect(duplicateActiveSemanticPaymentRules(fixture.sqlite, orgId)).toEqual([]);
     } finally {
       fixture.close();
     }
@@ -569,6 +669,47 @@ async function createOrganisation(env: WorkerBindings, signupVerificationId: str
   }, env);
 }
 
+function paymentPolicyPayload(overrides: Record<string, Partial<{ enabled: boolean; minimumCourseDurationMonths: number }>> = {}) {
+  return {
+    twoInstalments: { enabled: true, minimumCourseDurationMonths: 3, ...overrides.twoInstalments },
+    threeInstalments: { enabled: true, minimumCourseDurationMonths: 3, ...overrides.threeInstalments },
+    flexibleInstalments: { enabled: false, minimumCourseDurationMonths: 4, ...overrides.flexibleInstalments },
+  };
+}
+
+function activePaymentRules(db: DatabaseSync, organisationId: string) {
+  return rows(
+    db,
+    `select plan_type, min_duration_months, max_duration_months, fixed_instalments
+     from payment_plan_rules
+     where organisation_id = ? and is_active = 1
+     order by coalesce(fixed_instalments, 999), plan_type`,
+    organisationId,
+  );
+}
+
+function duplicateActiveSemanticPaymentRules(db: DatabaseSync, organisationId: string) {
+  return rows(
+    db,
+    `select plan_type, min_duration_months, coalesce(max_duration_months, -1) as max_duration_months, fixed_instalments, count(*) as count
+     from payment_plan_rules
+     where organisation_id = ? and is_active = 1
+     group by plan_type, min_duration_months, coalesce(max_duration_months, -1), fixed_instalments
+     having count(*) > 1`,
+    organisationId,
+  );
+}
+
+function dbCreateRejectPaymentRuleTrigger(db: DatabaseSync) {
+  db.exec(`
+    create trigger reject_signup_payment_policy
+    before insert on payment_plan_rules
+    begin
+      select raise(abort, 'forced payment policy provisioning failure');
+    end;
+  `);
+}
+
 function createFixture() {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec("pragma foreign_keys = on");
@@ -687,8 +828,8 @@ function rows(db: DatabaseSync, sql: string, ...values: SQLInputValue[]) {
   return db.prepare(sql).all(...values) as Row[];
 }
 
-function count(db: DatabaseSync, tableOrSql: string) {
-  return Number(row(db, `select count(*) as count from ${tableOrSql}`)?.count || 0);
+function count(db: DatabaseSync, tableOrSql: string, ...values: SQLInputValue[]) {
+  return Number(row(db, `select count(*) as count from ${tableOrSql}`, ...values)?.count || 0);
 }
 
 function columns(db: DatabaseSync, table: string) {

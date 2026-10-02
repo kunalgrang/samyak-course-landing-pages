@@ -33,6 +33,12 @@ const FIXED_PLAN_COUNTS: Partial<Record<PaymentPlanType, number>> = {
 export const MAX_PAYMENT_PLAN_INSTALMENTS = 24;
 export const MIN_PAYMENT_PLAN_DURATION_MONTHS = 0.5;
 
+export const DEFAULT_SIGNUP_PAYMENT_PLAN_RULES = [
+  { planType: "full", minDurationMonths: MIN_PAYMENT_PLAN_DURATION_MONTHS, maxDurationMonths: null, fixedInstalments: 1 },
+  { planType: "two_instalments", minDurationMonths: 3, maxDurationMonths: null, fixedInstalments: 2 },
+  { planType: "three_instalments", minDurationMonths: 3, maxDurationMonths: null, fixedInstalments: 3 },
+] as const satisfies ReadonlyArray<{ planType: PaymentPlanType; minDurationMonths: number; maxDurationMonths: null; fixedInstalments: number }>;
+
 const submittedDuration = z.union([z.number(), z.string()]).transform((value, ctx) => {
   const parsed = typeof value === "string" ? Number(value.trim()) : value;
   if (!Number.isFinite(parsed)) {
@@ -126,6 +132,38 @@ export async function resolvePaymentPlanPolicy(c: AppContext, organisationId: st
 
 export function fixedInstalmentsForRule(rule: PaymentPlanPolicyRule) {
   return FIXED_PLAN_COUNTS[rule.planType] ?? rule.fixedInstalments ?? null;
+}
+
+export function defaultSignupPaymentPlanPolicyStatements(c: AppContext, organisationId: string, now: string) {
+  return DEFAULT_SIGNUP_PAYMENT_PLAN_RULES.map((rule) =>
+    c.env.DB.prepare(
+      `insert into payment_plan_rules
+         (id, organisation_id, min_duration_months, max_duration_months, plan_type, fixed_instalments, is_active, created_at, updated_at)
+       select ?, ?, ?, null, ?, ?, 1, ?, ?
+       where not exists (
+         select 1
+         from payment_plan_rules
+         where organisation_id = ?
+           and plan_type = ?
+           and is_active = 1
+           and min_duration_months = ?
+           and max_duration_months is null
+           and fixed_instalments = ?
+       )`,
+    ).bind(
+      createOpaqueId("payrule"),
+      organisationId,
+      rule.minDurationMonths,
+      rule.planType,
+      rule.fixedInstalments,
+      now,
+      now,
+      organisationId,
+      rule.planType,
+      rule.minDurationMonths,
+      rule.fixedInstalments,
+    ),
+  );
 }
 
 export async function getOrganisationPaymentPlanPolicy(c: AppContext, organisationId: string): Promise<OrganisationPaymentPlanPolicy> {

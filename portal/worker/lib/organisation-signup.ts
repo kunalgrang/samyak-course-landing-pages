@@ -1,6 +1,7 @@
 import type { AppContext } from "./http";
 import { createOpaqueId, daysFromNow, hmacHex } from "./crypto";
 import { mobileHash } from "./auth-store";
+import { defaultSignupPaymentPlanPolicyStatements } from "./payment-plan-policy";
 
 export const SIGNUP_TRIAL_DAYS = 15;
 export const SIGNUP_TERMS_VERSION = "2026-09-24";
@@ -284,6 +285,7 @@ export async function createOrganisationFromSignup(c: AppContext, input: Organis
       .bind(trialId, organisationId, now, trialEndsAt, now, now),
     c.env.DB.prepare("insert into organisation_onboarding_progress (organisation_id, status, completed_steps_json, checklist_json, reported_centre_count, created_at, updated_at) values (?, 'in_progress', ?, ?, ?, ?, ?)")
       .bind(organisationId, JSON.stringify(["organisation_profile", "centre_profile", "owner_account"]), checklist, input.onboarding.reportedCentreCount, now, now),
+    ...defaultSignupPaymentPlanPolicyStatements(c, organisationId, now),
     c.env.DB.prepare("update signup_verifications set status = 'used', created_organisation_id = ?, used_at = ? where id = ? and status = 'verified'")
       .bind(organisationId, now, verification.id),
     ...auditStatements(c, organisationId, branchId, accountId, personId, input.idempotencyKey, now, input.organisation.legalEntityType, trialEndsAt),
