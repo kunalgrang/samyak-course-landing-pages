@@ -58,6 +58,7 @@ import {
   mergeDraftResponsePayload,
   mergeAdmissionPayload,
   maximumInstallmentsForRules,
+  maximumInstallmentsForCourse,
   paymentPlanPolicyMessage,
   paymentPlanTypeForInstallmentCount,
   shouldSaveDraftBeforeConfirm,
@@ -335,7 +336,7 @@ describe("AdmissionPage helpers", () => {
       "5 PM to 8 PM",
       "Full upfront payment",
       "Management approval",
-      "Custom",
+      "Flexible instalments",
     ]) {
       expect(html).toContain(label);
     }
@@ -360,7 +361,8 @@ describe("AdmissionPage helpers", () => {
   });
 
   it("shows an explicit payment-plan duration policy error when no rule matches", () => {
-    const message = paymentPlanPolicyMessage({ ...course, duration_months: 13 }, populatedConfiguration().paymentPlanRules.filter((rule) => rule.max_duration_months === 6), []);
+    const legacyFiniteRules = [plan(0.5, 6, "full", 1), plan(2, 6, "two_instalments", 2)];
+    const message = paymentPlanPolicyMessage({ ...course, duration_months: 13 }, legacyFiniteRules, []);
     const html = renderToStaticMarkup(<PaymentPlanField value="" rules={[]} message={message} onChange={() => undefined} />);
 
     expect(message).toBe("No payment plan is configured for this course duration.");
@@ -374,8 +376,8 @@ describe("AdmissionPage helpers", () => {
     expect(allowedPaymentRulesForCourse({ ...course, duration_months: 1 }, rules).map((rule) => rule.plan_type)).toEqual(["full"]);
     expect(allowedPaymentRulesForCourse({ ...course, duration_months: 1.5 }, rules).map((rule) => rule.plan_type)).toEqual(["full"]);
     expect(allowedPaymentRulesForCourse({ ...course, duration_months: 2 }, rules).map((rule) => rule.plan_type)).toEqual(["full", "two_instalments"]);
-    expect(allowedPaymentRulesForCourse({ ...course, duration_months: 4 }, rules).map((rule) => rule.plan_type)).toEqual(["full", "two_instalments", "three_instalments"]);
-    expect(allowedPaymentRulesForCourse({ ...course, duration_months: 7 }, rules).map((rule) => rule.plan_type)).toEqual(["full", "two_instalments", "three_instalments", "custom"]);
+    expect(allowedPaymentRulesForCourse({ ...course, duration_months: 3 }, rules).map((rule) => rule.plan_type)).toEqual(["full", "two_instalments", "three_instalments"]);
+    expect(allowedPaymentRulesForCourse({ ...course, duration_months: 4 }, rules).map((rule) => rule.plan_type)).toEqual(["full", "two_instalments", "three_instalments", "custom"]);
   });
 
   it.each([
@@ -383,19 +385,39 @@ describe("AdmissionPage helpers", () => {
     [1, [1]],
     [1.5, [1]],
     [2, [1, 2]],
-    [4, [1, 2, 3]],
-    [7, Array.from({ length: 24 }, (_item, index) => index + 1)],
+    [3, [1, 2, 3]],
+    [4, [1, 2, 3, 4]],
+    [6, [1, 2, 3, 4, 5, 6]],
+    [12, Array.from({ length: 12 }, (_item, index) => index + 1)],
   ])("derives %s-month course instalment options from organisation rules", (durationMonths, expected) => {
-    const allowedRules = allowedPaymentRulesForCourse({ ...course, duration_months: durationMonths }, populatedConfiguration().paymentPlanRules);
+    const selectedCourse = { ...course, duration_months: durationMonths };
+    const allowedRules = allowedPaymentRulesForCourse(selectedCourse, populatedConfiguration().paymentPlanRules);
+    const maximum = maximumInstallmentsForCourse(selectedCourse);
 
-    expect(installmentOptionsForRules(allowedRules)).toEqual(expected);
-    expect(maximumInstallmentsForRules(allowedRules)).toBe(expected.at(-1) || 0);
+    expect(installmentOptionsForRules(allowedRules, maximum)).toEqual(expected);
+    expect(maximumInstallmentsForRules(allowedRules, maximum)).toBe(expected.at(-1) || 0);
+  });
+
+  it.each([
+    [0.5, 1],
+    [1, 1],
+    [1.5, 1],
+    [2, 2],
+    [2.5, 2],
+    [3, 3],
+    [4, 4],
+    [6, 6],
+    [6.5, 6],
+    [12, 12],
+    [30, 24],
+  ])("caps %s-month courses at %s instalment(s)", (durationMonths, expected) => {
+    expect(maximumInstallmentsForCourse({ ...course, duration_months: durationMonths })).toBe(expected);
   });
 
   it("does not offer fixed instalment counts without a matching organisation rule", () => {
     const allowedRules = allowedPaymentRulesForCourse({ ...course, duration_months: 1.5 }, populatedConfiguration().paymentPlanRules);
 
-    expect(installmentOptionsForRules(allowedRules)).toEqual([1]);
+    expect(installmentOptionsForRules(allowedRules, maximumInstallmentsForCourse({ ...course, duration_months: 1.5 }))).toEqual([1]);
   });
 
   it.each([
@@ -558,7 +580,7 @@ describe("AdmissionPage draft validation interactions", () => {
     await changeValue(courseSelect as unknown as HTMLInputElement, "course_advanced");
     const instalments = windowRef.document.getElementById(admissionFieldId("fee.numberOfInstalments")) as unknown as HTMLSelectElement;
 
-    expect(Array.from(instalments.options).map((option) => option.value)).toEqual(["", ...Array.from({ length: 24 }, (_item, index) => String(index + 1))]);
+    expect(Array.from(instalments.options).map((option) => option.value)).toEqual(["", ...Array.from({ length: 7 }, (_item, index) => String(index + 1))]);
     await changeValue(instalments as unknown as HTMLInputElement, "6");
     await click(buttonByText(container, "Save Draft"));
 
@@ -901,12 +923,9 @@ function populatedConfiguration() {
     ],
     paymentPlanRules: [
       plan(0.5, null, "full", 1),
-      plan(2, 3, "two_instalments", 2),
-      plan(4, 6, "two_instalments", 2),
-      plan(4, 6, "three_instalments", 3),
-      plan(7, null, "two_instalments", 2),
-      plan(7, null, "three_instalments", 3),
-      plan(7, null, "custom", null),
+      plan(2, null, "two_instalments", 2),
+      plan(3, null, "three_instalments", 3),
+      plan(4, null, "custom", null),
     ],
     configuration: { ready: true, missingCategories: [], paymentPlanRulesConfigured: true },
   };

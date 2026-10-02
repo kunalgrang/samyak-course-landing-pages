@@ -33,8 +33,6 @@ const FIXED_PLAN_COUNTS: Partial<Record<PaymentPlanType, number>> = {
 export const MAX_PAYMENT_PLAN_INSTALMENTS = 24;
 export const MIN_PAYMENT_PLAN_DURATION_MONTHS = 0.5;
 
-const PAYMENT_PLAN_TYPES = ["full", "two_instalments", "three_instalments", "custom"] as const;
-
 const submittedDuration = z.union([z.number(), z.string()]).transform((value, ctx) => {
   const parsed = typeof value === "string" ? Number(value.trim()) : value;
   if (!Number.isFinite(parsed)) {
@@ -44,39 +42,38 @@ const submittedDuration = z.union([z.number(), z.string()]).transform((value, ct
   return parsed;
 });
 
-const submittedMaxDuration = z.union([z.number(), z.string(), z.null()]).optional().transform((value, ctx) => {
-  if (value === undefined || value === null || value === "") return null;
-  const parsed = typeof value === "string" ? Number(value.trim()) : value;
-  if (!Number.isFinite(parsed)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Enter a valid upper duration." });
-    return z.NEVER;
-  }
-  return parsed;
-});
+const optionalPlanUpdateSchema = z.object({
+  enabled: z.boolean(),
+  minimumCourseDurationMonths: submittedDuration,
+}).strict();
+
+const OPTIONAL_PLAN_MINIMUMS = {
+  twoInstalments: 2,
+  threeInstalments: 3,
+  flexibleInstalments: 4,
+} as const;
 
 export const paymentPlanPolicyUpdateSchema = z.object({
-  rules: z.array(z.object({
-    planType: z.enum(PAYMENT_PLAN_TYPES),
-    minDurationMonths: submittedDuration,
-    maxDurationMonths: submittedMaxDuration,
-    isActive: z.boolean().default(true),
-    fixedInstalments: z.union([z.number(), z.string(), z.null()]).optional(),
-  }).strict()).min(1),
+  twoInstalments: optionalPlanUpdateSchema,
+  threeInstalments: optionalPlanUpdateSchema,
+  flexibleInstalments: optionalPlanUpdateSchema,
 }).strict();
 
 export type PaymentPlanPolicyUpdateInput = z.infer<typeof paymentPlanPolicyUpdateSchema>;
 
 export type OrganisationPaymentPlanPolicyRule = {
-  id: string | null;
-  planType: PaymentPlanType;
-  fixedInstalments: number | null;
-  minDurationMonths: number;
-  maxDurationMonths: number | null;
-  isActive: boolean;
+  enabled: boolean;
+  minimumCourseDurationMonths: number;
 };
 
 export type OrganisationPaymentPlanPolicy = {
-  rules: OrganisationPaymentPlanPolicyRule[];
+  fullPayment: {
+    enabled: true;
+    minimumCourseDurationMonths: 0.5;
+  };
+  twoInstalments: OrganisationPaymentPlanPolicyRule;
+  threeInstalments: OrganisationPaymentPlanPolicyRule;
+  flexibleInstalments: OrganisationPaymentPlanPolicyRule;
 };
 
 type PaymentPlanRuleRow = {
@@ -102,11 +99,9 @@ export async function resolvePaymentPlanPolicy(c: AppContext, organisationId: st
      from payment_plan_rules
      where organisation_id = ?
        and is_active = 1
-       and ? >= min_duration_months
-       and (max_duration_months is null or ? <= max_duration_months)
      order by min_duration_months, coalesce(max_duration_months, 999999), plan_type, fixed_instalments`,
   )
-    .bind(organisationId, durationMonths, durationMonths)
+    .bind(organisationId)
     .all<Record<string, unknown>>();
 
   const rules = (rows.results || []).map((row) => ({
@@ -114,7 +109,7 @@ export async function resolvePaymentPlanPolicy(c: AppContext, organisationId: st
     fixedInstalments: row.fixed_instalments == null ? null : Number(row.fixed_instalments),
     minDurationMonths: Number(row.min_duration_months),
     maxDurationMonths: row.max_duration_months == null ? null : Number(row.max_duration_months),
-  }));
+  })).filter((rule) => durationMonths >= rule.minDurationMonths);
   if (!rules.length) {
     return { ok: false, code: "payment_plan_policy_missing", message: "No payment plan policy is configured for this course duration." };
   }
@@ -143,7 +138,7 @@ export async function updateOrganisationPaymentPlanPolicy(c: AppContext, staff: 
   const existingRows = await loadPaymentPlanRuleRows(c, organisationId);
   const current = policyFromRows(existingRows.filter((row) => Boolean(row.is_active)));
 
-  const validation = canonicalPolicyRules(input.rules);
+  const validation = canonicalPolicyRules(input);
   if (!validation.ok) {
     return { ok: false as const, status: 400 as const, code: validation.code, message: validation.message, fieldErrors: validation.fieldErrors };
   }
@@ -220,78 +215,61 @@ function loadPaymentPlanRuleRows(c: AppContext, organisationId: string) {
 }
 
 function policyFromRows(rows: PaymentPlanRuleRow[]): OrganisationPaymentPlanPolicy {
-  const rules = rows.map((row) => ({
-    id: row.id,
-    planType: row.plan_type,
-    fixedInstalments: row.fixed_instalments == null ? null : Number(row.fixed_instalments),
-    minDurationMonths: Number(row.min_duration_months),
-    maxDurationMonths: row.max_duration_months == null ? null : Number(row.max_duration_months),
-    isActive: Boolean(row.is_active),
-  }));
-  return { rules };
+  const active = rows.filter((row) => Boolean(row.is_active));
+  const two = active.find((row) => row.plan_type === "two_instalments");
+  const three = active.find((row) => row.plan_type === "three_instalments");
+  const flexible = active.find((row) => row.plan_type === "custom");
+  return {
+    fullPayment: { enabled: true, minimumCourseDurationMonths: 0.5 },
+    twoInstalments: { enabled: Boolean(two), minimumCourseDurationMonths: two ? Number(two.min_duration_months) : 2 },
+    threeInstalments: { enabled: Boolean(three), minimumCourseDurationMonths: three ? Number(three.min_duration_months) : 3 },
+    flexibleInstalments: { enabled: Boolean(flexible), minimumCourseDurationMonths: flexible ? Number(flexible.min_duration_months) : 4 },
+  };
 }
 
-function canonicalPolicyRules(inputRules: PaymentPlanPolicyUpdateInput["rules"]) {
-  const active = inputRules.filter((rule) => rule.isActive).map((rule, index) => ({
-    planType: rule.planType,
-    minDurationMonths: normalizedDuration(rule.minDurationMonths),
-    maxDurationMonths: rule.maxDurationMonths == null ? null : normalizedDuration(rule.maxDurationMonths),
-    fixedInstalments: FIXED_PLAN_COUNTS[rule.planType] ?? null,
-    index,
-  }));
-
+function canonicalPolicyRules(input: PaymentPlanPolicyUpdateInput) {
   const fieldErrors: Record<string, string[]> = {};
-  for (const rule of active) {
-    if (rule.minDurationMonths < MIN_PAYMENT_PLAN_DURATION_MONTHS) {
-      fieldErrors[`rules.${rule.index}.minDurationMonths`] = ["Minimum duration must be at least 0.5 months."];
+  const twoMin = normalizedDuration(input.twoInstalments.minimumCourseDurationMonths);
+  const threeMin = normalizedDuration(input.threeInstalments.minimumCourseDurationMonths);
+  const flexibleMin = normalizedDuration(input.flexibleInstalments.minimumCourseDurationMonths);
+  const optional = [
+    { key: "twoInstalments" as const, path: "twoInstalments", planType: "two_instalments" as const, min: twoMin, fixedInstalments: 2, lowerBound: OPTIONAL_PLAN_MINIMUMS.twoInstalments, label: "2 instalments" },
+    { key: "threeInstalments" as const, path: "threeInstalments", planType: "three_instalments" as const, min: threeMin, fixedInstalments: 3, lowerBound: OPTIONAL_PLAN_MINIMUMS.threeInstalments, label: "3 instalments" },
+    { key: "flexibleInstalments" as const, path: "flexibleInstalments", planType: "custom" as const, min: flexibleMin, fixedInstalments: null, lowerBound: OPTIONAL_PLAN_MINIMUMS.flexibleInstalments, label: "Flexible instalments" },
+  ];
+  for (const rule of optional) {
+    if (input[rule.key].enabled && rule.min < rule.lowerBound) {
+      fieldErrors[`${rule.path}.minimumCourseDurationMonths`] = [`${rule.label} can start only from Courses of at least ${rule.lowerBound} months.`];
     }
-    if (rule.maxDurationMonths != null && rule.maxDurationMonths < rule.minDurationMonths) {
-      fieldErrors[`rules.${rule.index}.maxDurationMonths`] = ["Available until must be greater than or equal to available from."];
-    }
+  }
+  if (input.threeInstalments.enabled && !input.twoInstalments.enabled) {
+    fieldErrors["threeInstalments.enabled"] = ["Enable 2 instalments before enabling 3 instalments."];
+  }
+  if (input.flexibleInstalments.enabled && (!input.twoInstalments.enabled || !input.threeInstalments.enabled)) {
+    fieldErrors["flexibleInstalments.enabled"] = ["Enable 2 and 3 instalments before enabling flexible instalments."];
+  }
+  if (input.twoInstalments.enabled && input.threeInstalments.enabled && twoMin > threeMin) {
+    fieldErrors["threeInstalments.minimumCourseDurationMonths"] = ["3 instalments must start at the same or a longer Course duration than 2 instalments."];
+  }
+  if (input.threeInstalments.enabled && input.flexibleInstalments.enabled && threeMin > flexibleMin) {
+    fieldErrors["flexibleInstalments.minimumCourseDurationMonths"] = ["Flexible instalments must start at the same or a longer Course duration than 3 instalments."];
   }
   if (Object.keys(fieldErrors).length) {
     return { ok: false as const, code: "invalid_policy", message: "Please correct the highlighted payment plan rules.", fieldErrors };
   }
-  if (!active.length) {
-    return { ok: false as const, code: "empty_policy", message: "At least one active payment plan rule is required.", fieldErrors: null };
-  }
-  const full = active.find((rule) => rule.planType === "full" && rule.minDurationMonths === MIN_PAYMENT_PLAN_DURATION_MONTHS && rule.maxDurationMonths === null);
-  if (!full) {
-    return { ok: false as const, code: "full_payment_required", message: "Full payment must remain available for every course duration from 0.5 months upward.", fieldErrors: null };
-  }
-  const repeated = repeatedPlanType(active);
-  if (repeated) {
-    return { ok: false as const, code: "ambiguous_policy", message: `${labelForPlan(repeated)} can have only one active duration range.`, fieldErrors: null };
-  }
-  const ambiguous = overlappingPlanType(active);
-  if (ambiguous) {
-    return { ok: false as const, code: "ambiguous_policy", message: `${labelForPlan(ambiguous)} has overlapping active duration ranges.`, fieldErrors: null };
-  }
+  const active = [
+    { planType: "full" as const, minDurationMonths: MIN_PAYMENT_PLAN_DURATION_MONTHS, maxDurationMonths: null, fixedInstalments: 1 },
+    ...optional.filter((rule) => input[rule.key].enabled).map((rule) => ({
+      planType: rule.planType,
+      minDurationMonths: rule.min,
+      maxDurationMonths: null,
+      fixedInstalments: rule.fixedInstalments,
+    })),
+  ];
   return {
     ok: true as const,
-    rules: active.map(({ index: _index, ...rule }) => rule).sort((a, b) => a.minDurationMonths - b.minDurationMonths || (a.maxDurationMonths ?? 999999) - (b.maxDurationMonths ?? 999999) || a.planType.localeCompare(b.planType)),
+    rules: active.sort((a, b) => a.minDurationMonths - b.minDurationMonths || a.planType.localeCompare(b.planType)),
   };
-}
-
-function repeatedPlanType(rules: Array<{ planType: PaymentPlanType }>) {
-  const seen = new Set<PaymentPlanType>();
-  for (const rule of rules) {
-    if (seen.has(rule.planType)) return rule.planType;
-    seen.add(rule.planType);
-  }
-  return null;
-}
-
-function overlappingPlanType(rules: Array<{ planType: PaymentPlanType; minDurationMonths: number; maxDurationMonths: number | null }>) {
-  for (const planType of PAYMENT_PLAN_TYPES) {
-    const matching = rules.filter((rule) => rule.planType === planType).sort((a, b) => a.minDurationMonths - b.minDurationMonths);
-    for (let index = 1; index < matching.length; index += 1) {
-      const previous = matching[index - 1];
-      const current = matching[index];
-      if ((previous.maxDurationMonths ?? Infinity) >= current.minDurationMonths) return planType;
-    }
-  }
-  return null;
 }
 
 function findMatchingRule(rows: PaymentPlanRuleRow[], rule: { planType: PaymentPlanType; minDurationMonths: number; maxDurationMonths: number | null }) {
@@ -307,7 +285,12 @@ function normalizedDuration(value: number) {
 }
 
 function summaryForPolicy(policy: OrganisationPaymentPlanPolicy) {
-  return summaryForRules(policy.rules.filter((rule) => rule.isActive));
+  return summaryForRules([
+    { planType: "full", minDurationMonths: 0.5, maxDurationMonths: null, fixedInstalments: 1 },
+    ...(policy.twoInstalments.enabled ? [{ planType: "two_instalments" as const, minDurationMonths: policy.twoInstalments.minimumCourseDurationMonths, maxDurationMonths: null, fixedInstalments: 2 }] : []),
+    ...(policy.threeInstalments.enabled ? [{ planType: "three_instalments" as const, minDurationMonths: policy.threeInstalments.minimumCourseDurationMonths, maxDurationMonths: null, fixedInstalments: 3 }] : []),
+    ...(policy.flexibleInstalments.enabled ? [{ planType: "custom" as const, minDurationMonths: policy.flexibleInstalments.minimumCourseDurationMonths, maxDurationMonths: null, fixedInstalments: null }] : []),
+  ]);
 }
 
 function summaryForRules(rules: Array<{ planType: PaymentPlanType; minDurationMonths: number; maxDurationMonths: number | null; fixedInstalments: number | null }>) {
@@ -321,13 +304,4 @@ function summaryForRules(rules: Array<{ planType: PaymentPlanType; minDurationMo
 
 function policySignature(summary: Array<{ planType: PaymentPlanType; minDurationMonths: number; maxDurationMonths: number | null; fixedInstalments: number | null }>) {
   return JSON.stringify([...summary].sort((a, b) => a.planType.localeCompare(b.planType) || a.minDurationMonths - b.minDurationMonths || (a.maxDurationMonths ?? 999999) - (b.maxDurationMonths ?? 999999)));
-}
-
-function labelForPlan(planType: PaymentPlanType) {
-  switch (planType) {
-    case "full": return "Full payment";
-    case "two_instalments": return "2 instalments";
-    case "three_instalments": return "3 instalments";
-    case "custom": return "Custom payment plan";
-  }
 }

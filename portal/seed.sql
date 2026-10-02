@@ -155,6 +155,39 @@ WHERE organisation_id = 'org_samyak'
   )
   OR id IN ('payrule_short_full', 'payrule_mid_full', 'payrule_long_full'));
 
+UPDATE payment_plan_rules
+SET min_duration_months = 2,
+    max_duration_months = NULL,
+    fixed_instalments = 2,
+    is_active = 1,
+    updated_at = '2026-08-03T00:00:00.000Z'
+WHERE organisation_id = 'org_samyak'
+  AND id = 'payrule_short_two';
+
+UPDATE payment_plan_rules
+SET min_duration_months = 3,
+    max_duration_months = NULL,
+    fixed_instalments = 3,
+    is_active = 1,
+    updated_at = '2026-08-03T00:00:00.000Z'
+WHERE organisation_id = 'org_samyak'
+  AND id = 'payrule_mid_three';
+
+UPDATE payment_plan_rules
+SET min_duration_months = 4,
+    max_duration_months = NULL,
+    fixed_instalments = NULL,
+    is_active = 1,
+    updated_at = '2026-08-03T00:00:00.000Z'
+WHERE organisation_id = 'org_samyak'
+  AND id = 'payrule_long_custom';
+
+UPDATE payment_plan_rules
+SET is_active = 0,
+    updated_at = '2026-08-03T00:00:00.000Z'
+WHERE organisation_id = 'org_samyak'
+  AND id IN ('payrule_mid_two', 'payrule_long_two', 'payrule_long_three');
+
 INSERT INTO roles (id, organisation_id, code, name, created_at)
 VALUES
   ('role_owner', 'org_samyak', 'owner', 'Owner', '2026-07-21T00:00:00.000Z'),

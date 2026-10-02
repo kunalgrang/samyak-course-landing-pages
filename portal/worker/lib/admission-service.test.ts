@@ -320,7 +320,7 @@ describe("admission configuration defaults migration", () => {
     });
     expect(config.configuration).toEqual({ ready: true, missingCategories: [], paymentPlanRulesConfigured: true });
     expect(config.options).toHaveLength(42);
-    expect(config.paymentPlanRules).toHaveLength(7);
+    expect(config.paymentPlanRules).toHaveLength(4);
     expect(codesFor(db, "preferred_language")).toContain("gujarati");
     expect(codesFor(db, "qualification_level")).toEqual(expect.arrayContaining(["below_10th", "undergraduate", "postgraduate", "doctorate"]));
     expect(codesFor(db, "stream")).toEqual(expect.arrayContaining(["general", "engineering", "management", "vocational"]));
@@ -376,6 +376,13 @@ describe("admission configuration defaults migration", () => {
     expect(() => db.database.exec("insert into payment_plan_rules (id, organisation_id, min_duration_months, max_duration_months, plan_type, fixed_instalments, is_active, created_at, updated_at) values ('bad_duration', 'org_samyak', 0.25, null, 'full', 1, 1, '2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z')")).toThrow();
     expect(count(db, "payment_plan_rules where organisation_id = 'org_samyak' and id in ('payrule_short_full', 'payrule_mid_full', 'payrule_long_full') and is_active = 1")).toBe(0);
     expect(count(db, "select min_duration_months, coalesce(max_duration_months, -1), plan_type from payment_plan_rules where organisation_id = 'org_samyak' and is_active = 1 group by min_duration_months, coalesce(max_duration_months, -1), plan_type having count(*) > 1")).toBe(0);
+    applyMigrationFile(db, "0040_simplify_samyak_payment_plan_policy.sql");
+    expect(all(db, "select plan_type, min_duration_months, max_duration_months from payment_plan_rules where organisation_id = 'org_samyak' and is_active = 1 order by coalesce(fixed_instalments, 999), plan_type")).toEqual([
+      { plan_type: "full", min_duration_months: 0.5, max_duration_months: null },
+      { plan_type: "two_instalments", min_duration_months: 2, max_duration_months: null },
+      { plan_type: "three_instalments", min_duration_months: 3, max_duration_months: null },
+      { plan_type: "custom", min_duration_months: 4, max_duration_months: null },
+    ]);
     db.close();
   });
 
@@ -387,6 +394,7 @@ describe("admission configuration defaults migration", () => {
 
     applyMigrationFile(db, "0011_admission_configuration_defaults.sql");
     applyMigrationFile(db, "0039_samyak_fractional_payment_plan_policy.sql");
+    applyMigrationFile(db, "0040_simplify_samyak_payment_plan_policy.sql");
 
     expect(count(db, "admission_option_values where organisation_id = 'org_other'")).toBe(0);
     expect(count(db, "payment_plan_rules where organisation_id = 'org_other'")).toBe(0);
@@ -398,9 +406,9 @@ describe("admission configuration defaults migration", () => {
     [1, ["full"]],
     [1.5, ["full"]],
     [2, ["full", "two_instalments"]],
-    [3, ["full", "two_instalments"]],
-    [4, ["full", "two_instalments", "three_instalments"]],
-    [6, ["full", "two_instalments", "three_instalments"]],
+    [3, ["full", "two_instalments", "three_instalments"]],
+    [4, ["full", "two_instalments", "three_instalments", "custom"]],
+    [6, ["full", "two_instalments", "three_instalments", "custom"]],
     [7, ["full", "two_instalments", "three_instalments", "custom"]],
     [12, ["full", "two_instalments", "three_instalments", "custom"]],
   ])("returns the exact active payment plans for %s-month courses", (duration, expected) => {
@@ -1051,7 +1059,7 @@ describe("confirmAdmission service integration", () => {
     db.close();
   });
 
-  it("rejects custom plans when Organisation policy does not permit them for the duration", async () => {
+  it("rejects instalments above the Course-duration maximum", async () => {
     const db = testDb();
     const c = context(db);
     const payload = validPayload();
@@ -1061,7 +1069,7 @@ describe("confirmAdmission service integration", () => {
 
     const confirmed = await confirmAdmission(c, staff, "enq_first");
     expect(confirmed).toMatchObject({ ok: false, status: 400, code: "invalid_admission" });
-    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.paymentPlanType"]?.[0]).toContain("not permitted");
+    expect(confirmed.ok ? "" : confirmed.fieldErrors?.["fee.numberOfInstalments"]?.[0]).toContain("maximum of 6 instalments");
     db.close();
   });
 
@@ -1665,6 +1673,7 @@ function testDb() {
   seedBase(db);
   applyMigrationFile(db, "0011_admission_configuration_defaults.sql");
   applyMigrationFile(db, "0039_samyak_fractional_payment_plan_policy.sql");
+  applyMigrationFile(db, "0040_simplify_samyak_payment_plan_policy.sql");
   seedEnquiry(db, { id: "enq_first", personId: "person_asha", number: "ENQ-SION-2026-001" });
   return db;
 }
@@ -1675,6 +1684,7 @@ function configurationDb() {
   seedOrganisation(db, "org_samyak");
   applyMigrationFile(db, "0011_admission_configuration_defaults.sql");
   applyMigrationFile(db, "0039_samyak_fractional_payment_plan_policy.sql");
+  applyMigrationFile(db, "0040_simplify_samyak_payment_plan_policy.sql");
   return db;
 }
 

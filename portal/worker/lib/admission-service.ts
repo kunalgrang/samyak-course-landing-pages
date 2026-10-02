@@ -1971,7 +1971,9 @@ async function paymentPlanFieldErrors(c: AppContext, payload: AdmissionPayload, 
     return fieldErrors;
   }
   const count = instalmentsFor(selected, Number(payload.fee?.numberOfInstalments || 0));
+  const expectedPlanType = paymentPlanTypeForInstalmentCount(count);
   let fixedCount: number | null = null;
+  let allowedCounts: number[] | null = null;
   if (enforceCurrentPolicy) {
     const policy = await resolvePaymentPlanPolicy(c, authenticatedOrDefaultOrganisationId(c), course);
     if (!policy.ok) {
@@ -1984,11 +1986,18 @@ async function paymentPlanFieldErrors(c: AppContext, payload: AdmissionPayload, 
       return fieldErrors;
     }
     fixedCount = fixedInstalmentsForRule(rule);
+    allowedCounts = allowedInstalmentCounts(policy.plans, course);
   }
   if (!Number.isInteger(count) || count < 1) {
     addFieldError(fieldErrors, "fee.numberOfInstalments", "Select at least one instalment.");
   } else if (count > MAX_PAYMENT_PLAN_INSTALMENTS) {
     addFieldError(fieldErrors, "fee.numberOfInstalments", `Payment schedules can have a maximum of ${MAX_PAYMENT_PLAN_INSTALMENTS} instalments.`);
+  } else if (count > maximumInstallmentsForCourse(course)) {
+    addFieldError(fieldErrors, "fee.numberOfInstalments", `This Course can have a maximum of ${maximumInstallmentsForCourse(course)} instalment${maximumInstallmentsForCourse(course) === 1 ? "" : "s"}.`);
+  } else if (expectedPlanType && selected !== expectedPlanType) {
+    addFieldError(fieldErrors, "fee.paymentPlanType", "Selected payment plan does not match the number of instalments.");
+  } else if (allowedCounts && !allowedCounts.includes(count)) {
+    addFieldError(fieldErrors, "fee.numberOfInstalments", `${count} instalment${count === 1 ? "" : "s"} is not permitted for this Course duration.`);
   } else if (fixedCount !== null && count !== fixedCount) {
     addFieldError(fieldErrors, "fee.numberOfInstalments", `${paymentPlanLabel(selected)} requires ${fixedCount} instalment${fixedCount === 1 ? "" : "s"}.`);
   }
@@ -2004,6 +2013,20 @@ async function paymentPlanFieldErrors(c: AppContext, payload: AdmissionPayload, 
     addFieldError(fieldErrors, "fee.installmentSchedule", "Instalments must be positive, sequential, and use real non-decreasing due dates.");
   }
   return fieldErrors;
+}
+
+function allowedInstalmentCounts(plans: Map<PaymentPlanType, { minDurationMonths: number }>, course: CourseRecord) {
+  const durationMonths = Number(course.duration_months);
+  const maximum = maximumInstallmentsForCourse(course);
+  if (!Number.isFinite(durationMonths) || maximum < 1) return [];
+  const counts: number[] = [];
+  if (plans.has("full")) counts.push(1);
+  if (maximum >= 2 && plans.has("two_instalments")) counts.push(2);
+  if (maximum >= 3 && plans.has("three_instalments")) counts.push(3);
+  if (plans.has("custom")) {
+    for (let count = 4; count <= maximum; count += 1) counts.push(count);
+  }
+  return counts;
 }
 
 async function discountApprovalFieldErrors(c: AppContext, payload: AdmissionPayload, draftId: string, course: CourseRecord) {
@@ -2560,6 +2583,14 @@ function instalmentsFor(paymentPlanType: string | undefined, custom: number | nu
   if (paymentPlanType === "two_instalments") return 2;
   if (paymentPlanType === "three_instalments") return 3;
   return custom || 1;
+}
+
+function paymentPlanTypeForInstalmentCount(count: number) {
+  if (count === 1) return "full";
+  if (count === 2) return "two_instalments";
+  if (count === 3) return "three_instalments";
+  if (Number.isInteger(count) && count >= 4) return "custom";
+  return null;
 }
 
 function sanitizeAdmissionDraftPayload(payload: AdmissionPayload): AdmissionPayload {

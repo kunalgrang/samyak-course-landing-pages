@@ -14,7 +14,6 @@ import {
   type CreateCentreInput,
   type OrganisationSettings,
   type PaymentPlanPolicy,
-  type PaymentPlanPolicyInputRule,
   type StaffCentre,
   type UpdateCentreInput,
 } from "../../lib/api";
@@ -44,15 +43,6 @@ const OPERATING_MODEL_OPTIONS = [
   ["company_owned", "Company owned"],
   ["franchise_operated", "Franchise operated"],
 ];
-
-const PAYMENT_PLAN_LABELS = {
-  full: "Full payment",
-  two_instalments: "2 instalments",
-  three_instalments: "3 instalments",
-  custom: "Custom",
-};
-
-const PAYMENT_PLAN_TYPES = ["full", "two_instalments", "three_instalments", "custom"] as const;
 
 const blankSettings: OrganisationSettings = {
   id: "",
@@ -94,10 +84,9 @@ type Tab = "organisation" | "centres" | "paymentPlans";
 type FieldErrors = Record<string, string[]> | null;
 type CentreForm = typeof blankCentreForm;
 type PaymentPlanFormRule = {
-  planType: PaymentPlanPolicyInputRule["planType"];
+  key: "twoInstalments" | "threeInstalments" | "flexibleInstalments";
   isActive: boolean;
-  minDurationMonths: string;
-  maxDurationMonths: string;
+  minimumCourseDurationMonths: string;
 };
 
 export function OrganisationSettingsPage() {
@@ -291,9 +280,7 @@ export function OrganisationSettingsPage() {
       const nextValue = field === "isActive" ? event.target.checked : event.target.value;
       setPaymentPlanForm((current) => current.map((rule, ruleIndex) => {
         if (ruleIndex !== index) return rule;
-        const next = { ...rule, [field]: nextValue };
-        if (next.planType === "full") return { ...next, isActive: true, minDurationMonths: "0.5", maxDurationMonths: "" };
-        return next;
+        return { ...rule, [field]: nextValue };
       }));
       setPaymentPlansSuccess(null);
       setPaymentPlansSaveError(null);
@@ -309,7 +296,7 @@ export function OrganisationSettingsPage() {
     setPaymentPlanFieldErrors(null);
     setPaymentPlansSuccess(null);
     try {
-      const result = await updatePaymentPlanPolicy({ rules: paymentPlanPayload(paymentPlanForm) });
+      const result = await updatePaymentPlanPolicy(paymentPlanPayload(paymentPlanForm));
       setPaymentPolicy(result.policy);
       setPaymentPlanForm(formFromPaymentPolicy(result.policy));
       setPaymentPlansSuccess("Payment plan policy saved.");
@@ -598,62 +585,21 @@ function PaymentPlansAdmin({
       <form className="content-stack" onSubmit={onSubmit}>
         <section className="staff-card content-stack">
           <div className="section-heading"><h2>Payment Plans</h2></div>
-          <p className="form-message">These rules control payment-plan options for new admissions. Existing student fee agreements are not changed.</p>
-          <div className="content-stack">
-            {form.map((rule, index) => {
-              const lockedFull = rule.planType === "full";
-              return (
-                <div key={rule.planType} className="staff-card">
-                  <div className="section-heading">
-                    <h3>{PAYMENT_PLAN_LABELS[rule.planType]}</h3>
-                    <label>
-                      Available
-                      <input
-                        name={`paymentPlan.${rule.planType}.active`}
-                        type="checkbox"
-                        checked={rule.isActive}
-                        disabled={lockedFull}
-                        onChange={onChange(index, "isActive")}
-                      />
-                    </label>
-                  </div>
-                  <div className="staff-form-grid">
-                    <label>
-                      Available from
-                      <input
-                        name={`paymentPlan.${rule.planType}.minDurationMonths`}
-                        type="number"
-                        min="0.5"
-                        step="0.5"
-                        value={rule.minDurationMonths}
-                        disabled={lockedFull || !rule.isActive}
-                        onChange={onChange(index, "minDurationMonths")}
-                        onInput={(event) => onChange(index, "minDurationMonths")(event as unknown as ChangeEvent<HTMLInputElement>)}
-                        aria-invalid={Boolean(fieldErrors?.[`rules.${index}.minDurationMonths`]?.[0])}
-                      />
-                      {fieldErrors?.[`rules.${index}.minDurationMonths`]?.[0] ? <small className="field-error">{fieldErrors[`rules.${index}.minDurationMonths`][0]}</small> : null}
-                    </label>
-                    <label>
-                      Available until
-                      <input
-                        name={`paymentPlan.${rule.planType}.maxDurationMonths`}
-                        type="number"
-                        min="0.5"
-                        step="0.5"
-                        value={rule.maxDurationMonths}
-                        disabled={lockedFull || !rule.isActive}
-                        placeholder="No upper limit"
-                        onChange={onChange(index, "maxDurationMonths")}
-                        onInput={(event) => onChange(index, "maxDurationMonths")(event as unknown as ChangeEvent<HTMLInputElement>)}
-                        aria-invalid={Boolean(fieldErrors?.[`rules.${index}.maxDurationMonths`]?.[0])}
-                      />
-                      {fieldErrors?.[`rules.${index}.maxDurationMonths`]?.[0] ? <small className="field-error">{fieldErrors[`rules.${index}.maxDurationMonths`][0]}</small> : null}
-                    </label>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <p className="form-message">Choose how students can pay Course fees for new admissions. Existing student fee agreements and payment schedules are not changed.</p>
+          <article className="staff-card content-stack">
+            <div className="section-heading"><h3>Full payment</h3></div>
+            <p className="form-message">Always available for every Course.</p>
+          </article>
+          {form.map((rule, index) => (
+            <PaymentPlanTier
+              key={rule.key}
+              rule={rule}
+              index={index}
+              fieldErrors={fieldErrors}
+              onChange={onChange}
+            />
+          ))}
+          <PaymentPlanExamples form={form} />
         </section>
 
         <div className="staff-form-actions">
@@ -661,6 +607,75 @@ function PaymentPlansAdmin({
         </div>
       </form>
     </div>
+  );
+}
+
+function PaymentPlanTier({
+  rule,
+  index,
+  fieldErrors,
+  onChange,
+}: {
+  rule: PaymentPlanFormRule;
+  index: number;
+  fieldErrors: FieldErrors;
+  onChange: (index: number, field: keyof PaymentPlanFormRule) => (event: ChangeEvent<HTMLInputElement>) => void;
+}) {
+  const config = paymentPlanTierConfig(rule.key);
+  const durationError = fieldErrors?.[`${rule.key}.minimumCourseDurationMonths`]?.[0];
+  const enabledError = fieldErrors?.[`${rule.key}.enabled`]?.[0];
+  return (
+    <article className="staff-card content-stack">
+      <div className="section-heading">
+        <h3>{config.heading}</h3>
+        <label>
+          <input
+            name={`paymentPlan.${rule.key}.active`}
+            type="checkbox"
+            checked={rule.isActive}
+            onChange={onChange(index, "isActive")}
+          />
+          Enabled
+        </label>
+      </div>
+      <label>
+        {config.label}
+        <span className="inline-input-with-unit">
+          <input
+            name={`paymentPlan.${rule.key}.minimumCourseDurationMonths`}
+            type="number"
+            min={config.minimum}
+            step="0.5"
+            value={rule.minimumCourseDurationMonths}
+            disabled={!rule.isActive}
+            onChange={onChange(index, "minimumCourseDurationMonths")}
+            onInput={(event) => onChange(index, "minimumCourseDurationMonths")(event as unknown as ChangeEvent<HTMLInputElement>)}
+            aria-invalid={Boolean(durationError)}
+          />
+          <span>months</span>
+        </span>
+      </label>
+      {config.helper ? <p className="form-message">{config.helper}</p> : null}
+      {durationError ? <small className="field-error">{durationError}</small> : null}
+      {enabledError ? <small className="field-error">{enabledError}</small> : null}
+    </article>
+  );
+}
+
+function PaymentPlanExamples({ form }: { form: PaymentPlanFormRule[] }) {
+  const examples = [1, 2, 3, 6].map((duration) => ({ duration, counts: exampleInstalmentCounts(form, duration) }));
+  return (
+    <article className="staff-card content-stack">
+      <div className="section-heading"><h3>Examples</h3></div>
+      <div className="payment-summary-grid">
+        {examples.map((example) => (
+          <div key={example.duration}>
+            <strong>{example.duration}-month Course</strong>
+            <p>{formatInstalmentChoices(example.counts)}</p>
+          </div>
+        ))}
+      </div>
+    </article>
   );
 }
 
@@ -712,36 +727,80 @@ function SelectField({
 }
 
 function formFromPaymentPolicy(policy: PaymentPlanPolicy): PaymentPlanFormRule[] {
-  return PAYMENT_PLAN_TYPES.map((planType) => {
-    const rule = policy.rules.find((item) => item.planType === planType && item.isActive);
-    if (rule) {
-      return {
-        planType,
-        isActive: true,
-        minDurationMonths: String(rule.minDurationMonths),
-        maxDurationMonths: rule.maxDurationMonths == null ? "" : String(rule.maxDurationMonths),
-      };
-    }
-    return {
-      planType,
-      isActive: planType === "full",
-      minDurationMonths: planType === "full" ? "0.5" : "0.5",
-      maxDurationMonths: "",
-    };
-  });
+  return [
+    {
+      key: "twoInstalments",
+      isActive: policy.twoInstalments.enabled,
+      minimumCourseDurationMonths: String(policy.twoInstalments.minimumCourseDurationMonths),
+    },
+    {
+      key: "threeInstalments",
+      isActive: policy.threeInstalments.enabled,
+      minimumCourseDurationMonths: String(policy.threeInstalments.minimumCourseDurationMonths),
+    },
+    {
+      key: "flexibleInstalments",
+      isActive: policy.flexibleInstalments.enabled,
+      minimumCourseDurationMonths: String(policy.flexibleInstalments.minimumCourseDurationMonths),
+    },
+  ];
 }
 
 function defaultPaymentPlanRows(): PaymentPlanFormRule[] {
-  return formFromPaymentPolicy({ rules: [] });
+  return formFromPaymentPolicy({
+    fullPayment: { enabled: true, minimumCourseDurationMonths: 0.5 },
+    twoInstalments: { enabled: true, minimumCourseDurationMonths: 2 },
+    threeInstalments: { enabled: true, minimumCourseDurationMonths: 3 },
+    flexibleInstalments: { enabled: true, minimumCourseDurationMonths: 4 },
+  });
 }
 
-function paymentPlanPayload(form: PaymentPlanFormRule[]): PaymentPlanPolicyInputRule[] {
-  return form.map((rule) => ({
-    planType: rule.planType,
-    isActive: rule.planType === "full" ? true : rule.isActive,
-    minDurationMonths: Number(rule.planType === "full" ? "0.5" : rule.minDurationMonths),
-    maxDurationMonths: rule.planType === "full" || rule.maxDurationMonths.trim() === "" ? null : Number(rule.maxDurationMonths),
-  }));
+function paymentPlanPayload(form: PaymentPlanFormRule[]) {
+  const byKey = Object.fromEntries(form.map((rule) => [rule.key, rule])) as Record<PaymentPlanFormRule["key"], PaymentPlanFormRule>;
+  return {
+    twoInstalments: {
+      enabled: byKey.twoInstalments.isActive,
+      minimumCourseDurationMonths: Number(byKey.twoInstalments.minimumCourseDurationMonths),
+    },
+    threeInstalments: {
+      enabled: byKey.threeInstalments.isActive,
+      minimumCourseDurationMonths: Number(byKey.threeInstalments.minimumCourseDurationMonths),
+    },
+    flexibleInstalments: {
+      enabled: byKey.flexibleInstalments.isActive,
+      minimumCourseDurationMonths: Number(byKey.flexibleInstalments.minimumCourseDurationMonths),
+    },
+  };
+}
+
+function paymentPlanTierConfig(key: PaymentPlanFormRule["key"]) {
+  if (key === "twoInstalments") return { heading: "2 instalments", label: "Allow 2 instalments for Courses of at least", helper: "Minimum 2 months.", minimum: 2 };
+  if (key === "threeInstalments") return { heading: "3 instalments", label: "Allow 3 instalments for Courses of at least", helper: "Minimum 3 months.", minimum: 3 };
+  return {
+    heading: "Flexible instalments (4+)",
+    label: "Allow flexible instalments for Courses of at least",
+    helper: "Minimum 4 months. The maximum number of instalments is limited by the Course duration. A 6-month Course can have at most 6 instalments.",
+    minimum: 4,
+  };
+}
+
+function exampleInstalmentCounts(form: PaymentPlanFormRule[], durationMonths: number) {
+  const payload = paymentPlanPayload(form);
+  const maximum = Math.min(24, Math.max(1, Math.floor(durationMonths)));
+  const counts = [1];
+  if (payload.twoInstalments.enabled && durationMonths >= payload.twoInstalments.minimumCourseDurationMonths && maximum >= 2) counts.push(2);
+  if (payload.threeInstalments.enabled && durationMonths >= payload.threeInstalments.minimumCourseDurationMonths && maximum >= 3) counts.push(3);
+  if (payload.flexibleInstalments.enabled && durationMonths >= payload.flexibleInstalments.minimumCourseDurationMonths) {
+    for (let count = 4; count <= maximum; count += 1) counts.push(count);
+  }
+  return counts;
+}
+
+function formatInstalmentChoices(counts: number[]) {
+  if (counts.length === 1) return "1 payment";
+  if (counts.length > 3 && counts.every((count, index) => count === index + 1)) return `1 to ${counts.at(-1)} payments`;
+  const last = counts.at(-1);
+  return `${counts.slice(0, -1).join(", ")} or ${last} payments`;
 }
 
 function settingsPayload(form: OrganisationSettings) {

@@ -199,17 +199,23 @@ const organisationSettingsResponseSchema = z.object({
   changedFields: z.array(z.string()).optional(),
 });
 
-const paymentPlanPolicyRuleSchema = z.object({
-  id: z.string().nullable(),
-  planType: z.union([z.literal("full"), z.literal("two_instalments"), z.literal("three_instalments"), z.literal("custom")]),
-  fixedInstalments: z.number().nullable(),
-  minDurationMonths: z.number(),
-  maxDurationMonths: z.number().nullable(),
-  isActive: z.boolean(),
-});
-
 const paymentPlanPolicySchema = z.object({
-  rules: z.array(paymentPlanPolicyRuleSchema),
+  fullPayment: z.object({
+    enabled: z.literal(true),
+    minimumCourseDurationMonths: z.literal(0.5),
+  }),
+  twoInstalments: z.object({
+    enabled: z.boolean(),
+    minimumCourseDurationMonths: z.number(),
+  }),
+  threeInstalments: z.object({
+    enabled: z.boolean(),
+    minimumCourseDurationMonths: z.number(),
+  }),
+  flexibleInstalments: z.object({
+    enabled: z.boolean(),
+    minimumCourseDurationMonths: z.number(),
+  }),
 });
 
 const paymentPlanPolicyResponseSchema = z.object({
@@ -218,14 +224,8 @@ const paymentPlanPolicyResponseSchema = z.object({
   changedRuleIds: z.array(z.string()).optional(),
 });
 
-export type PaymentPlanPolicyRule = z.infer<typeof paymentPlanPolicyRuleSchema>;
 export type PaymentPlanPolicy = z.infer<typeof paymentPlanPolicySchema>;
-export type PaymentPlanPolicyInputRule = {
-  planType: PaymentPlanPolicyRule["planType"];
-  minDurationMonths: number;
-  maxDurationMonths: number | null;
-  isActive: boolean;
-};
+export type PaymentPlanPolicyInput = Omit<PaymentPlanPolicy, "fullPayment">;
 
 const organisationOnboardingResponseSchema = z.object({
   success: z.literal(true),
@@ -1957,7 +1957,7 @@ export async function getPaymentPlanPolicy() {
   return getJson("/api/staff/organisation-settings/payment-plan-policy", paymentPlanPolicyResponseSchema);
 }
 
-export async function updatePaymentPlanPolicy(input: { rules: PaymentPlanPolicyInputRule[] }) {
+export async function updatePaymentPlanPolicy(input: PaymentPlanPolicyInput) {
   return putJson("/api/staff/organisation-settings/payment-plan-policy", input, paymentPlanPolicyResponseSchema);
 }
 

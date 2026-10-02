@@ -270,41 +270,51 @@ describe("OrganisationSettingsPage", () => {
     await clickButton("Payment Plans");
 
     expect(apiMocks.getPaymentPlanPolicy).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain("These rules control payment-plan options for new admissions. Existing student fee agreements are not changed.");
+    expect(container.textContent).toContain("Choose how students can pay Course fees for new admissions. Existing student fee agreements and payment schedules are not changed.");
     expect(container.textContent).toContain("Full payment");
+    expect(container.textContent).toContain("Always available for every Course.");
     expect(container.textContent).toContain("2 instalments");
-    expect((input("paymentPlan.full.minDurationMonths") as HTMLInputElement).value).toBe("0.5");
-    expect((input("paymentPlan.two_instalments.minDurationMonths") as HTMLInputElement).value).toBe("2");
-    expect((input("paymentPlan.custom.minDurationMonths") as HTMLInputElement).value).toBe("7");
+    expect(container.textContent).toContain("Flexible instalments (4+)");
+    expect(container.textContent).not.toContain("Available until");
+    expect((input("paymentPlan.twoInstalments.minimumCourseDurationMonths") as HTMLInputElement).value).toBe("2");
+    expect((input("paymentPlan.threeInstalments.minimumCourseDurationMonths") as HTMLInputElement).value).toBe("3");
+    expect((input("paymentPlan.flexibleInstalments.minimumCourseDurationMonths") as HTMLInputElement).value).toBe("4");
+    expect((input("paymentPlan.twoInstalments.minimumCourseDurationMonths") as HTMLInputElement).min).toBe("2");
+    expect((input("paymentPlan.threeInstalments.minimumCourseDurationMonths") as HTMLInputElement).min).toBe("3");
+    expect((input("paymentPlan.flexibleInstalments.minimumCourseDurationMonths") as HTMLInputElement).min).toBe("4");
+    expect(container.textContent).toContain("Minimum 2 months.");
+    expect(container.textContent).toContain("Minimum 3 months.");
+    expect(container.textContent).toContain("Minimum 4 months.");
+    expect(container.textContent).toContain("A 6-month Course can have at most 6 instalments.");
+    expect(container.textContent).toContain("1-month Course");
+    expect(container.textContent).toContain("1 to 6 payments");
   });
 
   it("edits fractional payment-plan values and saves the policy", async () => {
     await renderPage();
     await clickButton("Payment Plans");
-    await setInput("paymentPlan.two_instalments.minDurationMonths", "1.5");
-    await setInput("paymentPlan.two_instalments.maxDurationMonths", "6");
+    await setInput("paymentPlan.twoInstalments.minimumCourseDurationMonths", "2.5");
 
     await submit();
 
     expect(apiMocks.updatePaymentPlanPolicy).toHaveBeenCalledWith({
-      rules: expect.arrayContaining([
-        { planType: "full", isActive: true, minDurationMonths: 0.5, maxDurationMonths: null },
-        { planType: "two_instalments", isActive: true, minDurationMonths: 1.5, maxDurationMonths: 6 },
-      ]),
+      twoInstalments: { enabled: true, minimumCourseDurationMonths: 2.5 },
+      threeInstalments: { enabled: true, minimumCourseDurationMonths: 3 },
+      flexibleInstalments: { enabled: true, minimumCourseDurationMonths: 4 },
     });
     expect(container.textContent).toContain("Payment plan policy saved.");
   });
 
   it("shows payment-plan validation errors", async () => {
-    apiMocks.updatePaymentPlanPolicy.mockRejectedValueOnce(new ApiError("Please correct the highlighted payment plan rules.", { "rules.1.minDurationMonths": ["Minimum duration must be at least 0.5 months."] }, "invalid_policy"));
+    apiMocks.updatePaymentPlanPolicy.mockRejectedValueOnce(new ApiError("Please correct the highlighted payment plan rules.", { "twoInstalments.minimumCourseDurationMonths": ["2 instalments can start only from Courses of at least 2 months."] }, "invalid_policy"));
     await renderPage();
     await clickButton("Payment Plans");
-    await setInput("paymentPlan.two_instalments.minDurationMonths", "0.25");
+    await setInput("paymentPlan.twoInstalments.minimumCourseDurationMonths", "0.25");
 
     await submit();
 
     expect(container.textContent).toContain("Please correct the highlighted payment plan rules.");
-    expect(container.textContent).toContain("Minimum duration must be at least 0.5 months.");
+    expect(container.textContent).toContain("2 instalments can start only from Courses of at least 2 months.");
   });
 
   async function renderPage() {
@@ -424,12 +434,10 @@ function pendingCentre(overrides: Partial<StaffCentre> = {}): StaffCentre {
 
 function paymentPolicy() {
   return {
-    rules: [
-      { id: "payrule_full", planType: "full" as const, fixedInstalments: 1, minDurationMonths: 0.5, maxDurationMonths: null, isActive: true },
-      { id: "payrule_two", planType: "two_instalments" as const, fixedInstalments: 2, minDurationMonths: 2, maxDurationMonths: null, isActive: true },
-      { id: "payrule_three", planType: "three_instalments" as const, fixedInstalments: 3, minDurationMonths: 4, maxDurationMonths: null, isActive: true },
-      { id: "payrule_custom", planType: "custom" as const, fixedInstalments: null, minDurationMonths: 7, maxDurationMonths: null, isActive: true },
-    ],
+    fullPayment: { enabled: true as const, minimumCourseDurationMonths: 0.5 as const },
+    twoInstalments: { enabled: true, minimumCourseDurationMonths: 2 },
+    threeInstalments: { enabled: true, minimumCourseDurationMonths: 3 },
+    flexibleInstalments: { enabled: true, minimumCourseDurationMonths: 4 },
   };
 }
 

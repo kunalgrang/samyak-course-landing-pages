@@ -170,8 +170,9 @@ export function AdmissionPage({ enquiryId }: { enquiryId: string }) {
   const review = useMemo(() => admissionReview(payload, reviewCourse), [payload, reviewCourse]);
   const optionGroups = useMemo(() => groupOptions(configuration), [configuration]);
   const allowedPaymentRules = useMemo(() => allowedPaymentRulesForCourse(selectedCourse, configuration.paymentPlanRules), [configuration.paymentPlanRules, selectedCourse]);
-  const installmentOptions = useMemo(() => installmentOptionsForRules(allowedPaymentRules), [allowedPaymentRules]);
-  const maxInstallments = maximumInstallmentsForRules(allowedPaymentRules);
+  const courseInstallmentMaximum = maximumInstallmentsForCourse(selectedCourse);
+  const installmentOptions = useMemo(() => installmentOptionsForRules(allowedPaymentRules, courseInstallmentMaximum), [allowedPaymentRules, courseInstallmentMaximum]);
+  const maxInstallments = maximumInstallmentsForRules(allowedPaymentRules, courseInstallmentMaximum);
   const admissionSchedule = useMemo(() => admissionScheduleRows(payload), [payload]);
   const admissionScheduleTotal = useMemo(() => sumPaise(admissionSchedule), [admissionSchedule]);
   const admissionScheduleDifference = admissionScheduleTotal - Number(payload.fee.finalAgreedFeePaise || 0);
@@ -931,22 +932,28 @@ const FIXED_INSTALLMENTS_BY_PLAN: Record<string, number> = {
   three_instalments: 3,
 };
 
-export function maximumInstallmentsForRules(rules: PaymentPlanRule[]) {
-  const options = installmentOptionsForRules(rules);
+export function maximumInstallmentsForCourse(course: StaffCourse | undefined) {
+  const durationMonths = Number(course?.duration_months);
+  if (!Number.isFinite(durationMonths) || durationMonths < 0.5) return 0;
+  return Math.min(MAX_CUSTOM_INSTALLMENTS, Math.max(1, Math.floor(durationMonths)));
+}
+
+export function maximumInstallmentsForRules(rules: PaymentPlanRule[], maximum = MAX_CUSTOM_INSTALLMENTS) {
+  const options = installmentOptionsForRules(rules, maximum);
   return options.length ? Math.max(...options) : 0;
 }
 
-export function installmentOptionsForRules(rules: PaymentPlanRule[]) {
+export function installmentOptionsForRules(rules: PaymentPlanRule[], maximum = MAX_CUSTOM_INSTALLMENTS) {
   const options = new Set<number>();
   for (const rule of rules) {
     if (rule.plan_type === "custom") {
-      for (let count = 4; count <= MAX_CUSTOM_INSTALLMENTS; count += 1) {
+      for (let count = 4; count <= maximum; count += 1) {
         options.add(count);
       }
       continue;
     }
     const fixedCount = FIXED_INSTALLMENTS_BY_PLAN[rule.plan_type] ?? Number(rule.fixed_instalments || 0);
-    if (Number.isInteger(fixedCount) && fixedCount > 0) options.add(fixedCount);
+    if (Number.isInteger(fixedCount) && fixedCount > 0 && fixedCount <= maximum) options.add(fixedCount);
   }
   return Array.from(options).sort((left, right) => left - right);
 }
@@ -1447,7 +1454,7 @@ function paymentPlanLabel(value: string) {
   if (value === "full") return "Full payment";
   if (value === "two_instalments") return "Two instalments";
   if (value === "three_instalments") return "Three instalments";
-  if (value === "custom") return "Custom";
+  if (value === "custom") return "Flexible instalments";
   return value || "Not selected";
 }
 

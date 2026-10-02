@@ -235,9 +235,9 @@ describe("staff organisation settings routes", () => {
     const rememo = await app.request("/api/staff/organisation-settings/payment-plan-policy?organisationId=org_samyak", {}, env(db));
 
     expect(samyak.status).toBe(200);
-    expect(await samyak.json()).toMatchObject({ success: true, policy: { rules: expect.arrayContaining([expect.objectContaining({ planType: "custom" })]) } });
+    expect(await samyak.json()).toMatchObject({ success: true, policy: { flexibleInstalments: { enabled: true, minimumCourseDurationMonths: 4 } } });
     expect(rememo.status).toBe(200);
-    expect(await rememo.json()).toMatchObject({ success: true, policy: { rules: [expect.objectContaining({ planType: "full", minDurationMonths: 0.5 })] } });
+    expect(await rememo.json()).toMatchObject({ success: true, policy: { fullPayment: { enabled: true, minimumCourseDurationMonths: 0.5 }, twoInstalments: { enabled: false } } });
   });
 
   it.each(["admin", "system_admin", "admission_admin", "counsellor", "student"])("denies %s payment-plan policy mutation", async (role) => {
@@ -261,7 +261,7 @@ describe("staff organisation settings routes", () => {
     const response = await app.request("http://portal.test/api/staff/organisation-settings/payment-plan-policy?organisationId=org_samyak", {
       method: "PUT",
       headers: { "Content-Type": "application/json", Origin: "http://portal.test" },
-      body: JSON.stringify(paymentPolicyPayload([{ planType: "full", minDurationMonths: 0.5, maxDurationMonths: null, isActive: true }])),
+      body: JSON.stringify(paymentPolicyPayload({ twoInstalments: { enabled: false }, threeInstalments: { enabled: false }, flexibleInstalments: { enabled: false } })),
     }, env(db));
 
     expect(response.status).toBe(200);
@@ -269,46 +269,39 @@ describe("staff organisation settings routes", () => {
     expect(activePlanTypes(db, "org_rememo")).toEqual(["full"]);
   });
 
-  it("validates durations, plan types, ambiguity and full-payment coverage", async () => {
+  it("validates strict simplified policy input and tier dependencies", async () => {
     const db = seededDb();
     const app = routeApp();
 
-    await expectPolicyStatus(app, db, paymentPolicyPayload([{ planType: "full", minDurationMonths: 0.25, maxDurationMonths: null, isActive: true }]), 400);
-    await expectPolicyStatus(app, db, paymentPolicyPayload([{ planType: "full", minDurationMonths: 2, maxDurationMonths: 1, isActive: true }]), 400);
+    await expectPolicyStatus(app, db, paymentPolicyPayload({ twoInstalments: { minimumCourseDurationMonths: 0.25 } }), 400);
+    await expectPolicyStatus(app, db, paymentPolicyPayload({ twoInstalments: { minimumCourseDurationMonths: 1.5 } }), 400);
+    await expectPolicyStatus(app, db, paymentPolicyPayload({ threeInstalments: { minimumCourseDurationMonths: 2.5 } }), 400);
+    await expectPolicyStatus(app, db, paymentPolicyPayload({ flexibleInstalments: { minimumCourseDurationMonths: 3.5 } }), 400);
     await expectPolicyStatus(app, db, { rules: [{ planType: "bad", minDurationMonths: 0.5, maxDurationMonths: null, isActive: true }] }, 400);
-    await expectPolicyStatus(app, db, paymentPolicyPayload([]), 400);
-    await expectPolicyStatus(app, db, paymentPolicyPayload([{ planType: "two_instalments", minDurationMonths: 0.5, maxDurationMonths: null, isActive: true }]), 400);
-    await expectPolicyStatus(app, db, paymentPolicyPayload([
-      { planType: "full", minDurationMonths: 0.5, maxDurationMonths: null, isActive: true },
-      { planType: "two_instalments", minDurationMonths: 2, maxDurationMonths: 4, isActive: true },
-      { planType: "two_instalments", minDurationMonths: 3, maxDurationMonths: 6, isActive: true },
-    ]), 400);
-    await expectPolicyStatus(app, db, paymentPolicyPayload([
-      { planType: "full", minDurationMonths: 0.5, maxDurationMonths: null, isActive: true },
-      { planType: "two_instalments", minDurationMonths: 2, maxDurationMonths: 4, isActive: true },
-      { planType: "three_instalments", minDurationMonths: 3, maxDurationMonths: 6, isActive: true },
-    ]), 200);
+    await expectPolicyStatus(app, db, paymentPolicyPayload({ twoInstalments: { maxDurationMonths: 12 } as never }), 400);
+    await expectPolicyStatus(app, db, paymentPolicyPayload({ twoInstalments: { enabled: false }, threeInstalments: { enabled: true } }), 400);
+    await expectPolicyStatus(app, db, paymentPolicyPayload({ threeInstalments: { enabled: false }, flexibleInstalments: { enabled: true } }), 400);
+    await expectPolicyStatus(app, db, paymentPolicyPayload({ twoInstalments: { minimumCourseDurationMonths: 5 }, threeInstalments: { minimumCourseDurationMonths: 3 } }), 400);
+    await expectPolicyStatus(app, db, paymentPolicyPayload({ threeInstalments: { minimumCourseDurationMonths: 8 }, flexibleInstalments: { minimumCourseDurationMonths: 4 } }), 400);
+    await expectPolicyStatus(app, db, paymentPolicyPayload(), 200);
   });
 
-  it("canonicalizes fixed instalment counts and accepts a Samyak-equivalent fractional policy", async () => {
+  it("canonicalizes active optional upper limits to null and keeps full payment invariant", async () => {
     const db = seededDb();
     const app = routeApp();
 
-    const response = await putPolicy(app, db, {
-      rules: [
-        { planType: "full", minDurationMonths: 0.5, maxDurationMonths: null, fixedInstalments: 9, isActive: true },
-        { planType: "two_instalments", minDurationMonths: 2, maxDurationMonths: null, fixedInstalments: 4, isActive: true },
-        { planType: "three_instalments", minDurationMonths: 4, maxDurationMonths: null, fixedInstalments: 7, isActive: true },
-        { planType: "custom", minDurationMonths: 7, maxDurationMonths: null, fixedInstalments: 12, isActive: true },
-      ],
-    });
+    const response = await putPolicy(app, db, paymentPolicyPayload({
+      twoInstalments: { minimumCourseDurationMonths: 2.5 },
+      threeInstalments: { minimumCourseDurationMonths: 3.5 },
+      flexibleInstalments: { minimumCourseDurationMonths: 4.5 },
+    }));
 
     expect(response.status).toBe(200);
-    expect(rows(db, "select plan_type, fixed_instalments, min_duration_months from payment_plan_rules where organisation_id = 'org_samyak' and is_active = 1 order by plan_type")).toEqual([
-      { plan_type: "custom", fixed_instalments: null, min_duration_months: 7 },
-      { plan_type: "full", fixed_instalments: 1, min_duration_months: 0.5 },
-      { plan_type: "three_instalments", fixed_instalments: 3, min_duration_months: 4 },
-      { plan_type: "two_instalments", fixed_instalments: 2, min_duration_months: 2 },
+    expect(rows(db, "select plan_type, fixed_instalments, min_duration_months, max_duration_months from payment_plan_rules where organisation_id = 'org_samyak' and is_active = 1 order by plan_type")).toEqual([
+      { plan_type: "custom", fixed_instalments: null, min_duration_months: 4.5, max_duration_months: null },
+      { plan_type: "full", fixed_instalments: 1, min_duration_months: 0.5, max_duration_months: null },
+      { plan_type: "three_instalments", fixed_instalments: 3, min_duration_months: 3.5, max_duration_months: null },
+      { plan_type: "two_instalments", fixed_instalments: 2, min_duration_months: 2.5, max_duration_months: null },
     ]);
   });
 
@@ -317,19 +310,13 @@ describe("staff organisation settings routes", () => {
     const app = routeApp();
     db.exec(`create trigger reject_policy_audit before insert on audit_logs when new.action = 'payment_plan_policy_updated' begin select raise(abort, 'forced policy audit failure'); end;`);
 
-    const failed = await putPolicy(app, db, paymentPolicyPayload([
-      { planType: "full", minDurationMonths: 0.5, maxDurationMonths: null, isActive: true },
-      { planType: "two_instalments", minDurationMonths: 3, maxDurationMonths: null, isActive: true },
-    ]));
+    const failed = await putPolicy(app, db, paymentPolicyPayload({ threeInstalments: { enabled: false }, flexibleInstalments: { enabled: false }, twoInstalments: { minimumCourseDurationMonths: 3 } }));
 
     expect(failed.status).toBe(500);
-    expect(activeRulesSummary(db, "org_samyak")).toEqual(["custom:7:", "full:0.5:", "three_instalments:4:", "two_instalments:2:"]);
+    expect(activeRulesSummary(db, "org_samyak")).toEqual(["custom:4:", "full:0.5:", "three_instalments:3:", "two_instalments:2:"]);
     expect(count(db, "audit_logs where action = 'payment_plan_policy_updated'")).toBe(0);
     db.exec("drop trigger reject_policy_audit");
-    const retry = await putPolicy(app, db, paymentPolicyPayload([
-      { planType: "full", minDurationMonths: 0.5, maxDurationMonths: null, isActive: true },
-      { planType: "two_instalments", minDurationMonths: 3, maxDurationMonths: null, isActive: true },
-    ]));
+    const retry = await putPolicy(app, db, paymentPolicyPayload({ threeInstalments: { enabled: false }, flexibleInstalments: { enabled: false }, twoInstalments: { minimumCourseDurationMonths: 3 } }));
 
     expect(retry.status).toBe(200);
     expect(activeRulesSummary(db, "org_samyak")).toEqual(["full:0.5:", "two_instalments:3:"]);
@@ -354,17 +341,11 @@ describe("staff organisation settings routes", () => {
     const db = seededDb();
     const app = routeApp();
 
-    expect((await putPolicy(app, db, paymentPolicyPayload([
-      { planType: "full", minDurationMonths: 0.5, maxDurationMonths: null, isActive: true },
-      { planType: "two_instalments", minDurationMonths: 3, maxDurationMonths: null, isActive: true },
-    ]))).status).toBe(200);
-    const later = await putPolicy(app, db, paymentPolicyPayload([
-      { planType: "full", minDurationMonths: 0.5, maxDurationMonths: null, isActive: true },
-      { planType: "custom", minDurationMonths: 6, maxDurationMonths: null, isActive: true },
-    ]));
+    expect((await putPolicy(app, db, paymentPolicyPayload({ threeInstalments: { enabled: false }, flexibleInstalments: { enabled: false }, twoInstalments: { minimumCourseDurationMonths: 3 } }))).status).toBe(200);
+    const later = await putPolicy(app, db, paymentPolicyPayload({ twoInstalments: { enabled: false }, threeInstalments: { enabled: false }, flexibleInstalments: { enabled: false } }));
 
     expect(later.status).toBe(200);
-    expect(activeRulesSummary(db, "org_samyak")).toEqual(["custom:6:", "full:0.5:"]);
+    expect(activeRulesSummary(db, "org_samyak")).toEqual(["full:0.5:"]);
   });
 
   it("does not rewrite historical finance rows while unlocked admissions see new policy", async () => {
@@ -372,10 +353,7 @@ describe("staff organisation settings routes", () => {
     const app = routeApp();
     const before = financeSnapshot(db);
 
-    const response = await putPolicy(app, db, paymentPolicyPayload([
-      { planType: "full", minDurationMonths: 0.5, maxDurationMonths: null, isActive: true },
-      { planType: "two_instalments", minDurationMonths: 5, maxDurationMonths: null, isActive: true },
-    ]));
+    const response = await putPolicy(app, db, paymentPolicyPayload({ threeInstalments: { enabled: false }, flexibleInstalments: { enabled: false }, twoInstalments: { minimumCourseDurationMonths: 5 } }));
 
     expect(response.status).toBe(200);
     expect(financeSnapshot(db)).toEqual(before);
@@ -415,13 +393,12 @@ function putPolicy(app: Hono, db: DatabaseSync, body: Record<string, unknown>) {
   }, env(db));
 }
 
-function paymentPolicyPayload(rules: Array<Record<string, unknown>> = [
-  { planType: "full", minDurationMonths: 0.5, maxDurationMonths: null, isActive: true },
-  { planType: "two_instalments", minDurationMonths: 2, maxDurationMonths: null, isActive: true },
-  { planType: "three_instalments", minDurationMonths: 4, maxDurationMonths: null, isActive: true },
-  { planType: "custom", minDurationMonths: 7, maxDurationMonths: null, isActive: true },
-]) {
-  return { rules };
+function paymentPolicyPayload(overrides: Record<string, Partial<{ enabled: boolean; minimumCourseDurationMonths: number }>> = {}) {
+  return {
+    twoInstalments: { enabled: true, minimumCourseDurationMonths: 2, ...(overrides.twoInstalments || {}) },
+    threeInstalments: { enabled: true, minimumCourseDurationMonths: 3, ...(overrides.threeInstalments || {}) },
+    flexibleInstalments: { enabled: true, minimumCourseDurationMonths: 4, ...(overrides.flexibleInstalments || {}) },
+  };
 }
 
 async function expectPolicyStatus(app: Hono, db: DatabaseSync, body: Record<string, unknown>, status: number) {
@@ -565,8 +542,8 @@ function seededDb() {
     .run("access_samyak", "org_samyak", "2026-01-01", "2026-01-16", "2026-01-01", "2026-01-01");
   insertPaymentRule(db, "payrule_full", "org_samyak", 0.5, null, "full", 1, 1);
   insertPaymentRule(db, "payrule_two", "org_samyak", 2, null, "two_instalments", 2, 1);
-  insertPaymentRule(db, "payrule_three", "org_samyak", 4, null, "three_instalments", 3, 1);
-  insertPaymentRule(db, "payrule_custom", "org_samyak", 7, null, "custom", null, 1);
+  insertPaymentRule(db, "payrule_three", "org_samyak", 3, null, "three_instalments", 3, 1);
+  insertPaymentRule(db, "payrule_custom", "org_samyak", 4, null, "custom", null, 1);
   insertPaymentRule(db, "payrule_rememo_full", "org_rememo", 0.5, null, "full", 1, 1);
   db.exec(`
     insert into fee_agreements values ('fee_locked', 1000000, 'three_instalments', 3, '2026-01-01T00:00:00.000Z');

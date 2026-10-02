@@ -146,6 +146,17 @@
   line-height: 1.4;
 }
 
+.inline-input-with-unit {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.inline-input-with-unit input {
+  max-width: 120px;
+}
+
 .admission-error-summary {
   border-color: rgba(180, 35, 24, 0.28);
   background: #fff4f2;
