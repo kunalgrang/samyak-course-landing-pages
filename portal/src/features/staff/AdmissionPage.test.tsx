@@ -171,6 +171,8 @@ describe("AdmissionPage helpers", () => {
     expect(html).toContain("SYK-SION-000001");
     expect(html).toContain("ENR-SION-2026-000001");
     expect(html).toContain("/app/students/student_1");
+    expect(html).toContain("First Instalment Required");
+    expect(html).toContain("Pending before classes start");
   });
 
   it("renders the effective admission token once and keeps reversed history readable", () => {
@@ -591,6 +593,14 @@ describe("AdmissionPage draft validation interactions", () => {
       }),
       expect.any(String),
     );
+  });
+
+  it("does not render initial payment expected and keeps the payment schedule editor available", async () => {
+    const container = await renderAdmissionPage(roots);
+
+    expect(container.textContent).not.toContain("Initial payment expected");
+    expect(container.textContent).toContain("Payment schedule");
+    expect(container.querySelector(".admission-schedule-editor")).not.toBeNull();
   });
 
   it("saves custom unequal instalment amounts and due dates in the Admission draft", async () => {

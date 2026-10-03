@@ -23,7 +23,7 @@ import {
   validateAdmissionDraftPayload,
   validateAdmissionForConfirmation,
 } from "./admission-service";
-import { getPaymentLedger } from "./payments-ledger";
+import { getPaymentLedger, recordEnrolmentReceipt, reverseEnrolmentReceipt } from "./payments-ledger";
 
 type Row = Record<string, any>;
 type AdmissionTestPayload = any;
@@ -473,6 +473,9 @@ describe("confirmAdmission service integration", () => {
       firstInstalmentBalancePaise: 2450000,
       classStartEligible: false,
     });
+    expect(row(db, "select initial_payment_expected_paise from fee_agreements")).toMatchObject({
+      initial_payment_expected_paise: 2500000,
+    });
     expect(row(db, "select status, converted_enrolment_id from enquiries where id = 'enq_first'")).toMatchObject({
       status: "converted",
       converted_enrolment_id: confirmed.result.enrolmentId,
@@ -510,6 +513,51 @@ describe("confirmAdmission service integration", () => {
 
     expect(second).toMatchObject({ ok: false, status: 409, code: "first_receipt_already_recorded" });
     expect(count(db, "receipts")).toBe(1);
+    db.close();
+  });
+
+  it("locks commercial terms after the first effective token receipt", async () => {
+    const db = testDb();
+    const c = context(db);
+    const payload = validPayload();
+    payload.fee.installmentSchedule = [
+      { instalmentNumber: 1, amountPaise: 2500000, dueDate: null },
+      { instalmentNumber: 2, amountPaise: 2500000, dueDate: null },
+    ];
+    await createAdmissionDraft(c, "enq_first", payload, { tokenAmountPaise: 50000 });
+
+    const changedFinalFee = structuredClone(payload);
+    changedFinalFee.fee.finalAgreedFeePaise = 4900000;
+    await expect(saveAdmissionDraft(c, staff, "enq_first", { payload: changedFinalFee, currentStep: "fee" })).resolves.toMatchObject({
+      ok: false,
+      status: 409,
+      code: "commercial_terms_locked",
+    });
+
+    const changedCount = structuredClone(payload);
+    changedCount.fee.numberOfInstalments = 3;
+    changedCount.fee.paymentPlanType = "three_instalments";
+    changedCount.fee.installmentSchedule = [
+      { instalmentNumber: 1, amountPaise: 2000000, dueDate: null },
+      { instalmentNumber: 2, amountPaise: 1500000, dueDate: null },
+      { instalmentNumber: 3, amountPaise: 1500000, dueDate: null },
+    ];
+    await expect(saveAdmissionDraft(c, staff, "enq_first", { payload: changedCount, currentStep: "fee" })).resolves.toMatchObject({
+      ok: false,
+      status: 409,
+      code: "commercial_terms_locked",
+    });
+
+    const changedFirstInstalment = structuredClone(payload);
+    changedFirstInstalment.fee.installmentSchedule = [
+      { instalmentNumber: 1, amountPaise: 2600000, dueDate: null },
+      { instalmentNumber: 2, amountPaise: 2400000, dueDate: null },
+    ];
+    await expect(saveAdmissionDraft(c, staff, "enq_first", { payload: changedFirstInstalment, currentStep: "fee" })).resolves.toMatchObject({
+      ok: false,
+      status: 409,
+      code: "commercial_terms_locked",
+    });
     db.close();
   });
 
@@ -937,6 +985,30 @@ describe("confirmAdmission service integration", () => {
     db.close();
   });
 
+  it("recovers old locked snapshots that carry legacy initialPaymentExpectedPaise values", async () => {
+    const db = testDb();
+    const c = context(db);
+    await createAdmissionDraft(c, "enq_first");
+    db.failOnceSqlIncludes = "update receipts";
+
+    await expect(confirmAdmission(c, staff, "enq_first")).rejects.toThrow("Simulated D1 write failure");
+    const snapshot = confirmationSnapshot(db);
+    expect(snapshot.firstInstalmentRequiredPaise).toBe(2500000);
+    snapshot.initialPaymentExpectedPaise = 123456;
+    db.database.prepare("update admission_drafts set confirmation_snapshot_json = ? where enquiry_id = 'enq_first'").run(JSON.stringify(snapshot));
+    db.database.exec("update fee_agreements set initial_payment_expected_paise = 123456");
+
+    const recovered = await expectOk(confirmAdmission(c, staff, "enq_first"));
+
+    expect(recovered.financialSummary).toMatchObject({
+      firstInstalmentRequiredPaise: 2500000,
+      totalReceivedPaise: 50000,
+      classStartEligible: false,
+    });
+    expect(row(db, "select initial_payment_expected_paise from fee_agreements")).toMatchObject({ initial_payment_expected_paise: 123456 });
+    db.close();
+  });
+
   it("creates a safe snapshot before enrolment creation and recovers when enrolment insertion initially fails", async () => {
     const db = testDb();
     const c = context(db);
@@ -1126,6 +1198,68 @@ describe("confirmAdmission service integration", () => {
     db.close();
   });
 
+  it("keeps token receipt distinct from first instalment and recalculates class-start eligibility with receipts and reversals", async () => {
+    const db = testDb();
+    const c = context(db);
+    const payload = validPayload();
+    payload.fee.finalAgreedFeePaise = 5000000;
+    payload.fee.numberOfInstalments = 2;
+    payload.fee.installmentSchedule = [
+      { instalmentNumber: 1, amountPaise: 2500000, dueDate: "2026-08-05" },
+      { instalmentNumber: 2, amountPaise: 2500000, dueDate: "2026-09-05" },
+    ];
+    await createAdmissionDraft(c, "enq_first", payload, { tokenAmountPaise: 50000 });
+
+    const confirmed = await expectOk(confirmAdmission(c, staff, "enq_first"));
+
+    expect(confirmed.financialSummary).toMatchObject({
+      finalAgreedFeePaise: 5000000,
+      firstInstalmentRequiredPaise: 2500000,
+      firstInstalmentReceivedPaise: 50000,
+      totalReceivedPaise: 50000,
+      firstInstalmentBalancePaise: 2450000,
+      classStartEligible: false,
+    });
+    expect(confirmationSnapshot(db)).toMatchObject({
+      initialPaymentExpectedPaise: 2500000,
+      firstInstalmentRequiredPaise: 2500000,
+      tokenReceiptAmountPaise: 50000,
+    });
+
+    const balanceReceipt = await recordEnrolmentReceipt(c, staffForRole("owner"), confirmed.enrolmentId, {
+      amountPaise: 2450000,
+      paymentMode: "cash",
+      idempotencyKey: "first_instalment_balance",
+    });
+    expect(balanceReceipt).toMatchObject({
+      ok: true,
+      financialSummary: {
+        totalReceivedPaise: 2500000,
+        firstInstalmentReceivedPaise: 2500000,
+        firstInstalmentBalancePaise: 0,
+        classStartEligible: true,
+      },
+    });
+    if (!balanceReceipt.ok) throw new Error(balanceReceipt.message);
+
+    const reversed = await reverseEnrolmentReceipt(c, staffForRole("owner"), confirmed.enrolmentId, balanceReceipt.receipt.id, {
+      reason: "Balance receipt needs correction",
+      expectedReceiptVersion: balanceReceipt.receipt.correctionVersion,
+      idempotencyKey: "reverse_first_instalment_balance",
+    });
+    expect(reversed).toMatchObject({
+      ok: true,
+      financialSummary: {
+        totalReceivedPaise: 50000,
+        firstInstalmentReceivedPaise: 50000,
+        firstInstalmentBalancePaise: 2450000,
+        classStartEligible: false,
+      },
+    });
+    expect(row(db, "select count(*) as count from receipt_reversals where receipt_id = ?", balanceReceipt.receipt.id)).toMatchObject({ count: 1 });
+    db.close();
+  });
+
   it("rejects custom plans above the operational instalment limit", async () => {
     const db = testDb();
     const c = context(db);
@@ -1266,7 +1400,7 @@ describe("confirmAdmission service integration", () => {
     payload.fee.numberOfInstalments = numberOfInstalments;
     payload.fee.finalAgreedFeePaise = finalFeePaise;
     payload.fee.standardFeePaise = finalFeePaise;
-    payload.fee.initialPaymentExpectedPaise = 0;
+    payload.fee.initialPaymentExpectedPaise = Math.max(1, Math.floor(finalFeePaise / 10));
     db.database.exec(`update courses set duration_label = '7 months', duration_months = 7, default_fee_paise = ${finalFeePaise}, lowest_acceptable_fee_paise = ${finalFeePaise} where id = 'course_full_stack'`);
     await createAdmissionDraft(c, "enq_first", payload);
 
@@ -1275,6 +1409,10 @@ describe("confirmAdmission service integration", () => {
 
     expect(total).toBe(finalFeePaise);
     expect(count(db, "fee_agreement_instalments")).toBe(numberOfInstalments);
+    const rows = all(db, "select instalment_number, amount_paise from fee_agreement_instalments order by instalment_number");
+    expect(rows.map((item) => Number(item.instalment_number))).toEqual(Array.from({ length: numberOfInstalments }, (_item, index) => index + 1));
+    expect(rows.every((item) => Number(item.amount_paise) > 0)).toBe(true);
+    expect(Math.max(...rows.map((item) => Number(item.amount_paise))) - Math.min(...rows.map((item) => Number(item.amount_paise)))).toBeLessThanOrEqual(1);
     db.close();
   });
 
@@ -1300,6 +1438,21 @@ describe("confirmAdmission service integration", () => {
 
     expect(confirmed.financialSummary.instalments.map((item) => `${item.instalmentNumber}:${item.requiredPaise}:${item.dueDate}`)).toEqual(["1:600000:2026-08-05", "2:600000:2026-09-05", "3:500000:2026-10-05", "4:300000:2026-11-05"]);
     expect(schedule.map((item) => `${item.instalment_number}:${item.amount_paise}:${item.due_date}`)).toEqual(["1:600000:2026-08-05", "2:600000:2026-09-05", "3:500000:2026-10-05", "4:300000:2026-11-05"]);
+    db.close();
+  });
+
+  it("continues to load legacy drafts containing initialPaymentExpectedPaise", async () => {
+    const db = testDb();
+    const c = context(db);
+    const payload = validPayload();
+    payload.fee.initialPaymentExpectedPaise = 123456;
+    const saved = await createAdmissionDraft(c, "enq_first", payload, { recordReceipt: false });
+
+    const draft = await admissionDraftPayloadForStaff(c, (await getAdmissionDraft(c, "enq_first"))!);
+
+    expect(saved.ok).toBe(true);
+    expect(draft.fee?.initialPaymentExpectedPaise).toBe(123456);
+    expect(validateAdmissionDraftPayload(draft).success).toBe(true);
     db.close();
   });
 
@@ -1613,7 +1766,6 @@ function validPayload(): AdmissionTestPayload {
       discountReasonCode: "",
       paymentPlanType: "two_instalments",
       numberOfInstalments: 2,
-      initialPaymentExpectedPaise: 0,
     },
     declarations: {
       informationCorrect: true,

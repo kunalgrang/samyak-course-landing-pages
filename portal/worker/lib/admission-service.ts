@@ -1203,7 +1203,7 @@ async function buildConfirmationSnapshot(c: AppContext, enquiry: EnquiryRecord, 
     discountReasonText: fee.discountReason ? String(fee.discountReason) : null,
     paymentPlanType: String(fee.paymentPlanType),
     numberOfInstalments: instalmentsFor(String(fee.paymentPlanType), Number(fee.numberOfInstalments || 0)),
-    initialPaymentExpectedPaise: Number(fee.initialPaymentExpectedPaise || 0),
+    initialPaymentExpectedPaise: instalments[0]?.amountPaise || finalAgreedFeePaise,
     discountApprovalId: ownerApproval?.id || null,
     discountApprovedByLoginAccountId: ownerApproval?.decided_by_login_account_id || null,
     payloadFingerprint: await hmacHex(c.env.SESSION_PEPPER, "admission-confirmation-payload", JSON.stringify(payload)),
@@ -1537,17 +1537,13 @@ function buildInstalmentSchedule(payload: AdmissionPayload): Instalment[] {
   }
   if (count > finalFee) return [];
   if (count <= 1) return [{ instalmentNumber: 1, amountPaise: finalFee, dueDate: null }];
-  const requestedFirst = Number(fee.initialPaymentExpectedPaise || 0);
-  const first = requestedFirst > 0 && requestedFirst <= finalFee ? requestedFirst : Math.ceil(finalFee / count);
-  const remaining = finalFee - first;
-  const tailCount = count - 1;
-  const baseTail = Math.floor(remaining / tailCount);
-  let remainder = remaining - baseTail * tailCount;
-  const instalments: Instalment[] = [{ instalmentNumber: 1, amountPaise: first, dueDate: null }];
-  for (let index = 2; index <= count; index += 1) {
+  const base = Math.floor(finalFee / count);
+  let remainder = finalFee - base * count;
+  const instalments: Instalment[] = [];
+  for (let index = 1; index <= count; index += 1) {
     const extra = remainder > 0 ? 1 : 0;
     remainder -= extra;
-    instalments.push({ instalmentNumber: index, amountPaise: baseTail + extra, dueDate: null });
+    instalments.push({ instalmentNumber: index, amountPaise: base + extra, dueDate: null });
   }
   return instalments;
 }
@@ -1812,7 +1808,6 @@ function commercialTermsFingerprint(payload: AdmissionPayload) {
       discountReasonCode: payload.fee?.discountReasonCode || "",
       paymentPlanType: payload.fee?.paymentPlanType || "",
       numberOfInstalments: Number(payload.fee?.numberOfInstalments || 0),
-      initialPaymentExpectedPaise: Number(payload.fee?.initialPaymentExpectedPaise || 0),
       installmentSchedule: Array.isArray(payload.fee?.installmentSchedule)
         ? payload.fee.installmentSchedule.map((item) => ({
             instalmentNumber: Number(item.instalmentNumber || 0),
