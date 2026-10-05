@@ -2,11 +2,12 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import app from "../index";
 import type { AppContext } from "./http";
 import type { StaffContext } from "./staff-auth";
 import type { WorkerBindings } from "../bindings";
-import { decryptText } from "./crypto";
+import { decryptText, hmacHex } from "./crypto";
 import {
   admissionDraftPayloadForStaff,
   confirmAdmission,
@@ -27,6 +28,10 @@ import { getPaymentLedger, recordEnrolmentReceipt, reverseEnrolmentReceipt } fro
 
 type Row = Record<string, any>;
 type AdmissionTestPayload = any;
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 class SqliteD1Statement {
   private values: unknown[] = [];
@@ -481,6 +486,53 @@ describe("confirmAdmission service integration", () => {
       converted_enrolment_id: confirmed.result.enrolmentId,
     });
     expect(row(db, "select status from admission_drafts where enquiry_id = 'enq_first'")).toMatchObject({ status: "confirmed" });
+    expect(count(db, "global_identities")).toBe(1);
+    expect(count(db, "login_accounts where id not in ('acct_staff', 'acct_owner')")).toBe(1);
+    expect(count(db, "organisation_memberships")).toBe(1);
+    expect(row(db, "select access_type, is_available from login_account_people where person_id = 'person_asha'")).toMatchObject({
+      access_type: "self",
+      is_available: 1,
+    });
+    expect(count(db, "person_roles join roles on roles.id = person_roles.role_id where person_roles.person_id = 'person_asha' and roles.code = 'student' and person_roles.status = 'active'")).toBe(1);
+    expect(count(db, "person_roles join roles on roles.id = person_roles.role_id where person_roles.person_id = 'person_asha' and roles.code in ('owner', 'system_admin', 'admin', 'admission_admin', 'counsellor')")).toBe(0);
+    expect(row(db, "select portal_status from students where person_id = 'person_asha'")).toMatchObject({ portal_status: "not_invited" });
+    expect(count(db, "referrer_profiles")).toBe(0);
+    db.close();
+  });
+
+  it("makes a newly confirmed student OTP-eligible and able to reach student home without referral provisioning", async () => {
+    const db = testDb();
+    const c = context(db);
+    await createAdmissionDraft(c, "enq_first");
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
+    installTurnstile();
+
+    const response = await requestLoginOtp(db, "9876543210");
+    const otpBody = await response.json() as { challengeId: string };
+
+    expect(response.status).toBe(200);
+    expect(row(db, "select status, provider, challenge_purpose from otp_challenges order by requested_at desc limit 1")).toMatchObject({
+      status: "sent",
+      provider: "development",
+      challenge_purpose: "login",
+    });
+    const verified = await verifyLoginOtp(db, otpBody.challengeId);
+    expect(verified.status).toBe(200);
+    const verifiedBody = await verified.json() as { session: { activeOrganisation: { organisationId: string }; activeProfile: { personId: string; effectiveRoles: string[] } } };
+    expect(verifiedBody.session.activeOrganisation.organisationId).toBe("org_samyak");
+    expect(verifiedBody.session.activeProfile).toMatchObject({ personId: "person_asha" });
+    expect(verifiedBody.session.activeProfile.effectiveRoles).toContain("student");
+    expect(verifiedBody.session.activeProfile.effectiveRoles).not.toEqual(expect.arrayContaining(["owner", "system_admin", "admin", "admission_admin", "counsellor"]));
+
+    const home = await studentHome(db, (verified.headers.get("Set-Cookie") || "").split(";")[0]);
+    expect(home.status).toBe(200);
+    await expect(home.json()).resolves.toMatchObject({
+      success: true,
+      identity: {
+        personId: "person_asha",
+      },
+    });
+    expect(count(db, "referrer_profiles")).toBe(0);
     db.close();
   });
 
@@ -929,7 +981,176 @@ describe("confirmAdmission service integration", () => {
     expect(count(db, "person_localities")).toBe(1);
     expect(count(db, "education_records")).toBe(1);
     expect(count(db, "audit_logs where action = 'admission_confirmed'")).toBe(1);
+    expect(count(db, "global_identities")).toBe(1);
+    expect(count(db, "login_accounts where id not in ('acct_staff', 'acct_owner')")).toBe(1);
+    expect(count(db, "organisation_memberships")).toBe(1);
+    expect(count(db, "login_account_people where person_id = 'person_asha' and access_type = 'self'")).toBe(1);
+    expect(count(db, "person_roles join roles on roles.id = person_roles.role_id where person_roles.person_id = 'person_asha' and roles.code = 'student'")).toBe(1);
     db.close();
+  });
+
+  it("reuses an existing same-person global identity and login account when provisioning student portal access", async () => {
+    const db = testDb();
+    const c = context(db);
+    const mobileHash = await hmacHex("test-pepper", "mobile", "9876543210");
+    db.database.prepare(
+      "insert into global_identities (id, mobile_normalized, mobile_hash, mobile_last_four, status, created_at, updated_at) values ('gident_existing_student', ?, ?, '3210', 'active', ?, ?)",
+    ).run(mobileHash, mobileHash, "2026-07-21T00:00:00.000Z", "2026-07-21T00:00:00.000Z");
+    db.database.prepare(
+      "insert into login_accounts (id, organisation_id, global_identity_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, created_at, updated_at) values ('acct_existing_student', 'org_samyak', 'gident_existing_student', ?, ?, '3210', 1, 'active', ?, ?)",
+    ).run(mobileHash, mobileHash, "2026-07-21T00:00:00.000Z", "2026-07-21T00:00:00.000Z");
+    db.database.prepare(
+      "insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at) values ('acct_existing_student', 'person_asha', 'self', 1, 1, ?)",
+    ).run("2026-07-21T00:00:00.000Z");
+
+    await createAdmissionDraft(c, "enq_first");
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
+
+    expect(count(db, "global_identities")).toBe(1);
+    expect(count(db, "login_accounts where mobile_normalized = '" + mobileHash + "'")).toBe(1);
+    expect(row(db, "select login_account_id from organisation_memberships where global_identity_id = 'gident_existing_student'")).toMatchObject({
+      login_account_id: "acct_existing_student",
+    });
+    expect(row(db, "select login_account_id, person_id, is_available from login_account_people where login_account_id = 'acct_existing_student' and person_id = 'person_asha'")).toMatchObject({
+      login_account_id: "acct_existing_student",
+      person_id: "person_asha",
+      is_available: 1,
+    });
+    expect(count(db, "login_account_people where login_account_id = 'acct_existing_student'")).toBe(1);
+    expect(count(db, "person_roles join roles on roles.id = person_roles.role_id where person_roles.person_id = 'person_asha' and roles.code = 'student'")).toBe(1);
+    db.close();
+  });
+
+  it("does not claim an existing same-mobile login account linked to a different person", async () => {
+    const db = testDb();
+    const c = context(db);
+    const mobileHash = await hmacHex("test-pepper", "mobile", "9876543210");
+    db.database.exec(`
+      insert into people (id, organisation_id, home_branch_id, full_name, public_name, date_of_birth, status, created_at, updated_at)
+      values ('person_existing_owner', 'org_samyak', 'branch_sion', 'Existing Owner', 'Existing', null, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+      insert into global_identities (id, mobile_normalized, mobile_hash, mobile_last_four, status, created_at, updated_at)
+      values ('gident_conflict', '${mobileHash}', '${mobileHash}', '3210', 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+      insert into login_accounts (id, organisation_id, global_identity_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, created_at, updated_at)
+      values ('acct_conflict', 'org_samyak', 'gident_conflict', '${mobileHash}', '${mobileHash}', '3210', 1, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+      insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at)
+      values ('acct_conflict', 'person_existing_owner', 'self', 1, 1, '2026-07-21T00:00:00.000Z');
+    `);
+
+    await createAdmissionDraft(c, "enq_first");
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
+
+    expect(count(db, "login_account_people where login_account_id = 'acct_conflict' and person_id = 'person_asha'")).toBe(0);
+    expect(count(db, "organisation_memberships where global_identity_id = 'gident_conflict' and organisation_id = 'org_samyak'")).toBe(0);
+    expect(count(db, "person_roles join roles on roles.id = person_roles.role_id where person_roles.person_id = 'person_asha' and roles.code = 'student'")).toBe(0);
+    expect(row(db, "select action, metadata_json from audit_logs where action = 'student_portal_provisioning_blocked'")).toMatchObject({ action: "student_portal_provisioning_blocked" });
+    expect(String(row(db, "select metadata_json from audit_logs where action = 'student_portal_provisioning_blocked'")?.metadata_json)).toContain("identity_conflict");
+    installTurnstile();
+    const otp = await requestLoginOtp(db, "9876543210");
+    expect(otp.status).toBe(200);
+    expect(row(db, "select status, provider from otp_challenges order by requested_at desc limit 1")).toMatchObject({ status: "blocked", provider: "none" });
+    db.close();
+  });
+
+  it.each([
+    { accessType: "guardian", isDefault: 0 },
+    { accessType: "shared_family", isDefault: 0 },
+    { accessType: "staff", isDefault: 0 },
+    { accessType: "guardian", isDefault: 1 },
+  ])("does not claim an existing same-mobile $accessType link to a different person", async ({ accessType, isDefault }) => {
+    const db = testDb();
+    const c = context(db);
+    const mobileHash = await hmacHex("test-pepper", "mobile", "9876543210");
+    db.database.prepare(
+      "insert into people (id, organisation_id, home_branch_id, full_name, public_name, date_of_birth, status, created_at, updated_at) values ('person_existing_linked', 'org_samyak', 'branch_sion', 'Existing Linked', 'Linked', null, 'active', ?, ?)",
+    ).run("2026-07-21T00:00:00.000Z", "2026-07-21T00:00:00.000Z");
+    db.database.prepare(
+      "insert into global_identities (id, mobile_normalized, mobile_hash, mobile_last_four, status, created_at, updated_at) values ('gident_link_conflict', ?, ?, '3210', 'active', ?, ?)",
+    ).run(mobileHash, mobileHash, "2026-07-21T00:00:00.000Z", "2026-07-21T00:00:00.000Z");
+    db.database.prepare(
+      "insert into login_accounts (id, organisation_id, global_identity_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, created_at, updated_at) values ('acct_link_conflict', 'org_samyak', 'gident_link_conflict', ?, ?, '3210', 1, 'active', ?, ?)",
+    ).run(mobileHash, mobileHash, "2026-07-21T00:00:00.000Z", "2026-07-21T00:00:00.000Z");
+    db.database.prepare(
+      "insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at) values ('acct_link_conflict', 'person_existing_linked', ?, ?, 1, ?)",
+    ).run(accessType, isDefault, "2026-07-21T00:00:00.000Z");
+
+    await createAdmissionDraft(c, "enq_first");
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
+
+    expect(count(db, "login_account_people where login_account_id = 'acct_link_conflict' and person_id = 'person_asha'")).toBe(0);
+    expect(count(db, "organisation_memberships where global_identity_id = 'gident_link_conflict' and organisation_id = 'org_samyak'")).toBe(0);
+    expect(count(db, "person_roles join roles on roles.id = person_roles.role_id where person_roles.person_id = 'person_asha' and roles.code = 'student'")).toBe(0);
+    expect(String(row(db, "select metadata_json from audit_logs where action = 'student_portal_provisioning_blocked'")?.metadata_json)).toContain("different_linked_person");
+    db.close();
+  });
+
+  it("preserves a suspended organisation membership and keeps the mobile OTP-ineligible", async () => {
+    const db = testDb();
+    const c = context(db);
+    const mobileHash = await hmacHex("test-pepper", "mobile", "9876543210");
+    db.database.prepare(
+      "insert into global_identities (id, mobile_normalized, mobile_hash, mobile_last_four, status, created_at, updated_at) values ('gident_existing_member', ?, ?, '3210', 'active', ?, ?)",
+    ).run(mobileHash, mobileHash, "2026-07-21T00:00:00.000Z", "2026-07-21T00:00:00.000Z");
+    db.database.prepare(
+      "insert into login_accounts (id, organisation_id, global_identity_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, created_at, updated_at) values ('acct_existing_member', 'org_samyak', 'gident_existing_member', ?, ?, '3210', 1, 'active', ?, ?)",
+    ).run(mobileHash, mobileHash, "2026-07-21T00:00:00.000Z", "2026-07-21T00:00:00.000Z");
+    db.database.prepare(
+      "insert into organisation_memberships (id, global_identity_id, organisation_id, login_account_id, status, created_at, updated_at) values ('omem_existing_member', 'gident_existing_member', 'org_samyak', 'acct_existing_member', 'active', ?, ?)",
+    ).run("2026-07-21T00:00:00.000Z", "2026-07-21T00:00:00.000Z");
+    db.database.prepare(
+      "insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at) values ('acct_existing_member', 'person_asha', 'self', 1, 1, ?)",
+    ).run("2026-07-21T00:00:00.000Z");
+    db.database.prepare("update organisation_memberships set status = 'suspended' where id = 'omem_existing_member'").run();
+
+    await createAdmissionDraft(c, "enq_first");
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
+    await expectOk(confirmAdmission(c, staff, "enq_first"));
+
+    expect(count(db, "organisation_memberships where global_identity_id = 'gident_existing_member' and organisation_id = 'org_samyak'")).toBe(1);
+    expect(row(db, "select status from organisation_memberships where id = 'omem_existing_member'")).toMatchObject({ status: "suspended" });
+    expect(count(db, "login_accounts where mobile_normalized = '" + mobileHash + "'")).toBe(1);
+    expect(count(db, "person_roles join roles on roles.id = person_roles.role_id where person_roles.person_id = 'person_asha' and roles.code = 'student'")).toBe(0);
+    installTurnstile();
+    const otp = await requestLoginOtp(db, "9876543210");
+    expect(otp.status).toBe(200);
+    expect(row(db, "select status, provider from otp_challenges order by requested_at desc limit 1")).toMatchObject({ status: "blocked", provider: "none" });
+    db.close();
+  });
+
+  it("preserves revoked memberships and disabled or login-disabled accounts", async () => {
+    for (const scenario of [
+      { accountStatus: "active", loginEnabled: 1, membershipStatus: "revoked", expectedAction: "blocked_membership" },
+      { accountStatus: "disabled", loginEnabled: 1, membershipStatus: "active", expectedAction: "blocked_login_account" },
+      { accountStatus: "active", loginEnabled: 0, membershipStatus: "active", expectedAction: "blocked_login_account" },
+    ]) {
+      const db = testDb();
+      const c = context(db);
+      const mobileHash = await hmacHex("test-pepper", "mobile", "9876543210");
+      db.database.prepare(
+        "insert into global_identities (id, mobile_normalized, mobile_hash, mobile_last_four, status, created_at, updated_at) values ('gident_blocked', ?, ?, '3210', 'active', ?, ?)",
+      ).run(mobileHash, mobileHash, "2026-07-21T00:00:00.000Z", "2026-07-21T00:00:00.000Z");
+      db.database.prepare(
+        "insert into login_accounts (id, organisation_id, global_identity_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, created_at, updated_at) values ('acct_blocked', 'org_samyak', 'gident_blocked', ?, ?, '3210', ?, ?, ?, ?)",
+      ).run(mobileHash, mobileHash, scenario.loginEnabled, scenario.accountStatus, "2026-07-21T00:00:00.000Z", "2026-07-21T00:00:00.000Z");
+      db.database.prepare(
+        "insert into organisation_memberships (id, global_identity_id, organisation_id, login_account_id, status, created_at, updated_at) values ('omem_blocked', 'gident_blocked', 'org_samyak', 'acct_blocked', ?, ?, ?)",
+      ).run(scenario.membershipStatus, "2026-07-21T00:00:00.000Z", "2026-07-21T00:00:00.000Z");
+      db.database.prepare(
+        "insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at) values ('acct_blocked', 'person_asha', 'self', 1, 1, ?)",
+      ).run("2026-07-21T00:00:00.000Z");
+
+      await createAdmissionDraft(c, "enq_first");
+      await expectOk(confirmAdmission(c, staff, "enq_first"));
+
+      expect(row(db, "select status, login_enabled from login_accounts where id = 'acct_blocked'")).toMatchObject({ status: scenario.accountStatus, login_enabled: scenario.loginEnabled });
+      expect(row(db, "select status from organisation_memberships where id = 'omem_blocked'")).toMatchObject({ status: scenario.membershipStatus });
+      expect(String(row(db, "select metadata_json from audit_logs where action = 'student_portal_provisioning_blocked'")?.metadata_json)).toContain(scenario.expectedAction);
+      installTurnstile();
+      const otp = await requestLoginOtp(db, "9876543210");
+      expect(otp.status).toBe(200);
+      expect(row(db, "select status, provider from otp_challenges order by requested_at desc limit 1")).toMatchObject({ status: "blocked", provider: "none" });
+      vi.unstubAllGlobals();
+      db.close();
+    }
   });
 
   it("resolves simultaneous confirmations to one logical admission", async () => {
@@ -1853,6 +2074,54 @@ function context(db: SqliteD1): AppContext {
   } as AppContext;
 }
 
+function installTurnstile() {
+  vi.stubGlobal("fetch", vi.fn(async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("siteverify")) {
+      return new Response(JSON.stringify({ success: true, action: "request-otp", hostname: "localhost" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    throw new Error(`Unexpected fetch in admission auth test: ${href}`);
+  }));
+}
+
+async function requestLoginOtp(db: SqliteD1, mobile: string) {
+  return app.request(
+    "http://localhost/api/auth/request-otp",
+    {
+      method: "POST",
+      headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+      body: JSON.stringify({ mobile, turnstileToken: "token" }),
+    },
+    context(db).env,
+  );
+}
+
+async function verifyLoginOtp(db: SqliteD1, challengeId: string, otp = "123456") {
+  return app.request(
+    "http://localhost/api/auth/verify-otp",
+    {
+      method: "POST",
+      headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+      body: JSON.stringify({ challengeId, otp }),
+    },
+    context(db).env,
+  );
+}
+
+async function studentHome(db: SqliteD1, cookie: string) {
+  return app.request(
+    "http://localhost/api/student/home",
+    {
+      method: "GET",
+      headers: { Origin: "http://localhost", Cookie: cookie },
+    },
+    context(db).env,
+  );
+}
+
 function applyMigrations(db: SqliteD1, throughFile?: string) {
   const migrationsDir = join(process.cwd(), "migrations");
   for (const file of readdirSync(migrationsDir).filter((name: string) => /^\d{4}_.+\.sql$/.test(name)).sort()) {
@@ -1877,7 +2146,8 @@ function seedBase(db: SqliteD1) {
     insert into roles (id, organisation_id, code, name, created_at)
     values
       ('role_admission_admin', 'org_samyak', 'admission_admin', 'Admission Admin', '2026-07-21T00:00:00.000Z'),
-      ('role_owner', 'org_samyak', 'owner', 'Owner', '2026-07-21T00:00:00.000Z');
+      ('role_owner', 'org_samyak', 'owner', 'Owner', '2026-07-21T00:00:00.000Z'),
+      ('role_student', 'org_samyak', 'student', 'Student', '2026-07-21T00:00:00.000Z');
     insert into people (id, organisation_id, home_branch_id, full_name, public_name, date_of_birth, status, created_at, updated_at)
     values
       ('person_staff', 'org_samyak', 'branch_sion', 'Staff User', 'Staff', null, 'active', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'),

@@ -10,6 +10,7 @@ import { fixedInstalmentsForRule, MAX_PAYMENT_PLAN_INSTALMENTS, resolvePaymentPl
 import { maximumInstallmentsForCourse } from "./payment-schedule-policy";
 import { canReverseReceiptForBranch, financialSummaryFromReceipts, type FinancialSummary, type PublicReceipt, type ReceiptReversalInput } from "./payments-ledger";
 import { operationalCentreJoinSql, operationalCentreWhereSql } from "./centre-commercial-access";
+import { ensureStudentPortalMembershipForPrimaryMobile, type StudentPortalProvisioningResult } from "./student-portal-provisioning";
 
 export { maximumInstallmentsForCourse } from "./payment-schedule-policy";
 
@@ -996,6 +997,12 @@ async function finalizeAdmission(
   });
   const finalCheck = await finalizationIntegrityError(c, enquiry, draft, input);
   if (finalCheck) return finalCheck;
+  const portalProvisioning = await ensureStudentPortalMembershipForPrimaryMobile(c, {
+    organisationId: ORG_ID,
+    personId: input.personId,
+    now: input.now,
+  });
+  await auditStudentPortalProvisioning(c, staff, snapshot.branchId, input.enrolmentId, input.personId, portalProvisioning);
   const batchAssignment = await assignBatchOnAdmissionConfirmation(c, staff, snapshot, input.enrolmentId, input.now);
   if (!batchAssignment.ok) return batchAssignment;
   const financialSummary = ((await financialSummaryForEnrolment(c, input.enrolmentId, snapshot)) || financialSummaryFromReceipts(snapshot.finalAgreedFeePaise, scheduleFromSnapshot(snapshot), [])) as AdmissionFinancialSummary;
@@ -2503,6 +2510,36 @@ async function auditAdmissionConfirmed(c: AppContext, staff: StaffContext, branc
      values (?, ?, ?, ?, ?, 'admission_confirmed', 'enrolment', ?, ?, ?)`,
   )
     .bind(stableAdmissionChildId("audit_admission_confirmed", enrolmentId), ORG_ID, branchId, staff.loginAccountId, staff.activePersonId, enrolmentId, JSON.stringify(metadata), new Date().toISOString())
+    .run();
+}
+
+async function auditStudentPortalProvisioning(c: AppContext, staff: StaffContext, branchId: string | null, enrolmentId: string, personId: string, result: StudentPortalProvisioningResult) {
+  const ORG_ID = staffOrganisationId(staff);
+  setAuthenticatedOrganisationId(c, ORG_ID);
+  const blocked = !["provisioned", "already_provisioned"].includes(result.status);
+  await c.env.DB.prepare(
+    `insert or ignore into audit_logs
+       (id, organisation_id, branch_id, actor_login_account_id, actor_person_id, action, entity_type, entity_id, metadata_json, created_at)
+     values (?, ?, ?, ?, ?, ?, 'person', ?, ?, ?)`,
+  )
+    .bind(
+      stableAdmissionChildId(`audit_student_portal_${result.status}`, `${enrolmentId}_${personId}`),
+      ORG_ID,
+      branchId,
+      staff.loginAccountId,
+      staff.activePersonId,
+      blocked ? "student_portal_provisioning_blocked" : "student_portal_provisioning_completed",
+      personId,
+      JSON.stringify({
+        enrolmentId,
+        status: result.status,
+        reason: result.reason || null,
+        globalIdentityId: result.globalIdentityId || null,
+        loginAccountId: result.loginAccountId || null,
+        organisationMembershipId: result.organisationMembershipId || null,
+      }),
+      new Date().toISOString(),
+    )
     .run();
 }
 

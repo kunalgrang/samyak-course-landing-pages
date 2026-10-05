@@ -768,6 +768,32 @@ export async function defaultActivePersonId(c: AppContext, loginAccountId: strin
        and referrer_profiles.active = 1
      where login_account_people.login_account_id = ?
        and login_account_people.is_available = 1
+       and (
+         exists (
+           select 1 from referrer_profiles
+           where referrer_profiles.person_id = people.id
+             and referrer_profiles.organisation_id = people.organisation_id
+             and referrer_profiles.active = 1
+         )
+         or exists (
+           select 1 from login_account_roles
+           join roles on roles.id = login_account_roles.role_id
+             and roles.organisation_id = people.organisation_id
+             and roles.code not in ('student', 'alumni')
+           where login_account_roles.login_account_id = login_account_people.login_account_id
+         )
+         or (
+           login_account_people.access_type = 'self'
+           and exists (
+             select 1 from person_roles
+             join roles on roles.id = person_roles.role_id
+               and roles.organisation_id = people.organisation_id
+               and roles.code in ('student', 'alumni')
+             where person_roles.person_id = people.id
+               and coalesce(person_roles.status, 'active') = 'active'
+           )
+         )
+       )
      order by login_account_people.is_default desc, people.full_name collate nocase, people.id`,
   )
     .bind(organisationId, loginAccountId)
@@ -917,7 +943,33 @@ export async function sessionView(c: AppContext, loginAccountId: string, activeP
      where login_account_people.login_account_id = ?
        and login_account_people.is_available = 1
        and people.organisation_id = ?
-       and people.status = 'active'`,
+       and people.status = 'active'
+       and (
+         exists (
+           select 1 from referrer_profiles
+           where referrer_profiles.person_id = people.id
+             and referrer_profiles.organisation_id = people.organisation_id
+             and referrer_profiles.active = 1
+         )
+         or exists (
+           select 1 from login_account_roles
+           join roles on roles.id = login_account_roles.role_id
+             and roles.organisation_id = people.organisation_id
+             and roles.code not in ('student', 'alumni')
+           where login_account_roles.login_account_id = login_account_people.login_account_id
+         )
+         or (
+           login_account_people.access_type = 'self'
+           and exists (
+             select 1 from person_roles
+             join roles on roles.id = person_roles.role_id
+               and roles.organisation_id = people.organisation_id
+               and roles.code in ('student', 'alumni')
+             where person_roles.person_id = people.id
+               and coalesce(person_roles.status, 'active') = 'active'
+           )
+         )
+       )`,
   )
     .bind(loginAccountId, organisationId)
     .all<{ person_id: string; full_name: string; public_name: string | null; access_type: string; role_code: string | null; has_student_profile: number }>();
@@ -1788,15 +1840,26 @@ async function isLinkedProfileAvailable(c: AppContext, loginAccountId: string, p
        and people.organisation_id = ?
        and people.status = 'active'
        and (
-         exists (
-           select 1 from referrer_profiles
-           where referrer_profiles.person_id = people.id
-             and referrer_profiles.organisation_id = people.organisation_id
-             and referrer_profiles.active = 1
-         )
-         or exists (
-           select 1 from login_account_roles
-           join roles on roles.id = login_account_roles.role_id
+          exists (
+            select 1 from referrer_profiles
+            where referrer_profiles.person_id = people.id
+              and referrer_profiles.organisation_id = people.organisation_id
+              and referrer_profiles.active = 1
+          )
+          or (
+            login_account_people.access_type = 'self'
+            and exists (
+              select 1 from person_roles
+              join roles on roles.id = person_roles.role_id
+                and roles.organisation_id = people.organisation_id
+                and roles.code in ('student', 'alumni')
+              where person_roles.person_id = people.id
+                and coalesce(person_roles.status, 'active') = 'active'
+            )
+          )
+          or exists (
+            select 1 from login_account_roles
+            join roles on roles.id = login_account_roles.role_id
              and roles.organisation_id = people.organisation_id
              and roles.code not in ('student', 'alumni')
            where login_account_roles.login_account_id = login_account_people.login_account_id

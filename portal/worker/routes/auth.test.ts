@@ -224,6 +224,7 @@ class FakeD1Statement {
         results: this.db.loginAccountPeople
           .filter((link) => link.login_account_id === loginAccountId && link.is_available === 1)
           .filter((link) => this.db.people.some((person) => person.id === link.person_id && person.organisation_id === organisationId && person.status === "active"))
+          .filter((link) => this.db.canUsePersonProfile(String(loginAccountId), link, String(organisationId)))
           .map((link) => ({ person_id: link.person_id })),
       } as T;
     }
@@ -283,6 +284,7 @@ class FakeD1Statement {
         const person = this.db.people.find((row) => row.id === link.person_id && row.organisation_id === organisationId && row.status === "active");
         const student = this.db.students.find((row) => row.person_id === link.person_id && row.organisation_id === person?.organisation_id && row.portal_status !== "disabled");
         if (!person) continue;
+        if (!this.db.canUsePersonProfile(String(accountId), link, organisationId)) continue;
         const personRoles = this.db.personRoles.filter((row) => row.person_id === person.id);
         if (personRoles.length === 0) {
           results.push({ person_id: person.id, full_name: person.full_name, public_name: person.public_name, access_type: link.access_type, role_code: null, has_student_profile: student ? 1 : 0 });
@@ -427,12 +429,21 @@ class FakeD1 {
   isLinkedProfileAvailable(loginAccountId: string, personId: string, organisationId = "org_samyak") {
     const link = this.loginAccountPeople.find((row) => row.login_account_id === loginAccountId && row.person_id === personId && row.is_available === 1);
     const person = this.people.find((row) => row.id === personId && row.organisation_id === organisationId && row.status === "active");
+    return Boolean(link && person && this.canUsePersonProfile(loginAccountId, link, organisationId));
+  }
+
+  canUsePersonProfile(loginAccountId: string, link: Row, organisationId = "org_samyak") {
+    const personId = String(link.person_id);
     const referrer = this.referrerProfiles.find((row) => row.person_id === personId && row.organisation_id === organisationId && row.active === 1);
     const staffRole = this.loginAccountRoles
       .filter((row) => row.login_account_id === loginAccountId)
       .map((accountRole) => this.roles.find((role) => role.id === accountRole.role_id))
       .some((role) => role && !["student", "alumni"].includes(String(role.code)));
-    return Boolean(link && person && (referrer || staffRole));
+    const studentOrAlumniRole = this.personRoles
+      .filter((row) => row.person_id === personId && (row.status === undefined || row.status === "active"))
+      .map((personRole) => this.roles.find((role) => role.id === personRole.role_id))
+      .some((role) => role && ["student", "alumni"].includes(String(role.code)));
+    return Boolean(referrer || staffRole || (link.access_type === "self" && studentOrAlumniRole));
   }
 
   isLinkedTrainerAvailable(loginAccountId: string, personId: string, organisationId = "org_samyak") {
@@ -1207,6 +1218,73 @@ describe("auth routes", () => {
       expect(response.status).toBe(403);
       await expect(response.json()).resolves.toMatchObject({ success: false, code: "PROFILE_NOT_LINKED" });
     }
+  });
+
+  it.each([
+    { roleId: "role_student", roleCode: "student", accessType: "guardian" },
+    { roleId: "role_alumni", roleCode: "alumni", accessType: "shared_family" },
+  ])("does not expose a non-self linked $roleCode profile through person-role availability", async ({ roleId, accessType }) => {
+    const db = new FakeD1();
+    installFetch();
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const cookie = sessionCookie(verifyResponse);
+    const accountId = String(db.loginAccounts[0].id);
+
+    db.people.push({ id: `person_nonself_${roleId}`, organisation_id: "org_samyak", home_branch_id: "branch_sion", full_name: "Linked Learner", public_name: "Linked", status: "active", created_at: "2026-07-01", updated_at: "2026-07-01" });
+    db.students.push({ id: `student_nonself_${roleId}`, organisation_id: "org_samyak", person_id: `person_nonself_${roleId}`, home_branch_id: "branch_sion", student_number: `SYK-SION-${roleId}`, sequence_number: 7788, student_since: "2026-07-01", current_status: roleId === "role_alumni" ? "alumni" : "active", portal_status: "active" });
+    db.personRoles.push({ person_id: `person_nonself_${roleId}`, role_id: roleId, branch_id: null, branch_key: "", status: "active", created_at: "2026-07-01" });
+    db.loginAccountPeople.push({ login_account_id: accountId, person_id: `person_nonself_${roleId}`, access_type: accessType, is_default: 0, is_available: 1, created_at: "2026-07-01" });
+
+    const sessionResponse = await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db));
+    const sessionBody = await jsonBody(sessionResponse);
+    expect(sessionBody.profiles.map((item: Row) => item.personId)).not.toContain(`person_nonself_${roleId}`);
+
+    const selected = await app.request(
+      "http://localhost/api/auth/select-profile",
+      {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ personId: `person_nonself_${roleId}` }),
+      },
+      env(db),
+    );
+    expect(selected.status).toBe(403);
+    await expect(selected.json()).resolves.toMatchObject({ success: false, code: "PROFILE_NOT_LINKED" });
+  });
+
+  it("allows a self linked student role profile without requiring a referral profile", async () => {
+    const db = new FakeD1();
+    installFetch();
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const cookie = sessionCookie(verifyResponse);
+    const accountId = String(db.loginAccounts[0].id);
+
+    db.people.push({ id: "person_self_role_only", organisation_id: "org_samyak", home_branch_id: "branch_sion", full_name: "Self Role Only", public_name: "Self Role", status: "active", created_at: "2026-07-01", updated_at: "2026-07-01" });
+    db.students.push({ id: "student_self_role_only", organisation_id: "org_samyak", person_id: "person_self_role_only", home_branch_id: "branch_sion", student_number: "SYK-SION-ROLE", sequence_number: 7789, student_since: "2026-07-01", current_status: "active", portal_status: "active" });
+    db.personRoles.push({ person_id: "person_self_role_only", role_id: "role_student", branch_id: null, branch_key: "", status: "active", created_at: "2026-07-01" });
+    db.loginAccountPeople.push({ login_account_id: accountId, person_id: "person_self_role_only", access_type: "self", is_default: 0, is_available: 1, created_at: "2026-07-01" });
+
+    const sessionResponse = await app.request("http://localhost/api/auth/session", { headers: { Cookie: cookie } }, env(db));
+    const sessionBody = await jsonBody(sessionResponse);
+    expect(sessionBody.profiles.map((item: Row) => item.personId)).toContain("person_self_role_only");
+
+    const selected = await app.request(
+      "http://localhost/api/auth/select-profile",
+      {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ personId: "person_self_role_only" }),
+      },
+      env(db),
+    );
+    expect(selected.status).toBe(200);
+    await expect(selected.json()).resolves.toMatchObject({
+      session: {
+        activeProfile: expect.objectContaining({ personId: "person_self_role_only", effectiveRoles: expect.arrayContaining(["student"]) }),
+      },
+    });
   });
 
   it("handles synthetic shared-mobile scale with one login account and distinct linked people", async () => {
