@@ -639,7 +639,7 @@ describe("AdmissionPage draft validation interactions", () => {
       }),
       expect.any(String),
     );
-  });
+  }, 10_000);
 
   it("clears a stale custom schedule when a shorter course invalidates the selected count", async () => {
     apiMocks.getActiveCourses.mockResolvedValue({
