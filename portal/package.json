@@ -19,6 +19,8 @@
     "maintenance:organisation-demo": "node --experimental-strip-types --experimental-specifier-resolution=node ./worker/lib/organisation-demo-maintenance-cli.ts",
     "maintenance:demo-data": "node --experimental-strip-types --experimental-specifier-resolution=node ./worker/lib/demo-data-maintenance-cli.ts",
     "maintenance:centre-commercial": "node --experimental-strip-types --experimental-specifier-resolution=node ./worker/lib/centre-commercial-maintenance-cli.ts",
+    "operator:historical-repair:local": "wrangler dev --config wrangler.historical-repair.operator.local.jsonc --ip 127.0.0.1 --port 8791",
+    "operator:historical-repair:production": "wrangler dev --config wrangler.historical-repair.operator.production.jsonc --ip 127.0.0.1 --port 8791",
     "smoke:production": "node ./scripts/smoke-production.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply samyak-student-portal --local",

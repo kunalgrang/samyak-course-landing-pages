@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "samyak-student-portal-historical-repair-operator-local",
+  "compatibility_date": "2026-07-21",
+  "main": "worker/operator/historical-student-auth-repair-operator.ts",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    "ENVIRONMENT": "operator-local",
+    "OPERATOR_ALLOW_HISTORICAL_REPAIR": "true"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "samyak-student-portal",
+      "database_id": "fe9beb06-7c41-43ff-a475-2e345d48dbad"
+    }
+  ]
+}
