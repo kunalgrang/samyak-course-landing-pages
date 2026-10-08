@@ -49,6 +49,9 @@ type ApplicationEligibilityRow = {
   certificate_id: string | null;
   certificate_number: string | null;
   verification_code: string | null;
+  fee_agreement_id: string | null;
+  final_agreed_fee_paise: number | null;
+  effective_paid_paise: number | null;
 };
 
 export type CertificateApplicationRecord = {
@@ -76,6 +79,9 @@ export type CertificateApplicationRecord = {
   created_at: string;
   updated_at: string;
 };
+
+const APPLICATION_ELIGIBLE_STUDENT_STATUSES = ["active", "on_hold", "completed", "alumni"] as const;
+const APPLICATION_ELIGIBLE_ENROLMENT_STATUSES = ["confirmed", "not_started", "active", "on_hold", "completed"] as const;
 
 export async function listStudentCertificateApplications(c: AppContext, input: { organisationId: string; personId: string }) {
   const rows = await c.env.DB.prepare(
@@ -108,7 +114,10 @@ export async function listStudentCertificateApplications(c: AppContext, input: {
        certificate_applications.low_feedback_flag as application_low_feedback_flag,
        certificates.id as certificate_id,
        certificates.certificate_number,
-       certificates.verification_code
+       certificates.verification_code,
+       fee_agreements.id as fee_agreement_id,
+       fee_agreements.final_agreed_fee_paise,
+       coalesce(receipt_totals.effective_paid_paise, 0) as effective_paid_paise
      from enrolments
      join students on students.id = enrolments.student_id
        and students.organisation_id = ?
@@ -131,6 +140,16 @@ export async function listStudentCertificateApplications(c: AppContext, input: {
      left join certificates on certificates.organisation_id = students.organisation_id
        and certificates.enrolment_id = enrolments.id
        and certificates.status = 'issued'
+     left join fee_agreements on fee_agreements.enrolment_id = enrolments.id
+       and fee_agreements.status = 'active'
+     left join (
+       select receipts.fee_agreement_id, sum(receipts.amount_paise) as effective_paid_paise
+       from receipts
+       left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+       where receipts.status = 'recorded'
+         and receipt_reversals.id is null
+       group by receipts.fee_agreement_id
+     ) receipt_totals on receipt_totals.fee_agreement_id = fee_agreements.id
      where students.organisation_id = ?
        and people.id = ?
      order by enrolments.joining_date desc, enrolments.id desc`,
@@ -167,7 +186,7 @@ export async function submitCertificateApplication(c: AppContext, profile: { org
   if (!row) return { ok: false as const, status: 404, code: "enrolment_not_found", message: "This enrolment was not found." };
 
   const eligibility = applicationEligibilityForRow(row, profile.organisationId);
-  if (row.application_id && row.application_status) {
+  if (row.application_id && row.application_status && row.application_status !== "certificate_issued") {
     return {
       ok: true as const,
       status: 200,
@@ -526,9 +545,11 @@ function applicationEligibilityForRow(row: ApplicationEligibilityRow, organisati
   if (row.organisation_id !== organisationId) reasons.push("wrong_organisation");
   if (row.person_status !== "active") reasons.push("person_inactive");
   if (row.student_status === "archived") reasons.push("student_archived");
-  if (!["active", "on_hold"].includes(row.student_status)) reasons.push(`student_${row.student_status}`);
+  else if (!APPLICATION_ELIGIBLE_STUDENT_STATUSES.includes(row.student_status as (typeof APPLICATION_ELIGIBLE_STUDENT_STATUSES)[number])) reasons.push(`student_${row.student_status}`);
   if (row.course_status !== "active") reasons.push("course_inactive");
-  if (!["active", "on_hold"].includes(row.enrolment_status)) reasons.push(`enrolment_${row.enrolment_status}`);
+  if (!APPLICATION_ELIGIBLE_ENROLMENT_STATUSES.includes(row.enrolment_status as (typeof APPLICATION_ELIGIBLE_ENROLMENT_STATUSES)[number])) reasons.push("invalid_enrolment_status");
+  if (!row.fee_agreement_id) reasons.push("fee_agreement_missing");
+  if (row.fee_agreement_id && Number(row.effective_paid_paise || 0) < Number(row.final_agreed_fee_paise || 0)) reasons.push("fee_not_fully_paid");
   if (row.application_id && row.application_status !== "certificate_issued") reasons.push("application_already_submitted");
   if (row.certificate_id) reasons.push("certificate_already_issued");
   return { eligible: reasons.length === 0, reasons };
@@ -626,7 +647,10 @@ async function loadStudentEnrolmentRow(c: AppContext, organisationId: string, pe
        certificate_applications.low_feedback_flag as application_low_feedback_flag,
        certificates.id as certificate_id,
        certificates.certificate_number,
-       certificates.verification_code
+       certificates.verification_code,
+       fee_agreements.id as fee_agreement_id,
+       fee_agreements.final_agreed_fee_paise,
+       coalesce(receipt_totals.effective_paid_paise, 0) as effective_paid_paise
      from enrolments
      join students on students.id = enrolments.student_id
        and students.organisation_id = ?
@@ -643,6 +667,16 @@ async function loadStudentEnrolmentRow(c: AppContext, organisationId: string, pe
      left join certificates on certificates.organisation_id = students.organisation_id
        and certificates.enrolment_id = enrolments.id
        and certificates.status = 'issued'
+     left join fee_agreements on fee_agreements.enrolment_id = enrolments.id
+       and fee_agreements.status = 'active'
+     left join (
+       select receipts.fee_agreement_id, sum(receipts.amount_paise) as effective_paid_paise
+       from receipts
+       left join receipt_reversals on receipt_reversals.receipt_id = receipts.id
+       where receipts.status = 'recorded'
+         and receipt_reversals.id is null
+       group by receipts.fee_agreement_id
+     ) receipt_totals on receipt_totals.fee_agreement_id = fee_agreements.id
      where students.organisation_id = ?
        and people.id = ?
        and enrolments.id = ?

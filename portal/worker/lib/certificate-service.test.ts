@@ -330,6 +330,63 @@ describe("certificate service synthetic issuance flow", () => {
 });
 
 describe("certificate application workflow", () => {
+  it("allows V1 finalised enrolment statuses when the agreed fee is fully paid", async () => {
+    const { c, db } = testContext();
+    seedCertificateStudent(db, "confirmed", "confirmed", null);
+    seedCertificateStudent(db, "not_started", "not_started", null);
+
+    for (const suffix of ["confirmed", "not_started", "active", "on_hold", "completed"] as const) {
+      const listed = await listStudentCertificateApplications(c, { organisationId: "org_samyak", personId: `person_${suffix}` });
+      expect(listed.items[0]).toMatchObject({
+        enrolment: { enrolment_id: `enrolment_${suffix}` },
+        applicationEligibility: { eligible: true, reasons: [] },
+      });
+    }
+
+    await expect(submitCertificateApplication(c, { organisationId: "org_samyak", personId: "person_confirmed" }, applicationInput({ enrolmentId: "enrolment_confirmed" })))
+      .resolves.toMatchObject({ ok: true, status: 201 });
+    expect(row(db, "select status, actual_completion_date from enrolments where id = 'enrolment_confirmed'")).toMatchObject({ status: "confirmed", actual_completion_date: null });
+    db.close();
+  });
+
+  it("requires full payment from active fee agreements and excludes reversed receipts", async () => {
+    const { c, db } = testContext();
+    seedCertificateStudent(db, "confirmed_partial", "confirmed", null);
+    seedCertificateStudent(db, "active_partial", "active", null);
+    seedCertificateStudent(db, "multi_receipt", "confirmed", null);
+    seedCertificateStudent(db, "reversed_underpaid", "confirmed", null);
+    seedCertificateStudent(db, "exact_fee", "confirmed", null);
+    seedCertificateStudent(db, "overpaid", "confirmed", null);
+    seedCertificateStudent(db, "missing_fee", "confirmed", null);
+
+    db.prepare("update receipts set amount_paise = 1399999 where id = 'receipt_confirmed_partial_1'").run();
+    db.prepare("update receipts set amount_paise = 500000 where id = 'receipt_active_partial_1'").run();
+    db.prepare("delete from receipts where id = 'receipt_multi_receipt_1'").run();
+    db.prepare("insert into receipts (id, organisation_id, branch_id, receipt_number, receipt_year, person_id, student_id, enrolment_id, fee_agreement_id, amount_paise, received_at, payment_mode, status, created_by_login_account_id, idempotency_key, payload_fingerprint, created_at, updated_at) values ('receipt_multi_receipt_1a', 'org_samyak', 'branch_sion', 'RCP-MULTI-A', 2026, 'person_multi_receipt', 'student_multi_receipt', 'enrolment_multi_receipt', 'fee_multi_receipt', 700000, ?, 'upi', 'recorded', 'login_staff', 'multi_a', 'multi_a_fp', ?, ?)").run(now(), now(), now());
+    db.prepare("insert into receipts (id, organisation_id, branch_id, receipt_number, receipt_year, person_id, student_id, enrolment_id, fee_agreement_id, amount_paise, received_at, payment_mode, status, created_by_login_account_id, idempotency_key, payload_fingerprint, created_at, updated_at) values ('receipt_multi_receipt_1b', 'org_samyak', 'branch_sion', 'RCP-MULTI-B', 2026, 'person_multi_receipt', 'student_multi_receipt', 'enrolment_multi_receipt', 'fee_multi_receipt', 700000, ?, 'upi', 'recorded', 'login_staff', 'multi_b', 'multi_b_fp', ?, ?)").run(now(), now(), now());
+    db.prepare("insert into receipt_reversals (id, organisation_id, branch_id, receipt_id, enrolment_id, fee_agreement_id, reason, reversed_by_login_account_id, idempotency_key, payload_fingerprint, created_at) values ('reversal_reversed_underpaid_1', 'org_samyak', 'branch_sion', 'receipt_reversed_underpaid_1', 'enrolment_reversed_underpaid', 'fee_reversed_underpaid', 'Synthetic correction', 'login_staff', 'rev_underpaid', 'rev_underpaid_fp', ?)").run(now());
+    db.prepare("update receipts set amount_paise = 1500000 where id = 'receipt_overpaid_1'").run();
+    db.prepare("delete from receipts where fee_agreement_id = 'fee_missing_fee'").run();
+    db.prepare("delete from fee_agreement_instalments where fee_agreement_id = 'fee_missing_fee'").run();
+    db.prepare("delete from fee_agreements where id = 'fee_missing_fee'").run();
+
+    for (const suffix of ["confirmed_partial", "active_partial", "reversed_underpaid"] as const) {
+      const listed = await listStudentCertificateApplications(c, { organisationId: "org_samyak", personId: `person_${suffix}` });
+      expect(listed.items[0].applicationEligibility).toMatchObject({ eligible: false, reasons: expect.arrayContaining(["fee_not_fully_paid"]) });
+      await expect(submitCertificateApplication(c, { organisationId: "org_samyak", personId: `person_${suffix}` }, applicationInput({ enrolmentId: `enrolment_${suffix}` })))
+        .resolves.toMatchObject({ ok: false, status: 409, reasons: expect.arrayContaining(["fee_not_fully_paid"]) });
+    }
+
+    for (const suffix of ["multi_receipt", "exact_fee", "overpaid"] as const) {
+      const listed = await listStudentCertificateApplications(c, { organisationId: "org_samyak", personId: `person_${suffix}` });
+      expect(listed.items[0].applicationEligibility).toMatchObject({ eligible: true, reasons: [] });
+    }
+
+    const missing = await listStudentCertificateApplications(c, { organisationId: "org_samyak", personId: "person_missing_fee" });
+    expect(missing.items[0].applicationEligibility).toMatchObject({ eligible: false, reasons: expect.arrayContaining(["fee_agreement_missing"]) });
+    db.close();
+  });
+
   it("lets an active student apply once and leaves enrolment active", async () => {
     const { c, db } = testContext();
 
@@ -346,6 +403,20 @@ describe("certificate application workflow", () => {
     expect(duplicate).toMatchObject({ ok: true, status: 200, idempotent: true, application: { status: "submitted", low_feedback_flag: false } });
     expect(row(db, "select status from enrolments where id = 'enrolment_active'")).toMatchObject({ status: "active" });
     expect(count(db, "certificate_applications where enrolment_id = 'enrolment_active'")).toBe(1);
+    db.close();
+  });
+
+  it("does not allow a new application after a certificate is issued", async () => {
+    const { c, db, staff } = testContext();
+    const storage = createMemoryCertificatePdfStorage(new Map<string, Uint8Array>());
+
+    const issued = await issueCertificate(c, staff, "enrolment_completed", "2026-08-17", { storage });
+    expect(issued.ok).toBe(true);
+
+    const listed = await listStudentCertificateApplications(c, { organisationId: "org_samyak", personId: "person_completed" });
+    expect(listed.items[0].applicationEligibility).toMatchObject({ eligible: false, reasons: expect.arrayContaining(["certificate_already_issued"]) });
+    await expect(submitCertificateApplication(c, { organisationId: "org_samyak", personId: "person_completed" }, applicationInput({ enrolmentId: "enrolment_completed" })))
+      .resolves.toMatchObject({ ok: false, status: 409, reasons: expect.arrayContaining(["certificate_already_issued"]) });
     db.close();
   });
 
@@ -672,9 +743,10 @@ function applicationInput(overrides: Partial<Parameters<typeof submitCertificate
 }
 
 function seedCertificateStudent(db: DatabaseSync, suffix: string, enrolmentStatus: string, actualCompletionDate: string | null) {
-  const studentStatus = enrolmentStatus === "completed" ? "completed" : enrolmentStatus;
+  const studentStatus = enrolmentStatus === "completed" ? "completed" : enrolmentStatus === "on_hold" ? "on_hold" : "active";
   const readableName = title(suffix.replace(/_/g, " "));
-  const sequence = suffix === "completed" ? 1 : suffix === "active" ? 2 : suffix === "on_hold" ? 3 : suffix === "completed_null_date" ? 4 : suffix === "active_boundary" ? 6 : suffix === "active_overall" ? 7 : 5;
+  const fixedSequences: Record<string, number> = { completed: 1, active: 2, on_hold: 3, completed_null_date: 4, storage_failure: 5, active_boundary: 6, active_overall: 7 };
+  const sequence = fixedSequences[suffix] || 100 + Array.from(suffix).reduce((total, char) => total + char.charCodeAt(0), 0);
   db.prepare("insert into people (id, organisation_id, home_branch_id, full_name, public_name, status, created_at, updated_at) values (?, 'org_samyak', 'branch_sion', ?, ?, 'active', ?, ?)")
     .run(`person_${suffix}`, `Synthetic ${readableName} Student`, `Synthetic ${readableName}`, now(), now());
   db.prepare("insert into students (id, organisation_id, person_id, home_branch_id, student_number, sequence_number, student_since, current_status, portal_status, created_at, updated_at) values (?, 'org_samyak', ?, 'branch_sion', ?, ?, '2026-01-01', ?, 'active', ?, ?)")
@@ -686,6 +758,50 @@ function seedCertificateStudent(db: DatabaseSync, suffix: string, enrolmentStatu
      values (?, ?, 'branch_sion', 'course_syk_wdd_001', null, ?, 'classroom', null, null,
        '2026-01-05', '2026-01-10', '2026-08-10', ?, ?, 'decide_later', null, ?, ?)`)
     .run(`enrolment_${suffix}`, `student_${suffix}`, `ENR-${suffix.toUpperCase()}`, actualCompletionDate, enrolmentStatus, now(), now());
+  seedFeeAgreement(db, suffix, { receipts: [1400000] });
+}
+
+function seedFeeAgreement(
+  db: DatabaseSync,
+  suffix: string,
+  options: { finalFee?: number; receipts?: number[]; reversedReceiptIndexes?: number[] } = {},
+) {
+  const finalFee = options.finalFee ?? 1400000;
+  const receipts = options.receipts ?? [finalFee];
+  const reversed = new Set(options.reversedReceiptIndexes || []);
+  db.prepare(`insert into fee_agreements
+      (id, enrolment_id, standard_fee_paise, final_agreed_fee_paise, discount_paise, gst_rate_basis_points, payment_plan_type, status, created_at, updated_at)
+     values (?, ?, ?, ?, 0, 0, 'full_payment', 'active', ?, ?)`)
+    .run(`fee_${suffix}`, `enrolment_${suffix}`, finalFee, finalFee, now(), now());
+  db.prepare("insert into fee_agreement_instalments (id, fee_agreement_id, instalment_number, amount_paise, due_date, created_at) values (?, ?, 1, ?, '2026-01-05', ?)")
+    .run(`inst_${suffix}_1`, `fee_${suffix}`, finalFee, now());
+  receipts.forEach((amount, index) => {
+    const receiptId = `receipt_${suffix}_${index + 1}`;
+    db.prepare(`insert into receipts
+        (id, organisation_id, branch_id, receipt_number, receipt_year, enquiry_id, admission_draft_id, person_id, student_id, enrolment_id, fee_agreement_id,
+         amount_paise, received_at, payment_mode, payment_reference, notes, status, created_by_login_account_id, idempotency_key, payload_fingerprint, created_at, updated_at)
+       values (?, 'org_samyak', 'branch_sion', ?, 2026, null, null, ?, ?, ?, ?, ?, ?, 'upi', null, null, 'recorded', 'login_staff', ?, ?, ?, ?)`)
+      .run(
+        receiptId,
+        `RCP-${suffix.toUpperCase()}-${index + 1}`,
+        `person_${suffix}`,
+        `student_${suffix}`,
+        `enrolment_${suffix}`,
+        `fee_${suffix}`,
+        amount,
+        now(),
+        `receipt_${suffix}_${index + 1}`,
+        `fingerprint_${suffix}_${index + 1}`,
+        now(),
+        now(),
+      );
+    if (reversed.has(index)) {
+      db.prepare(`insert into receipt_reversals
+          (id, organisation_id, branch_id, receipt_id, enrolment_id, fee_agreement_id, reason, reversed_by_login_account_id, idempotency_key, payload_fingerprint, created_at)
+         values (?, 'org_samyak', 'branch_sion', ?, ?, ?, 'Synthetic reversal', 'login_staff', ?, ?, ?)`)
+        .run(`reversal_${suffix}_${index + 1}`, receiptId, `enrolment_${suffix}`, `fee_${suffix}`, `reversal_${suffix}_${index + 1}`, `reversal_fingerprint_${suffix}_${index + 1}`, now());
+    }
+  });
 }
 
 function applyMigrations(db: DatabaseSync, throughFile?: string) {

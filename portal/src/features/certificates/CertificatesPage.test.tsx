@@ -91,7 +91,7 @@ describe("student certificate UX", () => {
             duration_label: "6 months",
             joining_date: "2026-01-10",
             actual_completion_date: null,
-            status: "active",
+            status: "confirmed",
             batch_id: null,
             batch_name: null,
           },
@@ -112,13 +112,13 @@ describe("student certificate UX", () => {
             duration_label: "3 months",
             joining_date: "2026-02-10",
             actual_completion_date: null,
-            status: "cancelled",
+            status: "active",
             batch_id: null,
             batch_name: null,
           },
           certificate: null,
           application: null,
-          applicationEligibility: { eligible: false, reasons: ["enrolment_cancelled"] },
+          applicationEligibility: { eligible: false, reasons: ["fee_not_fully_paid"] },
         }],
       },
     };
@@ -137,7 +137,8 @@ describe("student certificate UX", () => {
     expect(container.textContent).not.toContain("Samyak");
     expect(container.innerHTML).not.toContain("go.samyaksion.com");
     expect(container.innerHTML).not.toContain("edu.rememo.in");
-    expect(container.textContent).toContain("Certificate requests are available for eligible current course enrolments. Please contact your institute if you have finished training and this option is not available.");
+    expect(container.textContent).toContain("Certificate requests become available after the course fee is fully paid.");
+    expect(container.textContent).not.toContain("Certificate requests are available for eligible current course enrolments.");
     expect(container.textContent).not.toContain("Certificate requests are available only for active course enrolments.");
 
     click(button("Confirm completion & request certificate"));
