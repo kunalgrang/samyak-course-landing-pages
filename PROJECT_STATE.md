@@ -1,6 +1,6 @@
 # Samyak / Rememo Education SaaS Project State
 
-LAST UPDATED: 2026-10-08
+LAST UPDATED: 2026-10-09
 
 ## Purpose
 
@@ -73,7 +73,7 @@ Security invariants:
 
 Historical auth repair is separate from forward admission provisioning.
 
-Do not assume all historical confirmed students automatically possess the modern auth path. A historical OTP failure demonstrated that missing modern auth provisioning can block eligibility before the SMS provider is invoked; keep that as compatibility context, not an incident diary.
+The known Samyak historical cohort affected by the legacy modern-auth gap has been reconciled in production. That cohort now has complete modern auth provisioning: active global identity, active/login-enabled login account, active Organisation membership, same-Person self link, and active student role. Future imports, newly discovered historical records, and records from other Organisations must still be verified on their own evidence before assuming the modern auth path exists.
 
 ## Historical Auth Repair
 
@@ -81,7 +81,7 @@ Historical student-auth repair/backfill must normally follow:
 
 read-only preview -> classify safe/collision/blocked cases -> owner review -> bounded repair -> deterministic tests -> fresh production precheck -> D1 Time Travel bookmark -> minimal canary -> read-only verification -> broader cohort only after canary success.
 
-The repository contains bounded tooling for historical student-auth repair. Do not assume historical repair has been broadly executed in production unless separate production evidence confirms it.
+The repository contains bounded tooling for historical student-auth repair. The known Samyak 70-student historical cohort has been fully reconciled in production, with no remaining blocked/manual-review, missing-auth, ambiguous, duplicate normalized identity, different-Person ownership, wrong/non-self-link, or unexpected privilege-escalation cases for that cohort. Future or other-Organisation repair/backfill still requires a fresh read-only preview, owner review, deterministic tests, production precheck, and production evidence before any mutation.
 
 Never use repair/backfill to automatically override identity collisions, cross-Person ownership, suspended membership, revoked membership, disabled account, or login-disabled account.
 
@@ -147,6 +147,12 @@ The certificate system includes staff issuance/revocation/download, student cert
 
 Do not remove legacy verification compatibility without checking current public links/QRs.
 
+Student Certificate Request V1 allows a student to request a certificate only when the enrolment is request-eligible, Person/Student/Course state and ownership are valid, an active fee agreement exists, the agreed fee is fully paid, no active certificate application already exists, and no issued certificate already exists. Current request-eligible enrolment statuses are `confirmed`, `not_started`, `active`, `on_hold`, and `completed`; invalid or non-request states remain excluded, including repository statuses such as `provisional`, `transferred`, `dropped_out`, `cancelled`, and `expired`.
+
+Certificate request full-payment eligibility uses the canonical financial truth: `fee_agreements.final_agreed_fee_paise` as the agreed amount, and recorded `receipts` linked to the fee agreement as the effective paid amount, excluding any receipt with a `receipt_reversals` row. Exact payment qualifies, overpayment remains financially satisfied, reversed receipts do not count, and a missing active fee agreement does not qualify. Do not derive certificate eligibility from Course listed/default fee, current `payment_plan_rules`, a certificate-specific paid flag, or any second ledger.
+
+Student certificate applications do not mark enrolments completed, do not set `actual_completion_date`, and do not issue certificates. Staff approval remains responsible for approving course completion, recording/validating the actual completion date, and transitioning the enrolment to completed where appropriate. Certificate issuance remains completion-gated and requires the enrolment to be completed. A certificate request should not be treated as proof of academic completion.
+
 ## Demo Organisation Safety
 
 Repository evidence verifies an `organisation_kind` field with `normal` / `demo`, demo maintenance tooling, and tests ensuring demo classification does not bypass normal Organisation membership boundaries.
@@ -206,7 +212,7 @@ Durable rules:
 
 Repository migration history advances over time and must not be treated as proof of the current production D1 migration head. Verify both repository and production migration state during release preparation.
 
-Current production deployment source and canonical Git `main` must be verified independently before release work. The recent application production release occurred before later documentation/governance-only commits, so current `origin/main` may be ahead of the deployed Worker solely because documentation changed.
+Canonical Git `main` and the deployed production runtime must always be verified independently before release work. Documentation-only commits can make source history differ from the currently deployed runtime without changing application behavior, so do not infer deployment identity from Git history alone.
 
 ## Local And Source Control Working Model
 
@@ -230,7 +236,7 @@ Include these only as broad architectural direction, not immediate task status:
 
 Future sessions should not assume:
 
-- all historical students have modern auth provisioning;
+- future imports, newly discovered legacy records, or other Organisations have modern auth provisioning merely because the known Samyak historical cohort has been reconciled;
 - repo migrations equal production D1 state;
 - `origin/main` equals current deployed Worker;
 - receipt rows can be destructively corrected;
