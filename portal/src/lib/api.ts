@@ -1319,6 +1319,11 @@ const studentMobileChangeResponseSchema = z.object({
   newLastFour: z.string(),
   sharedMobileMatches: z.array(sharedMobileMatchSchema),
   otpProfiles: z.number(),
+  portalProvisioning: z.object({
+    status: z.string(),
+    ready: z.boolean(),
+    reason: z.string().nullable(),
+  }),
 });
 
 const studentBasicDetailsChangeResponseSchema = z.object({

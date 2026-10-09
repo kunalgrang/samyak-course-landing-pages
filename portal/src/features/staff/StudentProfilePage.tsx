@@ -20,6 +20,7 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
   const [editingBasicDetails, setEditingBasicDetails] = useState(false);
   const [basicDetailsMessage, setBasicDetailsMessage] = useState<string | null>(null);
   const [editingContact, setEditingContact] = useState(false);
+  const [contactMessage, setContactMessage] = useState<string | null>(null);
   const [referralBusy, setReferralBusy] = useState(false);
   const [referralMessage, setReferralMessage] = useState<string | null>(null);
   const [batchPanelEnrolmentId, setBatchPanelEnrolmentId] = useState("");
@@ -136,12 +137,14 @@ export function StudentProfilePage({ studentId }: { studentId: string }) {
           studentId={studentId}
           profile={profile}
           onCancel={() => setEditingContact(false)}
-          onSaved={(nextProfile) => {
+          onSaved={(nextProfile, message) => {
             setProfile(nextProfile);
             setEditingContact(false);
+            setContactMessage(message || "Contact updated.");
           }}
         />
       ) : null}
+      {contactMessage ? <p className="form-message">{contactMessage}</p> : null}
 
       <ReferralLinkPanel
         profile={profile}
@@ -341,7 +344,7 @@ export function ContactEditPanel({
   studentId: string;
   profile: StaffStudentProfile;
   onCancel: () => void;
-  onSaved: (profile: StaffStudentProfile) => void;
+  onSaved: (profile: StaffStudentProfile, message?: string) => void;
 }) {
   const [newMobile, setNewMobile] = useState("");
   const [reason, setReason] = useState("Student changed number");
@@ -363,9 +366,9 @@ export function ContactEditPanel({
         setMessage("Refresh the profile before changing contact details.");
         return;
       }
-      await changeStaffStudentPrimaryMobile(studentId, { newMobile, reason, confirmSharedMobile, expectedContactVersion: profile.contactVersion });
+      const saved = await changeStaffStudentPrimaryMobile(studentId, { newMobile, reason, confirmSharedMobile, expectedContactVersion: profile.contactVersion });
       const nextProfile = await getStaffStudentProfile(studentId);
-      onSaved(nextProfile);
+      onSaved(nextProfile, saved.portalProvisioning.ready ? undefined : "Mobile updated. Student Portal access still needs owner review.");
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === "shared_mobile_confirmation_required") {
         setSharedMatches(parseSharedMatches(cause.details?.sharedMobileMatches));

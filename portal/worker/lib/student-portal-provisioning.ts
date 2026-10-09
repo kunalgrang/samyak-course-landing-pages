@@ -6,9 +6,12 @@ export type StudentPortalProvisioningResult = {
     | "provisioned"
     | "already_provisioned"
     | "no_primary_mobile"
+    | "stale_primary_mobile"
     | "blocked_identity"
     | "blocked_login_account"
     | "blocked_membership"
+    | "blocked_student_role"
+    | "portal_provisioning_failed"
     | "identity_conflict";
   globalIdentityId?: string;
   loginAccountId?: string;
@@ -22,10 +25,15 @@ export async function ensureStudentPortalMembershipForPrimaryMobile(
     organisationId: string;
     personId: string;
     now: string;
+    expectedPrimaryMobile?: {
+      contactId?: string;
+      normalizedValue: string;
+    };
+    studentRolePolicy?: "ensure_active" | "preserve_existing_status";
   },
 ): Promise<StudentPortalProvisioningResult> {
   const mobile = await c.env.DB.prepare(
-    `select person_contacts.normalized_value, person_contacts.last_four
+    `select person_contacts.id, person_contacts.normalized_value, person_contacts.last_four
      from person_contacts
      left join person_contact_details on person_contact_details.contact_id = person_contacts.id
      where person_contacts.person_id = ?
@@ -37,8 +45,29 @@ export async function ensureStudentPortalMembershipForPrimaryMobile(
      limit 1`,
   )
     .bind(input.personId, input.now)
-    .first<{ normalized_value: string; last_four: string | null }>();
+    .first<{ id: string; normalized_value: string; last_four: string | null }>();
   if (!mobile?.normalized_value) return { status: "no_primary_mobile" };
+  if (
+    input.expectedPrimaryMobile
+    && (
+      mobile.normalized_value !== input.expectedPrimaryMobile.normalizedValue
+      || (input.expectedPrimaryMobile.contactId && mobile.id !== input.expectedPrimaryMobile.contactId)
+    )
+  ) {
+    return {
+      status: "stale_primary_mobile",
+      reason: "primary_mobile_changed",
+    };
+  }
+
+  const rolePrecheck = await studentRoleStatus(c, input.organisationId, input.personId);
+  if (rolePrecheck.status === "missing_role_config") throw new Error("Student role is not configured");
+  if (input.studentRolePolicy === "preserve_existing_status" && rolePrecheck.status === "inactive") {
+    return {
+      status: "blocked_student_role",
+      reason: "student_role_not_active",
+    };
+  }
 
   const mobileHash = mobile.normalized_value;
   const mobileLastFour = mobile.last_four || "";
@@ -94,6 +123,15 @@ export async function ensureStudentPortalMembershipForPrimaryMobile(
       reason: "different_linked_person",
     };
   }
+  const existingPersonLink = await accountPersonLink(c, account.id, input.personId);
+  if (existingPersonLink && existingPersonLink.access_type !== "self") {
+    return {
+      status: "identity_conflict",
+      globalIdentityId,
+      loginAccountId: account.id,
+      reason: "non_self_account_person_link",
+    };
+  }
 
   const loginAccountId = account.id;
   const organisationMembershipId = existingMembership?.id || await ensureOrganisationMembership(c, {
@@ -136,10 +174,29 @@ export async function ensureStudentPortalMembershipForPrimaryMobile(
     .run();
 
   const linkCreated = await ensureLoginAccountPerson(c, loginAccountId, input.personId, input.now);
-  const roleCreated = await ensureStudentRole(c, input.organisationId, input.personId, input.now);
+  const selfLink = await accountPersonLink(c, loginAccountId, input.personId);
+  if (!selfLink || selfLink.access_type !== "self" || Number(selfLink.is_available) !== 1) {
+    return {
+      status: "identity_conflict",
+      globalIdentityId,
+      loginAccountId,
+      organisationMembershipId,
+      reason: selfLink && selfLink.access_type !== "self" ? "non_self_account_person_link" : "account_person_self_link_missing",
+    };
+  }
+  const roleResult = await ensureStudentRole(c, input.organisationId, input.personId, input.now, input.studentRolePolicy || "ensure_active");
+  if (!roleResult.ok) {
+    return {
+      status: "blocked_student_role",
+      globalIdentityId,
+      loginAccountId,
+      organisationMembershipId,
+      reason: roleResult.reason,
+    };
+  }
 
   return {
-    status: linkCreated || roleCreated || !existingMembership ? "provisioned" : "already_provisioned",
+    status: linkCreated || roleResult.created || !existingMembership ? "provisioned" : "already_provisioned",
     globalIdentityId,
     loginAccountId,
     organisationMembershipId,
@@ -276,11 +333,24 @@ async function ensureLoginAccountPerson(c: AppContext, loginAccountId: string, p
              and existing.is_default = 1
          ) then 1
          else login_account_people.is_default
-       end`,
+       end
+     where login_account_people.access_type = 'self'`,
   )
     .bind(loginAccountId, personId, isDefault, now)
     .run();
   return Number(result.meta?.changes ?? result.meta?.rows_written ?? 0) > 0;
+}
+
+async function accountPersonLink(c: AppContext, loginAccountId: string, personId: string) {
+  return c.env.DB.prepare(
+    `select person_id, access_type, is_default, is_available
+     from login_account_people
+     where login_account_id = ?
+       and person_id = ?
+     limit 1`,
+  )
+    .bind(loginAccountId, personId)
+    .first<{ person_id: string; access_type: string; is_default: number; is_available: number }>();
 }
 
 async function availableAccountPersonLinks(c: AppContext, loginAccountId: string) {
@@ -295,7 +365,7 @@ async function availableAccountPersonLinks(c: AppContext, loginAccountId: string
   return rows.results || [];
 }
 
-async function ensureStudentRole(c: AppContext, organisationId: string, personId: string, now: string) {
+async function studentRoleStatus(c: AppContext, organisationId: string, personId: string) {
   const role = await c.env.DB.prepare(
     `select id
      from roles
@@ -305,14 +375,42 @@ async function ensureStudentRole(c: AppContext, organisationId: string, personId
   )
     .bind(organisationId)
     .first<{ id: string }>();
-  if (!role) throw new Error("Student role is not configured");
+  if (!role) return { status: "missing_role_config" as const };
+  const existing = await c.env.DB.prepare(
+    `select status
+     from person_roles
+     where person_id = ?
+       and role_id = ?
+       and branch_key = ''
+     limit 1`,
+  )
+    .bind(personId, role.id)
+    .first<{ status: string }>();
+  if (!existing) return { status: "missing" as const, roleId: role.id };
+  return { status: existing.status === "active" ? "active" as const : "inactive" as const, roleId: role.id, roleStatus: existing.status };
+}
+
+async function ensureStudentRole(
+  c: AppContext,
+  organisationId: string,
+  personId: string,
+  now: string,
+  policy: "ensure_active" | "preserve_existing_status",
+) {
+  const roleState = await studentRoleStatus(c, organisationId, personId);
+  if (roleState.status === "missing_role_config") throw new Error("Student role is not configured");
+  if (roleState.status === "active") return { ok: true as const, created: false };
+  if (roleState.status === "inactive" && policy === "preserve_existing_status") {
+    return { ok: false as const, reason: "student_role_not_active" };
+  }
+
   const result = await c.env.DB.prepare(
     `insert into person_roles (person_id, role_id, branch_id, branch_key, status, created_at)
      values (?, ?, null, '', 'active', ?)
      on conflict(person_id, role_id, branch_key) do update set
        status = 'active'`,
   )
-    .bind(personId, role.id, now)
+    .bind(personId, roleState.roleId, now)
     .run();
-  return Number(result.meta?.changes ?? result.meta?.rows_written ?? 0) > 0;
+  return { ok: true as const, created: Number(result.meta?.changes ?? result.meta?.rows_written ?? 0) > 0 };
 }

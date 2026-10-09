@@ -1,10 +1,11 @@
 /// <reference types="node" />
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { fetchStudentHomeForActiveProfile, lookupPortalProfilesByMobile, mobileHash, ORG_ID } from "./auth-store";
+import { defaultActivePersonId, fetchStudentHomeForActiveProfile, lookupPortalProfilesByMobile, mobileHash, ORG_ID } from "./auth-store";
 import { changeStudentFullName, changeStudentPrimaryMobile, getStudentBasicDetailsVersion, getStudentContactVersion } from "./owner-student-maintenance";
 import { hmacHex } from "./crypto";
 import { listStaffStudents } from "./student-directory";
+import { ensureStudentPortalMembershipForPrimaryMobile } from "./student-portal-provisioning";
 
 const NOW = "2026-08-22T00:00:00.000Z";
 type SqlValue = string | number | bigint | Uint8Array | null;
@@ -137,7 +138,13 @@ describe("owner student maintenance", () => {
       reason: "Student changed number",
     });
 
-    expect(result).toMatchObject({ ok: true, studentId: "student_a", studentNumber: "SYK-SION-0001", personId: "person_a" });
+    expect(result).toMatchObject({
+      ok: true,
+      studentId: "student_a",
+      studentNumber: "SYK-SION-0001",
+      personId: "person_a",
+      portalProvisioning: { ready: true },
+    });
     expect(row(fixture.db, "select person_id, student_number from students where id = 'student_a'")).toMatchObject({ person_id: "person_a", student_number: "SYK-SION-0001" });
     expect(counts(fixture.db)).toMatchObject({
       students: before.students,
@@ -156,6 +163,11 @@ describe("owner student maintenance", () => {
 
     expect((await lookupPortalProfilesByMobile(fixture.c, "9123456780")).profiles.map((profile) => profile.personId)).toContain("person_a");
     expect((await lookupPortalProfilesByMobile(fixture.c, "9876543210")).profiles.map((profile) => profile.personId)).not.toContain("person_a");
+    expect(row(fixture.db, "select count(*) as count from global_identities where mobile_normalized = ?", newHash)?.count).toBe(1);
+    expect(row(fixture.db, "select count(*) as count from organisation_memberships where organisation_id = ?", ORG_ID)?.count).toBe(1);
+    expect(row(fixture.db, "select access_type, is_available from login_account_people where person_id = 'person_a' and is_available = 1")).toMatchObject({ access_type: "self", is_available: 1 });
+    expect(row(fixture.db, "select count(*) as count from login_account_roles where login_account_id not in ('acct_owner', 'acct_owner_sion', 'acct_counsellor', 'acct_student', 'acct_partner')")?.count).toBe(0);
+    expectNoUnexpectedPrivileges(fixture.db, "person_a");
     expect(JSON.stringify(all(fixture.db, "select metadata_json from audit_logs"))).not.toContain("9123456780");
     expect(JSON.stringify(all(fixture.db, "select metadata_json from audit_logs"))).not.toContain(newHash);
   });
@@ -182,18 +194,310 @@ describe("owner student maintenance", () => {
 
   it("does not duplicate when submitting the same mobile or reactivating a previous mobile", async () => {
     const fixture = await createFixture();
+    await seedPortalAuthForMobile(fixture.db, "9876543210", "person_a", { accountId: "acct_old_a", sessionId: "sess_old_a" });
     const same = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
       newMobile: "9876543210",
       confirmSharedMobile: false,
       expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
     });
-    expect(same).toMatchObject({ ok: true, idempotent: true });
+    expect(same).toMatchObject({ ok: true, idempotent: true, portalProvisioning: { ready: true } });
     expect(row(fixture.db, "select count(*) as count from person_contacts where person_id = 'person_a'")?.count).toBe(1);
 
     await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", { newMobile: "9123456780", confirmSharedMobile: false, expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a") });
+    expect(row(fixture.db, "select is_available from login_account_people where login_account_id = 'acct_old_a' and person_id = 'person_a'")).toMatchObject({ is_available: 0 });
+    expect(row(fixture.db, "select active_person_id from user_sessions where id = 'sess_old_a'")).toMatchObject({ active_person_id: null });
     await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", { newMobile: "9876543210", confirmSharedMobile: false, expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a") });
     expect(row(fixture.db, "select count(*) as count from person_contacts where person_id = 'person_a'")?.count).toBe(2);
     expect(row(fixture.db, "select status from person_contact_details where contact_id = 'contact_old_a'")).toMatchObject({ status: "active" });
+    expect(row(fixture.db, "select access_type, is_available from login_account_people where login_account_id = 'acct_old_a' and person_id = 'person_a'")).toMatchObject({ access_type: "self", is_available: 1 });
+    expect((await lookupPortalProfilesByMobile(fixture.c, "9876543210")).profiles.map((profile) => profile.personId)).toContain("person_a");
+    expect(row(fixture.db, "select count(*) as count from global_identities where mobile_normalized = ?", await testMobileHash("9876543210"))?.count).toBe(1);
+    expect(row(fixture.db, "select count(*) as count from login_accounts where mobile_normalized = ?", await testMobileHash("9876543210"))?.count).toBe(1);
+    expect(row(fixture.db, "select count(*) as count from organisation_memberships where login_account_id = 'acct_old_a'")?.count).toBe(1);
+    await expect(defaultActivePersonId(fixture.c, "acct_old_a", ORG_ID)).resolves.toBe("person_a");
+  });
+
+  it.each([
+    { label: "suspended membership", accountStatus: "active", loginEnabled: 1, membershipStatus: "suspended", expectedStatus: "blocked_membership", expectedReason: "membership_not_active" },
+    { label: "revoked membership", accountStatus: "active", loginEnabled: 1, membershipStatus: "revoked", expectedStatus: "blocked_membership", expectedReason: "membership_not_active" },
+    { label: "disabled account", accountStatus: "disabled", loginEnabled: 1, membershipStatus: "active", expectedStatus: "blocked_login_account", expectedReason: "login_account_not_active" },
+    { label: "login-disabled account", accountStatus: "active", loginEnabled: 0, membershipStatus: "active", expectedStatus: "blocked_login_account", expectedReason: "login_disabled" },
+  ])("updates the contact but reports blocked portal provisioning for $label", async ({ accountStatus, loginEnabled, membershipStatus, expectedStatus, expectedReason }) => {
+    const fixture = await createFixture();
+    await seedPortalAuthForMobile(fixture.db, "9123456780", "person_a", {
+      accountId: "acct_blocked",
+      membershipId: "omem_blocked",
+      identityId: "gident_blocked",
+      accountStatus,
+      loginEnabled,
+      membershipStatus,
+      linkAvailable: 0,
+    });
+
+    const result = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9123456780",
+      confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      portalProvisioning: { ready: false, status: expectedStatus, reason: expectedReason },
+    });
+    expect(row(fixture.db, "select status, login_enabled from login_accounts where id = 'acct_blocked'")).toMatchObject({ status: accountStatus, login_enabled: loginEnabled });
+    expect(row(fixture.db, "select status from organisation_memberships where id = 'omem_blocked'")).toMatchObject({ status: membershipStatus });
+    expect(row(fixture.db, "select is_available from login_account_people where login_account_id = 'acct_blocked' and person_id = 'person_a'")).toMatchObject({ is_available: 0 });
+    expect(row(fixture.db, "select last_four, is_primary from person_contacts where person_id = 'person_a' and is_primary = 1")).toMatchObject({ last_four: "6780", is_primary: 1 });
+  });
+
+  it("does not claim a target mobile account already linked to a different person", async () => {
+    const fixture = await createFixture({ withSharedTarget: true });
+    await seedPortalAuthForMobile(fixture.db, "9123456780", "person_b", { accountId: "acct_conflict" });
+
+    const result = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9123456780",
+      confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      portalProvisioning: { ready: false, status: "identity_conflict", reason: "different_linked_person" },
+    });
+    expect(row(fixture.db, "select count(*) as count from login_account_people where login_account_id = 'acct_conflict' and person_id = 'person_a'")?.count).toBe(0);
+    expect(row(fixture.db, "select access_type, is_available from login_account_people where login_account_id = 'acct_conflict' and person_id = 'person_b'")).toMatchObject({ access_type: "self", is_available: 1 });
+  });
+
+  it("does not convert an existing same-person non-self target mobile link into student self access", async () => {
+    const fixture = await createFixture();
+    await seedPortalAuthForMobile(fixture.db, "9123456780", "person_a", {
+      accountId: "acct_guardian",
+      accessType: "guardian",
+      membership: false,
+    });
+
+    const result = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9123456780",
+      confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      portalProvisioning: { ready: false, status: "identity_conflict", reason: "non_self_account_person_link" },
+    });
+    expect(row(fixture.db, "select access_type, is_available from login_account_people where login_account_id = 'acct_guardian' and person_id = 'person_a'")).toMatchObject({ access_type: "guardian", is_available: 1 });
+    expect(row(fixture.db, "select count(*) as count from organisation_memberships where login_account_id = 'acct_guardian'")?.count).toBe(0);
+    expect(row(fixture.db, "select count(*) as count from login_account_people where login_account_id = 'acct_guardian' and person_id = 'person_a'")?.count).toBe(1);
+    expectNoUnexpectedPrivileges(fixture.db, "person_a");
+  });
+
+  it("does not convert an unavailable same-person non-self target mobile link into student self access", async () => {
+    const fixture = await createFixture();
+    await seedPortalAuthForMobile(fixture.db, "9123456780", "person_a", {
+      accountId: "acct_shared_family_unavailable",
+      accessType: "shared_family",
+      linkAvailable: 0,
+      membership: false,
+    });
+
+    const result = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9123456780",
+      confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      portalProvisioning: { ready: false, status: "identity_conflict", reason: "non_self_account_person_link" },
+    });
+    expect(row(fixture.db, "select access_type, is_available from login_account_people where login_account_id = 'acct_shared_family_unavailable' and person_id = 'person_a'")).toMatchObject({ access_type: "shared_family", is_available: 0 });
+    expect(row(fixture.db, "select count(*) as count from login_account_people where login_account_id = 'acct_shared_family_unavailable' and person_id = 'person_a'")?.count).toBe(1);
+    expect(row(fixture.db, "select count(*) as count from login_account_people where login_account_id = 'acct_shared_family_unavailable' and person_id = 'person_a' and access_type = 'self'")?.count).toBe(0);
+    expect(row(fixture.db, "select count(*) as count from organisation_memberships where login_account_id = 'acct_shared_family_unavailable'")?.count).toBe(0);
+    expectNoUnexpectedPrivileges(fixture.db, "person_a");
+  });
+
+  it("reactivates an unavailable same-person self link for the target mobile", async () => {
+    const fixture = await createFixture();
+    await seedPortalAuthForMobile(fixture.db, "9123456780", "person_a", {
+      accountId: "acct_self_unavailable",
+      linkAvailable: 0,
+    });
+
+    const result = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9123456780",
+      confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+
+    expect(result).toMatchObject({ ok: true, portalProvisioning: { ready: true } });
+    expect(row(fixture.db, "select access_type, is_available from login_account_people where login_account_id = 'acct_self_unavailable' and person_id = 'person_a'")).toMatchObject({ access_type: "self", is_available: 1 });
+    expect(row(fixture.db, "select count(*) as count from login_account_people where login_account_id = 'acct_self_unavailable' and person_id = 'person_a'")?.count).toBe(1);
+    expectNoUnexpectedPrivileges(fixture.db, "person_a");
+  });
+
+  it("does not report ready if a same-person non-self relationship appears before the self-link write", async () => {
+    let injected = false;
+    const fixture = await createFixture({
+      onRun: (db, sql) => {
+        if (injected || !sql.includes("insert into login_account_people")) return;
+        injected = true;
+        db.prepare("insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at) values ('acct_race', 'person_a', 'staff', 0, 0, ?)")
+          .run(NOW);
+      },
+    });
+    await seedPortalAuthForMobile(fixture.db, "9123456780", "person_a", {
+      accountId: "acct_race",
+      link: false,
+    });
+
+    const result = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9123456780",
+      confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      portalProvisioning: { ready: false, status: "identity_conflict", reason: "non_self_account_person_link" },
+    });
+    expect(row(fixture.db, "select access_type, is_available from login_account_people where login_account_id = 'acct_race' and person_id = 'person_a'")).toMatchObject({ access_type: "staff", is_available: 0 });
+    expect(row(fixture.db, "select count(*) as count from login_account_people where login_account_id = 'acct_race' and person_id = 'person_a'")?.count).toBe(1);
+    expectNoUnexpectedPrivileges(fixture.db, "person_a");
+  });
+
+  it("does not provision a later primary mobile when the expected target is already stale", async () => {
+    const fixture = await createFixture();
+    await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9123456780",
+      confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+    const targetB = row(fixture.db, "select id, normalized_value from person_contacts where person_id = 'person_a' and last_four = '6780'");
+    await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9345678901",
+      confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+    const beforeCAuth = authCountsForMobile(fixture.db, await testMobileHash("9345678901"));
+
+    const result = await ensureStudentPortalMembershipForPrimaryMobile(fixture.c, {
+      organisationId: ORG_ID,
+      personId: "person_a",
+      now: NOW,
+      expectedPrimaryMobile: {
+        contactId: String(targetB?.id || ""),
+        normalizedValue: String(targetB?.normalized_value || ""),
+      },
+      studentRolePolicy: "preserve_existing_status",
+    });
+
+    expect(result).toMatchObject({ status: "stale_primary_mobile", reason: "primary_mobile_changed" });
+    expect(authCountsForMobile(fixture.db, await testMobileHash("9345678901"))).toEqual(beforeCAuth);
+  });
+
+  it("returns contact success with portal review when post-contact provisioning throws", async () => {
+    const fixture = await createFixture();
+    fixture.db.prepare("delete from roles where id = 'role_student'").run();
+
+    const result = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9123456780",
+      confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      portalProvisioning: { ready: false, status: "portal_provisioning_failed", reason: "portal_provisioning_failed" },
+    });
+    expect(row(fixture.db, "select last_four, is_primary from person_contacts where person_id = 'person_a' and is_primary = 1")).toMatchObject({ last_four: "6780", is_primary: 1 });
+  });
+
+  it("safely completes partial target auth state without duplicates", async () => {
+    const fixture = await createFixture();
+    await seedPortalAuthForMobile(fixture.db, "9123456780", "person_a", {
+      accountId: "acct_partial",
+      identityId: "gident_partial",
+      membership: false,
+      link: false,
+    });
+
+    const result = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9123456780",
+      confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+
+    expect(result).toMatchObject({ ok: true, portalProvisioning: { ready: true } });
+    const targetHash = await testMobileHash("9123456780");
+    expect(row(fixture.db, "select count(*) as count from global_identities where mobile_normalized = ?", targetHash)?.count).toBe(1);
+    expect(row(fixture.db, "select count(*) as count from login_accounts where mobile_normalized = ?", targetHash)?.count).toBe(1);
+    expect(row(fixture.db, "select count(*) as count from organisation_memberships where login_account_id = 'acct_partial'")?.count).toBe(1);
+    expect(row(fixture.db, "select access_type, is_available from login_account_people where login_account_id = 'acct_partial' and person_id = 'person_a'")).toMatchObject({ access_type: "self", is_available: 1 });
+    expectNoUnexpectedPrivileges(fixture.db, "person_a");
+  });
+
+  it("blocks portal provisioning without reactivating an inactive student role during mobile maintenance", async () => {
+    const fixture = await createFixture();
+    fixture.db.prepare("update person_roles set status = 'inactive' where person_id = 'person_a' and role_id = 'role_student'").run();
+
+    const result = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9123456780",
+      confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      portalProvisioning: { ready: false, status: "blocked_student_role", reason: "student_role_not_active" },
+    });
+    expect(row(fixture.db, "select status from person_roles where person_id = 'person_a' and role_id = 'role_student'")).toMatchObject({ status: "inactive" });
+    expect(row(fixture.db, "select count(*) as count from login_account_roles where login_account_id not in ('acct_owner', 'acct_owner_sion', 'acct_counsellor', 'acct_student', 'acct_partner')")?.count).toBe(0);
+  });
+
+  it("preserves a suspended target global identity during mobile maintenance", async () => {
+    const fixture = await createFixture();
+    await seedPortalAuthForMobile(fixture.db, "9123456780", "person_a", {
+      accountId: "acct_suspended_identity",
+      identityId: "gident_suspended_identity",
+      identityStatus: "suspended",
+      membership: false,
+      link: false,
+    });
+
+    const result = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9123456780",
+      confirmSharedMobile: false,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      portalProvisioning: { ready: false, status: "blocked_identity", reason: "global_identity_not_active" },
+    });
+    expect(row(fixture.db, "select status from global_identities where id = 'gident_suspended_identity'")).toMatchObject({ status: "suspended" });
+    expect(row(fixture.db, "select count(*) as count from organisation_memberships where global_identity_id = 'gident_suspended_identity'")?.count).toBe(0);
+  });
+
+  it("allows confirmed shared target contact but does not transfer unsafe auth ownership", async () => {
+    const fixture = await createFixture({ withSharedTarget: true });
+    await seedPortalAuthForMobile(fixture.db, "9234567890", "person_b", { accountId: "acct_shared_target_owner" });
+
+    const result = await changeStudentPrimaryMobile(fixture.c, ownerStaff(), "student_a", {
+      newMobile: "9234567890",
+      confirmSharedMobile: true,
+      expectedContactVersion: await getStudentContactVersion(fixture.c, "person_a"),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      portalProvisioning: { ready: false, status: "identity_conflict", reason: "different_linked_person" },
+    });
+    const sharedHash = await testMobileHash("9234567890");
+    expect(all(fixture.db, "select person_id from person_contacts where normalized_value = ? order by person_id", sharedHash).map((item) => item.person_id)).toEqual(["person_a", "person_b"]);
+    expect(row(fixture.db, "select access_type, is_available from login_account_people where login_account_id = 'acct_shared_target_owner' and person_id = 'person_b'")).toMatchObject({ access_type: "self", is_available: 1 });
+    expect(row(fixture.db, "select count(*) as count from login_account_people where login_account_id = 'acct_shared_target_owner' and person_id = 'person_a'")?.count).toBe(0);
   });
 
   it("denies counsellor maintenance", async () => {
@@ -246,7 +550,7 @@ describe("owner student maintenance", () => {
   });
 });
 
-async function createFixture(options: { withSharedTarget?: boolean; withSharedOldMobile?: boolean; withLegacyAlumni?: boolean; withSecondEnrolment?: boolean; withOtherBranch?: boolean; withArchived?: boolean } = {}) {
+async function createFixture(options: { withSharedTarget?: boolean; withSharedOldMobile?: boolean; withLegacyAlumni?: boolean; withSecondEnrolment?: boolean; withOtherBranch?: boolean; withArchived?: boolean; onRun?: D1RunHook } = {}) {
   const db = new DatabaseSync(":memory:");
   installSchema(db);
   seedBase(db);
@@ -266,12 +570,12 @@ async function createFixture(options: { withSharedTarget?: boolean; withSharedOl
   if (options.withArchived) {
     await seedStudent(db, "person_archived", "student_archived", "SYK-SION-ARCHIVED", "contact_archived", "9000000004", { personStatus: "archived" });
   }
-  const c = { env: { DB: new D1Adapter(db), SESSION_PEPPER: "test-pepper" }, req: { header: () => null } };
+  const c = { env: { DB: new D1Adapter(db, options.onRun), SESSION_PEPPER: "test-pepper" }, req: { header: () => null } };
   return { db, c: c as never };
 }
 
 function seedLoginAccountForMobile(db: DatabaseSync, mobileHashValue: string, links: Array<{ personId: string; sessionId: string }>) {
-  db.prepare("insert into login_accounts values ('acct_9876543210', ?, ?, ?, '3210', 1, 'active', null, ?, ?)")
+  db.prepare("insert into login_accounts (id, organisation_id, global_identity_id, organisation_membership_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, last_login_at, created_at, updated_at) values ('acct_9876543210', ?, null, null, ?, ?, '3210', 1, 'active', null, ?, ?)")
     .run(ORG_ID, mobileHashValue, mobileHashValue, NOW, NOW);
   for (const link of links) {
     db.prepare("insert into login_account_people values ('acct_9876543210', ?, 'self', 0, 1, ?)")
@@ -279,6 +583,96 @@ function seedLoginAccountForMobile(db: DatabaseSync, mobileHashValue: string, li
     db.prepare("insert into user_sessions values (?, 'acct_9876543210', ?, ?, ?, '2026-09-22T00:00:00.000Z', ?, null)")
       .run(link.sessionId, link.personId, `hash_${link.sessionId}`, NOW, NOW);
   }
+}
+
+async function seedPortalAuthForMobile(
+  db: DatabaseSync,
+  mobile: string,
+  personId: string,
+  options: {
+    accountId?: string;
+    identityId?: string;
+    membershipId?: string;
+    accountStatus?: string;
+    loginEnabled?: number;
+    membershipStatus?: string;
+    linkAvailable?: number;
+    accessType?: string;
+    sessionId?: string;
+    membership?: boolean;
+    identityStatus?: string;
+    link?: boolean;
+  } = {},
+) {
+  const hash = await testMobileHash(mobile);
+  const accountId = options.accountId || `acct_${mobile.slice(-4)}`;
+  const identityId = options.identityId || `gident_${mobile.slice(-4)}`;
+  const membershipId = options.membershipId || `omem_${mobile.slice(-4)}`;
+  db.prepare(
+    "insert into global_identities (id, mobile_normalized, mobile_hash, mobile_last_four, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)",
+  ).run(identityId, hash, hash, mobile.slice(-4), options.identityStatus || "active", NOW, NOW);
+  db.prepare(
+    `insert into login_accounts
+       (id, organisation_id, global_identity_id, organisation_membership_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, last_login_at, created_at, updated_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?, ?)`,
+  ).run(
+    accountId,
+    ORG_ID,
+    identityId,
+    options.membership === false ? null : membershipId,
+    hash,
+    hash,
+    mobile.slice(-4),
+    options.loginEnabled ?? 1,
+    options.accountStatus || "active",
+    NOW,
+    NOW,
+  );
+  if (options.membership !== false) {
+    db.prepare(
+      "insert into organisation_memberships (id, global_identity_id, organisation_id, login_account_id, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)",
+    ).run(membershipId, identityId, ORG_ID, accountId, options.membershipStatus || "active", NOW, NOW);
+  }
+  if (options.link !== false) {
+    db.prepare("insert into login_account_people (login_account_id, person_id, access_type, is_default, is_available, created_at) values (?, ?, ?, 1, ?, ?)")
+      .run(accountId, personId, options.accessType || "self", options.linkAvailable ?? 1, NOW);
+  }
+  if (options.sessionId) {
+    db.prepare("insert into user_sessions values (?, ?, ?, ?, ?, '2026-09-22T00:00:00.000Z', ?, null)")
+      .run(options.sessionId, accountId, personId, `hash_${options.sessionId}`, NOW, NOW);
+  }
+}
+
+function authCountsForMobile(db: DatabaseSync, mobileHashValue: string) {
+  return {
+    identities: row(db, "select count(*) as count from global_identities where mobile_normalized = ?", mobileHashValue)?.count,
+    accounts: row(db, "select count(*) as count from login_accounts where mobile_normalized = ?", mobileHashValue)?.count,
+    memberships: row(db, "select count(*) as count from organisation_memberships where login_account_id in (select id from login_accounts where mobile_normalized = ?)", mobileHashValue)?.count,
+    links: row(db, "select count(*) as count from login_account_people where login_account_id in (select id from login_accounts where mobile_normalized = ?)", mobileHashValue)?.count,
+  };
+}
+
+function expectNoUnexpectedPrivileges(db: DatabaseSync, personId: string) {
+  expect(all(
+    db,
+    `select roles.code
+     from person_roles
+     join roles on roles.id = person_roles.role_id
+     where person_roles.person_id = ?
+       and roles.code in ('staff', 'owner', 'admin', 'system_admin', 'admission_admin', 'counsellor', 'referral', 'trainer', 'partner')`,
+    personId,
+  )).toEqual([]);
+  expect(row(
+    db,
+    `select count(*) as count
+     from login_account_roles
+     where login_account_id in (
+       select login_account_id
+       from login_account_people
+       where person_id = ?
+     )`,
+    personId,
+  )?.count).toBe(0);
 }
 
 function installSchema(db: DatabaseSync) {
@@ -291,12 +685,14 @@ function installSchema(db: DatabaseSync) {
     create table person_contacts (id text primary key, person_id text, contact_type text, normalized_value text, display_value text, last_four text, is_primary integer, is_verified integer, verified_at text, created_at text, updated_at text, unique(person_id, contact_type, normalized_value));
     create table person_contact_details (contact_id text primary key, belongs_to text, contact_label text, is_whatsapp integer, valid_from text, valid_until text, status text, created_at text, updated_at text);
     create table person_contact_secrets (contact_id text primary key, value_ciphertext text, encryption_version text, created_at text, updated_at text);
-    create table login_accounts (id text primary key, organisation_id text, mobile_normalized text, mobile_hash text, mobile_last_four text, login_enabled integer, status text, last_login_at text, created_at text, updated_at text, unique(organisation_id, mobile_normalized));
+    create table global_identities (id text primary key, mobile_normalized text not null unique, mobile_hash text, mobile_last_four text not null, status text not null default 'active', created_at text not null, updated_at text not null);
+    create table organisation_memberships (id text primary key, global_identity_id text not null, organisation_id text not null, login_account_id text not null unique, status text not null default 'active', created_at text not null, updated_at text not null, unique(global_identity_id, organisation_id));
+    create table login_accounts (id text primary key, organisation_id text, global_identity_id text, organisation_membership_id text, mobile_normalized text, mobile_hash text, mobile_last_four text, login_enabled integer, status text, last_login_at text, created_at text, updated_at text, unique(organisation_id, mobile_normalized));
     create table login_account_people (login_account_id text, person_id text, access_type text, is_default integer, is_available integer, created_at text, primary key(login_account_id, person_id));
     create table user_sessions (id text primary key, login_account_id text, active_person_id text, token_hash text, created_at text, expires_at text, last_seen_at text, revoked_at text);
     create table roles (id text primary key, organisation_id text, code text, name text, created_at text);
     create table login_account_roles (login_account_id text, role_id text, branch_id text, created_at text);
-    create table person_roles (person_id text, role_id text, branch_id text, branch_key text, created_at text);
+    create table person_roles (person_id text, role_id text, branch_id text, branch_key text, status text default 'active', created_at text, unique(person_id, role_id, branch_key));
     create table referral_programmes (id text primary key, organisation_id text, code text, status text);
     create table referral_programme_referrer_types (referral_programme_id text, referrer_type text);
     create table referrer_profiles (id text primary key, organisation_id text, person_id text, external_referrer_id text, referral_token text, personal_link text, active integer, created_at text, updated_at text);
@@ -320,11 +716,11 @@ function seedBase(db: DatabaseSync) {
   db.prepare("insert into branches values ('branch_sion', ?, 'Sion', 'SION', 'Asia/Kolkata', 'active', ?, ?)").run(ORG_ID, NOW, NOW);
   db.prepare("insert into branches values ('branch_bandra', ?, 'Bandra', 'BANDRA', 'Asia/Kolkata', 'active', ?, ?)").run(ORG_ID, NOW, NOW);
   db.prepare("insert into roles values ('role_owner', ?, 'owner', 'Owner', ?), ('role_student', ?, 'student', 'Student', ?), ('role_counsellor', ?, 'counsellor', 'Counsellor', ?), ('role_partner', ?, 'partner', 'Partner', ?)").run(ORG_ID, NOW, ORG_ID, NOW, ORG_ID, NOW, ORG_ID, NOW);
-  db.prepare("insert into login_accounts values ('acct_owner', ?, 'owner', 'owner', '0000', 1, 'active', null, ?, ?)").run(ORG_ID, NOW, NOW);
-  db.prepare("insert into login_accounts values ('acct_owner_sion', ?, 'owner-sion', 'owner-sion', '0002', 1, 'active', null, ?, ?)").run(ORG_ID, NOW, NOW);
-  db.prepare("insert into login_accounts values ('acct_counsellor', ?, 'counsellor', 'counsellor', '0001', 1, 'active', null, ?, ?)").run(ORG_ID, NOW, NOW);
-  db.prepare("insert into login_accounts values ('acct_student', ?, 'student', 'student', '0003', 1, 'active', null, ?, ?)").run(ORG_ID, NOW, NOW);
-  db.prepare("insert into login_accounts values ('acct_partner', ?, 'partner', 'partner', '0004', 1, 'active', null, ?, ?)").run(ORG_ID, NOW, NOW);
+  db.prepare("insert into login_accounts (id, organisation_id, global_identity_id, organisation_membership_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, last_login_at, created_at, updated_at) values ('acct_owner', ?, null, null, 'owner', 'owner', '0000', 1, 'active', null, ?, ?)").run(ORG_ID, NOW, NOW);
+  db.prepare("insert into login_accounts (id, organisation_id, global_identity_id, organisation_membership_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, last_login_at, created_at, updated_at) values ('acct_owner_sion', ?, null, null, 'owner-sion', 'owner-sion', '0002', 1, 'active', null, ?, ?)").run(ORG_ID, NOW, NOW);
+  db.prepare("insert into login_accounts (id, organisation_id, global_identity_id, organisation_membership_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, last_login_at, created_at, updated_at) values ('acct_counsellor', ?, null, null, 'counsellor', 'counsellor', '0001', 1, 'active', null, ?, ?)").run(ORG_ID, NOW, NOW);
+  db.prepare("insert into login_accounts (id, organisation_id, global_identity_id, organisation_membership_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, last_login_at, created_at, updated_at) values ('acct_student', ?, null, null, 'student', 'student', '0003', 1, 'active', null, ?, ?)").run(ORG_ID, NOW, NOW);
+  db.prepare("insert into login_accounts (id, organisation_id, global_identity_id, organisation_membership_id, mobile_normalized, mobile_hash, mobile_last_four, login_enabled, status, last_login_at, created_at, updated_at) values ('acct_partner', ?, null, null, 'partner', 'partner', '0004', 1, 'active', null, ?, ?)").run(ORG_ID, NOW, NOW);
   db.prepare("insert into login_account_roles values ('acct_owner', 'role_owner', null, ?), ('acct_owner_sion', 'role_owner', 'branch_sion', ?), ('acct_counsellor', 'role_counsellor', null, ?), ('acct_student', 'role_student', null, ?), ('acct_partner', 'role_partner', null, ?)").run(NOW, NOW, NOW, NOW, NOW);
   db.prepare("insert into referral_programmes values ('prog_skill_circle', ?, 'samyak_skill_circle', 'active')").run(ORG_ID);
   db.prepare("insert into referral_programme_referrer_types values ('prog_skill_circle', 'student')").run();
@@ -349,7 +745,7 @@ async function seedStudent(
   db.prepare("insert into students values (?, ?, ?, ?, ?, 1, '2024-01-01', ?, 'active', ?, ?)").run(studentId, ORG_ID, personId, branchId, studentNumber, currentStatus, NOW, NOW);
   db.prepare("insert into person_contacts values (?, ?, 'mobile', ?, null, ?, 1, 1, null, ?, ?)").run(contactId, personId, hash, mobile.slice(-4), NOW, NOW);
   db.prepare("insert into person_contact_details values (?, 'student', null, 1, null, null, 'active', ?, ?)").run(contactId, NOW, NOW);
-  db.prepare("insert into person_roles values (?, 'role_student', null, '', ?)").run(personId, NOW);
+  db.prepare("insert into person_roles values (?, 'role_student', null, '', 'active', ?)").run(personId, NOW);
   db.prepare("insert into referrer_profiles values (?, ?, ?, ?, ?, ?, 1, ?, ?)").run(`ref_${personId}`, ORG_ID, personId, `ext_${personId}`, `token_${personId}`, `link_${personId}`, NOW, NOW);
   db.prepare("insert into enrolments values (?, ?, ?, 'course_a', null, ?, 'classroom', null, '2024-01-01', '2024-01-02', null, null, 'active', 'no', ?, ?)").run(`enrol_${personId}`, studentId, branchId, `ENR-${studentNumber}`, NOW, NOW);
   if (options.withFee !== false) db.prepare("insert into fee_agreements values (?, ?, 100000, 'full', 'active')").run(`fee_${personId}`, `enrol_${personId}`);
@@ -412,10 +808,12 @@ function all(db: DatabaseSync, sql: string, ...values: SqlValue[]) {
   return db.prepare(sql).all(...values) as Array<Record<string, any>>;
 }
 
+type D1RunHook = (db: DatabaseSync, sql: string, values: SqlValue[]) => void;
+
 class D1Adapter {
-  constructor(private readonly db: DatabaseSync) {}
+  constructor(private readonly db: DatabaseSync, private readonly onRun?: D1RunHook) {}
   prepare(sql: string) {
-    return new D1Statement(this.db, sql);
+    return new D1Statement(this.db, sql, this.onRun);
   }
   async batch(statements: D1Statement[]) {
     this.db.exec("begin");
@@ -433,7 +831,7 @@ class D1Adapter {
 
 class D1Statement {
   private values: SqlValue[] = [];
-  constructor(private readonly db: DatabaseSync, private readonly sql: string) {}
+  constructor(private readonly db: DatabaseSync, private readonly sql: string, private readonly onRun?: D1RunHook) {}
   bind(...values: SqlValue[]) {
     this.values = values;
     return this;
@@ -445,6 +843,7 @@ class D1Statement {
     return { results: this.db.prepare(this.sql).all(...this.values) } as T;
   }
   async run() {
+    this.onRun?.(this.db, this.sql, this.values);
     const result = this.db.prepare(this.sql).run(...this.values);
     return { success: true, meta: { changes: result.changes } };
   }

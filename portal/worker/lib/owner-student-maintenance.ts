@@ -1,5 +1,6 @@
 import type { AppContext } from "./http";
 import { lookupPortalProfilesByMobile, mobileHash } from "./auth-store";
+import { ensureStudentPortalMembershipForPrimaryMobile, type StudentPortalProvisioningResult } from "./student-portal-provisioning";
 import { ORG_ID } from "./tenant-context";
 import { createOpaqueId, encryptText, hmacHex } from "./crypto";
 import { normalizeIndianMobile } from "./mobile";
@@ -52,8 +53,15 @@ export type MobileChangeResult =
       newLastFour: string;
       sharedMobileMatches: SharedMobileMatch[];
       otpProfiles: number;
+      portalProvisioning: MobilePortalProvisioningResult;
     }
   | { ok: false; status: number; code: string; message: string; sharedMobileMatches?: SharedMobileMatch[] };
+
+export type MobilePortalProvisioningResult = {
+  status: StudentPortalProvisioningResult["status"];
+  ready: boolean;
+  reason: string | null;
+};
 
 export type SharedMobileMatch = {
   personId: string;
@@ -196,6 +204,13 @@ export async function changeStudentPrimaryMobile(
   }
 
   if (currentPrimary.normalized_value === lookupHash) {
+    const portalProvisioning = await provisionStudentPortalAfterMobileMaintenance(c, {
+      organisationId: ORG_ID,
+      personId: student.person_id,
+      now,
+      expectedContactId: currentPrimary.id,
+      expectedNormalizedValue: lookupHash,
+    });
     return {
       ok: true,
       studentId: student.student_id,
@@ -207,6 +222,7 @@ export async function changeStudentPrimaryMobile(
       newLastFour: normalizedMobile.slice(-4),
       sharedMobileMatches: [],
       otpProfiles: (await lookupPortalProfilesByMobile(c, normalizedMobile)).profiles.filter((profile) => profile.personId === student.person_id).length,
+      portalProvisioning: toMobilePortalProvisioningResult(portalProvisioning),
     };
   }
 
@@ -331,6 +347,13 @@ export async function changeStudentPrimaryMobile(
     return { ok: false, status: 409, code: "contact_state_invalid", message: "Student contact state needs review before another change." };
   }
 
+  const portalProvisioning = await provisionStudentPortalAfterMobileMaintenance(c, {
+    organisationId: ORG_ID,
+    personId: student.person_id,
+    now,
+    expectedContactId: newContactId,
+    expectedNormalizedValue: lookupHash,
+  });
   const otpProfiles = (await lookupPortalProfilesByMobile(c, normalizedMobile)).profiles.filter((profile) => profile.personId === student.person_id).length;
   return {
     ok: true,
@@ -343,6 +366,7 @@ export async function changeStudentPrimaryMobile(
     newLastFour: normalizedMobile.slice(-4),
     sharedMobileMatches,
     otpProfiles,
+    portalProvisioning: toMobilePortalProvisioningResult(portalProvisioning),
   };
 }
 
@@ -554,4 +578,41 @@ function changed(result: D1RunResult | null | undefined) {
 
 function maskMobileByLastFour(lastFour: string) {
   return lastFour ? `******${lastFour}` : "Protected";
+}
+
+function toMobilePortalProvisioningResult(result: StudentPortalProvisioningResult): MobilePortalProvisioningResult {
+  return {
+    status: result.status,
+    ready: result.status === "provisioned" || result.status === "already_provisioned",
+    reason: result.reason || null,
+  };
+}
+
+async function provisionStudentPortalAfterMobileMaintenance(
+  c: AppContext,
+  input: {
+    organisationId: string;
+    personId: string;
+    now: string;
+    expectedContactId: string;
+    expectedNormalizedValue: string;
+  },
+): Promise<StudentPortalProvisioningResult> {
+  try {
+    return await ensureStudentPortalMembershipForPrimaryMobile(c, {
+      organisationId: input.organisationId,
+      personId: input.personId,
+      now: input.now,
+      expectedPrimaryMobile: {
+        contactId: input.expectedContactId,
+        normalizedValue: input.expectedNormalizedValue,
+      },
+      studentRolePolicy: "preserve_existing_status",
+    });
+  } catch {
+    return {
+      status: "portal_provisioning_failed",
+      reason: "portal_provisioning_failed",
+    };
+  }
 }
