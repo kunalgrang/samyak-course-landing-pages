@@ -509,6 +509,191 @@ describe("certificate application workflow", () => {
     db.close();
   });
 
+  it("approves course completion from confirmed and not-started applications without issuing certificates", async () => {
+    const { c, db, staff } = testContext();
+    seedCertificateStudent(db, "confirmed_completion", "confirmed", null);
+    seedCertificateStudent(db, "not_started_completion", "not_started", null);
+
+    for (const suffix of ["confirmed_completion", "not_started_completion"] as const) {
+      const submitted = await submitCertificateApplication(
+        c,
+        { organisationId: "org_samyak", personId: `person_${suffix}` },
+        applicationInput({ enrolmentId: `enrolment_${suffix}` }),
+      );
+      if (!submitted.ok) throw new Error(`expected ${suffix} application submission`);
+
+      const approved = await approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-18");
+      const retry = await approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-18");
+      const eligibility = await certificateEligibility(c, { organisationId: "org_samyak", enrolmentId: `enrolment_${suffix}` });
+
+      expect(approved).toMatchObject({ ok: true, idempotent: false });
+      expect(retry).toMatchObject({ ok: true, idempotent: true });
+      expect(row(db, "select status, actual_completion_date from enrolments where id = ?", `enrolment_${suffix}`)).toMatchObject({ status: "completed", actual_completion_date: "2026-08-18" });
+      expect(row(db, "select current_status from students where id = ?", `student_${suffix}`)).toMatchObject({ current_status: "completed" });
+      expect(row(db, "select status, completion_date from certificate_applications where id = ?", submitted.application.id)).toMatchObject({ status: "approved", completion_date: "2026-08-18" });
+      expect(eligibility).toMatchObject({ eligible: true, reasons: [] });
+      expect(count(db, `certificate_application_events where application_id = '${submitted.application.id}' and action = 'approved'`)).toBe(1);
+    }
+
+    expect(count(db, "certificates where organisation_id = 'org_samyak' and enrolment_id in ('enrolment_confirmed_completion', 'enrolment_not_started_completion')")).toBe(0);
+    db.close();
+  });
+
+  it("approves course completion from an on-hold application without issuing a certificate", async () => {
+    const { c, db, staff } = testContext();
+    const submitted = await submitCertificateApplication(
+      c,
+      { organisationId: "org_samyak", personId: "person_on_hold" },
+      applicationInput({ enrolmentId: "enrolment_on_hold" }),
+    );
+    if (!submitted.ok) throw new Error("expected on-hold application submission");
+
+    expect(row(db, "select status, actual_completion_date from enrolments where id = 'enrolment_on_hold'")).toMatchObject({ status: "on_hold", actual_completion_date: null });
+    expect(row(db, "select status, completion_date, reviewed_at, reviewed_by_actor_id from certificate_applications where id = ?", submitted.application.id)).toMatchObject({
+      status: "submitted",
+      completion_date: null,
+      reviewed_at: null,
+      reviewed_by_actor_id: null,
+    });
+
+    const approved = await approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-18");
+
+    expect(approved).toMatchObject({ ok: true, idempotent: false });
+    expect(row(db, "select status, actual_completion_date from enrolments where id = 'enrolment_on_hold'")).toMatchObject({ status: "completed", actual_completion_date: "2026-08-18" });
+    expect(row(db, "select status, completion_date, reviewed_by_actor_id from certificate_applications where id = ?", submitted.application.id)).toMatchObject({
+      status: "approved",
+      completion_date: "2026-08-18",
+      reviewed_by_actor_id: "login_staff",
+    });
+    expect(row(db, "select reviewed_at from certificate_applications where id = ?", submitted.application.id)?.reviewed_at).toEqual(expect.any(String));
+    expect(row(db, "select current_status from students where id = 'student_on_hold'")).toMatchObject({ current_status: "completed" });
+    expect(count(db, `certificate_application_events where application_id = '${submitted.application.id}' and action = 'approved'`)).toBe(1);
+    expect(count(db, "certificates where organisation_id = 'org_samyak' and enrolment_id = 'enrolment_on_hold'")).toBe(0);
+    db.close();
+  });
+
+  it("keeps non-finalised enrolment statuses blocked from completion approval", async () => {
+    const { c, db, staff } = testContext();
+
+    for (const status of ["provisional", "transferred", "dropped_out", "cancelled", "expired"] as const) {
+      const suffix = `blocked_${status}`;
+      seedCertificateStudent(db, suffix, "active", null);
+      const submitted = await submitCertificateApplication(
+        c,
+        { organisationId: "org_samyak", personId: `person_${suffix}` },
+        applicationInput({ enrolmentId: `enrolment_${suffix}` }),
+      );
+      if (!submitted.ok) throw new Error(`expected ${suffix} application submission`);
+      db.prepare("update enrolments set status = ?, updated_at = ? where id = ?").run(status, now(), `enrolment_${suffix}`);
+
+      const approved = await approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-18");
+
+      expect(approved).toMatchObject({ ok: false, status: 409, code: "invalid_enrolment_status" });
+      expect(row(db, "select status, actual_completion_date from enrolments where id = ?", `enrolment_${suffix}`)).toMatchObject({ status, actual_completion_date: null });
+      expect(row(db, "select status, completion_date from certificate_applications where id = ?", submitted.application.id)).toMatchObject({ status: "submitted", completion_date: null });
+      expect(count(db, `certificate_application_events where application_id = '${submitted.application.id}' and action = 'approved'`)).toBe(0);
+    }
+
+    db.close();
+  });
+
+  it("returns conflict without partial writes when the enrolment changes after review", async () => {
+    const { c, db, staff } = testContext({
+      beforeBatch(database) {
+        database.prepare("update enrolments set status = 'cancelled', updated_at = ? where id = 'enrolment_active'").run("2026-08-17T00:01:00.000Z");
+      },
+    });
+    const submitted = await submitCertificateApplication(c, { organisationId: "org_samyak", personId: "person_active" }, applicationInput());
+    if (!submitted.ok) throw new Error("expected application submission");
+
+    const approved = await approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-18");
+
+    expect(approved).toMatchObject({ ok: false, status: 409, code: "approval_state_changed" });
+    expect(row(db, "select status, actual_completion_date from enrolments where id = 'enrolment_active'")).toMatchObject({ status: "cancelled", actual_completion_date: null });
+    expect(row(db, "select status, completion_date, reviewed_at, reviewed_by_actor_id from certificate_applications where id = ?", submitted.application.id)).toMatchObject({
+      status: "submitted",
+      completion_date: null,
+      reviewed_at: null,
+      reviewed_by_actor_id: null,
+    });
+    expect(count(db, `certificate_application_events where application_id = '${submitted.application.id}' and action = 'approved'`)).toBe(0);
+    db.close();
+  });
+
+  it("returns conflict without partial writes when the application changes after review", async () => {
+    const { c, db, staff } = testContext({
+      beforeBatch(database) {
+        database.prepare("update certificate_applications set status = 'cancelled', updated_at = ? where enrolment_id = 'enrolment_active'").run("2026-08-17T00:01:00.000Z");
+      },
+    });
+    const submitted = await submitCertificateApplication(c, { organisationId: "org_samyak", personId: "person_active" }, applicationInput());
+    if (!submitted.ok) throw new Error("expected application submission");
+
+    const approved = await approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-18");
+
+    expect(approved).toMatchObject({ ok: false, status: 409, code: "approval_state_changed" });
+    expect(row(db, "select status, actual_completion_date from enrolments where id = 'enrolment_active'")).toMatchObject({ status: "active", actual_completion_date: null });
+    expect(row(db, "select status, completion_date, reviewed_at, reviewed_by_actor_id from certificate_applications where id = ?", submitted.application.id)).toMatchObject({
+      status: "cancelled",
+      completion_date: null,
+      reviewed_at: null,
+      reviewed_by_actor_id: null,
+    });
+    expect(count(db, `certificate_application_events where application_id = '${submitted.application.id}' and action = 'approved'`)).toBe(0);
+    db.close();
+  });
+
+  it("allows submitted applications for completed enrolments only when the established date matches", async () => {
+    const { c, db, staff } = testContext();
+    const submitted = await submitCertificateApplication(c, { organisationId: "org_samyak", personId: "person_completed" }, applicationInput({ enrolmentId: "enrolment_completed" }));
+    if (!submitted.ok) throw new Error("expected completed enrolment application submission");
+
+    const approved = await approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-10");
+
+    expect(approved).toMatchObject({ ok: true, idempotent: false });
+    expect(row(db, "select status, actual_completion_date from enrolments where id = 'enrolment_completed'")).toMatchObject({ status: "completed", actual_completion_date: "2026-08-10" });
+    expect(row(db, "select status, completion_date, reviewed_by_actor_id from certificate_applications where id = ?", submitted.application.id)).toMatchObject({
+      status: "approved",
+      completion_date: "2026-08-10",
+      reviewed_by_actor_id: "login_staff",
+    });
+    expect(count(db, `certificate_application_events where application_id = '${submitted.application.id}' and action = 'approved'`)).toBe(1);
+    db.close();
+  });
+
+  it("rejects conflicting completion dates without rewriting approved history", async () => {
+    const { c, db, staff } = testContext();
+    const submitted = await submitCertificateApplication(c, { organisationId: "org_samyak", personId: "person_active" }, applicationInput());
+    if (!submitted.ok) throw new Error("expected application submission");
+    await expect(approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-18")).resolves.toMatchObject({ ok: true });
+
+    const conflict = await approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-19");
+
+    expect(conflict).toMatchObject({ ok: false, status: 409, code: "completion_date_conflict" });
+    expect(row(db, "select status, actual_completion_date from enrolments where id = 'enrolment_active'")).toMatchObject({ status: "completed", actual_completion_date: "2026-08-18" });
+    expect(row(db, "select status, completion_date from certificate_applications where id = ?", submitted.application.id)).toMatchObject({ status: "approved", completion_date: "2026-08-18" });
+    expect(count(db, `certificate_application_events where application_id = '${submitted.application.id}' and action = 'approved'`)).toBe(1);
+    db.close();
+  });
+
+  it("rejects established enrolment completion-date conflicts without mutation", async () => {
+    const { c, db, staff } = testContext();
+    const submitted = await submitCertificateApplication(c, { organisationId: "org_samyak", personId: "person_completed" }, applicationInput({ enrolmentId: "enrolment_completed" }));
+    if (!submitted.ok) throw new Error("expected completed enrolment application submission");
+
+    const conflict = await approveCourseCompletionFromApplication(c, staff, submitted.application.id, "2026-08-18");
+
+    expect(conflict).toMatchObject({ ok: false, status: 409, code: "completion_date_conflict" });
+    expect(row(db, "select status, actual_completion_date from enrolments where id = 'enrolment_completed'")).toMatchObject({ status: "completed", actual_completion_date: "2026-08-10" });
+    expect(row(db, "select status, completion_date, reviewed_at from certificate_applications where id = ?", submitted.application.id)).toMatchObject({
+      status: "submitted",
+      completion_date: null,
+      reviewed_at: null,
+    });
+    expect(count(db, `certificate_application_events where application_id = '${submitted.application.id}' and action = 'approved'`)).toBe(0);
+    db.close();
+  });
+
   it("rejects invalid completion dates and keeps needs-attention recoverable", async () => {
     const { c, db, staff } = testContext();
     const submitted = await submitCertificateApplication(c, { organisationId: "org_samyak", personId: "person_active" }, applicationInput());
@@ -584,7 +769,7 @@ describe("certificate application workflow", () => {
   });
 });
 
-function testContext() {
+function testContext(options: { beforeBatch?: (db: DatabaseSync) => void } = {}) {
   const db = migratedSeededDb();
   seedStaff(db);
   seedCertificateStudents(db);
@@ -592,7 +777,7 @@ function testContext() {
     db,
     c: {
       env: {
-        DB: new SqliteD1(db),
+        DB: new SqliteD1(db, options),
         ENVIRONMENT: "production",
         CERTIFICATE_VERIFICATION_ORIGIN: "https://edu.rememo.in",
       },
@@ -883,11 +1068,14 @@ function tomorrowInIndia() {
 }
 
 class SqliteD1 {
-  constructor(private readonly db: DatabaseSync) {}
+  private batchCount = 0;
+  constructor(private readonly db: DatabaseSync, private readonly options: { beforeBatch?: (db: DatabaseSync) => void } = {}) {}
   prepare(sql: string) {
     return new SqliteD1Statement(this.db, sql, []);
   }
   async batch(statements: SqliteD1Statement[]) {
+    this.batchCount += 1;
+    if (this.batchCount === 2) this.options.beforeBatch?.(this.db);
     this.db.exec("begin");
     try {
       const results = statements.map((statement) => statement.runSync());

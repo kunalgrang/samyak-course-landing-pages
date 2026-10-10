@@ -357,6 +357,8 @@ export async function getStaffCertificateApplication(c: AppContext, staff: Staff
        enrolments.enrolment_number,
        enrolments.joining_date,
        enrolments.actual_completion_date,
+       enrolments.updated_at as enrolment_updated_at,
+       certificate_applications.updated_at as application_updated_at,
        batches.name as batch_name
      from certificate_applications
      join people on people.id = certificate_applications.person_id
@@ -428,24 +430,114 @@ export async function approveCourseCompletionFromApplication(c: AppContext, staf
   const current = await getStaffCertificateApplication(c, staff, applicationId);
   if (!current) return { ok: false as const, status: 404, code: "application_not_found", message: "Certificate application was not found." };
   if (current.status === "certificate_issued") return { ok: false as const, status: 409, code: "already_issued", message: "This application already has an issued certificate." };
-  if (current.status === "approved" && current.enrolment_status === "completed" && current.completion_date === completionDate) {
-    return { ok: true as const, idempotent: true };
-  }
   const validation = validateCompletionDate(completionDate, String(current.joining_date));
   if (!validation.ok) return validation;
+  if (current.completion_date && current.completion_date !== completionDate) {
+    return { ok: false as const, status: 409, code: "completion_date_conflict", message: "This application was already approved with a different completion date." };
+  }
+  if (current.actual_completion_date && current.actual_completion_date !== completionDate) {
+    return { ok: false as const, status: 409, code: "completion_date_conflict", message: "This enrolment already has a different completion date." };
+  }
+  if (current.status === "approved") {
+    if (current.enrolment_status === "completed" && current.completion_date === completionDate && current.actual_completion_date === completionDate) {
+      return { ok: true as const, idempotent: true };
+    }
+    return { ok: false as const, status: 409, code: "approval_state_changed", message: "This application changed while approval was in progress." };
+  }
   if (!["submitted", "needs_attention", "approved"].includes(String(current.status))) {
     return { ok: false as const, status: 409, code: "invalid_status", message: "This application cannot be approved." };
   }
-  if (!["active", "on_hold", "completed"].includes(String(current.enrolment_status))) {
+  if (!APPLICATION_ELIGIBLE_ENROLMENT_STATUSES.includes(String(current.enrolment_status) as (typeof APPLICATION_ELIGIBLE_ENROLMENT_STATUSES)[number])) {
     return { ok: false as const, status: 409, code: "invalid_enrolment_status", message: "This enrolment cannot be completed from a certificate application." };
   }
   const now = new Date().toISOString();
-  await c.env.DB.batch([
+  const previousCompletionDate = current.actual_completion_date ?? null;
+  const previousApplicationCompletionDate = current.completion_date ?? null;
+  const batchResult = await c.env.DB.batch([
     c.env.DB.prepare(
       `update enrolments
        set status = 'completed', actual_completion_date = ?, updated_at = ?
-       where id = ? and branch_id = ? and status in ('active', 'on_hold', 'completed')`,
-    ).bind(completionDate, now, current.enrolment_id, current.branch_id),
+       where id = ?
+         and branch_id = ?
+         and student_id = ?
+         and course_id = ?
+         and status = ?
+         and updated_at = ?
+         and ((actual_completion_date is null and ? is null) or actual_completion_date = ?)
+         and (actual_completion_date is null or actual_completion_date = ?)
+         and exists (
+           select 1
+           from certificate_applications
+           where certificate_applications.id = ?
+             and certificate_applications.organisation_id = ?
+             and certificate_applications.branch_id = enrolments.branch_id
+             and certificate_applications.student_id = enrolments.student_id
+             and certificate_applications.enrolment_id = enrolments.id
+             and certificate_applications.course_id = enrolments.course_id
+             and certificate_applications.status = ?
+             and certificate_applications.updated_at = ?
+             and ((certificate_applications.completion_date is null and ? is null) or certificate_applications.completion_date = ?)
+         )`,
+    ).bind(
+      completionDate,
+      now,
+      current.enrolment_id,
+      current.branch_id,
+      current.student_id,
+      current.course_id,
+      current.enrolment_status,
+      current.enrolment_updated_at,
+      previousCompletionDate,
+      previousCompletionDate,
+      completionDate,
+      applicationId,
+      organisationId,
+      current.status,
+      current.application_updated_at,
+      previousApplicationCompletionDate,
+      previousApplicationCompletionDate,
+    ),
+    c.env.DB.prepare(
+      `update certificate_applications
+       set status = 'approved', completion_date = ?, reviewed_at = ?, reviewed_by_actor_id = ?, updated_at = ?
+       where id = ?
+         and organisation_id = ?
+         and branch_id = ?
+         and student_id = ?
+         and enrolment_id = ?
+         and course_id = ?
+         and status = ?
+         and updated_at = ?
+         and ((completion_date is null and ? is null) or completion_date = ?)
+         and exists (
+           select 1
+           from enrolments
+           where enrolments.id = certificate_applications.enrolment_id
+             and enrolments.branch_id = certificate_applications.branch_id
+             and enrolments.student_id = certificate_applications.student_id
+             and enrolments.course_id = certificate_applications.course_id
+             and enrolments.status = 'completed'
+             and enrolments.actual_completion_date = ?
+             and enrolments.updated_at = ?
+         )`,
+    ).bind(
+      completionDate,
+      now,
+      staff.loginAccountId,
+      now,
+      applicationId,
+      organisationId,
+      current.branch_id,
+      current.student_id,
+      current.enrolment_id,
+      current.course_id,
+      current.status,
+      current.application_updated_at,
+      previousApplicationCompletionDate,
+      previousApplicationCompletionDate,
+      completionDate,
+      now,
+    ),
     c.env.DB.prepare(
       `update students
        set current_status = case
@@ -464,27 +556,39 @@ export async function approveCourseCompletionFromApplication(c: AppContext, staf
          else 'completed'
        end,
        updated_at = ?
-       where id = ? and organisation_id = ? and current_status in ('active', 'on_hold', 'completed')`,
-    ).bind(current.enrolment_id, current.enrolment_id, now, current.student_id, organisationId),
-    c.env.DB.prepare(
-      `update certificate_applications
-       set status = 'approved', completion_date = ?, reviewed_at = ?, reviewed_by_actor_id = ?, updated_at = ?
-       where id = ? and organisation_id = ? and status in ('submitted', 'needs_attention', 'approved')`,
-    ).bind(completionDate, now, staff.loginAccountId, now, applicationId, organisationId),
-    applicationEvent(c, {
+       where id = ?
+         and organisation_id = ?
+         and current_status in ('active', 'on_hold', 'completed')
+         and exists (
+           select 1
+           from certificate_applications
+           where certificate_applications.id = ?
+             and certificate_applications.organisation_id = students.organisation_id
+             and certificate_applications.student_id = students.id
+             and certificate_applications.status = 'approved'
+             and certificate_applications.completion_date = ?
+             and certificate_applications.reviewed_at = ?
+             and certificate_applications.reviewed_by_actor_id = ?
+         )`,
+    ).bind(current.enrolment_id, current.enrolment_id, now, current.student_id, organisationId, applicationId, completionDate, now, staff.loginAccountId),
+    approvalApplicationEvent(c, {
       organisationId,
       applicationId,
       branchId: String(current.branch_id),
       actorLoginAccountId: staff.loginAccountId,
       actorPersonId: staff.activePersonId,
-      action: "approved",
       fromStatus: String(current.status),
-      toStatus: "approved",
-      note: null,
-      metadata: { enrolmentId: current.enrolment_id, completionDate },
+      enrolmentId: String(current.enrolment_id),
+      completionDate,
       now,
     }),
   ]);
+  const enrolmentChanges = affectedRows(batchResult[0]);
+  const applicationChanges = affectedRows(batchResult[1]);
+  const eventChanges = affectedRows(batchResult[3]);
+  if (enrolmentChanges !== 1 || applicationChanges !== 1 || eventChanges !== 1) {
+    return { ok: false as const, status: 409, code: "approval_state_changed", message: "This application changed while approval was in progress." };
+  }
   return { ok: true as const, idempotent: false };
 }
 
@@ -616,6 +720,11 @@ function normalizeComment(value: string | null | undefined) {
   return text ? text : null;
 }
 
+function affectedRows(result: unknown) {
+  const meta = (result as { meta?: { changes?: number; rows_written?: number } } | undefined)?.meta;
+  return Number(meta?.changes ?? meta?.rows_written ?? 0);
+}
+
 async function loadStudentEnrolmentRow(c: AppContext, organisationId: string, personId: string, enrolmentId: string) {
   return c.env.DB.prepare(
     `select
@@ -733,5 +842,54 @@ function applicationEvent(
     input.note,
     JSON.stringify(input.metadata),
     input.now,
+  );
+}
+
+function approvalApplicationEvent(
+  c: AppContext,
+  input: {
+    organisationId: string;
+    applicationId: string;
+    branchId: string;
+    actorLoginAccountId: string;
+    actorPersonId: string | null;
+    fromStatus: string;
+    enrolmentId: string;
+    completionDate: string;
+    now: string;
+  },
+) {
+  return c.env.DB.prepare(
+    `insert into certificate_application_events
+       (id, organisation_id, branch_id, application_id, actor_login_account_id, actor_person_id,
+        action, from_status, to_status, note, metadata_json, created_at)
+     select ?, ?, ?, ?, ?, ?, 'approved', ?, 'approved', null, ?, ?
+     where exists (
+       select 1
+       from certificate_applications
+       where id = ?
+         and organisation_id = ?
+         and branch_id = ?
+         and status = 'approved'
+         and completion_date = ?
+         and reviewed_at = ?
+         and reviewed_by_actor_id = ?
+     )`,
+  ).bind(
+    createOpaqueId("certappevt"),
+    input.organisationId,
+    input.branchId,
+    input.applicationId,
+    input.actorLoginAccountId,
+    input.actorPersonId,
+    input.fromStatus,
+    JSON.stringify({ enrolmentId: input.enrolmentId, completionDate: input.completionDate }),
+    input.now,
+    input.applicationId,
+    input.organisationId,
+    input.branchId,
+    input.completionDate,
+    input.now,
+    input.actorLoginAccountId,
   );
 }
