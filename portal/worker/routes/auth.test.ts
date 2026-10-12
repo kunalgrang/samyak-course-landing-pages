@@ -83,6 +83,10 @@ class FakeD1Statement {
       }
       return (this.db.isLinkedProfileAvailable(String(this.values[0]), String(this.values[1]), String(this.values[2] || "org_samyak")) ? { ok: 1 } : null) as T;
     }
+    if (sql.includes("select id, external_referrer_id, personal_link, active, created_at from referrer_profiles where organisation_id = ? and person_id = ? limit 1")) {
+      if (this.db.failReferrerProfileStateLookup) throw new Error("simulated referrer profile lookup failure");
+      return (this.db.referrerProfiles.find((row) => row.organisation_id === this.values[0] && row.person_id === this.values[1]) ?? null) as T;
+    }
     if (sql.includes("select * from referrer_profiles where organisation_id = ? and person_id = ? and active = 1")) {
       return (this.db.referrerProfiles.find((row) => row.organisation_id === this.values[0] && row.person_id === this.values[1] && row.active === 1) ?? null) as T;
     }
@@ -364,6 +368,7 @@ class FakeD1Statement {
 }
 
 class FakeD1 {
+  failReferrerProfileStateLookup = false;
   writes: Array<{ sql: string; values: unknown[] }> = [];
   otpChallenges: Row[] = [];
   loginAccounts: Row[] = [];
@@ -1037,6 +1042,60 @@ async function jsonBody(response: Response): Promise<Row> {
   return (await response.json()) as Row;
 }
 
+function addLinkedReferralLearner(
+  db: FakeD1,
+  loginAccountId: string,
+  options: { suffix: string; accessType: string; roleId?: "role_student" | "role_alumni"; activeReferrer?: boolean; includeReferrer?: boolean },
+) {
+  const roleId = options.roleId ?? "role_student";
+  const personId = `person_${options.suffix}`;
+  const externalReferrerId = options.suffix.toUpperCase();
+  db.people.push({
+    id: personId,
+    organisation_id: "org_samyak",
+    home_branch_id: "branch_sion",
+    full_name: `Linked ${options.suffix}`,
+    public_name: `Linked ${options.suffix}`,
+    status: "active",
+    created_at: "2026-07-01",
+    updated_at: "2026-07-01",
+  });
+  db.students.push({
+    id: `student_${options.suffix}`,
+    organisation_id: "org_samyak",
+    person_id: personId,
+    home_branch_id: "branch_sion",
+    student_number: `SYK-SION-${options.suffix.toUpperCase()}`,
+    sequence_number: db.students.length + 1,
+    student_since: "2026-07-01",
+    current_status: roleId === "role_alumni" ? "completed" : "active",
+    portal_status: "active",
+  });
+  db.personRoles.push({ person_id: personId, role_id: roleId, branch_id: null, branch_key: "", status: "active", created_at: "2026-07-01" });
+  db.loginAccountPeople.push({
+    login_account_id: loginAccountId,
+    person_id: personId,
+    access_type: options.accessType,
+    is_default: 0,
+    is_available: 1,
+    created_at: "2026-07-01",
+  });
+  if (options.includeReferrer ?? true) {
+    db.referrerProfiles.push({
+      id: `ref_${options.suffix}`,
+      organisation_id: "org_samyak",
+      person_id: personId,
+      external_referrer_id: externalReferrerId,
+      referral_token: `${externalReferrerId}_TOKEN`,
+      personal_link: `https://example.test/r/${externalReferrerId}_TOKEN`,
+      active: options.activeReferrer === false ? 0 : 1,
+      created_at: "2026-07-01",
+      updated_at: "2026-07-01",
+    });
+  }
+  return { personId, externalReferrerId };
+}
+
 function compactSql(sql: string) {
   return sql.toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -1285,6 +1344,200 @@ describe("auth routes", () => {
         activeProfile: expect.objectContaining({ personId: "person_self_role_only", effectiveRoles: expect.arrayContaining(["student"]) }),
       },
     });
+
+    const referrerProfilesBefore = db.referrerProfiles.length;
+    const referralLinksBefore = db.referralLinks.length;
+    const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: cookie } }, env(db));
+    expect(referrals.status).toBe(200);
+    await expect(referrals.json()).resolves.toMatchObject({
+      success: true,
+      state: "not_provisioned",
+      message: "Referral access is not yet enabled for this profile. Please contact your institute for assistance.",
+    });
+    expect(db.referrerProfiles).toHaveLength(referrerProfilesBefore);
+    expect(db.referralLinks).toHaveLength(referralLinksBefore);
+
+    const link = await app.request(
+      "http://localhost/api/referrals/link",
+      { method: "POST", headers: { Origin: "http://localhost", Cookie: cookie } },
+      env(db),
+    );
+    expect(link.status).toBe(403);
+    await expect(link.json()).resolves.toMatchObject({ success: false, error: { code: "referrer_not_eligible" } });
+    expect(db.referrerProfiles).toHaveLength(referrerProfilesBefore);
+    expect(db.referralLinks).toHaveLength(referralLinksBefore);
+  });
+
+  it("returns a not-provisioned referral dashboard for a self linked alumni profile without a referrer profile", async () => {
+    const db = new FakeD1();
+    installFetch({ profiles: [profile("STU1", "Asha Student", "Asha", "Student"), profile("ALU1", "Ravi Alumni", "Ravi", "Alumni")] });
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const cookie = sessionCookie(verifyResponse);
+    db.referrerProfiles = db.referrerProfiles.filter((row) => row.person_id !== "person_alu1");
+
+    const selected = await app.request(
+      "http://localhost/api/auth/select-profile",
+      {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ personId: "person_alu1" }),
+      },
+      env(db),
+    );
+    expect(selected.status).toBe(200);
+
+    const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: cookie } }, env(db));
+    expect(referrals.status).toBe(200);
+    await expect(referrals.json()).resolves.toMatchObject({
+      success: true,
+      state: "not_provisioned",
+    });
+  });
+
+  it("returns an inactive referral dashboard state without reactivating the profile", async () => {
+    const db = new FakeD1();
+    installFetch();
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const cookie = sessionCookie(verifyResponse);
+    db.referrerProfiles.find((row) => row.person_id === "person_stu1")!.active = 0;
+
+    const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: cookie } }, env(db));
+    expect(referrals.status).toBe(200);
+    await expect(referrals.json()).resolves.toMatchObject({
+      success: true,
+      state: "inactive",
+      message: "Referral access is not active for this profile. Please contact your institute for assistance.",
+    });
+    expect(db.referrerProfiles.find((row) => row.person_id === "person_stu1")!.active).toBe(0);
+  });
+
+  it.each([
+    { accessType: "shared_family", suffix: "shared_referral_reader" },
+    { accessType: "guardian", suffix: "guardian_referral_reader" },
+    { accessType: "staff", suffix: "staff_referral_reader", staffAccountRole: true },
+  ])("denies a non-self $accessType profile before reading its active referral dashboard", async ({ accessType, suffix, staffAccountRole }) => {
+    const db = new FakeD1();
+    installFetch();
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const cookie = sessionCookie(verifyResponse);
+    const accountId = String(db.loginAccounts[0].id);
+    if (staffAccountRole) {
+      db.loginAccountRoles.push({ login_account_id: accountId, role_id: "role_owner", branch_id: "branch_sion", created_at: "2026-07-01" });
+    }
+    const linked = addLinkedReferralLearner(db, accountId, { suffix, accessType });
+
+    const selected = await app.request(
+      "http://localhost/api/auth/select-profile",
+      {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ personId: linked.personId }),
+      },
+      env(db),
+    );
+    expect(selected.status).toBe(200);
+
+    const referrerProfilesBefore = db.referrerProfiles.length;
+    const referralLinksBefore = db.referralLinks.length;
+    const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: cookie } }, env(db));
+    expect(referrals.status).toBe(403);
+    const body = await jsonBody(referrals);
+    expect(body).toMatchObject({ success: false, error: { code: "student_profile_required" } });
+    expect(JSON.stringify(body)).not.toContain(`${linked.externalReferrerId}_TOKEN`);
+    expect(JSON.stringify(body)).not.toContain(`https://example.test/r/${linked.externalReferrerId}_TOKEN`);
+    expect(db.referrerProfiles).toHaveLength(referrerProfilesBefore);
+    expect(db.referralLinks).toHaveLength(referralLinksBefore);
+
+    const link = await app.request(
+      "http://localhost/api/referrals/link",
+      { method: "POST", headers: { Origin: "http://localhost", Cookie: cookie } },
+      env(db),
+    );
+    expect(link.status).toBe(403);
+    await expect(link.json()).resolves.toMatchObject({ success: false, error: { code: "referrer_not_eligible" } });
+    expect(db.referrerProfiles).toHaveLength(referrerProfilesBefore);
+    expect(db.referralLinks).toHaveLength(referralLinksBefore);
+  });
+
+  it("denies a non-self staff-linked student before disclosing that no referral profile exists", async () => {
+    const db = new FakeD1();
+    installFetch();
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const cookie = sessionCookie(verifyResponse);
+    const accountId = String(db.loginAccounts[0].id);
+    db.loginAccountRoles.push({ login_account_id: accountId, role_id: "role_owner", branch_id: "branch_sion", created_at: "2026-07-01" });
+    const linked = addLinkedReferralLearner(db, accountId, { suffix: "staff_no_referrer", accessType: "staff", includeReferrer: false });
+
+    const selected = await app.request(
+      "http://localhost/api/auth/select-profile",
+      {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ personId: linked.personId }),
+      },
+      env(db),
+    );
+    expect(selected.status).toBe(200);
+
+    const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: cookie } }, env(db));
+    expect(referrals.status).toBe(403);
+    await expect(referrals.json()).resolves.toMatchObject({ success: false, error: { code: "student_profile_required" } });
+    expect(db.referrerProfiles.some((row) => row.person_id === linked.personId)).toBe(false);
+    expect(db.referralLinks.some((row) => row.person_id === linked.personId || row.referrer_profile_id === `ref_${linked.externalReferrerId.toLowerCase()}`)).toBe(false);
+  });
+
+  it("keeps a self-linked alumni referral dashboard available", async () => {
+    const db = new FakeD1();
+    installFetch({ profiles: [profile("STU1", "Asha Student", "Asha", "Student"), profile("ALU1", "Ravi Alumni", "Ravi", "Alumni")] });
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    const cookie = sessionCookie(verifyResponse);
+
+    const selected = await app.request(
+      "http://localhost/api/auth/select-profile",
+      {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ personId: "person_alu1" }),
+      },
+      env(db),
+    );
+    expect(selected.status).toBe(200);
+
+    const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: cookie } }, env(db));
+    expect(referrals.status).toBe(200);
+    await expect(referrals.json()).resolves.toMatchObject({
+      success: true,
+      state: "available",
+      profile: expect.objectContaining({ externalReferrerId: "ALU1" }),
+    });
+  });
+
+  it("requires student or alumni role before returning the referrals dashboard", async () => {
+    const db = new FakeD1();
+    installFetch();
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    db.personRoles = db.personRoles.filter((row) => row.person_id !== "person_stu1");
+    const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: sessionCookie(verifyResponse) } }, env(db));
+    expect(referrals.status).toBe(403);
+    await expect(referrals.json()).resolves.toMatchObject({ success: false, error: { code: "student_profile_required" } });
+  });
+
+  it("keeps genuine referral dashboard database failures as infrastructure errors", async () => {
+    const db = new FakeD1();
+    installFetch();
+    const otpResponse = await requestOtp(db);
+    const verifyResponse = await verifyOtp(db, String((await jsonBody(otpResponse)).challengeId), "123456");
+    db.failReferrerProfileStateLookup = true;
+
+    const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: sessionCookie(verifyResponse) } }, env(db));
+    expect(referrals.status).toBe(503);
+    await expect(referrals.json()).resolves.toMatchObject({ success: false, error: { code: "dashboard_unavailable" } });
   });
 
   it("handles synthetic shared-mobile scale with one login account and distinct linked people", async () => {
@@ -1382,7 +1635,7 @@ describe("auth routes", () => {
 
     const referrals = await app.request("http://localhost/api/student/referrals", { headers: { Cookie: cookie } }, env(db));
     expect(referrals.status).toBe(200);
-    await expect(referrals.json()).resolves.toMatchObject({ success: true, referrals: [] });
+    await expect(referrals.json()).resolves.toMatchObject({ success: true, state: "available", referrals: [] });
     expect(fetchMock).not.toHaveBeenCalled();
 
     const home = await app.request("http://localhost/api/student/home", { headers: { Cookie: cookie } }, env(db));

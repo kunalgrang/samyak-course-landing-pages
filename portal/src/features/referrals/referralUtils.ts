@@ -1,5 +1,7 @@
 import type { ReferralDashboard } from "../../lib/api";
 
+type AvailableReferralDashboard = Extract<ReferralDashboard, { state: "available" }>;
+
 export const rewardSlabs = [
   { fee: "Below \u20B910,000", cash: 500, credit: 750 },
   { fee: "\u20B910,000-\u20B919,999", cash: 750, credit: 1000 },
@@ -45,6 +47,6 @@ export async function copyReferralLink(personalLink: string, clipboard: Pick<Cli
   await clipboard.writeText(personalLink);
 }
 
-export function recentReferrals(dashboard: ReferralDashboard, limit = 5) {
+export function recentReferrals(dashboard: AvailableReferralDashboard, limit = 5) {
   return dashboard.referrals.slice(0, limit);
 }

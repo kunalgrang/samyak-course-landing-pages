@@ -7,7 +7,7 @@ import type { ReferralDashboard, SessionResponse, StaffReferralList, StudentHome
 import { ProfileContent } from "../profile/ProfilePage";
 import { OverviewContent } from "../../routes/ShellHomePage";
 import { RulesPage } from "../../routes/RulesPage";
-import { ReferralsContent } from "./ReferralsPage";
+import { ReferralUnavailable, ReferralsContent } from "./ReferralsPage";
 import { ContactCell, ReferralOperationsContent } from "../staff/ReferralOperationsPage";
 import {
   buildWhatsAppShareUrl,
@@ -19,6 +19,7 @@ import {
 
 const dashboard: ReferralDashboard = {
   success: true,
+  state: "available",
   profile: {
     externalReferrerId: "SSC-001",
     fullName: "Asha Student",
@@ -406,5 +407,15 @@ describe("student referral portal UI", () => {
     expect(html).toContain("No active referral link");
     expect(html).toContain("Generate referral link");
     expect(html).not.toContain("Copy Link");
+  });
+
+  it("renders unavailable referral access without dashboard controls or fabricated statistics", () => {
+    const html = renderToStaticMarkup(
+      <ReferralUnavailable message="Referral access is not yet enabled for this profile. Please contact your institute for assistance." />,
+    );
+    expect(html).toContain("Referral access is not yet enabled for this profile. Please contact your institute for assistance.");
+    expect(html).not.toContain("Generate referral link");
+    expect(html).not.toContain("Total referrals");
+    expect(html).not.toContain("Cash rewards earned");
   });
 });

@@ -73,6 +73,9 @@ export function registerStudentRoutes(app: PortalHono) {
     if (!view.activeProfile) {
       return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
     }
+    if (view.activeProfile.accessType !== "self" || !view.activeProfile.effectiveRoles?.some((role) => role === "student" || role === "alumni")) {
+      return jsonError(c, { status: 403, code: "student_profile_required", message: "This profile is not available." });
+    }
     try {
       return jsonPlain(c, await fetchDashboardForActiveProfile(c, view.activeProfile.personId, dashboardPagination(c), organisationId));
     } catch {
@@ -196,6 +199,9 @@ async function authenticatedReferrerContext(c: PortalContext) {
   const organisationId = session.record.organisation_id || ORG_ID;
   const view = await sessionView(c, session.record.login_account_id, session.record.active_person_id, organisationId);
   if (!view.activeProfile) return jsonError(c, { status: 409, code: "profile_required", message: "Select a profile first." });
+  if (view.activeProfile.accessType !== "self") {
+    return jsonError(c, { status: 403, code: "referrer_not_eligible", message: "This profile is not eligible for referral links." });
+  }
   const referrer = await activeReferrerForPerson(c, view.activeProfile.personId, organisationId);
   if (!referrer) return jsonError(c, { status: 403, code: "referrer_not_eligible", message: "This profile is not eligible for referral links." });
   return { session, view, referrer, organisationId };

@@ -1217,14 +1217,15 @@ describe("native referral services", () => {
     const studentDashboard = await app.request("https://portal.samyaksion.com/api/student/referrals", { headers: { Cookie: studentCookie } }, workerEnv);
     const familyDashboard = await app.request("https://portal.samyaksion.com/api/student/referrals", { headers: { Cookie: familyCookie } }, workerEnv);
     expect(studentDashboard.status).toBe(200);
-    expect(familyDashboard.status).toBe(200);
+    expect(familyDashboard.status).toBe(403);
     const studentBody = await studentDashboard.json() as { linkStatus: { publicUrl: string } };
-    const familyBody = await familyDashboard.json() as { linkStatus: { publicUrl: string } };
+    const familyBody = await familyDashboard.json() as Record<string, unknown>;
 
     expect(studentBody.linkStatus.publicUrl).toBe(`https://go.samyaksion.com/r/${studentIssued.rawToken}`);
     expect(studentBody.linkStatus.publicUrl).not.toBe(`https://go.samyaksion.com/r/${familyIssued.rawToken}`);
-    expect(familyBody.linkStatus.publicUrl).toBe(`https://go.samyaksion.com/r/${familyIssued.rawToken}`);
-    expect(familyBody.linkStatus.publicUrl).not.toBe(`https://go.samyaksion.com/r/${studentIssued.rawToken}`);
+    expect(familyBody).toMatchObject({ success: false, error: { code: "student_profile_required" } });
+    expect(JSON.stringify(familyBody)).not.toContain(String(familyIssued.rawToken));
+    expect(JSON.stringify(familyBody)).not.toContain(String(studentIssued.rawToken));
     fixture.close();
   });
 

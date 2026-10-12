@@ -343,6 +343,7 @@ export type VerifyTrainerOtpResponse = z.infer<typeof verifyTrainerOtpResponseSc
 
 const dashboardSchema = z.object({
   success: z.literal(true),
+  state: z.literal("available"),
   profile: z.object({
     externalReferrerId: z.string(),
     fullName: z.string(),
@@ -392,7 +393,15 @@ const dashboardSchema = z.object({
   ),
 });
 
-export type ReferralDashboard = z.infer<typeof dashboardSchema>;
+const referralDashboardUnavailableSchema = z.object({
+  success: z.literal(true),
+  state: z.union([z.literal("not_provisioned"), z.literal("inactive")]),
+  message: z.string(),
+});
+
+const referralDashboardResponseSchema = z.union([dashboardSchema, referralDashboardUnavailableSchema]);
+
+export type ReferralDashboard = z.infer<typeof referralDashboardResponseSchema>;
 
 const studentHomeSchema = z.object({
   success: z.literal(true),
@@ -2091,7 +2100,7 @@ export async function getPartnerPortal(params: { limit?: number; offset?: number
 }
 
 export async function getReferralDashboard() {
-  return getJson("/api/student/referrals", dashboardSchema);
+  return getJson("/api/student/referrals", referralDashboardResponseSchema);
 }
 
 export async function getStudentHome() {

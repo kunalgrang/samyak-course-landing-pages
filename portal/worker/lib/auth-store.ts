@@ -203,6 +203,7 @@ export type PartnerPortalLookup = {
 
 export type PortalDashboard = {
   success: true;
+  state: "available";
   profile: Omit<PortalProfile, "personId" | "referralToken">;
   linkStatus: {
     hasActiveLink: boolean;
@@ -240,6 +241,14 @@ export type PortalDashboard = {
     rewardPaymentDate: string;
   }>;
 };
+
+export type ReferralDashboardUnavailable = {
+  success: true;
+  state: "not_provisioned" | "inactive";
+  message: string;
+};
+
+export type ReferralDashboardResponse = PortalDashboard | ReferralDashboardUnavailable;
 
 export type StudentHome = {
   success: true;
@@ -1197,9 +1206,28 @@ export async function activeReferrerForPerson(c: AppContext, personId: string, o
     .first<{ id: string; external_referrer_id: string; personal_link: string; active: number; created_at: string }>();
 }
 
-export async function fetchDashboardForActiveProfile(c: AppContext, personId: string, pagination: { limit?: number; offset?: number } = {}, organisationId = ORG_ID): Promise<PortalDashboard> {
-  const referrer = await activeReferrerForPerson(c, personId, organisationId);
-  if (!referrer) throw new Error("No active referrer profile");
+export async function referrerProfileStateForPerson(c: AppContext, personId: string, organisationId = ORG_ID) {
+  return c.env.DB.prepare("select id, external_referrer_id, personal_link, active, created_at from referrer_profiles where organisation_id = ? and person_id = ? limit 1")
+    .bind(organisationId, personId)
+    .first<{ id: string; external_referrer_id: string; personal_link: string; active: number; created_at: string }>();
+}
+
+export async function fetchDashboardForActiveProfile(c: AppContext, personId: string, pagination: { limit?: number; offset?: number } = {}, organisationId = ORG_ID): Promise<ReferralDashboardResponse> {
+  const referrer = await referrerProfileStateForPerson(c, personId, organisationId);
+  if (!referrer) {
+    return {
+      success: true,
+      state: "not_provisioned",
+      message: "Referral access is not yet enabled for this profile. Please contact your institute for assistance.",
+    };
+  }
+  if (Number(referrer.active) !== 1) {
+    return {
+      success: true,
+      state: "inactive",
+      message: "Referral access is not active for this profile. Please contact your institute for assistance.",
+    };
+  }
   const profile = await profileForPerson(c, personId, organisationId);
   if (!profile) throw new Error("No active profile");
   const limit = pagination.limit || 25;
@@ -1275,6 +1303,7 @@ export async function fetchDashboardForActiveProfile(c: AppContext, personId: st
   });
   return {
     success: true,
+    state: "available",
     profile: {
       externalReferrerId: profile.externalReferrerId,
       fullName: profile.fullName,
@@ -1431,7 +1460,9 @@ export async function fetchStudentHomeForActiveProfile(c: AppContext, personId: 
       referralDashboardPath: "/app/referrals",
       message: activeLink
         ? "Your referral dashboard is ready."
-        : "Create or manage your referral link from My Referrals.",
+        : student.referrer_profile_id
+          ? "Create or manage your referral link from My Referrals."
+          : "Referral access is not yet enabled for this profile. Please contact your institute for assistance.",
     },
   };
 }

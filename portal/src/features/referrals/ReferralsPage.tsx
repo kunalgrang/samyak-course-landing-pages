@@ -48,6 +48,10 @@ export function ReferralsPage({ rulesPath = "/app/rules" }: { rulesPath?: string
     return <LoadingState label="Loading your referrals" />;
   }
 
+  if (dashboard.state !== "available") {
+    return <ReferralUnavailable message={dashboard.message} />;
+  }
+
   return (
     <ReferralsContent
       dashboard={dashboard}
@@ -60,6 +64,17 @@ export function ReferralsPage({ rulesPath = "/app/rules" }: { rulesPath?: string
       onGenerate={() => void handleGenerate()}
       rulesPath={rulesPath}
     />
+  );
+}
+
+export function ReferralUnavailable({ message }: { message: string }) {
+  return (
+    <div className="content-stack">
+      <header className="page-header">
+        <h1>My Referrals</h1>
+      </header>
+      <EmptyState title="Referral access not enabled" message={message} />
+    </div>
   );
 }
 
@@ -84,6 +99,10 @@ export function ReferralsContent({
   onGenerate?: () => void;
   rulesPath?: string;
 }) {
+  if (dashboard.state !== "available") {
+    return <ReferralUnavailable message={dashboard.message} />;
+  }
+
   const linkStatus = dashboard.linkStatus;
   const shareableLink = oneTimeLink || linkStatus.publicUrl || "";
 
