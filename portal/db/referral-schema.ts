@@ -1,7 +1,32 @@
 import { sql } from "drizzle-orm";
 import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { branches, loginAccounts, organisations, people, referrerProfiles } from "./schema";
-import { courses, enrolments, enquiries, feeAgreements } from "./student-master-schema";
+import { admissionDrafts, courses, enrolments, enquiries, feeAgreements, students } from "./student-master-schema";
+
+// SQL migration 0041 also defines the atomic write guards and immutable evidence
+// triggers; Drizzle declarations alone do not establish their security contract.
+export const studentReferralAdmissionIntents = sqliteTable("student_referral_admission_intents", {
+  id: text("id").primaryKey(),
+  organisationId: text("organisation_id").notNull().references(() => organisations.id),
+  personId: text("person_id").notNull().references(() => people.id),
+  studentId: text("student_id").notNull().references(() => students.id),
+  enrolmentId: text("enrolment_id").notNull().unique().references(() => enrolments.id),
+  draftId: text("draft_id").notNull().unique().references(() => admissionDrafts.id),
+  enquiryId: text("enquiry_id").notNull().unique().references(() => enquiries.id),
+  confirmationAuditId: text("confirmation_audit_id").notNull().unique(),
+  snapshotJson: text("snapshot_json").notNull(),
+  createdAt: text("created_at").notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
+}, (table) => [check("student_referral_intent_snapshot_valid", sql`json_valid(${table.snapshotJson})`)]);
+
+export const studentReferralProvisioningEvents = sqliteTable("student_referral_provisioning_events", {
+  intentId: text("intent_id").primaryKey().references(() => studentReferralAdmissionIntents.id),
+  personId: text("person_id").notNull().unique().references(() => people.id),
+  profileId: text("profile_id").notNull().unique().references(() => referrerProfiles.id),
+  loginAccountId: text("login_account_id").notNull().references(() => loginAccounts.id),
+  programmeId: text("programme_id").notNull().references(() => referralProgrammes.id),
+  auditId: text("audit_id").notNull().unique(),
+  createdAt: text("created_at").notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
+});
 
 const timestamps = {
   createdAt: text("created_at").notNull(),
