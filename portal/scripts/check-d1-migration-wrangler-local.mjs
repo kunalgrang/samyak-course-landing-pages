@@ -53,6 +53,16 @@ try {
   const subjectTriggers = query("select name from sqlite_master where type = 'trigger' and name like 'user_sessions_active_subject_%';");
   const preconfirmIndex = query("select name from sqlite_master where type = 'index' and name = 'receipts_one_preconfirm_token_per_draft';");
   const otpPurposeMigrationSql = readFileSync(join(projectRoot, "migrations", "0037_otp_challenge_signup_purpose.sql"), "utf8");
+  const forwardReferralSchema = query("select name from sqlite_master where name like 'student_referral_%';");
+  const forwardReferralMigration = query("select name from d1_migrations where name = '0041_student_referral_forward_intents.sql';");
+  expectSome(forwardReferralMigration, "0041 migration record");
+  expectNames(forwardReferralSchema, [
+    "student_referral_admission_intents", "student_referral_provisioning_events",
+    "student_referral_admission_evidence", "student_referral_write_eligibility",
+    "student_referral_intent_insert", "student_referral_intent_finalize", "student_referral_provision_insert",
+    "student_referral_intents_no_update", "student_referral_intents_no_delete",
+    "student_referral_events_no_update", "student_referral_events_no_delete",
+  ]);
 
   expectSome(columns, "active_subject_type column");
   expectSome(sessionMembershipColumn, "user_sessions.organisation_membership_id column");
@@ -176,7 +186,7 @@ try {
     throw new Error("0032 should drop receipts_one_preconfirm_token_per_draft; effective pre-confirm token protection is guarded against receipt_reversals.");
   }
 
-  console.log("Wrangler local D1 migration apply passed through 0038.");
+  console.log("Wrangler local D1 migration apply passed through 0041 (forward intent tables, views and guards verified).");
 } finally {
   rmSync(persistTo, { recursive: true, force: true });
 }
