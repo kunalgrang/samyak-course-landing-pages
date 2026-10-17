@@ -1,0 +1,20 @@
+{
+  "files": [
+    "index.html", "404.html", "robots.txt", "sitemap.xml", "_headers", "_redirects", "_routes.json",
+    "tally-sion/index.html", "digital-marketing-sion/index.html", "data-analytics-sion/index.html",
+    "full-stack-developer-course-sion/index.html", "r/index.html", "samyak-skill-circle/index.html",
+    "assets/css/full-stack.css", "assets/css/referral-form.css", "assets/css/shared.css", "assets/css/skill-circle.css",
+    "assets/js/referral-form.js", "assets/js/shared.js",
+    "assets/images/apple-touch-icon.png", "assets/images/favicon-192.png", "assets/images/favicon-32.png",
+    "assets/images/full-stack-hero.webp", "assets/images/full-stack-social-preview.webp",
+    "assets/images/samyak-logo-round.webp", "assets/images/samyak-logo.webp", "assets/images/social-preview.webp",
+    "assets/samyak logo - rectangle.jpeg", "assets/samyak logo.png", "assets/samyak-logo-rectangle.jpeg", "assets/samyak-logo-round.png",
+    "ccc-mock-test/index.html", "ccc-mock-test/nq01.txt", "ccc-mock-test/nq02.txt", "ccc-mock-test/nq03.txt",
+    "ccc-mock-test/nq04.txt", "ccc-mock-test/nq05.txt", "ccc-mock-test/nq06.txt", "ccc-mock-test/nq07.txt",
+    "ccc-mock-test/nq08.txt", "ccc-mock-test/nq09.txt", "ccc-mock-test/p01.txt", "ccc-mock-test/p02.txt",
+    "ccc-mock-test/p03.txt", "ccc-mock-test/p04.txt", "ccc-mock-test/p05.txt", "ccc-mock-test/p06.txt", "ccc-mock-test/p07.txt",
+    "ccc-mock-test/hard/index.html", "ccc-mock-test/hard/hd01.txt", "ccc-mock-test/hard/hd02.txt",
+    "ccc-mock-test/hard/hd03.txt", "ccc-mock-test/hard/hd04.txt", "ccc-mock-test/hard/hd05.txt",
+    "ccc-mock-test/hard/hd06.txt", "ccc-mock-test/hard/hd07.txt", "ccc-mock-test/hard/hd08.txt", "ccc-mock-test/hard/hq01.txt"
+  ]
+}
