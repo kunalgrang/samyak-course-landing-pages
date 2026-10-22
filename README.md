@@ -13,26 +13,47 @@ This repository replaces heavy WordPress/Elementor landing pages with lightweigh
 - `https://go.samyaksion.com/data-analytics-sion/`
 - `https://go.samyaksion.com/` redirects to `https://samyaksion.com/`
 
-## Local Preview
+## Local Build and Preview
 
-Run from the repository root:
+Run from the repository root with Node.js 22 or newer:
 
-```bash
-python -m http.server 8080
+```sh
+node scripts/build-pages.mjs
+node scripts/build-pages.mjs --check
+node --test scripts/build-pages.test.mjs
 ```
 
-Then open `http://localhost:8080/tally-sion/`, `http://localhost:8080/digital-marketing-sion/`, and `http://localhost:8080/data-analytics-sion/`.
+Publish only the generated `dist-pages/` directory. The exact public files are
+listed in `pages-public-files.json`; new files require an explicit allowlist review.
+Never serve or upload the repository root as the public asset directory.
 
-## Cloudflare Pages Setup
+For local Cloudflare Pages/Function HTTP tests, with portal dev tools installed:
+
+```sh
+node --test scripts/pages-referral.test.mjs
+node scripts/test-pages-preview.mjs
+```
+
+See [the public-output and containment runbook](docs/pages-public-output.md) for
+loopback browser QA, dependency reuse, exposure assessment and release gates.
+
+## Cloudflare Pages Setup (proposed; owner approval required)
 
 Use GitHub integration for `kunalgrang/samyak-course-landing-pages`.
 
-Exact build settings:
+- Production branch: `main`.
+- Root directory: blank (repository root).
+- Build command: `node scripts/build-pages.mjs`.
+- Build output directory: `dist-pages`.
+- Framework preset: None / static.
+- Build runtime: Node.js 22 or newer; no build secrets or dependencies required.
+- Functions source: root `functions/`, outside static output.
 
-- Production branch: `main`
-- Build command: leave blank
-- Build output directory: `/`
-- Framework preset: None / static
+These settings require a separate Dashboard change; adding scripts does not update
+live settings. Current automatic builds can still publish root files until the
+owner applies the approved configuration. Do not push/merge as a deployment shortcut.
+Preserve `_headers`, `_redirects` and `_routes.json` in generated output. Pages CI
+builds root Functions separately; never copy their source into `dist-pages/`.
 
 ## Custom Domain and DNS
 
@@ -97,7 +118,7 @@ All WhatsApp buttons use `wa.me/917413832777`. All call buttons use `tel:+917413
 
 ## Rollback
 
-In Cloudflare Pages, roll back to the previous deployment from the Deployments tab. If DNS was changed, revert the `go.samyaksion.com` record to the prior target.
+Use only an owner-approved deployment verified to contain the allowlisted public output as a recovery target. Rolling back to an older root-publishing deployment can restore internal-file exposure. Prefer a safe fix forward; see the containment runbook for legacy preview URLs and recovery approval.
 
 ## Old WordPress Redirect Instructions
 
